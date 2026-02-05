@@ -1,0 +1,262 @@
+@import "tailwindcss";
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   KPOS - Design System Tokens (Tailwind CSS v4)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Enable dark mode with class strategy */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+    /* Primary Brand Colors */
+    --color-primary-50: oklch(0.97 0.02 250);
+    --color-primary-100: oklch(0.93 0.04 250);
+    --color-primary-200: oklch(0.86 0.08 250);
+    --color-primary-300: oklch(0.76 0.12 250);
+    --color-primary-400: oklch(0.66 0.16 250);
+    --color-primary-500: oklch(0.55 0.18 250);
+    --color-primary-600: oklch(0.48 0.16 250);
+    --color-primary-700: oklch(0.40 0.14 250);
+    --color-primary-800: oklch(0.33 0.11 250);
+    --color-primary-900: oklch(0.27 0.08 250);
+    --color-primary-950: oklch(0.20 0.06 250);
+
+    /* Semantic Colors */
+    --color-success-500: oklch(0.60 0.18 145);
+    --color-success-600: oklch(0.52 0.16 145);
+    --color-warning-500: oklch(0.75 0.18 85);
+    --color-warning-600: oklch(0.68 0.16 85);
+    --color-error-500: oklch(0.60 0.20 25);
+    --color-error-600: oklch(0.52 0.18 25);
+    --color-info-500: oklch(0.60 0.15 220);
+
+    /* Typography */
+    --font-sans: 'Inter Variable', 'Noto Sans Thai Variable', system-ui, sans-serif;
+    --font-mono: 'JetBrains Mono Variable', monospace;
+
+    /* POS-specific sizes */
+    --font-size-price: 2rem;
+    --font-size-total: 2.5rem;
+
+    /* Border Radius */
+    --radius-sm: 0.25rem;
+    --radius-md: 0.375rem;
+    --radius-lg: 0.5rem;
+    --radius-xl: 0.75rem;
+    --radius-2xl: 1rem;
+
+    /* Shadows */
+    --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+    --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+    --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+    --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+
+    /* Z-Index */
+    --z-dropdown: 100;
+    --z-modal: 200;
+    --z-toast: 300;
+    --z-tooltip: 400;
+}
+
+/* Dark Mode Variables */
+@media (prefers-color-scheme: dark) {
+    :root {
+        --color-surface: oklch(0.15 0 0);
+        --color-surface-dim: oklch(0.12 0 0);
+        --color-surface-container: oklch(0.18 0 0);
+    }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Base Styles
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+html {
+    @apply antialiased;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+}
+
+body {
+    @apply bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-gray-100;
+    min-height: 100vh;
+    min-height: 100dvh;
+}
+
+/* Input Fields for Dark Mode */
+input,
+textarea,
+select {
+    @apply text-gray-900 dark:text-white bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600;
+}
+
+input::placeholder,
+textarea::placeholder {
+    @apply text-gray-400 dark:text-gray-500;
+}
+
+/* Scrollbar Styling */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    @apply bg-gray-100 dark:bg-gray-900;
+}
+
+::-webkit-scrollbar-thumb {
+    @apply bg-gray-300 dark:bg-gray-700 rounded-full;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    @apply bg-gray-400 dark:bg-gray-600;
+}
+
+/* Focus Ring */
+*:focus-visible {
+    @apply outline-none ring-2 ring-primary-500 ring-offset-2 dark:ring-offset-gray-900;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   POS-Specific Styles
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.pos-layout {
+    display: grid;
+    grid-template-columns: 1fr 380px;
+    grid-template-rows: auto 1fr;
+    height: 100vh;
+    height: 100dvh;
+    gap: 0;
+}
+
+.pos-products {
+    grid-column: 1;
+    grid-row: 2;
+    overflow-y: auto;
+}
+
+.pos-cart {
+    grid-column: 2;
+    grid-row: 1 / -1;
+    @apply bg-white dark:bg-gray-900 border-l border-gray-200 dark:border-gray-800;
+    display: flex;
+    flex-direction: column;
+}
+
+.pos-header {
+    grid-column: 1;
+    grid-row: 1;
+}
+
+/* Product Grid */
+.product-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 0.75rem;
+    padding: 1rem;
+}
+
+@media (min-width: 1280px) {
+    .product-grid {
+        grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    }
+}
+
+/* Number Pad */
+.numpad-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.5rem;
+}
+
+.numpad-btn {
+    @apply h-14 text-xl font-medium bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 rounded-xl transition-colors active:scale-95;
+}
+
+/* Category Tabs */
+.category-tabs {
+    @apply flex gap-2 overflow-x-auto pb-2;
+    -webkit-overflow-scrolling: touch;
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+}
+
+.category-tabs::-webkit-scrollbar {
+    display: none;
+}
+
+.category-tab {
+    @apply px-4 py-2 rounded-full text-sm font-medium whitespace-nowrap bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 transition-colors;
+}
+
+.category-tab.active {
+    @apply bg-primary-500 text-white;
+}
+
+/* Cart Item */
+.cart-item {
+    @apply flex items-center gap-3 p-3 border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors;
+}
+
+/* Price Display */
+.price-display {
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Animations
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+@keyframes slideIn {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+    }
+
+    to {
+        opacity: 1;
+    }
+}
+
+@keyframes pulse {
+
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.5;
+    }
+}
+
+.animate-slide-in {
+    animation: slideIn 0.2s ease-out;
+}
+
+.animate-fade-in {
+    animation: fadeIn 0.15s ease-out;
+}
+
+/* Hide scrollbar but allow scrolling */
+.scrollbar-none {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+    display: none;
+}

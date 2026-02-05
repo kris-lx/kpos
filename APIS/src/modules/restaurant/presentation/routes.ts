@@ -1,0 +1,396 @@
+// ═══════════════════════════════════════════════════════════════════════════
+// Restaurant Module - Routes (Refactored with Services)
+// ═══════════════════════════════════════════════════════════════════════════
+
+import { Router, Request, Response, NextFunction } from 'express';
+import { authenticate, authorize } from '@/infrastructure/http/middleware/auth.middleware';
+import { 
+    tableService, 
+    orderService, 
+    reservationService, 
+    eMenuService 
+} from '../application/services';
+import { TableStatus } from '../domain/entities/Table';
+import { OrderStatus, OrderItemStatus } from '../domain/entities/Order';
+import { ReservationStatus } from '../domain/entities/Reservation';
+
+export const restaurantRoutes = Router();
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TABLES
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Get all tables
+restaurantRoutes.get('/tables', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { branchId, status, zone, floor } = req.query;
+        
+        const tables = await tableService.findAll({
+            branchId: branchId as string,
+            status: status as TableStatus,
+            zone: zone as string,
+            floor: floor as string,
+        });
+
+        res.json({ success: true, data: tables });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Get table stats
+restaurantRoutes.get('/tables/stats', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { branchId } = req.query;
+        
+        if (!branchId) {
+            res.status(400).json({ success: false, error: { code: 'RES_001', message: 'branchId is required' } });
+            return;
+        }
+
+        const stats = await tableService.getStats(branchId as string);
+        res.json({ success: true, data: stats });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Get table by ID
+restaurantRoutes.get('/tables/:id', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const table = await tableService.findById(req.params.id);
+
+        if (!table) {
+            res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Table not found' } });
+            return;
+        }
+
+        res.json({ success: true, data: table });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Create table
+restaurantRoutes.post('/tables', authenticate, authorize('tables:create'), async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const table = await tableService.create(req.body);
+        res.status(201).json({ success: true, data: table });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Update table
+restaurantRoutes.put('/tables/:id', authenticate, authorize('tables:update'), async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const table = await tableService.update(req.params.id, req.body);
+        res.json({ success: true, data: table });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Update table status
+restaurantRoutes.patch('/tables/:id/status', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { status } = req.body;
+        const table = await tableService.updateStatus(req.params.id, status as TableStatus);
+        res.json({ success: true, data: table });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Delete table (soft delete)
+restaurantRoutes.delete('/tables/:id', authenticate, authorize('tables:delete'), async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        await tableService.delete(req.params.id);
+        res.json({ success: true, message: 'Table deleted successfully' });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ORDERS
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Get all orders
+restaurantRoutes.get('/orders', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { branchId, status, tableId } = req.query;
+
+        const orders = await orderService.findAll({
+            branchId: branchId as string,
+            status: status as OrderStatus,
+            tableId: tableId as string,
+        });
+
+        res.json({ success: true, data: orders });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Get order stats
+restaurantRoutes.get('/orders/stats', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { branchId } = req.query;
+        
+        if (!branchId) {
+            res.status(400).json({ success: false, error: { code: 'RES_001', message: 'branchId is required' } });
+            return;
+        }
+
+        const stats = await orderService.getStats(branchId as string);
+        res.json({ success: true, data: stats });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Get order by ID
+restaurantRoutes.get('/orders/:id', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const order = await orderService.findById(req.params.id);
+
+        if (!order) {
+            res.status(404).json({ success: false, error: { code: 'RES_002', message: 'Order not found' } });
+            return;
+        }
+
+        res.json({ success: true, data: order });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Create order
+restaurantRoutes.post('/orders', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const order = await orderService.create(req.body);
+        res.status(201).json({ success: true, data: order });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Update order
+restaurantRoutes.put('/orders/:id', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const order = await orderService.update(req.params.id, req.body);
+        res.json({ success: true, data: order });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Update order status
+restaurantRoutes.patch('/orders/:id/status', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { status } = req.body;
+        const order = await orderService.update(req.params.id, { status: status as OrderStatus });
+        res.json({ success: true, data: order });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Add items to order
+restaurantRoutes.post('/orders/:id/items', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { items } = req.body;
+        const order = await orderService.addItems(req.params.id, items);
+        res.json({ success: true, data: order });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// KITCHEN DISPLAY
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Get kitchen orders
+restaurantRoutes.get('/kitchen', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { branchId } = req.query;
+        const orders = await orderService.getKitchenOrders(branchId as string);
+        res.json({ success: true, data: orders });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Update order item status (kitchen)
+restaurantRoutes.put('/kitchen/:orderId/items/:itemId', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { status } = req.body;
+        const item = await orderService.updateItemStatus(req.params.itemId, status as OrderItemStatus);
+        res.json({ success: true, data: item });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Legacy endpoint for backward compatibility
+restaurantRoutes.patch('/kitchen/items/:id/status', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { status } = req.body;
+        const item = await orderService.updateItemStatus(req.params.id, status as OrderItemStatus);
+        res.json({ success: true, data: item });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RESERVATIONS
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Get all reservations
+restaurantRoutes.get('/reservations', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { branchId, status, date, page, limit } = req.query;
+
+        const result = await reservationService.findAll({
+            branchId: branchId as string,
+            status: status as ReservationStatus,
+            date: date as string,
+            page: page ? Number(page) : 1,
+            limit: limit ? Number(limit) : 50,
+        });
+
+        res.json({
+            success: true,
+            data: result.data,
+            meta: {
+                total: result.total,
+                page: page ? Number(page) : 1,
+                limit: limit ? Number(limit) : 50,
+                totalPages: Math.ceil(result.total / (limit ? Number(limit) : 50)),
+            },
+        });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Get reservation stats
+restaurantRoutes.get('/reservations/stats', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { branchId, date } = req.query;
+        
+        if (!branchId) {
+            res.status(400).json({ success: false, error: { code: 'RES_001', message: 'branchId is required' } });
+            return;
+        }
+
+        const stats = await reservationService.getStats(
+            branchId as string, 
+            date ? new Date(date as string) : undefined
+        );
+        res.json({ success: true, data: stats });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Get reservation by ID
+restaurantRoutes.get('/reservations/:id', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const reservation = await reservationService.findById(req.params.id);
+
+        if (!reservation) {
+            res.status(404).json({ success: false, error: { code: 'RES_003', message: 'Reservation not found' } });
+            return;
+        }
+
+        res.json({ success: true, data: reservation });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Create reservation
+restaurantRoutes.post('/reservations', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const reservation = await reservationService.create(req.body);
+        res.status(201).json({ success: true, data: reservation });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Update reservation
+restaurantRoutes.put('/reservations/:id', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const reservation = await reservationService.update(req.params.id, req.body);
+        res.json({ success: true, data: reservation });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Update reservation status
+restaurantRoutes.patch('/reservations/:id/status', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { status } = req.body;
+        const reservation = await reservationService.update(req.params.id, { status: status as ReservationStatus });
+        res.json({ success: true, data: reservation });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Delete reservation
+restaurantRoutes.delete('/reservations/:id', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        await reservationService.delete(req.params.id);
+        res.json({ success: true, message: 'Reservation deleted successfully' });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// E-MENU (Public endpoints for customer-facing menu)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Get e-menu (public)
+restaurantRoutes.get('/e-menu', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { branchId } = req.query;
+        const menuData = await eMenuService.getMenu(branchId as string);
+        res.json({ success: true, data: menuData });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Create order from e-menu (public)
+restaurantRoutes.post('/e-menu/order', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { branchId, tableNumber, items } = req.body;
+
+        if (!branchId || !items || items.length === 0) {
+            res.status(400).json({ 
+                success: false, 
+                error: { code: 'RES_004', message: 'branchId and items are required' } 
+            });
+            return;
+        }
+
+        const result = await eMenuService.createOrder(branchId, tableNumber, items);
+        
+        if (!result.success) {
+            res.status(400).json({ success: false, error: { code: 'RES_005', message: result.error } });
+            return;
+        }
+
+        res.status(201).json({ success: true, data: { orderNo: result.orderNo } });
+    } catch (error) {
+        next(error);
+    }
+});

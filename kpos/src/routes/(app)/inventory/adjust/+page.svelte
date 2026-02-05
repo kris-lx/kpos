@@ -1,0 +1,390 @@
+<script lang="ts">
+    import { onMount } from "svelte";
+    import { t } from "$lib/i18n/index.svelte";
+    import { cn } from "$utils";
+    import { api } from "$api";
+    import { formatDate } from "$lib/utils";
+    import { toast } from "svelte-sonner";
+    import {
+        TrendingUp,
+        TrendingDown,
+        Plus,
+        Search,
+        X,
+        Loader2,
+        ChevronLeft,
+        ChevronRight,
+        Package,
+        Calendar,
+        FileText,
+        AlertCircle,
+        Download,
+    } from "lucide-svelte";
+
+    // State
+    let searchQuery = $state("");
+    let typeFilter = $state<string | null>(null);
+    let isLoading = $state(true);
+    let showModal = $state(false);
+    let currentPage = $state(1);
+    let itemsPerPage = $state(10);
+    let totalItems = $state(0);
+    let searchTimeout: ReturnType<typeof setTimeout>;
+
+    // Data
+    let adjustments = $state<any[]>([]);
+    let products = $state<any[]>([]);
+
+    // Form
+    let formData = $state({
+        productId: "",
+        adjustmentType: "increase",
+        quantity: 1,
+        reason: "",
+        reference: "",
+        notes: "",
+        date: new Date().toISOString().split("T")[0],
+    });
+
+    // Stats
+    let stats = $derived({
+        total: totalItems,
+        increase: adjustments.filter((a) => a.adjustmentType === "increase").length,
+        decrease: adjustments.filter((a) => a.adjustmentType === "decrease").length,
+        totalQty: adjustments.reduce((sum, a) => sum + (a.adjustmentType === "increase" ? a.quantity : -a.quantity), 0),
+    });
+
+    async function loadData() {
+        isLoading = true;
+        try {
+            const params = new URLSearchParams({
+                page: currentPage.toString(),
+                limit: itemsPerPage.toString(),
+            });
+            if (searchQuery.trim()) {
+                params.append("search", searchQuery.trim());
+            }
+            const [adjRes, prodRes, invRes] = await Promise.all([
+                api.get(`inventory/adjustments?${params}`).json<any>(),
+                api.get("products?limit=1000").json<any>(),
+                api.get("inventory?limit=1000").json<any>(),
+            ]);
+            adjustments = adjRes.data || [];
+            totalItems = adjRes.meta?.total || 0;
+            // Merge product with inventory stock
+            const inventoryMap = new Map((invRes.data || []).map((inv: any) => [inv.productId, inv.quantity]));
+            products = (prodRes.data || []).map((p: any) => ({
+                ...p,
+                stock: inventoryMap.get(p.id) || 0
+            }));
+        } catch (e) {
+            console.error("Failed to load:", e);
+        } finally {
+            isLoading = false;
+        }
+    }
+
+    function handleSearch() {
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(() => {
+            currentPage = 1;
+            loadData();
+        }, 300);
+    }
+
+    async function handleSubmit() {
+        try {
+            await api.put("inventory/adjustments", { json: formData }).json();
+            toast.success("ປັບສະຕ໋ອກສຳເລັດ");
+            showModal = false;
+            resetForm();
+            loadData();
+        } catch (e) {
+            console.error("Failed to save:", e);
+            toast.error(t("common.error"));
+        }
+    }
+
+    function getProductName(productId: string) {
+        return products.find((p) => p.id === productId)?.name || "-";
+    }
+
+    function resetForm() {
+        formData = {
+            productId: "",
+            adjustmentType: "increase",
+            quantity: 1,
+            reason: "",
+            reference: "",
+            notes: "",
+            date: new Date().toISOString().split("T")[0],
+        };
+    }
+
+    let totalPages = $derived(Math.ceil(totalItems / itemsPerPage));
+
+    function goToPage(page: number) {
+        if (page >= 1 && page <= totalPages) {
+            currentPage = page;
+            loadData();
+        }
+    }
+
+    onMount(() => loadData());
+</script>
+
+<svelte:head>
+    <title>ປັບສະຕ໋ອກ - KPOS</title>
+</svelte:head>
+
+<div class="min-h-screen bg-gray-50 dark:bg-gray-900 p-4 md:p-6">
+    <!-- Header -->
+    <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between mb-6 gap-4">
+        <div>
+            <div class="flex items-center gap-3">
+                <div class="p-2.5 bg-gradient-to-br from-orange-500 to-red-600 rounded-xl shadow-lg">
+                    <TrendingUp class="w-6 h-6 text-white" />
+                </div>
+                <div>
+                    <h1 class="text-2xl font-bold text-gray-900 dark:text-white">ປັບສະຕ໋ອກ</h1>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">ປັບປ່ຽນຈຳນວນສິນຄ້າໃນສະຕ໋ອກ</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="flex items-center gap-3">
+            <button class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-700">
+                <Download class="w-4 h-4" />
+                ສົ່ງອອກ
+            </button>
+            <button
+                onclick={() => { resetForm(); showModal = true; }}
+                class="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-orange-500 to-red-600 text-white rounded-xl text-sm font-semibold shadow-lg hover:from-orange-600 hover:to-red-700"
+            >
+                <Plus class="w-5 h-5" />
+                ປັບສະຕ໋ອກ
+            </button>
+        </div>
+    </div>
+
+    <!-- Stats -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+        <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
+            <div class="flex items-center justify-between">
+                <div class="p-2 bg-orange-100 dark:bg-orange-900/50 rounded-lg">
+                    <FileText class="w-5 h-5 text-orange-600 dark:text-orange-400" />
+                </div>
+                <span class="text-2xl font-bold text-orange-600 dark:text-orange-400">{stats.total}</span>
+            </div>
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">ການປັບທັງໝົດ</p>
+        </div>
+        <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
+            <div class="flex items-center justify-between">
+                <div class="p-2 bg-green-100 dark:bg-green-900/50 rounded-lg">
+                    <TrendingUp class="w-5 h-5 text-green-600 dark:text-green-400" />
+                </div>
+                <span class="text-2xl font-bold text-green-600 dark:text-green-400">{stats.increase}</span>
+            </div>
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">ເພີ່ມ</p>
+        </div>
+        <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
+            <div class="flex items-center justify-between">
+                <div class="p-2 bg-red-100 dark:bg-red-900/50 rounded-lg">
+                    <TrendingDown class="w-5 h-5 text-red-600 dark:text-red-400" />
+                </div>
+                <span class="text-2xl font-bold text-red-600 dark:text-red-400">{stats.decrease}</span>
+            </div>
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">ຫຼຸດ</p>
+        </div>
+        <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
+            <div class="flex items-center justify-between">
+                <div class="p-2 bg-blue-100 dark:bg-blue-900/50 rounded-lg">
+                    <Package class="w-5 h-5 text-blue-600 dark:text-blue-400" />
+                </div>
+                <span class={cn("text-2xl font-bold", stats.totalQty >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400")}>
+                    {stats.totalQty >= 0 ? "+" : ""}{stats.totalQty}
+                </span>
+            </div>
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">ປ່ຽນແປງສຸດທິ</p>
+        </div>
+    </div>
+
+    <!-- Filters -->
+    <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm mb-6">
+        <div class="flex flex-col lg:flex-row lg:items-center gap-4">
+            <div class="relative flex-1">
+                <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                <input type="text" bind:value={searchQuery} oninput={handleSearch} placeholder="ຄົ້ນຫາສິນຄ້າ, ເຫດຜົນ..." class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-orange-500" />
+            </div>
+            <div class="flex gap-2">
+                {#each [{ id: null, label: "ທັງໝົດ" }, { id: "increase", label: "ເພີ່ມ" }, { id: "decrease", label: "ຫຼຸດ" }] as filter}
+                    <button
+                        onclick={() => { typeFilter = filter.id; currentPage = 1; }}
+                        class={cn("px-3 py-2 rounded-lg text-sm font-medium transition-all", typeFilter === filter.id ? "bg-orange-100 dark:bg-orange-900/50 text-orange-700 dark:text-orange-400" : "text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700")}
+                    >
+                        {filter.label}
+                    </button>
+                {/each}
+            </div>
+        </div>
+    </div>
+
+    <!-- Content -->
+    {#if isLoading}
+        <div class="flex items-center justify-center py-20">
+            <Loader2 class="w-10 h-10 text-orange-500 animate-spin" />
+        </div>
+    {:else if adjustments.length === 0}
+        <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-16 text-center">
+            <TrendingUp class="w-16 h-16 mx-auto text-gray-300 dark:text-gray-600" />
+            <h3 class="text-lg font-semibold text-gray-900 dark:text-white mt-4">ບໍ່ມີການປັບສະຕ໋ອກ</h3>
+        </div>
+    {:else}
+        <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden">
+            <div class="overflow-x-auto">
+                <table class="w-full">
+                    <thead>
+                        <tr class="border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
+                            <th class="text-left px-6 py-4 text-xs font-semibold text-gray-500 uppercase">ວັນທີ</th>
+                            <th class="text-left px-6 py-4 text-xs font-semibold text-gray-500 uppercase">ສິນຄ້າ</th>
+                            <th class="text-center px-6 py-4 text-xs font-semibold text-gray-500 uppercase">ປະເພດ</th>
+                            <th class="text-right px-6 py-4 text-xs font-semibold text-gray-500 uppercase">ຈຳນວນ</th>
+                            <th class="text-left px-6 py-4 text-xs font-semibold text-gray-500 uppercase">ເຫດຜົນ</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-gray-200 dark:divide-gray-700">
+                        {#each adjustments as adj}
+                            <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-all">
+                                <td class="px-6 py-4">
+                                    <div class="flex items-center gap-2 text-gray-600 dark:text-gray-400">
+                                        <Calendar class="w-4 h-4" />
+                                        <span>{formatDate(adj.date || adj.createdAt)}</span>
+                                    </div>
+                                </td>
+                                <td class="px-6 py-4">
+                                    <div class="flex items-center gap-2">
+                                        <Package class="w-4 h-4 text-gray-400" />
+                                        <span class="font-medium text-gray-900 dark:text-white">{getProductName(adj.productId)}</span>
+                                    </div>
+                                </td>
+                                <td class="px-6 py-4 text-center">
+                                    {#if adj.adjustmentType === "increase"}
+                                        <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-green-100 dark:bg-green-900/50 text-green-700 dark:text-green-400">
+                                            <TrendingUp class="w-3 h-3" /> ເພີ່ມ
+                                        </span>
+                                    {:else}
+                                        <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-400">
+                                            <TrendingDown class="w-3 h-3" /> ຫຼຸດ
+                                        </span>
+                                    {/if}
+                                </td>
+                                <td class="px-6 py-4 text-right">
+                                    <span class={cn("font-bold", adj.adjustmentType === "increase" ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400")}>
+                                        {adj.adjustmentType === "increase" ? "+" : "-"}{adj.quantity}
+                                    </span>
+                                </td>
+                                <td class="px-6 py-4 text-gray-600 dark:text-gray-400">{adj.reason || "-"}</td>
+                            </tr>
+                        {/each}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    {/if}
+
+    <!-- Pagination -->
+    {#if totalPages >= 1}
+        <div class="flex items-center justify-between mt-6 bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700">
+            <div class="flex items-center gap-2">
+                <span class="text-sm text-gray-600 dark:text-gray-400">ສະແດງ</span>
+                <select
+                    bind:value={itemsPerPage}
+                    onchange={() => { currentPage = 1; loadData(); }}
+                    class="px-2 py-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm"
+                >
+                    {#each [10, 20, 50, 100] as size}
+                        <option value={size}>{size}</option>
+                    {/each}
+                </select>
+                <span class="text-sm text-gray-600 dark:text-gray-400">ລາຍການ</span>
+            </div>
+            <div class="flex items-center gap-2">
+                <button onclick={() => goToPage(currentPage - 1)} disabled={currentPage === 1} class="p-2 rounded-lg border border-gray-200 dark:border-gray-700 disabled:opacity-50">
+                    <ChevronLeft class="w-5 h-5" />
+                </button>
+                <span class="px-4 py-2 text-sm text-gray-600 dark:text-gray-400">{currentPage} / {totalPages} (ທັງໝົດ {totalItems})</span>
+                <button onclick={() => goToPage(currentPage + 1)} disabled={currentPage === totalPages} class="p-2 rounded-lg border border-gray-200 dark:border-gray-700 disabled:opacity-50">
+                    <ChevronRight class="w-5 h-5" />
+                </button>
+            </div>
+        </div>
+    {/if}
+</div>
+
+<!-- Modal -->
+{#if showModal}
+    <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+        <div class="w-full max-w-lg bg-white dark:bg-gray-800 rounded-2xl shadow-2xl overflow-hidden">
+            <div class="px-6 py-4 bg-gradient-to-r from-orange-500 to-red-600 flex items-center justify-between">
+                <h2 class="text-xl font-bold text-white">ປັບສະຕ໋ອກ</h2>
+                <button onclick={() => (showModal = false)} class="p-1.5 hover:bg-white/20 rounded-lg">
+                    <X class="w-5 h-5 text-white" />
+                </button>
+            </div>
+
+            <form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }} class="p-6 space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ສິນຄ້າ *</label>
+                    <select bind:value={formData.productId} required class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white">
+                        <option value="">ເລືອກສິນຄ້າ</option>
+                        {#each products as product}
+                            <option value={product.id}>{product.name} (ສະຕ໋ອກ: {product.stock || 0})</option>
+                        {/each}
+                    </select>
+                </div>
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ປະເພດ</label>
+                        <select bind:value={formData.adjustmentType} class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white">
+                            <option value="increase">ເພີ່ມ (+)</option>
+                            <option value="decrease">ຫຼຸດ (-)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຈຳນວນ *</label>
+                        <input type="number" bind:value={formData.quantity} min="1" required class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ເຫດຜົນ</label>
+                    <select bind:value={formData.reason} class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white">
+                        <option value="">ເລືອກເຫດຜົນ</option>
+                        <option value="damaged">ເສຍຫາຍ</option>
+                        <option value="expired">ໝົດອາຍຸ</option>
+                        <option value="lost">ສູນຫາຍ</option>
+                        <option value="returned">ສົ່ງຄືນ</option>
+                        <option value="recount">ນັບຄືນ</option>
+                        <option value="other">ອື່ນໆ</option>
+                    </select>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ວັນທີ</label>
+                    <input type="date" bind:value={formData.date} class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ໝາຍເຫດ</label>
+                    <textarea bind:value={formData.notes} rows="2" class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white resize-none"></textarea>
+                </div>
+
+                <div class="flex justify-end gap-3 pt-4">
+                    <button type="button" onclick={() => (showModal = false)} class="px-5 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 font-medium">ຍົກເລີກ</button>
+                    <button type="submit" class="px-5 py-2.5 bg-gradient-to-r from-orange-500 to-red-600 text-white rounded-xl font-medium shadow-lg">ບັນທຶກ</button>
+                </div>
+            </form>
+        </div>
+    </div>
+{/if}
