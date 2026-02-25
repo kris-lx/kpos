@@ -5,12 +5,19 @@
         useQueryClient,
     } from "@tanstack/svelte-query";
     import { api } from "$api";
+    import { auth } from "$stores";
     import { cn } from "$utils";
     import { toast } from "svelte-sonner";
     import { t } from "$lib/i18n/index.svelte";
     import { Plus, Search, Pencil, Trash2, Tags, X, ChevronLeft, ChevronRight, Loader2 } from "lucide-svelte";
 
     const queryClient = useQueryClient();
+
+    // Rule-based CRUD — also requires write access to active store
+    const hasWriteAccess = $derived(auth.hasStoreAccess('write') || !auth.activeStoreId);
+    const canCreateCat = $derived(auth.canCreate('products') && hasWriteAccess);
+    const canUpdateCat = $derived(auth.canUpdate('products') && hasWriteAccess);
+    const canDeleteCat = $derived(auth.canDelete('products') && hasWriteAccess);
 
     let searchQuery = $state("");
     let showModal = $state(false);
@@ -25,8 +32,10 @@
         isActive: true,
     });
 
+    const activeStoreId = $derived(auth.activeStoreId);
+
     const categoriesQuery = createQuery({
-        queryKey: ["categories", searchQuery],
+        queryKey: ["categories", searchQuery, activeStoreId],
         queryFn: async () => {
             const params = new URLSearchParams();
             if (searchQuery) params.append("search", searchQuery);
@@ -167,6 +176,7 @@
             </div>
         </div>
 
+        {#if canCreateCat}
         <button
             onclick={openCreate}
             class="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-purple-500 to-pink-600 text-white rounded-xl text-sm font-semibold shadow-lg hover:from-purple-600 hover:to-pink-700 transition-all"
@@ -174,6 +184,7 @@
             <Plus class="w-5 h-5" />
             {t("common.addNew")}
         </button>
+        {/if}
     </div>
 
     <!-- Search -->
@@ -202,7 +213,7 @@
     <!-- Categories Grid -->
     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
         {#if $categoriesQuery.isLoading}
-            {#each Array(8) as _}
+            {#each Array(8) as _, i (i)}
                 <div class="bg-white dark:bg-gray-800 rounded-xl p-6 animate-pulse shadow-sm">
                     <div class="w-12 h-12 bg-gray-200 dark:bg-gray-700 rounded-xl mb-4"></div>
                     <div class="h-5 bg-gray-200 dark:bg-gray-700 rounded w-2/3 mb-2"></div>
@@ -216,7 +227,7 @@
                 <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">{t("common.addNew")}</p>
             </div>
         {:else}
-            {#each paginatedCategories as category}
+            {#each paginatedCategories as category (category.id)}
                 <div
                     class="bg-white dark:bg-gray-800 rounded-xl p-6 relative group shadow-sm hover:shadow-md transition-all border border-gray-100 dark:border-gray-700"
                 >
@@ -224,6 +235,7 @@
                     <div
                         class="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1"
                     >
+                        {#if canUpdateCat}
                         <button
                             onclick={() => openEdit(category)}
                             class="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-all"
@@ -231,6 +243,8 @@
                         >
                             <Pencil class="w-4 h-4 text-gray-500 dark:text-gray-400 hover:text-purple-500" />
                         </button>
+                        {/if}
+                        {#if canDeleteCat}
                         <button
                             onclick={() => confirmDelete(category)}
                             class="p-2 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg transition-all"
@@ -238,6 +252,7 @@
                         >
                             <Trash2 class="w-4 h-4 text-gray-500 dark:text-gray-400 hover:text-red-500" />
                         </button>
+                        {/if}
                     </div>
 
                     <!-- Icon -->
@@ -284,7 +299,7 @@
             </button>
             
             <div class="flex gap-1">
-                {#each Array(Math.min(totalPages, 5)) as _, i}
+                {#each Array(Math.min(totalPages, 5)) as _, i (i)}
                     {@const pageNum = totalPages <= 5 ? i + 1 : (currentPage <= 3 ? i + 1 : currentPage + i - 2)}
                     {#if pageNum >= 1 && pageNum <= totalPages}
                         <button
@@ -367,7 +382,7 @@
                         ສີ
                     </label>
                     <div class="flex gap-2 flex-wrap">
-                        {#each colors as color}
+                        {#each colors as color (color)}
                             <button
                                 type="button"
                                 onclick={() => (form.color = color)}

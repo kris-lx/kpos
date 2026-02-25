@@ -2,7 +2,7 @@
     import { createQuery, createMutation, useQueryClient } from "@tanstack/svelte-query";
     import { api } from "$api";
     import { auth } from "$stores";
-    import { cn } from "$utils";
+    import { cn, formatPhone } from "$utils";
     import { toast } from "svelte-sonner";
     import {
         Plus,
@@ -188,7 +188,7 @@
 
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {#if $branchesQuery.isLoading}
-            {#each Array(3) as _}
+            {#each Array(3) as _, i (i)}
                 <div
                     class="bg-white dark:bg-gray-900 rounded-xl p-6 animate-pulse"
                 >
@@ -213,7 +213,7 @@
                 <p class="text-lg font-medium">ບໍ່ພົບສາຂາ</p>
             </div>
         {:else}
-            {#each $branchesQuery.data || [] as branch}
+            {#each $branchesQuery.data || [] as branch (branch.id)}
                 <div
                     class="bg-white dark:bg-gray-900 rounded-xl p-6 relative group"
                 >
@@ -271,7 +271,7 @@
                         {#if branch.phone}
                             <div class="flex items-center gap-2">
                                 <Phone class="w-4 h-4" />
-                                <span>{branch.phone}</span>
+                                <span>{formatPhone(branch.phone)}</span>
                             </div>
                         {/if}
                         <div class="flex items-center gap-2">

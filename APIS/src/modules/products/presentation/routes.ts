@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, branchFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, branchFilter, applyScopeFilter, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { prisma } from '@/config/database.config';
 
 export const productRoutes = Router();
@@ -650,25 +650,21 @@ productRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { page = 1, limit = 20, search, categoryId, branchId, storeId } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
-        const filter = (req as any).branchFilter;
+        const filter = (req as any).branchFilter as ScopeFilter | undefined;
 
         const where: Record<string, unknown> = { isActive: true };
         
-        // Apply branch filter for non-admin users
-        if (filter?.branchIds?.length) {
-            if (branchId) {
-                // Verify user has access to requested branch
-                if (!filter.branchIds.includes(String(branchId))) {
-                    return res.status(403).json({
-                        success: false,
-                        error: { code: 'FORBIDDEN', message: 'No access to this branch' }
-                    });
-                }
-                where.branchId = String(branchId);
-            } else {
-                where.branchId = { in: filter.branchIds };
+        // Apply branch-level scope (products are branch-scoped)
+        applyScopeFilter(where, filter, 'branchId');
+
+        // Override with explicit branch query param
+        if (branchId) {
+            if (filter && !filter.branchIds.includes(String(branchId))) {
+                return res.status(403).json({
+                    success: false,
+                    error: { code: 'FORBIDDEN', message: 'No access to this branch' }
+                });
             }
-        } else if (branchId) {
             where.branchId = String(branchId);
         }
         
@@ -789,6 +785,28 @@ productRoutes.post('/', authenticate, authorize('products:create'), async (req, 
             });
         }
 
+        // Auto-create SKUVariant if product has SKU
+        if (product.sku) {
+            try {
+                await prisma.sKUVariant.create({
+                    data: {
+                        productId: product.id,
+                        sku: product.sku,
+                        barcode: product.barcode || undefined,
+                        name: product.name,
+                        attributes: {},
+                        price: product.price || 0,
+                        cost: product.cost || 0,
+                    },
+                });
+            } catch (skuErr: any) {
+                // Ignore duplicate SKU errors (P2002)
+                if (skuErr.code !== 'P2002') console.error('Auto SKU create error:', skuErr);
+            }
+        }
+
+        await invalidateQueryCache('products*');
+        await invalidateQueryCache('inventory*');
         res.status(201).json({ success: true, data: product });
     } catch (error: any) {
         console.error('Product create error:', error);
@@ -861,6 +879,7 @@ productRoutes.put('/:id', authenticate, authorize('products:update'), async (req
             data: productData,
         });
 
+        await invalidateQueryCache('products*');
         res.json({ success: true, data: product });
     } catch (error) {
         next(error);
@@ -875,6 +894,8 @@ productRoutes.delete('/:id', authenticate, authorize('products:delete'), async (
             data: { isActive: false },
         });
 
+        await invalidateQueryCache('products*');
+        await invalidateQueryCache('inventory*');
         res.json({ success: true, data: { message: 'Product deleted' } });
     } catch (error) {
         next(error);

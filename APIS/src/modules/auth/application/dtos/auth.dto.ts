@@ -13,8 +13,9 @@ export const RegisterDto = z.object({
     email: z.string().email('Invalid email format'),
     password: z.string().min(8, 'Password must be at least 8 characters'),
     name: z.string().min(1, 'Name is required'),
-    role: z.string().default('cashier'),
-    branchId: z.string().min(1, 'Branch ID is required'),
+    phone: z.string().optional(),
+    role: z.string().default('store_owner'),
+    branchId: z.string().optional(),
 });
 
 export const RefreshTokenDto = z.object({

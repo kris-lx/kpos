@@ -4,7 +4,7 @@
 
 import type { Request, Response, NextFunction } from 'express';
 import { LoginUseCase, RegisterUseCase, RefreshTokenUseCase } from '../../application';
-import { authService } from '../../infrastructure/services/auth.service';
+import { authService, DatabaseConnectionError } from '../../infrastructure/services/auth.service';
 import { BaseController } from '@/shared/application';
 
 const loginUseCase = new LoginUseCase(authService);
@@ -17,7 +17,12 @@ class AuthController extends BaseController {
             const result = await loginUseCase.execute(req.body);
 
             if (result.isFailure) {
-                this.fail(res, 'AUTH_001', String(result.error), 401);
+                const error = result.error;
+                if (error instanceof DatabaseConnectionError) {
+                    this.fail(res, 'DB_001', error.message, 503);
+                    return;
+                }
+                this.fail(res, 'AUTH_001', String(error), 401);
                 return;
             }
 

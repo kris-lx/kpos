@@ -4,7 +4,7 @@
     import { goto } from "$app/navigation";
     import { onMount } from "svelte";
     import { toast } from "svelte-sonner";
-    import { cn } from "$lib/utils";
+    import { cn, formatPhone, formatDate } from "$lib/utils";
     import {
         Building2,
         Search,
@@ -50,7 +50,7 @@
             userStoreId = (user as any).storeId || null;
             
             // Super Admin, Admin ເຫັນທຸກສາຂາ; Shop Admin, Manager ເຫັນສະເພາະສາຂາຂອງຮ້ານຕົນເອງ
-            if (user.isSuperAdmin || ['admin', 'shop_admin', 'manager'].includes(user.role)) {
+            if (user.isSuperAdmin || ['admin', 'store_owner', 'branch_admin', 'store_manager'].includes(user.role)) {
                 canAccess = true;
             } else {
                 toast.error("ທ່ານບໍ່ມີສິດເຂົ້າເຖິງໜ້ານີ້");
@@ -81,14 +81,6 @@
     $effect(() => {
         currentPage; pageSize; searchQuery;
         $branchesQuery.refetch();
-    });
-
-    const storesQuery = createQuery({
-        queryKey: ["admin-stores-list"],
-        queryFn: async () => {
-            const response = await api.get("admin/stores?limit=1000").json<any>();
-            return response.data || [];
-        }
     });
 
     const createMutationFn = createMutation({
@@ -136,7 +128,6 @@
     let formData = $state({
         name: "",
         code: "",
-        storeId: "",
         address: "",
         phone: "",
         email: "",
@@ -145,7 +136,7 @@
 
     function openCreateModal() {
         isEditing = false;
-        formData = { name: "", code: "", storeId: "", address: "", phone: "", email: "", isActive: true };
+        formData = { name: "", code: "", address: "", phone: "", email: "", isActive: true };
         showFormModal = true;
     }
 
@@ -155,7 +146,6 @@
         formData = {
             name: branch.name || "",
             code: branch.code || "",
-            storeId: branch.storeId || branch.store?.id || "",
             address: branch.address || "",
             phone: branch.phone || "",
             email: branch.email || "",
@@ -192,13 +182,6 @@
         }
     }
 
-    function formatDate(dateString: string) {
-        return new Date(dateString).toLocaleDateString("lo-LA", {
-            year: "numeric",
-            month: "short",
-            day: "numeric"
-        });
-    }
 
     function goToPage(page: number) {
         const totalPages = $branchesQuery.data?.meta?.totalPages || 1;
@@ -281,7 +264,7 @@
                     </div>
                 {:else}
                     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-5">
-                        {#each $branchesQuery.data.data as branch}
+                        {#each ($branchesQuery.data.data ?? []).filter((b: any) => b?.id) as branch (branch.id)}
                             <div class="bg-gray-50 dark:bg-gray-700/30 rounded-xl border border-gray-100 dark:border-gray-700 overflow-hidden hover:shadow-lg transition-all group">
                                 <div class="p-5">
                                     <div class="flex items-start justify-between mb-4">
@@ -319,10 +302,10 @@
                                     {/if}
 
                                     <div class="flex items-center gap-4 text-xs text-gray-400 dark:text-gray-500 mt-3 pt-3 border-t border-gray-200 dark:border-gray-600">
-                                        {#if branch._count?.users !== undefined}
+                                        {#if (branch._count?.users ?? branch._count?.userAccess) !== undefined}
                                             <span class="flex items-center gap-1">
                                                 <Users class="w-3.5 h-3.5" />
-                                                {branch._count.users} ຜູ້ໃຊ້
+                                                {branch._count?.users ?? branch._count?.userAccess ?? 0} ຜູ້ໃຊ້
                                             </span>
                                         {/if}
                                         <span class="flex items-center gap-1">
@@ -358,7 +341,7 @@
                                 onchange={() => changePageSize(pageSize)}
                                 class="px-3 py-1.5 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-white"
                             >
-                                {#each pageSizeOptions as size}
+                                {#each pageSizeOptions as size (size)}
                                     <option value={size}>{size} ລາຍການ</option>
                                 {/each}
                             </select>
@@ -450,7 +433,7 @@
                                 <Phone class="w-5 h-5 text-gray-400 mt-0.5" />
                                 <div>
                                     <p class="text-xs text-gray-500 dark:text-gray-400">ເບີໂທ</p>
-                                    <p class="text-gray-900 dark:text-white">{selectedBranch.phone}</p>
+                                    <p class="text-gray-900 dark:text-white">{formatPhone(selectedBranch.phone)}</p>
                                 </div>
                             </div>
                         {/if}
@@ -524,19 +507,6 @@
                                 class="w-full px-4 py-3 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 dark:text-white"
                             />
                         </div>
-                    </div>
-
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ຮ້ານ</label>
-                        <select
-                            bind:value={formData.storeId}
-                            class="w-full px-4 py-3 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 dark:text-white"
-                        >
-                            <option value="">ເລືອກຮ້ານ</option>
-                            {#each $storesQuery.data || [] as store}
-                                <option value={store.id}>{store.name}</option>
-                            {/each}
-                        </select>
                     </div>
 
                     <div>

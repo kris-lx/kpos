@@ -7,6 +7,7 @@ import jwt from 'jsonwebtoken';
 import { jwtConfig } from '@/config/app.config';
 import { ApiError } from './error.middleware';
 import { prisma } from '@/config/database.config';
+import { cache } from '@/config/redis.config';
 
 export interface JwtPayload {
     userId: string;
@@ -47,8 +48,45 @@ declare global {
     }
 }
 
-// Load user's store access from database
+// ═══════════════════════════════════════════════════════════════════════════
+// Redis-backed cache for auth data (shared across instances)
+// Keys: kpos:stores:{userId}, kpos:auth:{userId}, kpos:rules:{roleId}
+// ═══════════════════════════════════════════════════════════════════════════
+const CACHE_TTL = 300; // 5 minutes in seconds
+const CACHE_PREFIX = 'kpos';
+
+/** Invalidate a single user's cached store access (call after UserStore changes) */
+export async function invalidateUserStoreCache(userId: string): Promise<void> {
+    await cache.del(`${CACHE_PREFIX}:stores:${userId}`);
+    await cache.del(`${CACHE_PREFIX}:auth:${userId}`);
+}
+
+/** Invalidate ALL users' cached store access (call after bulk changes) */
+export async function invalidateAllUserStoreCache(): Promise<void> {
+    await cache.delPattern(`${CACHE_PREFIX}:stores:*`);
+    await cache.delPattern(`${CACHE_PREFIX}:auth:*`);
+}
+
+/** Invalidate cached role rules (call after role/rule changes) */
+export async function invalidateRoleRulesCache(roleId?: string): Promise<void> {
+    if (roleId) {
+        await cache.del(`${CACHE_PREFIX}:rules:${roleId}`);
+    } else {
+        await cache.delPattern(`${CACHE_PREFIX}:rules:*`);
+    }
+}
+
+/** Invalidate query cache by pattern (call after data mutations) */
+export async function invalidateQueryCache(pattern: string): Promise<void> {
+    await cache.delPattern(`${CACHE_PREFIX}:q:${pattern}`);
+}
+
+// Load user's store access from database (with Redis cache)
 async function loadUserStoreAccess(userId: string): Promise<UserStoreAccess[]> {
+    const cacheKey = `${CACHE_PREFIX}:stores:${userId}`;
+    const cached = await cache.get<UserStoreAccess[]>(cacheKey);
+    if (cached) return cached;
+
     const userStores = await prisma.userStore.findMany({
         where: { userId },
         include: {
@@ -57,7 +95,7 @@ async function loadUserStoreAccess(userId: string): Promise<UserStoreAccess[]> {
         }
     });
 
-    return userStores
+    const result = userStores
         .filter(us => us.store.isActive && us.branch.isActive)
         .map(us => ({
             storeId: us.storeId,
@@ -70,6 +108,58 @@ async function loadUserStoreAccess(userId: string): Promise<UserStoreAccess[]> {
             canManage: us.canManage,
             isDefault: us.isDefault
         }));
+
+    await cache.set(cacheKey, result, CACHE_TTL);
+    return result;
+}
+
+// Cached auth user data (user + permissions) — skips User DB lookup per request
+interface CachedAuthUser {
+    isActive: boolean;
+    branchId: string;
+    isSuperAdmin: boolean;
+    permissions: string[];
+    role: string;
+    roleId: string | null;
+}
+
+async function loadCachedAuthUser(userId: string): Promise<CachedAuthUser | null> {
+    const cacheKey = `${CACHE_PREFIX}:auth:${userId}`;
+    const cached = await cache.get<CachedAuthUser>(cacheKey);
+    if (cached) return cached;
+
+    const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: {
+            id: true,
+            isActive: true,
+            branchId: true,
+            isSuperAdmin: true,
+            permissions: true,
+            role: true,
+            roleId: true,
+            roleRelation: {
+                select: { permissions: true }
+            }
+        },
+    });
+
+    if (!user || !user.isActive) return null;
+
+    const rolePerms = user.roleRelation?.permissions || [];
+    const userPerms = user.permissions || [];
+
+    const result: CachedAuthUser = {
+        isActive: user.isActive,
+        branchId: user.branchId,
+        isSuperAdmin: user.isSuperAdmin,
+        permissions: [...new Set([...rolePerms, ...userPerms])],
+        role: user.role,
+        roleId: user.roleId,
+    };
+
+    await cache.set(cacheKey, result, CACHE_TTL);
+    return result;
 }
 
 export async function authenticate(
@@ -89,25 +179,16 @@ export async function authenticate(
         try {
             const decoded = jwt.verify(token, jwtConfig.secret) as JwtPayload;
 
-            // Verify user exists and is active with role permissions
-            const user = await prisma.user.findUnique({
-                where: { id: decoded.userId },
-                select: { 
-                    id: true, 
-                    isActive: true,
-                    branchId: true,
-                    isSuperAdmin: true,
-                    roleRelation: {
-                        select: { permissions: true }
-                    }
-                },
-            });
+            // Load user from Redis cache (falls back to DB on miss)
+            const user = await loadCachedAuthUser(decoded.userId);
 
-            if (!user || !user.isActive) {
+            if (!user) {
                 throw ApiError.unauthorized('User not found or inactive');
             }
 
-            // Load user's store access
+            const mergedPermissions = user.permissions;
+
+            // Load user's store access (Redis-cached)
             const accessibleStores = await loadUserStoreAccess(decoded.userId);
             
             // Get unique branch and store IDs
@@ -133,7 +214,8 @@ export async function authenticate(
             req.user = decoded;
             req.authUser = {
                 ...decoded,
-                permissions: user.roleRelation?.permissions || [],
+                permissions: mergedPermissions,
+                role: user.role,
                 accessibleStores,
                 accessibleBranchIds,
                 accessibleStoreIds,
@@ -168,15 +250,101 @@ export function authorize(...permissions: string[]) {
                 throw ApiError.unauthorized();
             }
 
+            // Super Admin bypasses all permission checks
+            if (req.authUser.isSuperAdmin) {
+                next();
+                return;
+            }
+
             const userPermissions = req.authUser.permissions;
 
             // Check if user has any of the required permissions
-            const hasPermission = permissions.some((p) =>
-                userPermissions.includes(p) || userPermissions.includes('*')
-            );
+            // Treat :view and :read as equivalent
+            const hasPermission = permissions.some((p) => {
+                if (userPermissions.includes(p) || userPermissions.includes('*')) return true;
+                // Check :view/:read equivalence
+                if (p.endsWith(':read') && userPermissions.includes(p.replace(':read', ':view'))) return true;
+                if (p.endsWith(':view') && userPermissions.includes(p.replace(':view', ':read'))) return true;
+                return false;
+            });
 
             if (!hasPermission) {
                 throw ApiError.forbidden('Insufficient permissions');
+            }
+
+            next();
+        } catch (error) {
+            next(error);
+        }
+    };
+}
+
+// New middleware: Rule-based CRUD authorization
+// Usage: authorizeRule('products', 'create') - checks if user's role has the 'products' rule with canCreate=true
+export function authorizeRule(module: string, action: 'read' | 'create' | 'update' | 'delete') {
+    return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+        try {
+            if (!req.authUser) {
+                throw ApiError.unauthorized();
+            }
+
+            // Super Admin bypasses all
+            if (req.authUser.isSuperAdmin) {
+                next();
+                return;
+            }
+
+            // Also fall back to existing permission check for backward compatibility
+            const userPermissions = req.authUser.permissions;
+            if (userPermissions.includes('*')) {
+                next();
+                return;
+            }
+
+            // Load user's role rules (Redis-cached by roleId, fallback to request cache)
+            if (!(req as any)._roleRulesLoaded) {
+                // roleId is already available from cached auth user
+                const cachedUser = await loadCachedAuthUser(req.authUser.userId);
+                const roleId = cachedUser?.roleId;
+                if (roleId) {
+                    const rulesCacheKey = `${CACHE_PREFIX}:rules:${roleId}`;
+                    let roleRules = await cache.get<any[]>(rulesCacheKey);
+                    if (!roleRules) {
+                        const dbRules = await prisma.roleRule.findMany({
+                            where: { roleId },
+                            include: { rule: { select: { name: true, module: true, isActive: true } } },
+                        });
+                        roleRules = dbRules.filter(rr => rr.rule.isActive);
+                        await cache.set(rulesCacheKey, roleRules, CACHE_TTL);
+                    }
+                    (req as any)._roleRules = roleRules;
+                } else {
+                    (req as any)._roleRules = [];
+                }
+                (req as any)._roleRulesLoaded = true;
+            }
+
+            const roleRules = (req as any)._roleRules || [];
+            const matchingRule = roleRules.find((rr: any) => rr.rule.module === module || rr.rule.name === module);
+
+            if (!matchingRule) {
+                // Fall back to existing permission string check
+                const actionMap: Record<string, string> = { read: 'view', create: 'create', update: 'update', delete: 'delete' };
+                const permKey = `${module}:${actionMap[action] || action}`;
+                const hasLegacy = userPermissions.includes(permKey) ||
+                    (action === 'read' && userPermissions.includes(`${module}:read`));
+                if (hasLegacy) {
+                    next();
+                    return;
+                }
+                throw ApiError.forbidden(`No access to ${module}:${action}`);
+            }
+
+            // Check CRUD flag
+            const crudMap: Record<string, string> = { read: 'canRead', create: 'canCreate', update: 'canUpdate', delete: 'canDelete' };
+            const flag = crudMap[action];
+            if (!matchingRule[flag]) {
+                throw ApiError.forbidden(`${action} access denied for ${module}`);
             }
 
             next();
@@ -224,31 +392,71 @@ export function requireStoreAccess(accessType: 'read' | 'write' | 'delete' | 'ma
     };
 }
 
-// New middleware: Filter by accessible branches
+// Scope filter type for route handlers
+export interface ScopeFilter {
+    branchIds: string[];
+    storeIds: string[];
+    activeBranchId: string;
+    activeStoreId?: string;
+    /** true when user is scoped by store (store_owner with UserStore entries) */
+    scopeByStore: boolean;
+}
+
+// New middleware: Filter by accessible branches/stores
 export function branchFilter() {
     return (req: Request, _res: Response, next: NextFunction): void => {
         if (req.authUser) {
-            // Super Admin has access to all branches
-            if (req.authUser.isSuperAdmin) {
-                // No filter for super admin
-                next();
-                return;
-            }
-            
-            // Add accessible branch IDs to query if not admin
-            const isAdmin = req.authUser.role === 'admin' || req.authUser.permissions.includes('*');
-            if (!isAdmin) {
+            // Super Admin and admin role have access to all branches (no branch restriction)
+            const isSuperOrAdmin = req.authUser.isSuperAdmin || req.authUser.role === 'admin' || req.authUser.permissions.includes('*');
+            if (!isSuperOrAdmin) {
+                const hasStoreScope = req.authUser.accessibleStoreIds.length > 0;
                 // Store accessible branch/store IDs for route handlers to use
                 (req as any).branchFilter = {
                     branchIds: req.authUser.accessibleBranchIds,
                     storeIds: req.authUser.accessibleStoreIds,
                     activeBranchId: req.authUser.activeBranchId,
-                    activeStoreId: req.authUser.activeStoreId
-                };
+                    activeStoreId: req.authUser.activeStoreId,
+                    scopeByStore: hasStoreScope,
+                } satisfies ScopeFilter;
             }
         }
         next();
     };
+}
+
+/**
+ * Helper: apply scope filter to a Prisma where clause.
+ * - 'store' model: filters by store.id ∈ storeIds (or branchId fallback)
+ * - 'storeId' model (Customer, etc.): filters by storeId ∈ storeIds
+ * - 'branchId' model (Product, Inventory, Transaction, etc.): filters by branchId ∈ branchIds
+ */
+export function applyScopeFilter(
+    where: Record<string, unknown>,
+    filter: ScopeFilter | undefined,
+    modelType: 'store' | 'storeId' | 'branchId' = 'branchId'
+): void {
+    if (!filter) return;
+
+    if (modelType === 'store') {
+        // For Store model — filter by store's own id
+        if (filter.scopeByStore && filter.storeIds.length > 0) {
+            where.id = { in: filter.storeIds };
+        } else if (filter.branchIds.length > 0) {
+            where.branchId = { in: filter.branchIds };
+        }
+    } else if (modelType === 'storeId') {
+        // For models with storeId field (Customer, etc.)
+        if (filter.scopeByStore && filter.storeIds.length > 0) {
+            where.storeId = { in: filter.storeIds };
+        } else if (filter.branchIds.length > 0) {
+            where.branchId = { in: filter.branchIds };
+        }
+    } else {
+        // For models with only branchId (Product, Inventory, Transaction, etc.)
+        if (filter.branchIds.length > 0) {
+            where.branchId = { in: filter.branchIds };
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

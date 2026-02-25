@@ -149,7 +149,8 @@
         }
     }
     
-    onMount(() => {
+    $effect(() => {
+        auth.activeStoreId;
         loadSettings();
     });
 </script>
@@ -185,7 +186,7 @@
         <!-- Sidebar -->
         <div class="w-64 shrink-0">
             <nav class="bg-white dark:bg-gray-900 rounded-xl p-2">
-                {#each tabs as tab}
+                {#each tabs as tab (tab.id)}
                     <button
                         onclick={() => (activeTab = tab.id)}
                         class={cn(
@@ -607,7 +608,7 @@
                             >สีหลัก</label
                         >
                         <div class="flex gap-3">
-                            {#each ["blue", "green", "purple", "red", "orange"] as color}
+                            {#each ["blue", "green", "purple", "red", "orange"] as color (color)}
                                 <button
                                     onclick={() =>
                                         (settings.accentColor = color)}

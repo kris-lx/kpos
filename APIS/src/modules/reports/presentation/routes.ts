@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, branchFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, branchFilter, applyScopeFilter, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { prisma } from '@/config/database.config';
 
 export const reportRoutes = Router();
@@ -13,21 +13,24 @@ export const reportRoutes = Router();
 // ═══════════════════════════════════════════════════════════════════════════
 reportRoutes.get('/summary', authenticate, branchFilter(), async (req, res, next) => {
     try {
-        const filter = (req as any).branchFilter;
+        const filter = (req as any).branchFilter as ScopeFilter | undefined;
         const branchId = filter?.branchIds?.[0] || req.user!.branchId;
         const today = new Date();
         today.setHours(0, 0, 0, 0);
         const tomorrow = new Date(today);
         tomorrow.setDate(tomorrow.getDate() + 1);
 
-        // Today's sales
+        // Today's sales — build where with store-level scope
+        const txWhere: Record<string, unknown> = {
+            status: 'COMPLETED',
+            type: 'SALE',
+            createdAt: { gte: today, lt: tomorrow },
+        };
+        applyScopeFilter(txWhere, filter, 'storeId');
+        if (!filter) txWhere.branchId = branchId;
+
         const todaySales = await prisma.transaction.aggregate({
-            where: {
-                branchId,
-                status: 'COMPLETED',
-                type: 'SALE',
-                createdAt: { gte: today, lt: tomorrow },
-            },
+            where: txWhere as any,
             _sum: { total: true },
             _count: { id: true },
         });
@@ -89,13 +92,16 @@ reportRoutes.get('/sales', authenticate, branchFilter(), async (req, res, next) 
         const end = endDate ? new Date(String(endDate)) : new Date();
         end.setHours(23, 59, 59, 999);
 
+        const txWhere: Record<string, unknown> = {
+            type: 'SALE',
+            status: 'COMPLETED',
+            createdAt: { gte: start, lte: end },
+        };
+        applyScopeFilter(txWhere, filter, 'storeId');
+        if (!filter) txWhere.branchId = branchId;
+
         const sales = await prisma.transaction.findMany({
-            where: {
-                branchId,
-                type: 'SALE',
-                status: 'COMPLETED',
-                createdAt: { gte: start, lte: end },
-            },
+            where: txWhere as any,
             select: {
                 id: true,
                 total: true,
@@ -164,13 +170,16 @@ reportRoutes.get('/top-products', authenticate, branchFilter(), async (req, res,
         end.setHours(23, 59, 59, 999);
 
         // Get all completed transactions in date range
+        const txWhere: Record<string, unknown> = {
+            type: 'SALE',
+            status: 'COMPLETED',
+            createdAt: { gte: start, lte: end },
+        };
+        applyScopeFilter(txWhere, filter, 'storeId');
+        if (!filter) txWhere.branchId = branchId;
+
         const transactions = await prisma.transaction.findMany({
-            where: {
-                branchId,
-                type: 'SALE',
-                status: 'COMPLETED',
-                createdAt: { gte: start, lte: end },
-            },
+            where: txWhere as any,
             select: { id: true },
         });
 
@@ -214,7 +223,9 @@ reportRoutes.get('/inventory', authenticate, branchFilter(), async (req, res, ne
         const limitNum = Math.min(100, Math.max(1, parseInt(String(limit), 10) || 20));
         const skip = (pageNum - 1) * limitNum;
 
-        const where: Record<string, unknown> = { branchId };
+        const where: Record<string, unknown> = {};
+        applyScopeFilter(where, filter, 'storeId');
+        if (!filter) where.branchId = branchId;
         if (lowStockOnly === 'true' || stockFilter === 'low') {
             where.quantity = { lte: 10, gt: 0 };
         } else if (stockFilter === 'out') {
@@ -262,8 +273,11 @@ reportRoutes.get('/inventory', authenticate, branchFilter(), async (req, res, ne
         }
 
         // Get summary stats (unfiltered by pagination)
+        const summaryWhere: Record<string, unknown> = {};
+        applyScopeFilter(summaryWhere, filter, 'storeId');
+        if (!filter) summaryWhere.branchId = branchId;
         const allInventory = await prisma.inventory.findMany({
-            where: { branchId },
+            where: summaryWhere,
             include: { product: { select: { cost: true, price: true } } },
         });
 
@@ -292,23 +306,27 @@ reportRoutes.get('/inventory', authenticate, branchFilter(), async (req, res, ne
 // ═══════════════════════════════════════════════════════════════════════════
 // PAYMENT METHODS REPORT
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/payments', authenticate, async (req, res, next) => {
+reportRoutes.get('/payments', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { startDate, endDate } = req.query;
-        const branchId = req.user!.branchId;
+        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const branchId = filter?.branchIds?.[0] || req.user!.branchId;
 
         const start = startDate ? new Date(String(startDate)) : new Date(new Date().setDate(new Date().getDate() - 30));
         const end = endDate ? new Date(String(endDate)) : new Date();
         end.setHours(23, 59, 59, 999);
 
         // Get transactions in date range
+        const txWhere: Record<string, unknown> = {
+            type: 'SALE',
+            status: 'COMPLETED',
+            createdAt: { gte: start, lte: end },
+        };
+        applyScopeFilter(txWhere, filter, 'storeId');
+        if (!filter) txWhere.branchId = branchId;
+
         const transactions = await prisma.transaction.findMany({
-            where: {
-                branchId,
-                type: 'SALE',
-                status: 'COMPLETED',
-                createdAt: { gte: start, lte: end },
-            },
+            where: txWhere as any,
             select: { id: true },
         });
 
@@ -340,10 +358,11 @@ reportRoutes.get('/payments', authenticate, async (req, res, next) => {
 // ═══════════════════════════════════════════════════════════════════════════
 // CUSTOMER REPORT
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/customers', authenticate, async (req, res, next) => {
+reportRoutes.get('/customers', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { from, to, limit = 20, page = '1', search } = req.query;
-        const branchId = req.user!.branchId;
+        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const branchId = filter?.branchIds?.[0] || req.user!.branchId;
         const pageNum = Math.max(1, parseInt(String(page), 10) || 1);
         const limitNum = Math.min(100, Math.max(1, parseInt(String(limit), 10) || 20));
         const skip = (pageNum - 1) * limitNum;
@@ -392,7 +411,9 @@ reportRoutes.get('/customers', authenticate, async (req, res, next) => {
             prisma.transaction.groupBy({
                 by: ['customerId'],
                 where: {
-                    branchId,
+                    ...(filter ? {} : { branchId }),
+                    ...(filter?.scopeByStore && filter.storeIds.length > 0 ? { storeId: { in: filter.storeIds } } : {}),
+                    ...(filter && !filter.scopeByStore && filter.branchIds.length > 0 ? { branchId: { in: filter.branchIds } } : {}),
                     status: 'COMPLETED',
                     type: 'SALE',
                     createdAt: { gte: startDate, lte: endDate },
@@ -403,7 +424,9 @@ reportRoutes.get('/customers', authenticate, async (req, res, next) => {
             // Revenue from customers in period
             prisma.transaction.aggregate({
                 where: {
-                    branchId,
+                    ...(filter ? {} : { branchId }),
+                    ...(filter?.scopeByStore && filter.storeIds.length > 0 ? { storeId: { in: filter.storeIds } } : {}),
+                    ...(filter && !filter.scopeByStore && filter.branchIds.length > 0 ? { branchId: { in: filter.branchIds } } : {}),
                     status: 'COMPLETED',
                     type: 'SALE',
                     createdAt: { gte: startDate, lte: endDate },
@@ -470,13 +493,21 @@ reportRoutes.get('/customers', authenticate, async (req, res, next) => {
             ? ((newCustomers - prevNewCustomers) / prevNewCustomers) * 100 
             : newCustomers > 0 ? 100 : 0;
 
-        // Segment data
-        const segments = [
-            { name: 'VIP', count: topCustomers.filter(c => c.totalSpent >= 10000000).length, color: '#8B5CF6' },
-            { name: 'Regular', count: topCustomers.filter(c => c.totalSpent >= 1000000 && c.totalSpent < 10000000).length, color: '#3B82F6' },
-            { name: 'New', count: newCustomers, color: '#10B981' },
-            { name: 'Inactive', count: Math.max(0, totalCustomers - activeCustomers), color: '#6B7280' },
+        // Segment data with percentage and revenue
+        const vipCustomers = topCustomers.filter(c => c.totalSpent >= 10000000);
+        const regularCustomers = topCustomers.filter(c => c.totalSpent >= 1000000 && c.totalSpent < 10000000);
+        const inactiveCount = Math.max(0, totalCustomers - activeCustomers);
+        const segmentsRaw = [
+            { name: 'VIP', count: vipCustomers.length, revenue: vipCustomers.reduce((s, c) => s + (c.totalSpent || 0), 0), color: '#8B5CF6' },
+            { name: 'ປະຈຳ', count: regularCustomers.length, revenue: regularCustomers.reduce((s, c) => s + (c.totalSpent || 0), 0), color: '#3B82F6' },
+            { name: 'ໃໝ່', count: newCustomers, revenue: 0, color: '#10B981' },
+            { name: 'ທົ່ວໄປ', count: inactiveCount, revenue: 0, color: '#6B7280' },
         ];
+        const segTotal = segmentsRaw.reduce((s, seg) => s + seg.count, 0) || 1;
+        const segments = segmentsRaw.map(seg => ({
+            ...seg,
+            percentage: Math.round((seg.count / segTotal) * 100 * 10) / 10,
+        }));
 
         res.json({
             success: true,
@@ -521,10 +552,11 @@ reportRoutes.get('/customers', authenticate, async (req, res, next) => {
 // ═══════════════════════════════════════════════════════════════════════════
 // PRODUCTS REPORT (with sales data)
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/products', authenticate, async (req, res, next) => {
+reportRoutes.get('/products', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { period = 'month', page = '1', limit = '20', search } = req.query;
-        const branchId = req.user!.branchId;
+        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const branchId = filter?.branchIds?.[0] || req.user!.branchId;
         const pageNum = Math.max(1, parseInt(String(page), 10) || 1);
         const limitNum = Math.min(100, Math.max(1, parseInt(String(limit), 10) || 20));
         const skip = (pageNum - 1) * limitNum;
@@ -550,13 +582,16 @@ reportRoutes.get('/products', authenticate, async (req, res, next) => {
         }
 
         // Get all completed transactions in date range
+        const txWhere: Record<string, unknown> = {
+            type: 'SALE',
+            status: 'COMPLETED',
+            createdAt: { gte: start },
+        };
+        applyScopeFilter(txWhere, filter, 'storeId');
+        if (!filter) txWhere.branchId = branchId;
+
         const transactions = await prisma.transaction.findMany({
-            where: {
-                branchId,
-                type: 'SALE',
-                status: 'COMPLETED',
-                createdAt: { gte: start },
-            },
+            where: txWhere as any,
             select: { id: true },
         });
 
@@ -614,10 +649,11 @@ reportRoutes.get('/products', authenticate, async (req, res, next) => {
 // ═══════════════════════════════════════════════════════════════════════════
 // FINANCIAL REPORT
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/financial', authenticate, async (req, res, next) => {
+reportRoutes.get('/financial', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { period = 'month' } = req.query;
-        const branchId = req.user!.branchId;
+        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const branchId = filter?.branchIds?.[0] || req.user!.branchId;
 
         // Calculate date range based on period
         const now = new Date();
@@ -655,36 +691,38 @@ reportRoutes.get('/financial', authenticate, async (req, res, next) => {
                 previousEnd = new Date(start);
         }
 
+        // Build scoped where clause
+        const txWhere: Record<string, unknown> = {
+            type: 'SALE',
+            status: 'COMPLETED',
+            createdAt: { gte: start },
+        };
+        applyScopeFilter(txWhere, filter, 'storeId');
+        if (!filter) txWhere.branchId = branchId;
+
+        const prevTxWhere: Record<string, unknown> = {
+            type: 'SALE',
+            status: 'COMPLETED',
+            createdAt: { gte: previousStart, lt: previousEnd },
+        };
+        applyScopeFilter(prevTxWhere, filter, 'storeId');
+        if (!filter) prevTxWhere.branchId = branchId;
+
         // Current period revenue
         const currentSales = await prisma.transaction.aggregate({
-            where: {
-                branchId,
-                type: 'SALE',
-                status: 'COMPLETED',
-                createdAt: { gte: start },
-            },
+            where: txWhere as any,
             _sum: { total: true, taxAmount: true, discountAmount: true },
         });
 
         // Previous period revenue
         const previousSales = await prisma.transaction.aggregate({
-            where: {
-                branchId,
-                type: 'SALE',
-                status: 'COMPLETED',
-                createdAt: { gte: previousStart, lt: previousEnd },
-            },
+            where: prevTxWhere as any,
             _sum: { total: true },
         });
 
         // Get transactions for payment method breakdown
         const currentTransactions = await prisma.transaction.findMany({
-            where: {
-                branchId,
-                type: 'SALE',
-                status: 'COMPLETED',
-                createdAt: { gte: start },
-            },
+            where: txWhere as any,
             select: { id: true },
         });
 
@@ -704,23 +742,52 @@ reportRoutes.get('/financial', authenticate, async (req, res, next) => {
         const expenses = 0; // Would need expense tracking
         const profit = revenue - expenses;
 
+        // Calculate payment method percentages
+        const totalPaymentAmount = payments.reduce((s, p) => s + (p._sum.amount || 0), 0) || 1;
+        const paymentMethods = payments.map(p => ({
+            type: p.methodName?.toLowerCase() || 'cash',
+            method: p.methodName?.toLowerCase() || 'cash',
+            methodName: p.methodName || 'Cash',
+            label: p.methodName || 'Cash',
+            total: p._sum.amount || 0,
+            count: p._count.id || 0,
+            percentage: Math.round(((p._sum.amount || 0) / totalPaymentAmount) * 100 * 10) / 10,
+        }));
+
+        // Build daily data from transactions
+        const dailyTransactions = await prisma.transaction.findMany({
+            where: txWhere as any,
+            select: { total: true, createdAt: true },
+            orderBy: { createdAt: 'asc' },
+        });
+
+        const dailyMap: Record<string, { revenue: number; transactions: number }> = {};
+        for (const t of dailyTransactions) {
+            const date = t.createdAt.toISOString().split('T')[0];
+            if (!dailyMap[date]) dailyMap[date] = { revenue: 0, transactions: 0 };
+            dailyMap[date].revenue += t.total;
+            dailyMap[date].transactions += 1;
+        }
+        const dailyData = Object.entries(dailyMap).map(([date, d]) => ({
+            date,
+            revenue: d.revenue,
+            expenses: 0,
+            transactions: d.transactions,
+        }));
+
         res.json({
             success: true,
             data: {
                 revenue,
                 expenses,
                 profit,
-                profitMargin: revenue > 0 ? (profit / revenue) * 100 : 0,
+                profitMargin: revenue > 0 ? Math.round((profit / revenue) * 100 * 10) / 10 : 0,
                 previousRevenue: previousSales._sum.total || 0,
                 previousExpenses: 0,
                 taxCollected: currentSales._sum.taxAmount || 0,
                 discountsGiven: currentSales._sum.discountAmount || 0,
-                paymentMethods: payments.map(p => ({
-                    method: p.methodName?.toLowerCase() || 'cash',
-                    methodName: p.methodName || 'Cash',
-                    total: p._sum.amount || 0,
-                    count: p._count.id || 0,
-                })),
+                paymentMethods,
+                dailyData,
             },
         });
     } catch (error) {
@@ -731,10 +798,11 @@ reportRoutes.get('/financial', authenticate, async (req, res, next) => {
 // ═══════════════════════════════════════════════════════════════════════════
 // STAFF REPORT
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/staff', authenticate, async (req, res, next) => {
+reportRoutes.get('/staff', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { period = 'month', page = '1', limit = '20', search } = req.query;
-        const branchId = req.user!.branchId;
+        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const branchId = filter?.branchIds?.[0] || req.user!.branchId;
         const pageNum = Math.max(1, parseInt(String(page), 10) || 1);
         const limitNum = Math.min(100, Math.max(1, parseInt(String(limit), 10) || 20));
         const skip = (pageNum - 1) * limitNum;
@@ -759,27 +827,26 @@ reportRoutes.get('/staff', authenticate, async (req, res, next) => {
                 start.setMonth(start.getMonth() - 1);
         }
 
+        // Build scoped where
+        const txWhere: Record<string, unknown> = {
+            type: 'SALE',
+            status: 'COMPLETED',
+            createdAt: { gte: start },
+        };
+        applyScopeFilter(txWhere, filter, 'storeId');
+        if (!filter) txWhere.branchId = branchId;
+
         // Get total unique users with sales
         const allSalesByUser = await prisma.transaction.groupBy({
             by: ['userId'],
-            where: {
-                branchId,
-                type: 'SALE',
-                status: 'COMPLETED',
-                createdAt: { gte: start },
-            },
+            where: txWhere as any,
         });
         const total = allSalesByUser.length;
 
         // Get sales grouped by user with pagination
         const salesByUser = await prisma.transaction.groupBy({
             by: ['userId'],
-            where: {
-                branchId,
-                type: 'SALE',
-                status: 'COMPLETED',
-                createdAt: { gte: start },
-            },
+            where: txWhere as any,
             _sum: { total: true },
             _count: { id: true },
             orderBy: { _sum: { total: 'desc' } },

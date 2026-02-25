@@ -19,11 +19,13 @@
         isLoading = true;
 
         try {
-            const success = await auth.login(email, password);
+            const result = await auth.login(email, password);
 
-            if (success) {
+            if (result === true) {
                 toast.success(t("auth.loginSuccess"));
                 goto("/pos");
+            } else if (result === 'SERVICE_UNAVAILABLE') {
+                error = "Database is not available. Please ensure MongoDB is running.";
             } else {
                 error = t("auth.loginFailed");
             }
@@ -219,7 +221,7 @@
                 <div class="space-y-2 text-xs text-gray-600 dark:text-gray-400">
                     <div class="flex justify-between p-2 bg-gray-50 dark:bg-gray-700 rounded-lg">
                         <span>Admin:</span>
-                        <span class="font-mono text-gray-800 dark:text-gray-200">admin@kpos.local / admin123</span>
+                        <span class="font-mono text-gray-800 dark:text-gray-200">admin@kpos.la / admin123</span>
                     </div>
                 </div>
             </div>

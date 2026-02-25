@@ -1,8 +1,9 @@
 <script lang="ts">
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
-    import { cn } from "$utils";
+    import { cn, formatDateTime, formatTime } from "$utils";
     import { api } from "$api";
+    import { auth } from "$stores";
     import { toast } from "svelte-sonner";
     import MoneyInput from "$lib/components/MoneyInput.svelte";
     import {
@@ -249,7 +250,8 @@
         }
     }
 
-    onMount(() => {
+    $effect(() => {
+        auth.activeStoreId; // reload on store switch
         loadShifts();
         loadCurrentShift();
     });
@@ -263,22 +265,8 @@
         );
     }
 
-    function formatDateTime(date: string): string {
-        return new Intl.DateTimeFormat("lo-LA", {
-            year: "numeric",
-            month: "short",
-            day: "numeric",
-            hour: "2-digit",
-            minute: "2-digit",
-        }).format(new Date(date));
-    }
 
-    function formatTime(date: string): string {
-        return new Intl.DateTimeFormat("lo-LA", {
-            hour: "2-digit",
-            minute: "2-digit",
-        }).format(new Date(date));
-    }
+
 
     function getStatusColor(status: string): string {
         return status === "OPEN"
@@ -569,7 +557,7 @@
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-gray-200 dark:divide-gray-700">
-                        {#each filteredShifts as shift}
+                        {#each filteredShifts as shift (shift.id)}
                             <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
                                 <td class="px-4 py-3">
                                     <span class="font-medium text-gray-900 dark:text-white">
@@ -1067,7 +1055,7 @@
                             {t("shifts.transactions")} ({selectedShift.transactions.length})
                         </h4>
                         <div class="bg-gray-50 dark:bg-gray-700/50 rounded-lg divide-y divide-gray-200 dark:divide-gray-600 max-h-48 overflow-y-auto">
-                            {#each selectedShift.transactions.slice(0, 10) as tx}
+                            {#each selectedShift.transactions.slice(0, 10) as tx (tx.transactionNo)}
                                 <div class="p-3 flex justify-between items-center">
                                     <div>
                                         <p class="text-sm font-medium text-gray-900 dark:text-white">{tx.transactionNo}</p>
@@ -1088,7 +1076,7 @@
                             {t("shifts.cashMovements")} ({selectedShift.cashMovements.length})
                         </h4>
                         <div class="bg-gray-50 dark:bg-gray-700/50 rounded-lg divide-y divide-gray-200 dark:divide-gray-600">
-                            {#each selectedShift.cashMovements as movement}
+                            {#each selectedShift.cashMovements as movement (movement.id)}
                                 <div class="p-3 flex justify-between items-center">
                                     <div class="flex items-center gap-3">
                                         <svelte:component

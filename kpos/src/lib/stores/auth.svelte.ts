@@ -3,6 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { authClientApi } from '$api/auth-client';
+import { api } from '$api';
 import { browser } from '$app/environment';
 
 // Storage keys
@@ -11,6 +12,7 @@ const REFRESH_TOKEN_KEY = 'kpos_refresh_token';
 const USER_KEY = 'kpos_user';
 const ACTIVE_STORE_KEY = 'kpos_active_store';
 const ACCESSIBLE_STORES_KEY = 'kpos_accessible_stores';
+const RULES_KEY = 'kpos_user_rules';
 
 interface User {
     id: string;
@@ -18,6 +20,7 @@ interface User {
     name: string;
     role: string;
     branchId: string;
+    phone?: string;
     isSuperAdmin?: boolean;
     permissions?: string[];
 }
@@ -42,6 +45,16 @@ export interface StoreContext {
     accessibleBranchIds: string[];
 }
 
+export interface UserRule {
+    name: string;
+    displayName: string;
+    module: string;
+    icon: string | null;
+    routes: string[];
+    permissions: string[];
+    crud: { read: boolean; create: boolean; update: boolean; delete: boolean };
+}
+
 // Create reactive auth state
 function createAuthStore() {
     let accessToken = $state<string | null>(null);
@@ -51,6 +64,7 @@ function createAuthStore() {
     let accessibleStores = $state<StoreAccess[]>([]);
     let activeStoreId = $state<string | null>(null);
     let activeBranchId = $state<string | null>(null);
+    let userRules = $state<UserRule[]>([]);
 
     // Initialize from localStorage
     if (browser) {
@@ -75,6 +89,16 @@ function createAuthStore() {
             }
         }
         activeStoreId = localStorage.getItem(ACTIVE_STORE_KEY);
+
+        // Load cached rules
+        const storedRules = localStorage.getItem(RULES_KEY);
+        if (storedRules) {
+            try {
+                userRules = JSON.parse(storedRules);
+            } catch {
+                userRules = [];
+            }
+        }
         
         // Set active branch from active store or user's default
         const activeStore = accessibleStores.find(s => s.storeId === activeStoreId);
@@ -92,7 +116,7 @@ function createAuthStore() {
     const activeStore = $derived(accessibleStores.find(s => s.storeId === activeStoreId) || null);
     
     // Derived: Get stores grouped by branch
-    const storesByBranch = $derived(() => {
+    const storesByBranch = $derived.by(() => {
         const grouped: Record<string, StoreAccess[]> = {};
         for (const store of accessibleStores) {
             if (!grouped[store.branchId]) {
@@ -103,7 +127,7 @@ function createAuthStore() {
         return grouped;
     });
 
-    async function login(email: string, password: string): Promise<boolean> {
+    async function login(email: string, password: string): Promise<boolean | string> {
         try {
             isLoading = true;
             const response = await authClientApi.login(email, password);
@@ -119,14 +143,22 @@ function createAuthStore() {
                     localStorage.setItem(USER_KEY, JSON.stringify(response.data.user));
                 }
                 
-                // Load accessible stores after login
+                // Load accessible stores and rules after login
                 await loadStoreContext();
+                await loadRules();
 
                 return true;
             }
             return false;
-        } catch (error) {
+        } catch (error: unknown) {
             console.error('Login failed:', error);
+            // Check for specific HTTP status codes
+            if (error && typeof error === 'object' && 'response' in error) {
+                const httpError = error as { response: { status: number } };
+                if (httpError.response?.status === 503) {
+                    return 'SERVICE_UNAVAILABLE';
+                }
+            }
             return false;
         } finally {
             isLoading = false;
@@ -138,41 +170,36 @@ function createAuthStore() {
         if (!accessToken) return;
         
         try {
-            const response = await fetch('/api/v1/stores/my-stores', {
-                headers: {
-                    'Authorization': `Bearer ${accessToken}`,
-                    'Content-Type': 'application/json'
-                }
-            });
+            const data = await api.get('stores/my-stores').json<{
+                success: boolean;
+                data?: { stores: StoreAccess[] };
+            }>();
             
-            if (response.ok) {
-                const data = await response.json();
-                if (data.success && data.data) {
-                    accessibleStores = data.data.stores || [];
-                    
-                    // Set active store (prefer stored, then default, then first)
-                    const storedActiveStore = browser ? localStorage.getItem(ACTIVE_STORE_KEY) : null;
-                    const defaultStore = accessibleStores.find(s => s.isDefault);
-                    const firstStore = accessibleStores[0];
-                    
-                    if (storedActiveStore && accessibleStores.some(s => s.storeId === storedActiveStore)) {
-                        activeStoreId = storedActiveStore;
-                    } else if (defaultStore) {
-                        activeStoreId = defaultStore.storeId;
-                    } else if (firstStore) {
-                        activeStoreId = firstStore.storeId;
-                    }
-                    
-                    // Set active branch
-                    const activeStoreObj = accessibleStores.find(s => s.storeId === activeStoreId);
-                    activeBranchId = activeStoreObj?.branchId || user?.branchId || null;
-                    
-                    // Persist to localStorage
-                    if (browser) {
-                        localStorage.setItem(ACCESSIBLE_STORES_KEY, JSON.stringify(accessibleStores));
-                        if (activeStoreId) {
-                            localStorage.setItem(ACTIVE_STORE_KEY, activeStoreId);
-                        }
+            if (data.success && data.data) {
+                accessibleStores = data.data.stores || [];
+                
+                // Set active store (prefer stored, then default, then first)
+                const storedActiveStore = browser ? localStorage.getItem(ACTIVE_STORE_KEY) : null;
+                const defaultStore = accessibleStores.find(s => s.isDefault);
+                const firstStore = accessibleStores[0];
+                
+                if (storedActiveStore && accessibleStores.some(s => s.storeId === storedActiveStore)) {
+                    activeStoreId = storedActiveStore;
+                } else if (defaultStore) {
+                    activeStoreId = defaultStore.storeId;
+                } else if (firstStore) {
+                    activeStoreId = firstStore.storeId;
+                }
+                
+                // Set active branch
+                const activeStoreObj = accessibleStores.find(s => s.storeId === activeStoreId);
+                activeBranchId = activeStoreObj?.branchId || user?.branchId || null;
+                
+                // Persist to localStorage
+                if (browser) {
+                    localStorage.setItem(ACCESSIBLE_STORES_KEY, JSON.stringify(accessibleStores));
+                    if (activeStoreId) {
+                        localStorage.setItem(ACTIVE_STORE_KEY, activeStoreId);
                     }
                 }
             }
@@ -181,6 +208,19 @@ function createAuthStore() {
         }
     }
     
+    // Refresh store access from backend (call after UserStore changes)
+    async function refreshStores(): Promise<void> {
+        if (!accessToken) return;
+        try {
+            // Invalidate server cache + get fresh data
+            await api.post('auth/refresh-stores').json();
+            // Reload store context from my-stores endpoint
+            await loadStoreContext();
+        } catch (error) {
+            console.error('Failed to refresh stores:', error);
+        }
+    }
+
     // Switch active store
     function setActiveStore(storeId: string): boolean {
         const store = accessibleStores.find(s => s.storeId === storeId);
@@ -241,6 +281,63 @@ function createAuthStore() {
         }
     }
 
+    // Load user rules from API
+    async function loadRules(): Promise<void> {
+        if (!accessToken) return;
+        try {
+            const res = await api.get('users/me/rules').json<{ success: boolean; data?: UserRule[] }>();
+            if (res.success && res.data) {
+                userRules = res.data;
+                if (browser) {
+                    localStorage.setItem(RULES_KEY, JSON.stringify(userRules));
+                }
+            }
+        } catch (error) {
+            console.error('Failed to load user rules:', error);
+        }
+    }
+
+    // Rule-based CRUD checks
+    function canRead(module: string): boolean {
+        if (!user) return false;
+        if (user.isSuperAdmin) return true;
+        const rule = userRules.find(r => r.module === module || r.name === module);
+        return rule?.crud.read ?? false;
+    }
+
+    function canCreate(module: string): boolean {
+        if (!user) return false;
+        if (user.isSuperAdmin) return true;
+        const rule = userRules.find(r => r.module === module || r.name === module);
+        return rule?.crud.create ?? false;
+    }
+
+    function canUpdate(module: string): boolean {
+        if (!user) return false;
+        if (user.isSuperAdmin) return true;
+        const rule = userRules.find(r => r.module === module || r.name === module);
+        return rule?.crud.update ?? false;
+    }
+
+    function canDelete(module: string): boolean {
+        if (!user) return false;
+        if (user.isSuperAdmin) return true;
+        const rule = userRules.find(r => r.module === module || r.name === module);
+        return rule?.crud.delete ?? false;
+    }
+
+    // Check if user has access to a specific frontend route
+    function hasRouteAccess(path: string): boolean {
+        if (!user) return false;
+        if (user.isSuperAdmin) return true;
+        // Help page is always accessible
+        if (path === '/help') return true;
+        return userRules.some(r => r.routes.some(route => path === route || path.startsWith(route + '/')));
+    }
+
+    // Get all accessible routes
+    const accessibleRoutes = $derived(userRules.flatMap(r => r.routes));
+
     function logout(): void {
         const currentToken = accessToken;
         accessToken = null;
@@ -249,6 +346,7 @@ function createAuthStore() {
         accessibleStores = [];
         activeStoreId = null;
         activeBranchId = null;
+        userRules = [];
 
         if (browser) {
             localStorage.removeItem(ACCESS_TOKEN_KEY);
@@ -256,6 +354,7 @@ function createAuthStore() {
             localStorage.removeItem(USER_KEY);
             localStorage.removeItem(ACCESSIBLE_STORES_KEY);
             localStorage.removeItem(ACTIVE_STORE_KEY);
+            localStorage.removeItem(RULES_KEY);
         }
 
         // Try to logout on server (ignore errors)
@@ -272,12 +371,14 @@ function createAuthStore() {
         if (user.permissions?.includes('*')) return true;
         // Check specific permission
         if (user.permissions?.includes(permission)) return true;
+        // Check :view/:read equivalence
+        if (permission.endsWith(':view') && user.permissions?.includes(permission.replace(':view', ':read'))) return true;
+        if (permission.endsWith(':read') && user.permissions?.includes(permission.replace(':read', ':view'))) return true;
         // Check module-level permission (e.g., 'products:view' matches 'products:*')
         const [module] = permission.split(':');
         if (user.permissions?.includes(`${module}:*`)) return true;
         
         // Check menu-based permissions (new system)
-        // Convert old permission format to menu key (e.g., 'products:view' -> 'products')
         const menuKey = permission.split(':')[0];
         if (user.permissions?.includes(menuKey)) return true;
         
@@ -339,6 +440,10 @@ function createAuthStore() {
         get activeStore() { return activeStore; },
         get accessibleBranchIds() { return accessibleBranchIds; },
         get storesByBranch() { return storesByBranch; },
+
+        // Rules (RBAC)
+        get userRules() { return userRules; },
+        get accessibleRoutes() { return accessibleRoutes; },
         
         // Auth methods
         login,
@@ -350,9 +455,18 @@ function createAuthStore() {
         getRoleDisplay,
         canAccessAdmin,
         isCashierOnly,
+
+        // Rule-based CRUD
+        loadRules,
+        canRead,
+        canCreate,
+        canUpdate,
+        canDelete,
+        hasRouteAccess,
         
         // Store methods
         loadStoreContext,
+        refreshStores,
         setActiveStore,
         hasStoreAccess,
         hasBranchAccess,

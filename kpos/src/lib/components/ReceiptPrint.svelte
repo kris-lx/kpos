@@ -86,6 +86,7 @@
                     margin: 0 !important;
                     box-shadow: none !important;
                     font-size: 12px !important;
+                    font-family: 'Noto Sans Lao', 'Phetsarath OT', sans-serif !important;
                 }
                 #pos-receipt .no-print {
                     display: none !important;

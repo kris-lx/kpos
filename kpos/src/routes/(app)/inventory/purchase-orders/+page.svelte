@@ -3,6 +3,7 @@
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
     import { api } from "$api";
+    import { auth } from "$lib/stores/auth.svelte";
     import { formatCurrency, formatDate } from "$lib/utils";
     import { toast } from "svelte-sonner";
     import MoneyInput from "$lib/components/MoneyInput.svelte";
@@ -120,9 +121,22 @@
 
     async function handleSubmit() {
         try {
-            const data = { ...formData, totalAmount: totalAmount };
+            const itemsWithNames = formData.items.map(item => ({
+                productId: item.productId,
+                productName: getProductName(item.productId),
+                quantity: Number(item.quantity),
+                unitCost: Number(item.unitCost),
+            }));
+            const data = {
+                vendorId: formData.vendorId,
+                branchId: auth.user?.branchId || '',
+                expectedDate: formData.expectedDate ? new Date(formData.expectedDate).toISOString() : undefined,
+                notes: formData.notes || undefined,
+                items: itemsWithNames,
+            };
             if (editingOrder) {
-                await api.put(`inventory/purchase-orders/${editingOrder.id}`, { json: data }).json();
+                const { items, ...updateData } = data;
+                await api.put(`inventory/purchase-orders/${editingOrder.id}`, { json: updateData }).json();
                 toast.success("ອັບເດດສຳເລັດ");
             } else {
                 await api.post("inventory/purchase-orders", { json: data }).json();
@@ -174,7 +188,10 @@
         }
     }
 
-    onMount(() => loadData());
+    $effect(() => {
+        auth.activeStoreId;
+        loadData();
+    });
 </script>
 
 <svelte:head>
@@ -265,7 +282,7 @@
                 />
             </div>
             <div class="flex gap-2">
-                {#each [{ id: null, label: "ທັງໝົດ" }, { id: "pending", label: "ລໍຖ້າ" }, { id: "received", label: "ຮັບແລ້ວ" }, { id: "cancelled", label: "ຍົກເລີກ" }] as filter}
+                {#each [{ id: null, label: "ທັງໝົດ" }, { id: "pending", label: "ລໍຖ້າ" }, { id: "received", label: "ຮັບແລ້ວ" }, { id: "cancelled", label: "ຍົກເລີກ" }] as filter (filter.id)}
                     <button
                         onclick={() => { statusFilter = filter.id; handleFilterChange(); }}
                         class={cn("px-3 py-2 rounded-lg text-sm font-medium transition-all", statusFilter === filter.id ? "bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-400" : "text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700")}
@@ -302,7 +319,7 @@
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-gray-200 dark:divide-gray-700">
-                        {#each purchaseOrders as order}
+                        {#each purchaseOrders as order (order.id)}
                             {@const statusConfig = getStatusConfig(order.status)}
                             <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-all">
                                 <td class="px-6 py-4">
@@ -353,7 +370,7 @@
                     onchange={() => { currentPage = 1; loadData(); }}
                     class="px-2 py-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm"
                 >
-                    {#each [10, 20, 50, 100] as size}
+                    {#each [10, 20, 50, 100] as size (size)}
                         <option value={size}>{size}</option>
                     {/each}
                 </select>
@@ -389,7 +406,7 @@
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຜູ້ສະໜອງ *</label>
                         <select bind:value={formData.vendorId} required class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white">
                             <option value="">ເລືອກຜູ້ສະໜອງ</option>
-                            {#each vendors as vendor}
+                            {#each vendors as vendor (vendor.id)}
                                 <option value={vendor.id}>{vendor.name}</option>
                             {/each}
                         </select>
@@ -418,7 +435,7 @@
                             <div class="flex gap-2 items-center">
                                 <select bind:value={item.productId} class="flex-1 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white text-sm">
                                     <option value="">ເລືອກສິນຄ້າ</option>
-                                    {#each products as product}
+                                    {#each products as product (product.id)}
                                         <option value={product.id}>{product.name}</option>
                                     {/each}
                                 </select>

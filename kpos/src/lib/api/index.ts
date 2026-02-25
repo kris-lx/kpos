@@ -10,6 +10,18 @@ const API_URL = PUBLIC_API_URL || 'http://localhost:5000/api/v1';
 const ACCESS_TOKEN_KEY = 'kpos_access_token';
 const ACTIVE_STORE_KEY = 'kpos_active_store';
 
+// Helper: strip undefined/null values from params to prevent ky sending "undefined" strings
+function cleanParams(params?: Record<string, unknown>): Record<string, string> | undefined {
+    if (!params) return undefined;
+    const cleaned: Record<string, string> = {};
+    for (const [key, value] of Object.entries(params)) {
+        if (value !== undefined && value !== null && value !== '') {
+            cleaned[key] = String(value);
+        }
+    }
+    return Object.keys(cleaned).length > 0 ? cleaned : undefined;
+}
+
 const beforeRequest: BeforeRequestHook = (request) => {
     if (browser) {
         const token = localStorage.getItem(ACCESS_TOKEN_KEY);
@@ -74,6 +86,8 @@ export const authApi = {
                 name: string;
                 role: string;
                 branchId: string;
+                isSuperAdmin: boolean;
+                permissions: string[];
             };
         }>>(),
 
@@ -91,7 +105,6 @@ export const authApi = {
     me: () => api.get('auth/me').json<ApiResponse<{
         userId: string;
         email: string;
-        name: string;
         role: string;
         branchId: string;
     }>>(),
@@ -100,7 +113,7 @@ export const authApi = {
 // Products API
 export const productsApi = {
     list: (params?: { page?: number; limit?: number; search?: string; categoryId?: string }) =>
-        api.get('products', { searchParams: params }).json<ApiResponse<Product[]>>(),
+        api.get('products', { searchParams: cleanParams(params) }).json<ApiResponse<Product[]>>(),
 
     get: (id: string) =>
         api.get(`products/${id}`).json<ApiResponse<Product>>(),
@@ -133,7 +146,7 @@ export const salesApi = {
         api.post('sales', { json: data }).json<ApiResponse<Sale>>(),
 
     list: (params?: { page?: number; limit?: number; startDate?: string; endDate?: string }) =>
-        api.get('sales', { searchParams: params }).json<ApiResponse<Sale[]>>(),
+        api.get('sales', { searchParams: cleanParams(params) }).json<ApiResponse<Sale[]>>(),
 
     get: (id: string) =>
         api.get(`sales/${id}`).json<ApiResponse<Sale>>(),
@@ -153,7 +166,7 @@ export const salesApi = {
 // Customers API
 export const customersApi = {
     list: (params?: { page?: number; limit?: number; search?: string }) =>
-        api.get('customers', { searchParams: params }).json<ApiResponse<Customer[]>>(),
+        api.get('customers', { searchParams: cleanParams(params) }).json<ApiResponse<Customer[]>>(),
 
     get: (id: string) =>
         api.get(`customers/${id}`).json<ApiResponse<Customer>>(),
@@ -200,11 +213,11 @@ export const dashboardApi = {
 // Inventory API
 export const inventoryApi = {
     list: (params?: { branchId?: string; lowStock?: boolean }) =>
-        api.get('inventory', { searchParams: params }).json<ApiResponse<unknown[]>>(),
+        api.get('inventory', { searchParams: cleanParams(params) }).json<ApiResponse<unknown[]>>(),
     movements: (params?: { productId?: string; type?: string; page?: number }) =>
-        api.get('inventory/movements', { searchParams: params }).json<ApiResponse<unknown[]>>(),
+        api.get('inventory/movements', { searchParams: cleanParams(params) }).json<ApiResponse<unknown[]>>(),
     adjust: (data: { productId: string; branchId: string; quantity: number; type: string; reason: string }) =>
-        api.post('inventory/adjust', { json: data }).json<ApiResponse<unknown>>(),
+        api.put('inventory/adjust', { json: data }).json<ApiResponse<unknown>>(),
     transfer: (data: { productId: string; fromBranchId: string; toBranchId: string; quantity: number }) =>
         api.post('inventory/transfer', { json: data }).json<ApiResponse<unknown>>(),
     alerts: () => api.get('inventory/alerts').json<ApiResponse<unknown[]>>(),
@@ -220,7 +233,7 @@ export const inventoryApi = {
     // Purchase Orders
     purchaseOrders: {
         list: (params?: { vendorId?: string; status?: string; page?: number }) =>
-            api.get('inventory/purchase-orders', { searchParams: params }).json<ApiResponse<PurchaseOrder[]>>(),
+            api.get('inventory/purchase-orders', { searchParams: cleanParams(params) }).json<ApiResponse<PurchaseOrder[]>>(),
         get: (id: string) => api.get(`inventory/purchase-orders/${id}`).json<ApiResponse<PurchaseOrder>>(),
         create: (data: Partial<PurchaseOrder>) => api.post('inventory/purchase-orders', { json: data }).json<ApiResponse<PurchaseOrder>>(),
         update: (id: string, data: Partial<PurchaseOrder>) => api.put(`inventory/purchase-orders/${id}`, { json: data }).json<ApiResponse<PurchaseOrder>>(),
@@ -230,7 +243,7 @@ export const inventoryApi = {
     // Stock Transfers
     stockTransfers: {
         list: (params?: { status?: string; page?: number }) =>
-            api.get('inventory/stock-transfers', { searchParams: params }).json<ApiResponse<unknown[]>>(),
+            api.get('inventory/stock-transfers', { searchParams: cleanParams(params) }).json<ApiResponse<unknown[]>>(),
         create: (data: unknown) => api.post('inventory/stock-transfers', { json: data }).json<ApiResponse<unknown>>(),
     },
 };
@@ -247,12 +260,12 @@ export const branchesApi = {
 // Staff API
 export const staffApi = {
     list: (params?: { page?: number; limit?: number; search?: string }) =>
-        api.get('staff', { searchParams: params }).json<ApiResponse<Staff[]>>(),
+        api.get('staff', { searchParams: cleanParams(params) }).json<ApiResponse<Staff[]>>(),
     get: (id: string) => api.get(`staff/${id}`).json<ApiResponse<Staff>>(),
     create: (data: Partial<Staff>) => api.post('staff', { json: data }).json<ApiResponse<Staff>>(),
     update: (id: string, data: Partial<Staff>) => api.put(`staff/${id}`, { json: data }).json<ApiResponse<Staff>>(),
     delete: (id: string) => api.delete(`staff/${id}`).json<ApiResponse<{ message: string }>>(),
-    roles: () => api.get('staff/roles').json<ApiResponse<Role[]>>(),
+    roles: () => api.get('staff/roles/list').json<ApiResponse<Role[]>>(),
 };
 
 // Roles API
@@ -268,7 +281,7 @@ export const rolesApi = {
 // Shifts API
 export const shiftsApi = {
     list: (params?: { status?: string; page?: number }) =>
-        api.get('sales/shifts', { searchParams: params }).json<ApiResponse<Shift[]>>(),
+        api.get('sales/shifts', { searchParams: cleanParams(params) }).json<ApiResponse<Shift[]>>(),
     current: () => api.get('sales/shifts/current').json<ApiResponse<Shift | null>>(),
     get: (id: string) => api.get(`sales/shifts/${id}`).json<ApiResponse<Shift>>(),
     open: (data: { openingBalance: number; registerId?: string; notes?: string }) =>
@@ -282,7 +295,7 @@ export const shiftsApi = {
 // Cash Registers API
 export const registersApi = {
     list: (params?: { branchId?: string }) =>
-        api.get('sales/registers', { searchParams: params }).json<ApiResponse<CashRegister[]>>(),
+        api.get('sales/registers', { searchParams: cleanParams(params) }).json<ApiResponse<CashRegister[]>>(),
     get: (id: string) => api.get(`sales/registers/${id}`).json<ApiResponse<CashRegister>>(),
     create: (data: Partial<CashRegister>) => api.post('sales/registers', { json: data }).json<ApiResponse<CashRegister>>(),
     update: (id: string, data: Partial<CashRegister>) => api.put(`sales/registers/${id}`, { json: data }).json<ApiResponse<CashRegister>>(),
@@ -319,7 +332,7 @@ export const restaurantApi = {
     // Tables
     tables: {
         list: (params?: { branchId?: string; status?: string }) =>
-            api.get('restaurant/tables', { searchParams: params }).json<ApiResponse<Table[]>>(),
+            api.get('restaurant/tables', { searchParams: cleanParams(params) }).json<ApiResponse<Table[]>>(),
         get: (id: string) => api.get(`restaurant/tables/${id}`).json<ApiResponse<Table>>(),
         create: (data: Partial<Table>) => api.post('restaurant/tables', { json: data }).json<ApiResponse<Table>>(),
         update: (id: string, data: Partial<Table>) => api.put(`restaurant/tables/${id}`, { json: data }).json<ApiResponse<Table>>(),
@@ -329,7 +342,7 @@ export const restaurantApi = {
     // Orders
     orders: {
         list: (params?: { branchId?: string; status?: string; tableId?: string }) =>
-            api.get('restaurant/orders', { searchParams: params }).json<ApiResponse<Order[]>>(),
+            api.get('restaurant/orders', { searchParams: cleanParams(params) }).json<ApiResponse<Order[]>>(),
         get: (id: string) => api.get(`restaurant/orders/${id}`).json<ApiResponse<Order>>(),
         create: (data: Partial<Order>) => api.post('restaurant/orders', { json: data }).json<ApiResponse<Order>>(),
         update: (id: string, data: Partial<Order>) => api.put(`restaurant/orders/${id}`, { json: data }).json<ApiResponse<Order>>(),
@@ -344,7 +357,7 @@ export const restaurantApi = {
     // Reservations
     reservations: {
         list: (params?: { date?: string; status?: string; page?: number }) =>
-            api.get('restaurant/reservations', { searchParams: params }).json<ApiResponse<Reservation[]>>(),
+            api.get('restaurant/reservations', { searchParams: cleanParams(params) }).json<ApiResponse<Reservation[]>>(),
         get: (id: string) => api.get(`restaurant/reservations/${id}`).json<ApiResponse<Reservation>>(),
         create: (data: Partial<Reservation>) => api.post('restaurant/reservations', { json: data }).json<ApiResponse<Reservation>>(),
         update: (id: string, data: Partial<Reservation>) => api.put(`restaurant/reservations/${id}`, { json: data }).json<ApiResponse<Reservation>>(),
@@ -355,17 +368,17 @@ export const restaurantApi = {
 
 // Reports API
 export const reportsApi = {
-    dashboard: () => api.get('reports/dashboard').json<ApiResponse<unknown>>(),
+    summary: () => api.get('reports/summary').json<ApiResponse<unknown>>(),
     sales: (params?: { startDate?: string; endDate?: string; branchId?: string }) =>
-        api.get('reports/sales', { searchParams: params }).json<ApiResponse<unknown>>(),
+        api.get('reports/sales', { searchParams: cleanParams(params) }).json<ApiResponse<unknown>>(),
     products: (params?: { startDate?: string; endDate?: string; limit?: number }) =>
-        api.get('reports/products', { searchParams: params }).json<ApiResponse<unknown>>(),
+        api.get('reports/products', { searchParams: cleanParams(params) }).json<ApiResponse<unknown>>(),
     inventory: (params?: { branchId?: string }) =>
-        api.get('reports/inventory', { searchParams: params }).json<ApiResponse<unknown>>(),
+        api.get('reports/inventory', { searchParams: cleanParams(params) }).json<ApiResponse<unknown>>(),
     payments: (params?: { startDate?: string; endDate?: string }) =>
-        api.get('reports/payments', { searchParams: params }).json<ApiResponse<unknown>>(),
+        api.get('reports/payments', { searchParams: cleanParams(params) }).json<ApiResponse<unknown>>(),
     customers: (params?: { startDate?: string; endDate?: string }) =>
-        api.get('reports/customers', { searchParams: params }).json<ApiResponse<unknown>>(),
+        api.get('reports/customers', { searchParams: cleanParams(params) }).json<ApiResponse<unknown>>(),
 };
 
 // Payments API
@@ -380,17 +393,17 @@ export const paymentsApi = {
     },
     transactions: {
         list: (params?: { page?: number; limit?: number; startDate?: string; endDate?: string }) =>
-            api.get('payments/transactions', { searchParams: params }).json<ApiResponse<unknown[]>>(),
+            api.get('payments/transactions', { searchParams: cleanParams(params) }).json<ApiResponse<unknown[]>>(),
         get: (id: string) => api.get(`payments/transactions/${id}`).json<ApiResponse<unknown>>(),
     },
     summary: (params?: { startDate?: string; endDate?: string }) =>
-        api.get('payments/summary', { searchParams: params }).json<ApiResponse<unknown>>(),
+        api.get('payments/summary', { searchParams: cleanParams(params) }).json<ApiResponse<unknown>>(),
 };
 
 // Documents API
 export const documentsApi = {
     list: (params?: { type?: string; status?: string; page?: number }) =>
-        api.get('settings/documents', { searchParams: params }).json<ApiResponse<Document[]>>(),
+        api.get('settings/documents', { searchParams: cleanParams(params) }).json<ApiResponse<Document[]>>(),
     get: (id: string) => api.get(`settings/documents/${id}`).json<ApiResponse<Document>>(),
     create: (data: Partial<Document>) => api.post('settings/documents', { json: data }).json<ApiResponse<Document>>(),
     updateStatus: (id: string, status: string) => api.patch(`settings/documents/${id}/status`, { json: { status } }).json<ApiResponse<Document>>(),

@@ -3,6 +3,7 @@
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
     import { api } from "$api";
+    import { auth } from "$stores";
     import { formatCurrency, formatDateTime } from "$lib/utils";
     import { toast } from "svelte-sonner";
     import {
@@ -176,8 +177,12 @@
         }
     }
 
-    onMount(() => {
+    $effect(() => {
+        auth.activeStoreId;
         loadData();
+    });
+
+    onMount(() => {
         refreshInterval = setInterval(() => loadData(), 30000);
     });
 
@@ -298,7 +303,7 @@
             
             <!-- Status Filter Tabs -->
             <div class="flex flex-wrap gap-2">
-                {#each statusFilters as filter}
+                {#each statusFilters as filter (filter.id)}
                     <button
                         onclick={() => { filterStatus = filter.id; loadData(); }}
                         class={cn(
@@ -340,7 +345,7 @@
         </div>
     {:else}
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {#each paginatedOrders as order}
+            {#each paginatedOrders as order (order.id)}
                 {@const config = getStatusConfig(order.status)}
                 {@const elapsedMinutes = getElapsedMinutes(order.createdAt)}
                 <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden hover:shadow-lg transition-all group">
@@ -379,7 +384,7 @@
                     <!-- Items -->
                     <div class="p-4 max-h-36 overflow-y-auto">
                         <div class="space-y-2">
-                            {#each order.items || [] as item}
+                            {#each order.items || [] as item (item.id)}
                                 <div class="flex items-start justify-between gap-2">
                                     <div class="flex items-center gap-2 min-w-0">
                                         <span class="shrink-0 w-6 h-6 flex items-center justify-center bg-gray-100 dark:bg-gray-700 rounded text-xs font-bold text-gray-700 dark:text-gray-300">

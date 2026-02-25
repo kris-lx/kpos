@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, invalidateQueryCache } from '@/infrastructure/http/middleware/auth.middleware';
 import { prisma } from '@/config/database.config';
 
 export const categoryRoutes = Router();
@@ -67,6 +67,8 @@ categoryRoutes.post('/', authenticate, authorize('categories:create'), async (re
         if (sortOrder !== undefined) data.sortOrder = sortOrder;
 
         const category = await prisma.category.create({ data });
+        await invalidateQueryCache('categories*');
+        await invalidateQueryCache('products*');
         res.status(201).json({ success: true, data: category });
     } catch (error) {
         next(error);
@@ -80,6 +82,7 @@ categoryRoutes.put('/:id', authenticate, authorize('categories:update'), async (
             where: { id: req.params.id },
             data: req.body,
         });
+        await invalidateQueryCache('categories*');
         res.json({ success: true, data: category });
     } catch (error) {
         next(error);
@@ -93,6 +96,8 @@ categoryRoutes.delete('/:id', authenticate, authorize('categories:delete'), asyn
             where: { id: req.params.id },
             data: { isActive: false },
         });
+        await invalidateQueryCache('categories*');
+        await invalidateQueryCache('products*');
         res.json({ success: true, data: { message: 'Category deleted' } });
     } catch (error) {
         next(error);

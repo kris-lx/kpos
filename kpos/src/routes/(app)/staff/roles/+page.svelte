@@ -2,6 +2,7 @@
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
     import { api } from "$api";
+    import { auth } from "$stores";
     import { toast } from "svelte-sonner";
     import { onMount } from "svelte";
     import {
@@ -20,6 +21,11 @@
         AlertCircle,
         RefreshCw,
     } from "lucide-svelte";
+
+    // CRUD permission gating
+    const canCreate = $derived(auth.canCreate('management.roles'));
+    const canUpdate = $derived(auth.canUpdate('management.roles'));
+    const canDelete = $derived(auth.canDelete('management.roles'));
 
     // State
     let roles = $state<any[]>([]);
@@ -254,6 +260,7 @@
                 {t("roles.subtitle")}
             </p>
         </div>
+        {#if canCreate}
         <button
             onclick={() => openModal()}
             class={cn(
@@ -264,6 +271,7 @@
             <Plus class="w-4 h-4" />
             {t("roles.createNew")}
         </button>
+        {/if}
     </div>
 
     <!-- Search -->
@@ -307,7 +315,7 @@
         </div>
     {:else}
         <div class="space-y-4">
-            {#each filteredRoles as role}
+            {#each filteredRoles as role (role.id)}
                 <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm overflow-hidden">
                     <!-- Role Header -->
                     <div class="p-4 flex items-center justify-between">
@@ -358,13 +366,15 @@
                                     <ChevronRight class="w-5 h-5" />
                                 {/if}
                             </button>
+                            {#if canUpdate}
                             <button
                                 onclick={() => openModal(role)}
                                 class="p-2 text-gray-500 hover:text-primary-600 dark:text-gray-400 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
                             >
                                 <Edit class="w-4 h-4" />
                             </button>
-                            {#if !role.isSystem}
+                            {/if}
+                            {#if canDelete && !role.isSystem}
                                 <button
                                     onclick={() => deleteRole(role.id)}
                                     class="p-2 text-gray-500 hover:text-red-600 dark:text-gray-400 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
@@ -380,7 +390,7 @@
                         <div class="px-4 pb-4 border-t border-gray-200 dark:border-gray-700 pt-4">
                             <h4 class="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">Permissions</h4>
                             <div class="flex flex-wrap gap-2">
-                                {#each role.permissions as permission}
+                                {#each role.permissions as permission (permission)}
                                     <span class="px-2 py-1 text-xs font-medium bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg">
                                         {permission}
                                     </span>
@@ -475,7 +485,7 @@
                         {t("roles.permissions")}
                     </label>
                     <div class="space-y-3 max-h-[300px] overflow-y-auto">
-                        {#each permissionCategories as category}
+                        {#each permissionCategories as category (category.name)}
                             {@const allSelected = category.permissions.every(p => formData.permissions.includes(p))}
                             {@const someSelected = category.permissions.some(p => formData.permissions.includes(p))}
                             <div class="border border-gray-200 dark:border-gray-700 rounded-xl p-3">
@@ -492,7 +502,7 @@
                                     </label>
                                 </div>
                                 <div class="flex flex-wrap gap-2 ml-6">
-                                    {#each category.permissions as permission}
+                                    {#each category.permissions as permission (permission)}
                                         <label class="flex items-center gap-1.5 cursor-pointer">
                                             <input
                                                 type="checkbox"

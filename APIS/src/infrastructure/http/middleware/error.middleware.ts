@@ -4,6 +4,7 @@
 
 import type { Request, Response, NextFunction } from 'express';
 import { ZodError } from 'zod';
+import { DatabaseConnectionError, isPrismaConnectionError } from '@/shared/domain/errors';
 
 export interface AppError extends Error {
     statusCode?: number;
@@ -86,6 +87,18 @@ export function errorHandler(
         return;
     }
 
+    // Database connection error
+    if (err instanceof DatabaseConnectionError || isPrismaConnectionError(err)) {
+        res.status(503).json({
+            success: false,
+            error: {
+                code: 'DB_001',
+                message: 'Database is not available. Please ensure MongoDB is running.',
+            },
+        });
+        return;
+    }
+
     // API Error
     if (err instanceof ApiError) {
         res.status(err.statusCode).json({
@@ -101,8 +114,9 @@ export function errorHandler(
 
     // Default error
     const statusCode = err.statusCode ?? 500;
-    // Show actual error message for debugging (in production, hide sensitive info)
-    const message = err.message || 'Internal server error';
+    // Hide internal error details in production
+    const isProd = process.env.NODE_ENV === 'production';
+    const message = isProd && statusCode >= 500 ? 'Internal server error' : (err.message || 'Internal server error');
 
     res.status(statusCode).json({
         success: false,

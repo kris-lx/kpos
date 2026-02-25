@@ -5,6 +5,7 @@
     import { api } from "$api";
     import { formatDate } from "$lib/utils";
     import { toast } from "svelte-sonner";
+    import { auth } from "$stores";
     import {
         TrendingUp,
         TrendingDown,
@@ -130,7 +131,10 @@
         }
     }
 
-    onMount(() => loadData());
+    $effect(() => {
+        auth.activeStoreId;
+        loadData();
+    });
 </script>
 
 <svelte:head>
@@ -217,7 +221,7 @@
                 <input type="text" bind:value={searchQuery} oninput={handleSearch} placeholder="ຄົ້ນຫາສິນຄ້າ, ເຫດຜົນ..." class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-orange-500" />
             </div>
             <div class="flex gap-2">
-                {#each [{ id: null, label: "ທັງໝົດ" }, { id: "increase", label: "ເພີ່ມ" }, { id: "decrease", label: "ຫຼຸດ" }] as filter}
+                {#each [{ id: null, label: "ທັງໝົດ" }, { id: "increase", label: "ເພີ່ມ" }, { id: "decrease", label: "ຫຼຸດ" }] as filter (filter.id)}
                     <button
                         onclick={() => { typeFilter = filter.id; currentPage = 1; }}
                         class={cn("px-3 py-2 rounded-lg text-sm font-medium transition-all", typeFilter === filter.id ? "bg-orange-100 dark:bg-orange-900/50 text-orange-700 dark:text-orange-400" : "text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700")}
@@ -253,7 +257,7 @@
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-gray-200 dark:divide-gray-700">
-                        {#each adjustments as adj}
+                        {#each adjustments as adj (adj.id)}
                             <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-all">
                                 <td class="px-6 py-4">
                                     <div class="flex items-center gap-2 text-gray-600 dark:text-gray-400">
@@ -302,7 +306,7 @@
                     onchange={() => { currentPage = 1; loadData(); }}
                     class="px-2 py-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm"
                 >
-                    {#each [10, 20, 50, 100] as size}
+                    {#each [10, 20, 50, 100] as size (size)}
                         <option value={size}>{size}</option>
                     {/each}
                 </select>
@@ -337,7 +341,7 @@
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ສິນຄ້າ *</label>
                     <select bind:value={formData.productId} required class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white">
                         <option value="">ເລືອກສິນຄ້າ</option>
-                        {#each products as product}
+                        {#each products as product (product.id)}
                             <option value={product.id}>{product.name} (ສະຕ໋ອກ: {product.stock || 0})</option>
                         {/each}
                     </select>

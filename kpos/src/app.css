@@ -31,7 +31,7 @@
     --color-info-500: oklch(0.60 0.15 220);
 
     /* Typography */
-    --font-sans: 'Inter Variable', 'Noto Sans Thai Variable', system-ui, sans-serif;
+    --font-sans: 'Inter Variable', 'Noto Sans Thai Variable', 'Noto Sans Lao', system-ui, sans-serif;
     --font-mono: 'JetBrains Mono Variable', monospace;
 
     /* POS-specific sizes */

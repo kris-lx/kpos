@@ -202,7 +202,7 @@
         <!-- FAQ Tab -->
         {#if activeTab === "faq"}
             <div class="space-y-3">
-                {#each filteredFaqs as faq}
+                {#each filteredFaqs as faq (faq.id)}
                     <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm overflow-hidden">
                         <button
                             onclick={() => expandedFaq = expandedFaq === faq.id ? null : faq.id}
@@ -241,11 +241,11 @@
                     <h3 class="font-semibold text-gray-900 dark:text-white">{t("help.keyboardShortcuts")}</h3>
                 </div>
                 <div class="divide-y divide-gray-100 dark:divide-gray-700">
-                    {#each shortcuts as shortcut}
+                    {#each shortcuts as shortcut (shortcut.description)}
                         <div class="flex items-center justify-between p-4">
                             <span class="text-gray-600 dark:text-gray-400">{shortcut.description}</span>
                             <div class="flex gap-1">
-                                {#each shortcut.keys as key}
+                                {#each shortcut.keys as key (key)}
                                     <kbd class="px-2 py-1 text-xs font-semibold bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-200 rounded border border-gray-300 dark:border-gray-600">
                                         {key}
                                     </kbd>

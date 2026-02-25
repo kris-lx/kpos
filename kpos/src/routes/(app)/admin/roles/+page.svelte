@@ -339,7 +339,7 @@
         switch (name) {
             case 'superadmin': return Crown;
             case 'admin': return Shield;
-            case 'shop_admin': return Store;
+            case 'store_owner': return Store;
             case 'branch_admin': return Building2;
             case 'manager': return UserCog;
             case 'cashier': return ShoppingCart;
@@ -351,7 +351,7 @@
         switch (name) {
             case 'superadmin': return 'from-amber-500 to-orange-500';
             case 'admin': return 'from-violet-500 to-purple-500';
-            case 'shop_admin': return 'from-emerald-500 to-green-500';
+            case 'store_owner': return 'from-emerald-500 to-green-500';
             case 'branch_admin': return 'from-blue-500 to-cyan-500';
             case 'manager': return 'from-pink-500 to-rose-500';
             case 'cashier': return 'from-teal-500 to-cyan-500';
@@ -496,7 +496,7 @@
                     </div>
                 {:else}
                     <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 p-4">
-                        {#each filteredRoles as role}
+                        {#each filteredRoles as role (role.id)}
                             {@const RoleIcon = getRoleIcon(role.name)}
                             <div class="group relative bg-gradient-to-br from-gray-50 to-white dark:from-gray-800/50 dark:to-gray-800/30 rounded-xl border border-gray-100 dark:border-gray-700/50 p-5 hover:shadow-xl hover:shadow-pink-500/5 transition-all duration-300">
                                 <!-- System Badge -->
@@ -617,7 +617,7 @@
                         <div>
                             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ໃຊ້ແມ່ແບບບົດບາດ</label>
                             <div class="flex flex-wrap gap-2">
-                                {#each $roleTemplatesQuery.data as template}
+                                {#each $roleTemplatesQuery.data as template (template.id)}
                                     <button
                                         type="button"
                                         onclick={() => applyRoleTemplate(template)}
@@ -661,7 +661,7 @@
                                     <Loader2 class="w-6 h-6 animate-spin mx-auto text-pink-500" />
                                 </div>
                             {:else}
-                                {#each $menuPermissionsQuery.data || [] as menu}
+                                {#each $menuPermissionsQuery.data || [] as menu (menu.key)}
                                     {@const MenuIcon = getGroupIcon(menu.icon)}
                                     {@const isExpanded = expandedMenus[menu.key]}
                                     {@const hasChildren = menu.children && menu.children.length > 0}
@@ -717,7 +717,7 @@
                                         <!-- Children Menus -->
                                         {#if hasChildren && isExpanded}
                                             <div class="border-t border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/30 pl-8">
-                                                {#each menu.children as child}
+                                                {#each menu.children as child (child.key)}
                                                     {@const ChildIcon = getGroupIcon(child.icon)}
                                                     {@const isChildSelected = formData.permissions.includes(child.key)}
                                                     

@@ -4,6 +4,7 @@
     import { cn } from "$utils";
     import { api } from "$api";
     import { toast } from "svelte-sonner";
+    import { auth } from "$stores";
     import {
         UtensilsCrossed,
         Users,
@@ -108,8 +109,12 @@
         isLoading = false;
     }
 
-    onMount(() => {
+    $effect(() => {
+        auth.activeStoreId; // reload on store switch
         loadData();
+    });
+
+    onMount(() => {
         // Auto refresh every 30 seconds
         refreshInterval = setInterval(() => {
             loadData();
@@ -415,7 +420,7 @@
                 <div class="p-4 border-b border-gray-100 dark:border-gray-700 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
                     <!-- Floor Tabs -->
                     <div class="flex gap-2">
-                        {#each floors as floor}
+                        {#each floors as floor (floor.id)}
                             <button
                                 onclick={() => (selectedFloor = floor.id)}
                                 class={cn(
@@ -467,7 +472,7 @@
                         </div>
                     {:else}
                         <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-                            {#each filteredTables as table}
+                            {#each filteredTables as table (table.id)}
                                 {@const config = getTableStatusConfig(table.status)}
                                 <button
                                     onclick={() => selectTable(table.id)}
@@ -645,7 +650,7 @@
                         </div>
                     </div>
                     <div class="p-4 space-y-3 max-h-[calc(100vh-350px)] overflow-y-auto">
-                        {#each kitchenOrders as order}
+                        {#each kitchenOrders as order (order.id)}
                             {#if order.items.some((i: any) => i.status === "pending")}
                                 <div class={cn(
                                     "rounded-xl border-2 overflow-hidden transition-all",
@@ -669,7 +674,7 @@
                                         </div>
                                     </div>
                                     <div class="p-3 space-y-2">
-                                        {#each order.items.filter((i: any) => i.status === "pending") as item}
+                                        {#each order.items.filter((i: any) => i.status === "pending") as item (item.id)}
                                             <div class="flex items-start justify-between gap-2 p-2 rounded-lg bg-gray-50 dark:bg-gray-700/50">
                                                 <div class="flex-1 min-w-0">
                                                     <div class="flex items-center gap-2">
@@ -726,7 +731,7 @@
                         </div>
                     </div>
                     <div class="p-4 space-y-3 max-h-[calc(100vh-350px)] overflow-y-auto">
-                        {#each kitchenOrders as order}
+                        {#each kitchenOrders as order (order.id)}
                             {#if order.items.some((i: any) => i.status === "cooking")}
                                 <div class="rounded-xl border-2 border-orange-200 dark:border-orange-800/30 bg-gradient-to-br from-orange-50 to-amber-50 dark:from-orange-900/10 dark:to-amber-900/10 overflow-hidden">
                                     <div class="p-3 border-b border-orange-100 dark:border-orange-800/30 flex items-center justify-between">
@@ -736,7 +741,7 @@
                                         </span>
                                     </div>
                                     <div class="p-3 space-y-2">
-                                        {#each order.items.filter((i: any) => i.status === "cooking") as item}
+                                        {#each order.items.filter((i: any) => i.status === "cooking") as item (item.id)}
                                             <div class="flex items-start justify-between gap-2 p-2 rounded-lg bg-white/50 dark:bg-gray-800/50">
                                                 <div class="flex-1 min-w-0">
                                                     <div class="flex items-center gap-2">
@@ -792,7 +797,7 @@
                         </div>
                     </div>
                     <div class="p-4 space-y-3 max-h-[calc(100vh-350px)] overflow-y-auto">
-                        {#each kitchenOrders as order}
+                        {#each kitchenOrders as order (order.id)}
                             {#if order.items.some((i: any) => i.status === "ready")}
                                 <div class="rounded-xl border-2 border-green-200 dark:border-green-800/30 bg-gradient-to-br from-green-50 to-emerald-50 dark:from-green-900/10 dark:to-emerald-900/10 overflow-hidden">
                                     <div class="p-3 border-b border-green-100 dark:border-green-800/30 flex items-center justify-between">
@@ -803,7 +808,7 @@
                                         </button>
                                     </div>
                                     <div class="p-3 space-y-2">
-                                        {#each order.items.filter((i: any) => i.status === "ready") as item}
+                                        {#each order.items.filter((i: any) => i.status === "ready") as item (item.id)}
                                             <div class="flex items-center justify-between gap-2 p-2 rounded-lg bg-white/50 dark:bg-gray-800/50">
                                                 <div class="flex items-center gap-2">
                                                     <span class="w-6 h-6 flex items-center justify-center bg-green-200 dark:bg-green-900/50 rounded text-xs font-bold text-green-700 dark:text-green-400">

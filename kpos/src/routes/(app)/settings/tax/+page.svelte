@@ -4,6 +4,7 @@
     import { cn } from "$utils";
     import { api } from "$api";
     import { toast } from "svelte-sonner";
+    import { auth } from "$stores";
     import {
         Receipt,
         Plus,
@@ -103,11 +104,14 @@
         formData = { name: "", rate: 0, type: "percentage", isActive: true, isDefault: false, description: "" };
     }
 
-    let filteredTaxes = $derived(() => {
+    let filteredTaxes = $derived.by(() => {
         return taxes.filter((t) => t.name?.toLowerCase().includes(searchQuery.toLowerCase()));
     });
 
-    onMount(() => loadData());
+    $effect(() => {
+        auth.activeStoreId;
+        loadData();
+    });
 </script>
 
 <svelte:head>
@@ -182,14 +186,14 @@
         <div class="flex items-center justify-center py-20">
             <Loader2 class="w-10 h-10 text-orange-500 animate-spin" />
         </div>
-    {:else if filteredTaxes().length === 0}
+    {:else if filteredTaxes.length === 0}
         <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-16 text-center">
             <Calculator class="w-16 h-16 mx-auto text-gray-300 dark:text-gray-600" />
             <h3 class="text-lg font-semibold text-gray-900 dark:text-white mt-4">ບໍ່ມີພາສີ</h3>
         </div>
     {:else}
         <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {#each filteredTaxes() as tax}
+            {#each filteredTaxes as tax (tax.id)}
                 <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden hover:shadow-md transition-all">
                     <div class={cn("p-4 flex items-center justify-between", tax.isDefault ? "bg-gradient-to-r from-orange-500 to-red-600" : "bg-gray-100 dark:bg-gray-700")}>
                         <div class="flex items-center gap-3">

@@ -3,6 +3,7 @@
     import { cn } from "$utils";
     import { t } from "$lib/i18n/index.svelte";
     import { toast } from "svelte-sonner";
+    import { api } from "$lib/api";
     import {
         Monitor,
         MonitorOff,
@@ -108,15 +109,26 @@
         { width: 800, height: 600, name: "SVGA (800x600)" },
     ];
 
-    onMount(() => {
-        // Load saved configuration
-        const savedConfig = localStorage.getItem("kpos_display_config");
-        if (savedConfig) {
-            try {
-                const parsed = JSON.parse(savedConfig);
+    onMount(async () => {
+        // Try loading from backend first
+        try {
+            const res = await api.get('settings/category/display').json<any>();
+            if (res.success && res.data?.config) {
+                const parsed = typeof res.data.config === 'string' ? JSON.parse(res.data.config) : res.data.config;
                 config = { ...config, ...parsed };
-            } catch (e) {
-                console.error("Failed to parse display config:", e);
+            } else {
+                throw new Error('No backend config');
+            }
+        } catch {
+            // Fallback to localStorage
+            const savedConfig = localStorage.getItem("kpos_display_config");
+            if (savedConfig) {
+                try {
+                    const parsed = JSON.parse(savedConfig);
+                    config = { ...config, ...parsed };
+                } catch (e) {
+                    console.error("Failed to parse display config:", e);
+                }
             }
         }
 
@@ -187,15 +199,13 @@
     async function saveConfig() {
         isSaving = true;
         try {
-            // Save to localStorage
+            // Save to localStorage as fallback
             localStorage.setItem("kpos_display_config", JSON.stringify(config));
 
-            // TODO: Also save to backend
-            // await fetch('/api/v1/settings/display', {
-            //     method: 'PUT',
-            //     headers: { 'Content-Type': 'application/json' },
-            //     body: JSON.stringify(config)
-            // });
+            // Save to backend
+            await api.put('settings/display/config', {
+                json: { value: JSON.stringify(config) }
+            }).json();
 
             saveSuccess = true;
             toast.success("ບັນທຶກການຕັ້ງຄ່າສຳເລັດ");
@@ -282,7 +292,7 @@
                     ໂໝດການສະແດງ
                 </h2>
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    {#each displayModes as mode}
+                    {#each displayModes as mode (mode.id)}
                         <button
                             onclick={() =>
                                 (config.mode = mode.id as "single" | "dual")}
@@ -381,7 +391,7 @@
                                     }}
                                     class="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white px-4 py-2.5"
                                 >
-                                    {#each resolutions as res}
+                                    {#each resolutions as res (res.width)}
                                         <option
                                             value="{res.width}x{res.height}"
                                             selected={config.customerDisplay
@@ -407,7 +417,7 @@
                                     bind:value={config.customerDisplay.position}
                                     class="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white px-4 py-2.5"
                                 >
-                                    {#each positions as pos}
+                                    {#each positions as pos (pos.id)}
                                         <option value={pos.id}
                                             >{pos.name}</option
                                         >
@@ -427,7 +437,7 @@
                                     bind:value={config.customerDisplay.fontSize}
                                     class="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white px-4 py-2.5"
                                 >
-                                    {#each fontSizes as size}
+                                    {#each fontSizes as size (size.id)}
                                         <option value={size.id}
                                             >{size.name}</option
                                         >
@@ -449,7 +459,7 @@
                                     }
                                     class="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white px-4 py-2.5"
                                 >
-                                    {#each animations as anim}
+                                    {#each animations as anim (anim.id)}
                                         <option value={anim.id}
                                             >{anim.name}</option
                                         >

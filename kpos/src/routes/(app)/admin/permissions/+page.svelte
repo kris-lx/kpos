@@ -277,15 +277,26 @@
                                         <p class="text-center text-gray-500 dark:text-gray-400 py-4">ບໍ່ມີສິດ</p>
                                     {:else}
                                         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-                                            {#each group.permissions as permission}
+                                            {#each group.permissions as permission, pIdx (permission.key)}
                                                 <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-700/30 rounded-xl group">
-                                                    <div class="flex items-center gap-3">
-                                                        <div class="w-2 h-2 bg-emerald-500 rounded-full"></div>
+                                                    <label class="flex items-center gap-3 cursor-pointer flex-1">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={permission.enabled !== false}
+                                                            onchange={(e) => {
+                                                                const gi = groups.findIndex(g => g.key === group.key);
+                                                                if (gi >= 0) {
+                                                                    groups[gi].permissions[pIdx] = { ...permission, enabled: e.currentTarget.checked };
+                                                                    groups = [...groups];
+                                                                }
+                                                            }}
+                                                            class="w-4 h-4 rounded border-gray-300 dark:border-gray-600 text-violet-600 focus:ring-violet-500 dark:bg-gray-700"
+                                                        />
                                                         <div>
-                                                            <p class="text-sm font-medium text-gray-900 dark:text-white">{permission.label}</p>
+                                                            <p class={cn("text-sm font-medium", permission.enabled !== false ? "text-gray-900 dark:text-white" : "text-gray-400 dark:text-gray-500 line-through")}>{permission.label}</p>
                                                             <p class="text-xs text-gray-500 dark:text-gray-400">{permission.key}</p>
                                                         </div>
-                                                    </div>
+                                                    </label>
                                                     <button onclick={() => removePermission(group.key, permission.key)} class="w-7 h-7 bg-red-100 dark:bg-red-900/30 hover:bg-red-200 dark:hover:bg-red-900/50 rounded-lg flex items-center justify-center text-red-600 dark:text-red-400 opacity-0 group-hover:opacity-100 transition-all">
                                                         <Trash2 class="w-3.5 h-3.5" />
                                                     </button>
@@ -345,7 +356,7 @@
                     <div>
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ໄອຄອນ</label>
                         <div class="grid grid-cols-5 gap-2">
-                            {#each iconOptions as option}
+                            {#each iconOptions as option (option.value)}
                                 {@const Icon = option.icon}
                                 <button type="button" onclick={() => newGroup.icon = option.value} class={cn("w-full aspect-square rounded-xl flex items-center justify-center border-2 transition-all", newGroup.icon === option.value ? "border-violet-500 bg-violet-50 dark:bg-violet-900/30" : "border-gray-200 dark:border-gray-600 hover:border-gray-300")}>
                                     <Icon class={cn("w-5 h-5", newGroup.icon === option.value ? "text-violet-500" : "text-gray-500 dark:text-gray-400")} />
@@ -356,7 +367,7 @@
                     <div>
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ສີ</label>
                         <div class="grid grid-cols-4 gap-2">
-                            {#each colorOptions as option}
+                            {#each colorOptions as option (option.value)}
                                 <button type="button" onclick={() => newGroup.color = option.value} class={cn("w-full h-10 rounded-xl bg-gradient-to-br border-2 transition-all", option.value, newGroup.color === option.value ? "border-gray-900 dark:border-white ring-2 ring-offset-2 ring-violet-500" : "border-transparent")}>
                                 </button>
                             {/each}

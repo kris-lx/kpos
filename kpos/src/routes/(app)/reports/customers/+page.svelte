@@ -3,6 +3,7 @@
     import { api } from "$lib/api";
     import { formatCurrency, formatNumber, formatDate } from "$lib/utils";
     import { onMount } from "svelte";
+    import { auth } from "$stores";
     import { toast } from "svelte-sonner";
     import { Download, Loader2, Users, UserPlus, Activity, DollarSign, Receipt, Heart, Trophy, PieChart, TrendingUp, Target, Cake, Star, Calendar, ChevronLeft, ChevronRight, Search } from "lucide-svelte";
 
@@ -52,7 +53,8 @@
         }, 300);
     }
 
-    onMount(() => {
+    $effect(() => {
+        auth.activeStoreId;
         loadReport();
     });
 
@@ -80,94 +82,6 @@
         } catch (error) {
             console.error("Failed to load customer report:", error);
             toast.error(t("reports.loadError"));
-            // Sample data
-            reportData = {
-                summary: {
-                    totalCustomers: 1250,
-                    newCustomers: 85,
-                    activeCustomers: 420,
-                    totalRevenue: 125000000,
-                    avgOrderValue: 350000,
-                    avgOrdersPerCustomer: 3.2,
-                },
-                topCustomers: [
-                    {
-                        id: "1",
-                        name: "ທ້າວ ສົມສີ",
-                        phone: "020 99887766",
-                        orderCount: 42,
-                        totalSpent: 15000000,
-                        lastOrder: "2024-01-28",
-                    },
-                    {
-                        id: "2",
-                        name: "ນາງ ມະນີ",
-                        phone: "020 88776655",
-                        orderCount: 38,
-                        totalSpent: 13500000,
-                        lastOrder: "2024-01-27",
-                    },
-                    {
-                        id: "3",
-                        name: "ບໍລິສັດ ABC",
-                        phone: "021 123456",
-                        orderCount: 35,
-                        totalSpent: 25000000,
-                        lastOrder: "2024-01-26",
-                    },
-                    {
-                        id: "4",
-                        name: "ຮ້ານ XYZ",
-                        phone: "020 77665544",
-                        orderCount: 32,
-                        totalSpent: 12000000,
-                        lastOrder: "2024-01-25",
-                    },
-                    {
-                        id: "5",
-                        name: "ທ້າວ ບຸນມີ",
-                        phone: "020 66554433",
-                        orderCount: 28,
-                        totalSpent: 9800000,
-                        lastOrder: "2024-01-24",
-                    },
-                ],
-                customerGrowth: [
-                    { month: "2024-01", new: 45, returning: 180 },
-                    { month: "2024-02", new: 52, returning: 195 },
-                    { month: "2024-03", new: 38, returning: 210 },
-                    { month: "2024-04", new: 61, returning: 225 },
-                    { month: "2024-05", new: 48, returning: 240 },
-                    { month: "2024-06", new: 55, returning: 255 },
-                ],
-                segments: [
-                    {
-                        name: "VIP",
-                        count: 45,
-                        percentage: 3.6,
-                        revenue: 45000000,
-                    },
-                    {
-                        name: "ປະຈຳ",
-                        count: 180,
-                        percentage: 14.4,
-                        revenue: 35000000,
-                    },
-                    {
-                        name: "ທົ່ວໄປ",
-                        count: 520,
-                        percentage: 41.6,
-                        revenue: 30000000,
-                    },
-                    {
-                        name: "ໃໝ່",
-                        count: 505,
-                        percentage: 40.4,
-                        revenue: 15000000,
-                    },
-                ],
-                retentionRate: 68.5,
-            };
         } finally {
             loading = false;
         }
@@ -294,7 +208,7 @@
                     <p class="text-sm text-gray-500 dark:text-gray-400">ອັດຕາຮັກສາ</p>
                 </div>
                 <p class="text-2xl font-bold text-cyan-600 dark:text-cyan-400">
-                    {reportData.retentionRate}%
+                    {(reportData.retentionRate ?? reportData.summary?.retentionRate ?? 0).toFixed(1)}%
                 </p>
             </div>
         </div>
@@ -363,7 +277,7 @@
                                 onchange={() => changePageSize(itemsPerPage)}
                                 class="px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm"
                             >
-                                {#each pageSizeOptions as size}
+                                {#each pageSizeOptions as size (size)}
                                     <option value={size}>{size} ລາຍການ</option>
                                 {/each}
                             </select>
@@ -402,7 +316,7 @@
                 </div>
                 <div class="p-4">
                     <div class="flex h-8 rounded-lg overflow-hidden mb-4">
-                        {#each reportData.segments as segment}
+                        {#each (reportData.segments || []) as segment (segment.name)}
                             <div
                                 class="{getSegmentColor(
                                     segment.name,
@@ -413,7 +327,7 @@
                         {/each}
                     </div>
                     <div class="space-y-3">
-                        {#each reportData.segments as segment}
+                        {#each (reportData.segments || []) as segment (segment.name)}
                             <div class="flex items-center justify-between">
                                 <div class="flex items-center gap-2">
                                     <span
@@ -450,7 +364,7 @@
             </div>
             <div class="p-4">
                 <div class="flex items-end gap-2 h-48">
-                    {#each reportData.customerGrowth as month}
+                    {#each (reportData.customerGrowth || []) as month (month.month)}
                         <div class="flex-1 flex flex-col items-center gap-1">
                             <div
                                 class="w-full flex flex-col gap-1"
@@ -493,41 +407,37 @@
             </div>
         </div>
 
-        <!-- Additional Insights -->
+        <!-- Additional Insights from real data -->
         <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mt-6">
             <div class="bg-white dark:bg-gray-800 rounded-lg shadow-sm p-4">
                 <h3 class="font-medium mb-3 text-gray-900 dark:text-white flex items-center gap-2">
-                    <Target class="w-5 h-5 text-orange-500" />
-                    ໂອກາດ
+                    <TrendingUp class="w-5 h-5 text-green-500" />
+                    ການເຕີບໂຕ
                 </h3>
-                <ul class="space-y-2 text-sm">
-                    <li class="flex items-start gap-2">
-                        <span class="text-yellow-500">⚠️</span>
-                        <span class="text-gray-700 dark:text-gray-300">ລູກຄ້າ 25 ຄົນບໍ່ມີການຊື້ 30 ວັນ</span>
-                    </li>
-                    <li class="flex items-start gap-2">
-                        <span class="text-blue-500">💡</span>
-                        <span class="text-gray-700 dark:text-gray-300">ລູກຄ້າ 12 ຄົນໃກ້ອັບເກຣດລະດັບ</span>
-                    </li>
-                </ul>
-            </div>
-            <div class="bg-white dark:bg-gray-800 rounded-lg shadow-sm p-4">
-                <h3 class="font-medium mb-3 text-gray-900 dark:text-white flex items-center gap-2">
-                    <Cake class="w-5 h-5 text-pink-500" />
-                    ວັນເກີດເດືອນນີ້
-                </h3>
-                <p class="text-3xl font-bold text-primary-600">8</p>
-                <p class="text-sm text-gray-500 dark:text-gray-400">ລູກຄ້າມີວັນເກີດ</p>
-            </div>
-            <div class="bg-white dark:bg-gray-800 rounded-lg shadow-sm p-4">
-                <h3 class="font-medium mb-3 text-gray-900 dark:text-white flex items-center gap-2">
-                    <Star class="w-5 h-5 text-yellow-500" />
-                    ຄະແນນສະສົມລວມ
-                </h3>
-                <p class="text-3xl font-bold text-green-600 dark:text-green-400">
-                    {formatNumber(125000)}
+                <p class="text-3xl font-bold {(reportData.summary?.growthRate ?? 0) >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}">
+                    {(reportData.summary?.growthRate ?? 0) >= 0 ? '+' : ''}{(reportData.summary?.growthRate ?? 0).toFixed(1)}%
                 </p>
-                <p class="text-sm text-gray-500 dark:text-gray-400">ຄະແນນໃນລະບົບ</p>
+                <p class="text-sm text-gray-500 dark:text-gray-400">ອັດຕາເຕີບໂຕລູກຄ້າໃໝ່</p>
+            </div>
+            <div class="bg-white dark:bg-gray-800 rounded-lg shadow-sm p-4">
+                <h3 class="font-medium mb-3 text-gray-900 dark:text-white flex items-center gap-2">
+                    <Activity class="w-5 h-5 text-blue-500" />
+                    ສະເລ່ຍ / ລູກຄ້າ
+                </h3>
+                <p class="text-3xl font-bold text-blue-600 dark:text-blue-400">
+                    {formatCurrency(reportData.summary?.avgOrderValue ?? 0)}
+                </p>
+                <p class="text-sm text-gray-500 dark:text-gray-400">ຍອດສະເລ່ຍຕໍ່ບິນ</p>
+            </div>
+            <div class="bg-white dark:bg-gray-800 rounded-lg shadow-sm p-4">
+                <h3 class="font-medium mb-3 text-gray-900 dark:text-white flex items-center gap-2">
+                    <Receipt class="w-5 h-5 text-purple-500" />
+                    ສະເລ່ຍ / ຄັ້ງ
+                </h3>
+                <p class="text-3xl font-bold text-purple-600 dark:text-purple-400">
+                    {(reportData.summary?.avgOrdersPerCustomer ?? 0).toFixed(1)}
+                </p>
+                <p class="text-sm text-gray-500 dark:text-gray-400">ຄັ້ງສະເລ່ຍຕໍ່ລູກຄ້າ</p>
             </div>
         </div>
     {/if}

@@ -3,33 +3,32 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, branchFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, branchFilter, applyScopeFilter, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { queryCache } from '@/infrastructure/http/middleware/cache.middleware';
 import { prisma } from '@/config/database.config';
 
 export const dashboardRoutes = Router();
 
 // Get dashboard stats
-dashboardRoutes.get('/stats', authenticate, branchFilter(), async (req, res, next) => {
+dashboardRoutes.get('/stats', authenticate, branchFilter(), queryCache(30, 'dashboard'), async (req, res, next) => {
     try {
         const { branchId } = req.query;
-        const filter = (req as any).branchFilter;
+        const filter = (req as any).branchFilter as ScopeFilter | undefined;
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
         const tomorrow = new Date(today);
         tomorrow.setDate(tomorrow.getDate() + 1);
 
-        // Build where clause with branch filtering
+        // Build where clause with store/branch filtering
         const transactionWhere: Record<string, unknown> = {
             createdAt: { gte: today, lt: tomorrow },
             status: 'COMPLETED',
             type: 'SALE',
         };
         
-        // Apply branch filter for non-admin users
-        if (filter?.branchIds?.length) {
-            transactionWhere.branchId = { in: filter.branchIds };
-        }
+        // Apply store-level or branch-level scope (Transaction now has storeId)
+        applyScopeFilter(transactionWhere, filter, 'storeId');
         // Override with specific branchId if provided and user has access
         if (branchId) {
             if (filter && !filter.branchIds.includes(String(branchId))) {
@@ -89,17 +88,15 @@ dashboardRoutes.get('/stats', authenticate, branchFilter(), async (req, res, nex
 dashboardRoutes.get('/low-stock', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { branchId } = req.query;
-        const filter = (req as any).branchFilter;
+        const filter = (req as any).branchFilter as ScopeFilter | undefined;
 
         const where: Record<string, unknown> = {
             quantity: { lte: 10 },
             product: { isActive: true },
         };
         
-        // Apply branch filter for non-admin users
-        if (filter?.branchIds?.length) {
-            where.branchId = { in: filter.branchIds };
-        }
+        // Apply store-level or branch-level scope (Inventory now has storeId)
+        applyScopeFilter(where, filter, 'storeId');
         if (branchId) {
             if (filter && !filter.branchIds.includes(String(branchId))) {
                 return res.status(403).json({
@@ -133,10 +130,10 @@ dashboardRoutes.get('/low-stock', authenticate, branchFilter(), async (req, res,
 });
 
 // Get sales chart data
-dashboardRoutes.get('/sales-chart', authenticate, branchFilter(), async (req, res, next) => {
+dashboardRoutes.get('/sales-chart', authenticate, branchFilter(), queryCache(60, 'dashboard'), async (req, res, next) => {
     try {
         const { branchId, period = '7days' } = req.query;
-        const filter = (req as any).branchFilter;
+        const filter = (req as any).branchFilter as ScopeFilter | undefined;
 
         let startDate = new Date();
         switch (period) {
@@ -158,10 +155,8 @@ dashboardRoutes.get('/sales-chart', authenticate, branchFilter(), async (req, re
             type: 'SALE',
         };
         
-        // Apply branch filter for non-admin users
-        if (filter?.branchIds?.length) {
-            where.branchId = { in: filter.branchIds };
-        }
+        // Apply store-level or branch-level scope
+        applyScopeFilter(where, filter, 'storeId');
         if (branchId) {
             if (filter && !filter.branchIds.includes(String(branchId))) {
                 return res.status(403).json({
@@ -203,14 +198,12 @@ dashboardRoutes.get('/sales-chart', authenticate, branchFilter(), async (req, re
 dashboardRoutes.get('/recent-transactions', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { branchId, limit = 10 } = req.query;
-        const filter = (req as any).branchFilter;
+        const filter = (req as any).branchFilter as ScopeFilter | undefined;
 
         const where: Record<string, unknown> = {};
         
-        // Apply branch filter for non-admin users
-        if (filter?.branchIds?.length) {
-            where.branchId = { in: filter.branchIds };
-        }
+        // Apply store-level or branch-level scope
+        applyScopeFilter(where, filter, 'storeId');
         if (branchId) {
             if (filter && !filter.branchIds.includes(String(branchId))) {
                 return res.status(403).json({
@@ -238,10 +231,10 @@ dashboardRoutes.get('/recent-transactions', authenticate, branchFilter(), async 
 });
 
 // Get top selling products
-dashboardRoutes.get('/top-products', authenticate, branchFilter(), async (req, res, next) => {
+dashboardRoutes.get('/top-products', authenticate, branchFilter(), queryCache(60, 'dashboard'), async (req, res, next) => {
     try {
         const { branchId, limit = 5 } = req.query;
-        const filter = (req as any).branchFilter;
+        const filter = (req as any).branchFilter as ScopeFilter | undefined;
         const thirtyDaysAgo = new Date();
         thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
@@ -252,10 +245,8 @@ dashboardRoutes.get('/top-products', authenticate, branchFilter(), async (req, r
             type: 'SALE',
         };
         
-        // Apply branch filter for non-admin users
-        if (filter?.branchIds?.length) {
-            transactionWhere.branchId = { in: filter.branchIds };
-        }
+        // Apply store-level or branch-level scope
+        applyScopeFilter(transactionWhere, filter, 'storeId');
         if (branchId) {
             if (filter && !filter.branchIds.includes(String(branchId))) {
                 return res.status(403).json({

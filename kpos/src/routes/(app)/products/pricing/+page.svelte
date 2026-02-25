@@ -103,7 +103,7 @@
     let totalPages = $derived(Math.ceil(totalItems / limit));
 
     // Computed
-    let filteredLevels = $derived(() => {
+    let filteredLevels = $derived.by(() => {
         if (!searchQuery) return priceLevels;
         const query = searchQuery.toLowerCase();
         return priceLevels.filter(
@@ -407,7 +407,7 @@
             <Loader2 class="w-10 h-10 text-green-600 animate-spin mb-4" />
             <p class="text-gray-500 dark:text-gray-400">ກຳລັງໂຫລດຂໍ້ມູນ...</p>
         </div>
-    {:else if filteredLevels().length === 0 && !error}
+    {:else if filteredLevels.length === 0 && !error}
         <div class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-12 text-center">
             <DollarSign class="w-16 h-16 text-gray-300 dark:text-gray-600 mx-auto mb-4" />
             <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">ບໍ່ພົບລະດັບລາຄາ</h3>
@@ -423,7 +423,7 @@
     {:else if !error}
         <!-- Price Levels Grid -->
         <div class="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-            {#each filteredLevels() as level}
+            {#each filteredLevels as level (level.id)}
                 <div class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden hover:shadow-lg transition-shadow">
                     <!-- Header -->
                     <div class="p-5 border-b border-gray-200 dark:border-gray-700 {level.isDefault ? 'bg-gradient-to-r from-yellow-50 to-orange-50 dark:from-yellow-900/20 dark:to-orange-900/20' : ''}">
@@ -495,7 +495,7 @@
                         <!-- Product prices preview -->
                         {#if level.products && level.products.length > 0}
                             <div class="space-y-2 mb-4">
-                                {#each level.products.slice(0, 3) as productPrice}
+                                {#each level.products.slice(0, 3) as productPrice (productPrice.product?.id || productPrice.productId)}
                                     <div class="flex items-center justify-between p-2 bg-gray-50 dark:bg-gray-700/50 rounded-lg">
                                         <span class="text-sm text-gray-700 dark:text-gray-300 truncate max-w-[150px]">
                                             {productPrice.product?.name || "ສິນຄ້າ"}
@@ -676,7 +676,7 @@
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-green-500"
                     >
                         <option value="">-- ເລືອກສິນຄ້າ --</option>
-                        {#each products as product}
+                        {#each products as product (product.id)}
                             <option value={product.id}>
                                 {product.name} - {formatCurrency(product.price)}
                             </option>

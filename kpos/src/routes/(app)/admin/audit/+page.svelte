@@ -4,7 +4,7 @@
     import { goto } from "$app/navigation";
     import { onMount } from "svelte";
     import { toast } from "svelte-sonner";
-    import { cn } from "$lib/utils";
+    import { cn, formatDateTime } from "$lib/utils";
     import {
         History,
         ArrowLeft,
@@ -94,7 +94,7 @@
     });
 
     const usersQuery = createQuery({
-        queryKey: ["admin-users-list"],
+        queryKey: () => ["admin-users-list"],
         queryFn: async () => {
             const response = await api.get("admin/users?limit=1000").json<any>();
             return response.data || [];
@@ -119,7 +119,8 @@
         showDetailModal = true;
     }
 
-    function getActionIcon(action: string) {
+    function getActionIcon(action: string | undefined) {
+        if (!action) return Activity;
         switch (action) {
             case 'user_created': return UserPlus;
             case 'user_deleted': return UserMinus;
@@ -148,14 +149,16 @@
         }
     }
 
-    function getActionColor(action: string) {
+    function getActionColor(action: string | undefined) {
+        if (!action) return 'text-gray-500 bg-gray-100 dark:bg-gray-700';
         if (action.includes('created') || action === 'login') return 'text-emerald-500 bg-emerald-100 dark:bg-emerald-900/30';
         if (action.includes('deleted') || action === 'logout' || action.includes('failed') || action.includes('voided')) return 'text-red-500 bg-red-100 dark:bg-red-900/30';
         if (action.includes('updated')) return 'text-blue-500 bg-blue-100 dark:bg-blue-900/30';
         return 'text-gray-500 bg-gray-100 dark:bg-gray-700';
     }
 
-    function getActionLabel(action: string) {
+    function getActionLabel(action: string | undefined) {
+        if (!action) return '-';
         const labels: Record<string, string> = {
             'user_created': 'ສ້າງຜູ້ໃຊ້',
             'user_updated': 'ແກ້ໄຂຜູ້ໃຊ້',
@@ -184,15 +187,8 @@
         return labels[action] || action;
     }
 
-    function formatDateTime(date: string) {
-        return new Intl.DateTimeFormat('lo-LA', {
-            year: 'numeric',
-            month: 'short',
-            day: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit',
-            second: '2-digit'
-        }).format(new Date(date));
+    function formatDateTimeLocal(date: string) {
+        return formatDateTime(date);
     }
 
     function formatTimeAgo(date: string) {
@@ -357,7 +353,7 @@
                         bind:value={actionFilter}
                         class="px-4 py-2.5 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                     >
-                        {#each actionOptions as option}
+                        {#each actionOptions as option (option.value)}
                             <option value={option.value}>{option.label}</option>
                         {/each}
                     </select>
@@ -394,7 +390,7 @@
                                 class="w-full px-4 py-2.5 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                             >
                                 <option value="">ທັງໝົດ</option>
-                                {#each $usersQuery.data || [] as user}
+                                {#each $usersQuery.data || [] as user (user.id)}
                                     <option value={user.id}>{user.name} ({user.email})</option>
                                 {/each}
                             </select>
@@ -446,7 +442,7 @@
                                 </tr>
                             </thead>
                             <tbody class="divide-y divide-gray-100 dark:divide-gray-700">
-                                {#each $auditQuery.data?.data || [] as log}
+                                {#each $auditQuery.data?.data || [] as log (log.id)}
                                     {@const ActionIcon = getActionIcon(log.action)}
                                     <tr class="hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors">
                                         <td class="px-4 py-3">

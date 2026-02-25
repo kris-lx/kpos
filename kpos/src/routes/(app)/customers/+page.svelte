@@ -3,7 +3,8 @@
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
     import { api } from "$api";
-    import { formatCurrency } from "$lib/utils";
+    import { auth } from "$stores";
+    import { formatCurrency, enforcePhoneInput, formatPhone, formatDate } from "$lib/utils";
     import { toast } from "svelte-sonner";
     import StoreBranchSelector from "$lib/components/StoreBranchSelector.svelte";
     import {
@@ -32,6 +33,12 @@
         MoreVertical,
     } from "lucide-svelte";
 
+    // Rule-based CRUD — also requires write access to active store
+    const hasWriteAccess = $derived(auth.hasStoreAccess('write') || !auth.activeStoreId);
+    const canCreateCustomer = $derived(auth.canCreate('customers') && hasWriteAccess);
+    const canUpdateCustomer = $derived(auth.canUpdate('customers') && hasWriteAccess);
+    const canDeleteCustomer = $derived(auth.canDelete('customers') && hasWriteAccess);
+
     // State
     let activeTab = $state<"all" | "members" | "vip">("all");
     let searchQuery = $state("");
@@ -49,23 +56,24 @@
     // Data
     let customers = $state<any[]>([]);
 
-    // Form
+    // Form (matches Prisma Customer schema fields)
     let formData = $state({
         name: "",
         email: "",
         phone: "",
         address: "",
+        taxId: "",
+        birthDate: "",
+        gender: "",
         notes: "",
-        isMember: false,
-        memberTier: "BRONZE",
         points: 0,
     });
 
     // Stats
     let stats = $derived({
         totalCustomers: customers.length,
-        totalMembers: customers.filter((c) => c.isMember).length,
-        vipCustomers: customers.filter((c) => c.memberTier === "GOLD" || c.memberTier === "PLATINUM").length,
+        totalMembers: customers.filter((c) => c.points > 0).length,
+        vipCustomers: customers.filter((c) => c.totalSpent > 1000000).length,
         newThisMonth: customers.filter((c) => {
             const date = new Date(c.createdAt);
             const now = new Date();
@@ -160,9 +168,10 @@
             email: customer.email || "",
             phone: customer.phone || "",
             address: customer.address || "",
+            taxId: customer.taxId || "",
+            birthDate: customer.birthDate?.split("T")[0] || "",
+            gender: customer.gender || "",
             notes: customer.notes || "",
-            isMember: customer.isMember || false,
-            memberTier: customer.memberTier || "BRONZE",
             points: customer.points || 0,
         };
         showModal = true;
@@ -180,21 +189,14 @@
             email: "",
             phone: "",
             address: "",
+            taxId: "",
+            birthDate: "",
+            gender: "",
             notes: "",
-            isMember: false,
-            memberTier: "BRONZE",
             points: 0,
         };
     }
 
-    function formatDate(date: string): string {
-        if (!date) return "-";
-        return new Intl.DateTimeFormat("lo-LA", {
-            year: "numeric",
-            month: "short",
-            day: "numeric",
-        }).format(new Date(date));
-    }
 
     function getInitials(name: string): string {
         return name
@@ -206,7 +208,7 @@
     }
 
     // Filtered data
-    let filteredCustomers = $derived(() => {
+    let filteredCustomers = $derived.by(() => {
         return customers.filter((customer) => {
             const matchSearch =
                 customer.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -215,8 +217,8 @@
             
             const matchTab = 
                 activeTab === "all" ? true :
-                activeTab === "members" ? customer.isMember :
-                activeTab === "vip" ? (customer.memberTier === "GOLD" || customer.memberTier === "PLATINUM") :
+                activeTab === "members" ? (customer.points > 0) :
+                activeTab === "vip" ? (customer.totalSpent > 1000000) :
                 true;
 
             return matchSearch && matchTab;
@@ -224,11 +226,11 @@
     });
 
     // Pagination
-    let totalItems = $derived(filteredCustomers().length);
+    let totalItems = $derived(filteredCustomers.length);
     let totalPages = $derived(Math.ceil(totalItems / itemsPerPage));
-    let paginatedCustomers = $derived(() => {
+    let paginatedCustomers = $derived.by(() => {
         const start = (currentPage - 1) * itemsPerPage;
-        return filteredCustomers().slice(start, start + itemsPerPage);
+        return filteredCustomers.slice(start, start + itemsPerPage);
     });
 
     function goToPage(page: number) {
@@ -237,7 +239,11 @@
         }
     }
 
-    onMount(() => loadData());
+    // Reload when active store switches
+    $effect(() => {
+        auth.activeStoreId; // track dependency
+        loadData();
+    });
 </script>
 
 <svelte:head>
@@ -264,7 +270,8 @@
         </div>
         
         <div class="flex items-center gap-3">
-            <StoreBranchSelector on:change={() => loadData()} />
+            <StoreBranchSelector onchange={() => loadData()} />
+            {#if canCreateCustomer}
             <button
                 onclick={() => {
                     resetForm();
@@ -275,6 +282,7 @@
                 <UserPlus class="w-5 h-5" />
                 {t("customers.addCustomer")}
             </button>
+            {/if}
         </div>
     </div>
 
@@ -369,7 +377,7 @@
                 <p class="text-gray-500 dark:text-gray-400">{t("common.loading")}...</p>
             </div>
         </div>
-    {:else if filteredCustomers().length === 0}
+    {:else if filteredCustomers.length === 0}
         <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-16 text-center shadow-sm">
             <Users class="w-16 h-16 mx-auto text-gray-300 dark:text-gray-600" />
             <h3 class="text-lg font-semibold text-gray-900 dark:text-white mt-4">{t("customers.noCustomers")}</h3>
@@ -377,8 +385,8 @@
         </div>
     {:else}
         <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-            {#each paginatedCustomers() as customer}
-                {@const tierConfig = getTierConfig(customer.memberTier)}
+            {#each paginatedCustomers as customer (customer.id)}
+                {@const tierConfig = getTierConfig(customer.totalSpent > 5000000 ? 'PLATINUM' : customer.totalSpent > 1000000 ? 'GOLD' : customer.totalSpent > 500000 ? 'SILVER' : 'BRONZE')}
                 
                 <div 
                     class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden hover:shadow-md transition-all cursor-pointer"
@@ -392,7 +400,7 @@
                             <!-- Avatar -->
                             <div class={cn(
                                 "w-14 h-14 rounded-xl flex items-center justify-center text-lg font-bold shrink-0",
-                                customer.isMember ? tierConfig.bg : "bg-gradient-to-br from-gray-400 to-gray-500",
+                                customer.points > 0 ? tierConfig.bg : "bg-gradient-to-br from-gray-400 to-gray-500",
                                 tierConfig.text
                             )}>
                                 {getInitials(customer.name)}
@@ -404,7 +412,7 @@
                                         <h3 class="font-semibold text-gray-900 dark:text-white truncate">
                                             {customer.name}
                                         </h3>
-                                        {#if customer.isMember}
+                                        {#if customer.points > 0}
                                             <span class={cn(
                                                 "inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium mt-1",
                                                 tierConfig.badge
@@ -414,12 +422,14 @@
                                             </span>
                                         {/if}
                                     </div>
+                                    {#if canUpdateCustomer}
                                     <button 
                                         onclick={(e) => { e.stopPropagation(); openEdit(customer); }}
                                         class="p-1.5 text-gray-400 hover:text-cyan-500 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-all"
                                     >
                                         <Edit class="w-4 h-4" />
                                     </button>
+                                    {/if}
                                 </div>
                             </div>
                         </div>
@@ -430,7 +440,7 @@
                         {#if customer.phone}
                             <div class="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
                                 <Phone class="w-4 h-4 shrink-0" />
-                                <span class="truncate">{customer.phone}</span>
+                                <span class="truncate">{formatPhone(customer.phone)}</span>
                             </div>
                         {/if}
                         {#if customer.email}
@@ -443,7 +453,7 @@
 
                     <!-- Stats Footer -->
                     <div class="px-4 py-3 bg-gray-50 dark:bg-gray-800/50 border-t border-gray-200 dark:border-gray-700 flex items-center justify-between text-xs">
-                        {#if customer.isMember}
+                        {#if customer.points > 0}
                             <div class="flex items-center gap-1 text-purple-600 dark:text-purple-400">
                                 <Gift class="w-3.5 h-3.5" />
                                 <span class="font-medium">{customer.points || 0} ຄະແນນ</span>
@@ -469,7 +479,7 @@
                     onchange={() => { currentPage = 1; }}
                     class="px-2 py-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-cyan-500"
                 >
-                    {#each itemsPerPageOptions as size}
+                    {#each itemsPerPageOptions as size (size)}
                         <option value={size}>{size}</option>
                     {/each}
                 </select>
@@ -543,6 +553,9 @@
                         <input
                             type="tel"
                             bind:value={formData.phone}
+                            oninput={(e) => { formData.phone = enforcePhoneInput(e.currentTarget.value); }}
+                            placeholder="20xxxxxxxx"
+                            maxlength="10"
                             class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-cyan-500 focus:border-transparent"
                         />
                     </div>
@@ -580,48 +593,56 @@
                     ></textarea>
                 </div>
 
-                <!-- Member Toggle -->
-                <div class="bg-gray-50 dark:bg-gray-900 rounded-xl p-4">
-                    <div class="flex items-center justify-between mb-4">
-                        <div class="flex items-center gap-3">
-                            <Crown class="w-5 h-5 text-purple-500" />
-                            <span class="font-medium text-gray-900 dark:text-white">ເປັນສະມາຊິກ</span>
-                        </div>
-                        <label class="relative inline-flex items-center cursor-pointer">
-                            <input type="checkbox" bind:checked={formData.isMember} class="sr-only peer" />
-                            <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-cyan-300 dark:peer-focus:ring-cyan-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-cyan-600"></div>
+                <!-- Additional Fields -->
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                            ເລກປະຈຳຕົວຜູ້ເສຍອາກອນ
                         </label>
+                        <input
+                            type="text"
+                            bind:value={formData.taxId}
+                            class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-cyan-500 focus:border-transparent"
+                        />
                     </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                            ເພດ
+                        </label>
+                        <select
+                            bind:value={formData.gender}
+                            class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-cyan-500 focus:border-transparent"
+                        >
+                            <option value="">-- ເລືອກ --</option>
+                            <option value="male">ຊາຍ</option>
+                            <option value="female">ຍິງ</option>
+                            <option value="other">ອື່ນໆ</option>
+                        </select>
+                    </div>
+                </div>
 
-                    {#if formData.isMember}
-                        <div class="grid grid-cols-2 gap-4">
-                            <div>
-                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                                    ລະດັບສະມາຊິກ
-                                </label>
-                                <select
-                                    bind:value={formData.memberTier}
-                                    class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-cyan-500 focus:border-transparent"
-                                >
-                                    <option value="BRONZE">ບຣອນ</option>
-                                    <option value="SILVER">ເງິນ</option>
-                                    <option value="GOLD">ທອງ</option>
-                                    <option value="PLATINUM">ແພັດຕິນັມ</option>
-                                </select>
-                            </div>
-                            <div>
-                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                                    ຄະແນນ
-                                </label>
-                                <input
-                                    type="number"
-                                    bind:value={formData.points}
-                                    min="0"
-                                    class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-cyan-500 focus:border-transparent"
-                                />
-                            </div>
-                        </div>
-                    {/if}
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                            ວັນເດືອນປີເກີດ
+                        </label>
+                        <input
+                            type="date"
+                            bind:value={formData.birthDate}
+                            class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-cyan-500 focus:border-transparent"
+                        />
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                            ຄະແນນ
+                        </label>
+                        <input
+                            type="number"
+                            bind:value={formData.points}
+                            min="0"
+                            class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-cyan-500 focus:border-transparent"
+                        />
+                    </div>
                 </div>
 
                 <div class="flex justify-end gap-3 pt-4">
@@ -646,12 +667,12 @@
 
 <!-- Detail Modal -->
 {#if showDetailModal && selectedCustomer}
-    {@const tierConfig = getTierConfig(selectedCustomer.memberTier)}
+    {@const tierConfig = getTierConfig(selectedCustomer.totalSpent > 5000000 ? 'PLATINUM' : selectedCustomer.totalSpent > 1000000 ? 'GOLD' : selectedCustomer.totalSpent > 500000 ? 'SILVER' : 'BRONZE')}
     
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
         <div class="w-full max-w-lg bg-white dark:bg-gray-800 rounded-2xl shadow-2xl overflow-hidden">
             <!-- Header -->
-            <div class={cn("px-6 py-6", selectedCustomer.isMember ? tierConfig.bg : "bg-gradient-to-r from-gray-500 to-gray-600")}>
+            <div class={cn("px-6 py-6", selectedCustomer.points > 0 ? tierConfig.bg : "bg-gradient-to-r from-gray-500 to-gray-600")}>
                 <div class="flex items-center justify-between">
                     <div class="flex items-center gap-4">
                         <div class="w-16 h-16 rounded-xl bg-white/20 flex items-center justify-center text-2xl font-bold text-white">
@@ -659,7 +680,7 @@
                         </div>
                         <div>
                             <h2 class="text-xl font-bold text-white">{selectedCustomer.name}</h2>
-                            {#if selectedCustomer.isMember}
+                            {#if selectedCustomer.points > 0}
                                 <span class="inline-flex items-center gap-1 px-2 py-0.5 bg-white/20 rounded-full text-xs font-medium text-white mt-1">
                                     <tierConfig.icon class="w-3 h-3" />
                                     {tierConfig.label}
@@ -685,7 +706,7 @@
                         {#if selectedCustomer.phone}
                             <div class="flex items-center gap-3 p-3 bg-gray-50 dark:bg-gray-700 rounded-xl">
                                 <Phone class="w-5 h-5 text-gray-400" />
-                                <span class="text-gray-900 dark:text-white">{selectedCustomer.phone}</span>
+                                <span class="text-gray-900 dark:text-white">{formatPhone(selectedCustomer.phone)}</span>
                             </div>
                         {/if}
                         {#if selectedCustomer.email}
@@ -704,7 +725,7 @@
                 </div>
 
                 <!-- Member Stats -->
-                {#if selectedCustomer.isMember}
+                {#if selectedCustomer.points > 0}
                     <div class="space-y-3">
                         <h3 class="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">ສະຖິຕິສະມາຊິກ</h3>
                         <div class="grid grid-cols-2 gap-3">

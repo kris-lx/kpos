@@ -21,36 +21,47 @@ const ALL_PERMISSIONS = [
     'pos:discount',
     'pos:refund',
     'pos:void',
+    'pos:credit',
 
     // Products
     'products:read',
+    'products:view',
     'products:create',
     'products:update',
     'products:delete',
 
     // Categories
     'categories:read',
+    'categories:view',
     'categories:create',
     'categories:update',
     'categories:delete',
 
     // Inventory
     'inventory:read',
+    'inventory:view',
     'inventory:create',
     'inventory:update',
     'inventory:delete',
     'inventory:adjust',
     'inventory:transfer',
+    'inventory:stockin',
+    'inventory:stockout',
 
     // Sales/Transactions
     'sales:read',
+    'sales:view',
     'sales:create',
     'sales:update',
     'sales:delete',
     'sales:export',
+    'sales:void',
+    'sales:refund',
+    'sales:view-own',
 
     // Customers
     'customers:read',
+    'customers:view',
     'customers:create',
     'customers:update',
     'customers:delete',
@@ -58,59 +69,88 @@ const ALL_PERMISSIONS = [
     // Reports
     'reports:view',
     'reports:export',
+    'reports:sales',
+    'reports:inventory',
+    'reports:financial',
+    'reports:staff',
 
     // Staff
     'staff:read',
+    'staff:view',
     'staff:create',
     'staff:update',
     'staff:delete',
 
     // Users
     'users:read',
+    'users:view',
     'users:create',
     'users:update',
     'users:delete',
 
     // Roles & Permissions
     'roles:read',
+    'roles:view',
     'roles:create',
     'roles:update',
     'roles:delete',
 
     // Settings
     'settings:read',
+    'settings:view',
     'settings:update',
 
     // Branches
     'branches:read',
+    'branches:view',
     'branches:create',
     'branches:update',
     'branches:delete',
 
     // Stores (Multi-store management)
     'stores:read',
+    'stores:view',
     'stores:create',
     'stores:update',
     'stores:delete',
-    'stores:assign',      // Assign users to stores
-    'stores:products',    // Manage store products
+    'stores:assign',
+    'stores:products',
 
     // Promotions
     'promotions:read',
+    'promotions:view',
     'promotions:create',
     'promotions:update',
     'promotions:delete',
 
     // Restaurant
     'restaurant:access',
+    'restaurant:view',
+    'restaurant:manage',
     'restaurant:tables',
     'restaurant:kitchen',
     'restaurant:reservations',
 
+    // Tables (Restaurant table CRUD)
+    'tables:create',
+    'tables:update',
+    'tables:delete',
+
     // Payments
     'payments:read',
+    'payments:view',
     'payments:refund',
     'payments:settings',
+    'payments:manage',
+    'payments:void',
+    'payments:settle',
+
+    // Documents
+    'documents:read',
+    'documents:view',
+    'documents:create',
+    'documents:update',
+    'documents:delete',
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -152,8 +192,15 @@ roleRoutes.get('/', authenticate, authorize('roles:read'), async (req, res) => {
     try {
         const { page = '1', limit = '50', search } = req.query;
         const skip = (parseInt(page as string) - 1) * parseInt(limit as string);
+        const user = req.user!;
+        const isAdmin = user.isSuperAdmin || user.role === 'admin';
 
         const where: Record<string, unknown> = {};
+        // Non-admin users only see non-system roles (cannot manage super_admin/admin/store_owner)
+        if (!isAdmin) {
+            where.name = { notIn: ['super_admin', 'admin', 'store_owner'] };
+            where.isSystem = false;
+        }
         if (search) {
             where.OR = [
                 { name: { contains: search as string, mode: 'insensitive' } },
@@ -242,11 +289,18 @@ roleRoutes.post('/', authenticate, authorize('roles:create'), async (req, res) =
         }
 
         // Check if role name already exists
-        const existing = await prisma.role.findUnique({ where: { name } });
+        const existing = await prisma.role.findFirst({
+            where: { 
+                OR: [
+                    { name: name },
+                    { displayName: displayName || name }
+                ]
+            } 
+        });
         if (existing) {
             return res.status(400).json({
                 success: false,
-                error: { code: 'DUPLICATE', message: 'Role name already exists' }
+                error: { code: 'DUPLICATE', message: 'Role name or display name already exists' }
             });
         }
 

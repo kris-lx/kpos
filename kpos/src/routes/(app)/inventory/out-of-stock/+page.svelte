@@ -3,6 +3,7 @@
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
     import { api } from "$api";
+    import { auth } from "$stores";
     import { formatDate } from "$lib/utils";
     import {
         PackageX,
@@ -93,7 +94,10 @@
         return pages;
     });
 
-    onMount(() => loadData());
+    $effect(() => {
+        auth.activeStoreId;
+        loadData();
+    });
 </script>
 
 <svelte:head>
@@ -303,7 +307,7 @@
                         </button>
                         
                         <div class="flex items-center gap-1">
-                            {#each visiblePages as page}
+                            {#each visiblePages as page, idx (idx)}
                                 {#if page < 0}
                                     <span class="px-2 text-gray-400 dark:text-gray-500">...</span>
                                 {:else}

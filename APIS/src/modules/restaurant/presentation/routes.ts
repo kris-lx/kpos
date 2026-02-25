@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router, Request, Response, NextFunction } from 'express';
-import { authenticate, authorize } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, branchFilter, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { 
     tableService, 
     orderService, 
@@ -21,12 +21,14 @@ export const restaurantRoutes = Router();
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all tables
-restaurantRoutes.get('/tables', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.get('/tables', authenticate, branchFilter(), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { branchId, status, zone, floor } = req.query;
+        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const effectiveBranchId = (branchId as string) || filter?.branchIds?.[0] || (req as any).authUser?.activeBranchId;
         
         const tables = await tableService.findAll({
-            branchId: branchId as string,
+            branchId: effectiveBranchId,
             status: status as TableStatus,
             zone: zone as string,
             floor: floor as string,
@@ -117,12 +119,14 @@ restaurantRoutes.delete('/tables/:id', authenticate, authorize('tables:delete'),
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all orders
-restaurantRoutes.get('/orders', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.get('/orders', authenticate, branchFilter(), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { branchId, status, tableId } = req.query;
+        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const effectiveBranchId = (branchId as string) || filter?.branchIds?.[0] || (req as any).authUser?.activeBranchId;
 
         const orders = await orderService.findAll({
-            branchId: branchId as string,
+            branchId: effectiveBranchId,
             status: status as OrderStatus,
             tableId: tableId as string,
         });
@@ -213,10 +217,12 @@ restaurantRoutes.post('/orders/:id/items', authenticate, async (req: Request, re
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get kitchen orders
-restaurantRoutes.get('/kitchen', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.get('/kitchen', authenticate, branchFilter(), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { branchId } = req.query;
-        const orders = await orderService.getKitchenOrders(branchId as string);
+        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const effectiveBranchId = (branchId as string) || filter?.branchIds?.[0] || (req as any).authUser?.activeBranchId;
+        const orders = await orderService.getKitchenOrders(effectiveBranchId);
         res.json({ success: true, data: orders });
     } catch (error) {
         next(error);
@@ -250,12 +256,14 @@ restaurantRoutes.patch('/kitchen/items/:id/status', authenticate, async (req: Re
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all reservations
-restaurantRoutes.get('/reservations', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.get('/reservations', authenticate, branchFilter(), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { branchId, status, date, page, limit } = req.query;
+        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const effectiveBranchId = (branchId as string) || filter?.branchIds?.[0] || (req as any).authUser?.activeBranchId;
 
         const result = await reservationService.findAll({
-            branchId: branchId as string,
+            branchId: effectiveBranchId,
             status: status as ReservationStatus,
             date: date as string,
             page: page ? Number(page) : 1,

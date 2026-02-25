@@ -16,6 +16,10 @@
 6. [Database Schema](#database-schema)
 7. [Real-time Features](#real-time-features)
 8. [Integration Points](#integration-points)
+9. [Development Guidelines](#development-guidelines)
+10. [Constraints & Non-Functional Requirements](#constraints--non-functional-requirements)
+11. [Testing & Quality Assurance](#testing--quality-assurance)
+12. [Deployment & DevOps](#deployment--devops)
 
 ═══════════════════════════════════════════════════════════════════════════════
 ## 🛠️ TECHNICAL STACK
@@ -1270,6 +1274,492 @@ SYS_001  - System error
 Reference: POSPOS (https://pospos.co) by CodeMobiles Co., Ltd.
 
 ---
-*Last Updated: January 2026*
-*Version: 1.0.0*
+
+═══════════════════════════════════════════════════════════════════════════════
+## 🔒 CONSTRAINTS & NON-FUNCTIONAL REQUIREMENTS
+═══════════════════════════════════════════════════════════════════════════════
+
+### 1. Performance Requirements
+```
+├── API Response Time
+│   ├── P95 latency < 200ms for read endpoints (with Redis cache hit)
+│   ├── P95 latency < 500ms for write endpoints
+│   ├── POS sale submission < 1000ms end-to-end
+│   └── Dashboard stats < 300ms (Redis cached, 30s TTL)
+│
+├── Caching Strategy (Redis)
+│   ├── Auth data: kpos:auth:{userId} — 5min TTL
+│   ├── Store access: kpos:stores:{userId} — 5min TTL
+│   ├── Role rules: kpos:rules:{roleId} — 5min TTL
+│   ├── Dashboard stats: queryCache 30s TTL
+│   ├── Sales chart: queryCache 60s TTL
+│   └── Top products: queryCache 60s TTL
+│
+├── Throughput
+│   ├── Minimum 100 concurrent users per branch
+│   ├── Minimum 500 transactions/hour per store
+│   └── Supports up to 50 branches per deployment
+│
+└── Database
+    ├── MongoDB replica set (minimum 3 nodes for production)
+    ├── Indexes on: branchId, storeId, createdAt, userId, productId
+    └── Pagination enforced on all list endpoints (default limit: 20)
+```
+
+### 2. Security Requirements
+```
+├── Authentication & Authorization
+│   ├── JWT access tokens (15min TTL) + refresh tokens (7d TTL)
+│   ├── argon2 password hashing (no MD5/SHA1/bcrypt)
+│   ├── RBAC: role → rules → CRUD flags per module
+│   ├── Multi-store scoping: branchFilter middleware on all data routes
+│   └── Super-admin bypass: isSuperAdmin flag skips all filters
+│
+├── HTTP Security (Helmet.js)
+│   ├── Content-Security-Policy
+│   ├── X-Frame-Options: DENY
+│   ├── X-Content-Type-Options: nosniff
+│   ├── Strict-Transport-Security (HSTS)
+│   └── Referrer-Policy
+│
+├── Rate Limiting
+│   ├── Global: 1000 requests / 15min per IP
+│   ├── Auth endpoints: 20 requests / 15min per IP
+│   └── Health check: exempt from rate limiting
+│
+├── CORS
+│   ├── Development: origin '*'
+│   ├── Production: CORS_ORIGIN env var (comma-separated whitelist)
+│   └── credentials: true
+│
+├── Input Validation
+│   ├── Zod schema validation on all mutation endpoints
+│   ├── validate()/validateBody()/validateQuery() middleware available
+│   └── ZodError forwarded to global error handler → 400 VAL_001
+│
+└── Error Handling (Production Safety)
+    ├── 5xx errors: message sanitized ("Internal server error") in production
+    ├── Stack traces: only returned in NODE_ENV !== 'production'
+    ├── unhandledRejection: logged, no crash in production
+    └── uncaughtException: logged, process exits (let supervisor restart)
+```
+
+### 3. Availability & Reliability Requirements
+```
+├── Uptime Target: 99.5% (excluding planned maintenance)
+│
+├── Graceful Shutdown
+│   ├── SIGINT/SIGTERM → drain in-flight requests
+│   ├── Close HTTP server → disconnect RabbitMQ → disconnect DB → disconnect Redis
+│   └── Max shutdown wait: 10 seconds
+│
+├── Health Check
+│   ├── GET /health — no auth required
+│   ├── Returns: { status: 'ok'|'degraded', services: { database } }
+│   └── HTTP 200 = healthy, 503 = degraded (MongoDB disconnected)
+│
+├── Async Queue (RabbitMQ)
+│   ├── Stock movements processed async (fire-and-forget from sale route)
+│   ├── Activity logs written async (non-blocking)
+│   ├── Cache invalidation fanout exchange (multi-instance safe)
+│   └── Fallback: sync processing if RabbitMQ unavailable
+│
+└── Database Resilience
+    ├── isPrismaConnectionError() detected → 503 response
+    ├── DatabaseConnectionError caught in global error handler
+    └── MongoDB connection retried on startup
+```
+
+### 4. Scalability Constraints
+```
+├── Horizontal Scaling
+│   ├── Stateless API (JWT, no server-side sessions)
+│   ├── Redis shared cache across instances
+│   ├── RabbitMQ fanout for cross-instance cache invalidation
+│   └── Socket.io: requires Redis adapter for multi-instance (future)
+│
+├── Multi-Tenant Architecture
+│   ├── Data isolation via branchId / storeId on all collections
+│   ├── UserStore junction table controls per-user store access
+│   ├── branchFilter middleware enforces scope on every GET route
+│   └── Super-admin sees all data (no filter applied)
+│
+└── Body Size Limits
+    ├── JSON body: 10mb max
+    └── URL-encoded: 10mb max
+```
+
+### 5. Maintainability Constraints
+```
+├── Code Standards
+│   ├── TypeScript strict mode — tsc --noEmit must exit 0
+│   ├── svelte-check must exit 0 on frontend
+│   ├── No any casts except at Prisma boundary (typed as any for flexibility)
+│   └── Conventional commits enforced
+│
+├── Module Structure
+│   ├── DDD: domain / application / infrastructure / presentation layers
+│   ├── Each module self-contained under src/modules/{name}/
+│   └── Shared kernel in src/shared/ (Entity, AggregateRoot, Result)
+│
+├── API Contract
+│   ├── All responses follow: { success: boolean, data?, error?, meta? }
+│   ├── Error codes: AUTH_001, AUTH_003, VAL_001, RES_001, BUS_001, SYS_001, DB_001
+│   └── Pagination meta: { page, limit, total, totalPages }
+│
+└── Observability
+    ├── requestLogger middleware logs all incoming requests
+    ├── Console error logging on all caught exceptions
+    └── Activity logs queued via RabbitMQ for async persistence
+```
+
+### 6. Operational Constraints
+```
+├── Environment Variables (required for production)
+│   ├── DATABASE_URL          — MongoDB connection string
+│   ├── REDIS_URL             — Redis connection string
+│   ├── RABBITMQ_URL          — RabbitMQ AMQP URL (optional, graceful fallback)
+│   ├── JWT_SECRET            — Minimum 32 characters
+│   ├── JWT_EXPIRES_IN        — e.g. 15m
+│   ├── JWT_REFRESH_EXPIRES_IN — e.g. 7d
+│   ├── CORS_ORIGIN           — Comma-separated allowed origins
+│   └── NODE_ENV              — 'production' | 'development' | 'test'
+│
+├── Deployment
+│   ├── Docker + docker-compose (recommended)
+│   ├── Nginx reverse proxy for SSL termination
+│   ├── MongoDB replica set (required for Prisma transactions)
+│   └── Bun runtime v1.x (not Node.js)
+│
+└── Not Supported (out of scope v1.0)
+    ├── Multi-currency real-time exchange rates (static config only)
+    ├── 2FA (architecture supports it, not implemented)
+    ├── E-commerce platform sync (Shopee/Lazada — endpoint stubs only)
+    └── EDC terminal integration (stub endpoints only)
+```
+
+═══════════════════════════════════════════════════════════════════════════════
+## 🧪 TESTING & QUALITY ASSURANCE
+═══════════════════════════════════════════════════════════════════════════════
+
+### 1. Testing Stack
+```
+├── Backend (APIS/)
+│   ├── Vitest           — unit + integration test runner
+│   ├── supertest        — HTTP integration tests (future)
+│   └── vitest.config.ts — alias resolution mirrors tsconfig.json paths
+│
+└── Frontend (kpos/)
+    ├── svelte-check     — TypeScript + Svelte type checking
+    └── vitest           — unit tests (future)
+```
+
+### 2. Test File Locations
+```
+APIS/src/
+├── shared/domain/
+│   ├── Result.test.ts          # Result<T,E> ok/fail/combine
+│   └── errors.test.ts          # DatabaseConnectionError, isPrismaConnectionError
+│
+└── infrastructure/http/middleware/
+    ├── error.middleware.test.ts  # ApiError, notFoundHandler, errorHandler
+    └── rateLimit.middleware.test.ts  # rateLimiter, authRateLimiter
+```
+
+### 3. Running Tests
+```bash
+# Backend — run all tests once
+npx vitest run
+
+# Backend — watch mode
+npx vitest --watch
+
+# Backend — type check only (no test execution)
+npx tsc --noEmit
+
+# Frontend — type + svelte check
+npx svelte-check
+```
+
+### 4. Test Coverage Targets
+```
+├── Shared Domain (Result, errors, Entity, ValueObject)  → 100%
+├── Error middleware (ApiError variants, prod sanitize)  → 100%
+├── Auth middleware (JWT verify, branchFilter scoping)   → 80%+
+├── Business logic (pagination, price calc, discount)    → 80%+
+└── API routes (integration via supertest)               → key flows only
+```
+
+### 5. What is Tested
+```
+├── Result<T,E>
+│   ├── ok() — isSuccess, value accessor, throws on error access
+│   ├── fail() — isFailure, error accessor, throws on value access
+│   └── combine() — all-ok → ok, any-fail → first failure, empty → ok
+│
+├── Domain Errors
+│   ├── DatabaseConnectionError — name, default/custom message, instanceof
+│   └── isPrismaConnectionError — 6 Prisma connection message patterns,
+│                                  non-matching errors, non-Error types
+│
+├── ApiError class
+│   ├── Default statusCode 400, code BAD_REQUEST
+│   ├── Static helpers: unauthorized(401), forbidden(403), notFound(404),
+│   │   conflict(409), internal(500)
+│   └── badRequest carries details payload
+│
+├── notFoundHandler
+│   └── Returns HTTP 404 with { success:false, error:{ code:'RES_001' } }
+│
+└── errorHandler
+    ├── ZodError → 400 VAL_001 with details array
+    ├── ApiError → correct statusCode + code
+    ├── Generic Error → 500
+    ├── Production: 5xx messages sanitized ("Internal server error")
+    └── Production: 4xx messages pass through unchanged
+```
+
+### 6. CI Quality Gates
+```
+# These must ALL pass before merge/deploy:
+npx tsc --noEmit        # Backend TypeScript — exit 0
+npx vitest run          # Backend unit tests — exit 0
+npx svelte-check        # Frontend types    — exit 0
+```
+
+### 7. Conventions
+```
+├── Test files: *.test.ts co-located with source (same directory)
+├── Test structure: describe → nested describe → it
+├── Mocks: vi.fn() for Express req/res, vi.stubEnv() for NODE_ENV
+├── No database connections in unit tests (mock at boundary)
+└── Integration tests (future): use test DB, isolated per test suite
+```
+
+═══════════════════════════════════════════════════════════════════════════════
+## 🚢 DEPLOYMENT & DEVOPS
+═══════════════════════════════════════════════════════════════════════════════
+
+### 1. Service Architecture
+```
+┌─────────────────────────────────────────────────────────┐
+│                    Docker Network: kpos-network           │
+│                                                           │
+│  ┌──────────┐   ┌──────────┐   ┌──────────┐             │
+│  │  Nginx   │──▶│  API     │──▶│ MongoDB  │             │
+│  │ :80/:443 │   │  :5000   │   │  :27017  │             │
+│  └────┬─────┘   └──────────┘   └──────────┘             │
+│       │              │                                    │
+│       ▼         ┌────┴─────┐   ┌──────────┐             │
+│  ┌──────────┐   │  Redis   │   │ RabbitMQ │             │
+│  │ Frontend │   │  :6379   │   │  :5672   │             │
+│  │  :3000   │   └──────────┘   └──────────┘             │
+│  └──────────┘                                            │
+└─────────────────────────────────────────────────────────┘
+```
+
+### 2. Docker Multi-Stage Builds
+```
+APIS/Dockerfile (oven/bun:1-alpine base)
+├── base    — install curl for healthcheck
+├── deps    — bun install --frozen-lockfile
+├── dev     — copy deps + source, bun --watch src/index.ts
+├── builder — bunx prisma generate + bun build → dist/
+└── production
+    ├── NODE_ENV=production
+    ├── copies: dist/, node_modules/, prisma/, package.json
+    ├── bunx prisma generate
+    └── CMD bun dist/index.js
+
+kpos/Dockerfile (oven/bun:1-alpine base)
+├── base    — install curl
+├── deps    — bun install --frozen-lockfile
+├── dev     — bun run dev --host 0.0.0.0  (port 3000)
+├── builder — bun run build → build/
+└── production
+    ├── NODE_ENV=production
+    ├── copies: build/, node_modules/, package.json
+    └── CMD node build  (SvelteKit node adapter)
+```
+
+### 3. Docker Compose Services
+```
+Service      Image                    Port(s)          Health Check
+─────────────────────────────────────────────────────────────────────
+api          ./APIS (Dockerfile:dev)  5000             GET /health
+frontend     ./kpos (Dockerfile:dev)  3000             —
+mongo        mongo:7.0               27017            rs.status().ok
+redis        redis:7.2-alpine         6379             redis-cli ping
+rabbitmq     rabbitmq:3.12-mgmt      5672, 15672      rabbitmq-diag ping
+postgres     postgres:18-alpine       5432             pg_isready
+mysql        mysql:8.4               3306             mysqladmin ping
+nginx        nginx:alpine             80, 443          profile=production
+```
+
+**Service dependencies (startup order):**
+```
+mongo (healthy) ──┐
+redis (healthy) ──┼──▶ api (healthy) ──▶ frontend
+rabbitmq (healthy)┘         │
+                            └──▶ nginx  [profile: production]
+```
+
+### 4. Nginx Reverse Proxy
+```nginx
+# Rate limiting zones
+limit_req_zone $binary_remote_addr zone=api_limit:10m rate=100r/s;
+limit_conn_zone $binary_remote_addr zone=conn_limit:10m;
+
+# Upstreams (keepalive 32 connections)
+upstream api_backend     { server api:5000; }
+upstream frontend_backend { server frontend:3000; }
+
+# Gzip: text/css, application/json, application/javascript, image/svg+xml
+# Compression level: 6
+
+# Route rules (conf.d/*.conf):
+# /api/*  → proxy_pass api_backend
+# /*      → proxy_pass frontend_backend
+# /health → proxy_pass api_backend (no auth)
+```
+
+### 5. Environment Variables
+```bash
+# ── Required for ALL environments ───────────────────────────────
+NODE_ENV=production
+JWT_SECRET=<min 32 chars, random>
+JWT_EXPIRES_IN=15m
+JWT_REFRESH_EXPIRES_IN=7d
+
+# ── Database ─────────────────────────────────────────────────────
+DATABASE_URL=mongodb://<host>:27017/kpos_db?replicaSet=rs0
+
+# ── Cache & Queue ────────────────────────────────────────────────
+REDIS_URL=redis://<host>:6379
+RABBITMQ_URL=amqp://<user>:<pass>@<host>:5672   # optional
+
+# ── Network ──────────────────────────────────────────────────────
+CORS_ORIGIN=https://yourdomain.com,https://app.yourdomain.com
+
+# ── Port overrides (docker-compose) ─────────────────────────────
+API_PORT=5000
+FRONTEND_PORT=3000
+MONGO_PORT=27017
+REDIS_PORT=6379
+RABBITMQ_PORT=5672
+RABBITMQ_MANAGEMENT_PORT=15672
+NGINX_HTTP_PORT=80
+NGINX_HTTPS_PORT=443
+
+# ── Database credentials (docker-compose) ────────────────────────
+POSTGRES_DB=kpos_db
+POSTGRES_USER=kpos
+POSTGRES_PASSWORD=<secret>
+MYSQL_DB=kpos_db
+MYSQL_USER=kpos
+MYSQL_PASSWORD=<secret>
+RABBITMQ_USER=kpos
+RABBITMQ_PASS=<secret>
+```
+
+### 6. Production Deployment Runbook
+```bash
+# 1. Clone and configure
+git clone <repo> && cd POS
+cp .env.example .env
+# Edit .env — set JWT_SECRET, DATABASE_URL, CORS_ORIGIN at minimum
+
+# 2. Start infrastructure services first
+docker-compose up -d mongo redis rabbitmq
+
+# 3. Wait for MongoDB replica set to initialise (~30s)
+docker-compose logs mongo --follow
+# Look for: "rs0 is now the primary"
+
+# 4. Run database migrations
+docker-compose run --rm api bunx prisma db push
+
+# 5. Seed default roles, rules, and menu
+docker-compose run --rm api bun run db:seed
+
+# 6. Start application services
+docker-compose up -d api frontend
+
+# 7. Start Nginx (production profile only)
+docker-compose --profile production up -d nginx
+
+# 8. Verify health
+curl http://localhost:5000/health
+# Expected: { "status": "ok", "services": { "database": "connected" } }
+
+# 9. Seed RBAC rules via API (once)
+curl -X POST http://localhost:5000/api/v1/admin/rules/seed \
+  -H "Authorization: Bearer <superadmin-token>"
+```
+
+### 7. Redis Configuration
+```
+# docker-compose redis command:
+redis-server \
+  --appendonly yes          # AOF persistence
+  --maxmemory 256mb         # Memory cap
+  --maxmemory-policy allkeys-lru  # Evict LRU keys when full
+
+# Key namespaces:
+kpos:auth:{userId}          TTL 300s
+kpos:stores:{userId}        TTL 300s
+kpos:rules:{roleId}         TTL 300s
+kpos:query:{path}:{params}  TTL 30-60s  (queryCache middleware)
+```
+
+### 8. MongoDB Replica Set
+```bash
+# Auto-initialised by docker-compose healthcheck:
+mongosh --eval "rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: 'localhost:27017' }] })"
+
+# Required by Prisma for multi-document transactions
+# Connection string must include: ?replicaSet=rs0&directConnection=true
+
+# Prisma migrations:
+bunx prisma db push      # apply schema (development/staging)
+bunx prisma generate     # regenerate Prisma client after schema change
+```
+
+### 9. Volumes & Persistence
+```
+Volume Name           Mounts To              Purpose
+────────────────────────────────────────────────────────
+kpos-mongo-data       mongo:/data/db         Document storage
+kpos-mongo-config     mongo:/data/configdb   Replica set config
+kpos-redis-data       redis:/data            AOF persistence
+kpos-rabbitmq-data    rabbitmq:/var/lib/...  Queue durability
+kpos-postgres-data    postgres:/var/lib/...  PostgreSQL data
+kpos-mysql-data       mysql:/var/lib/mysql   MySQL data
+```
+
+### 10. Local Development (without Docker)
+```bash
+# Prerequisites: Bun >= 1.0, MongoDB running locally with replica set
+
+# Backend
+cd APIS
+bun install
+bun run db:push          # apply schema
+bun run db:seed          # seed roles/rules
+bun run dev              # tsx watch src/index.ts  → :5000
+
+# Frontend
+cd kpos
+bun install
+bun run dev              # → :5173
+
+# Quality checks
+npx tsc --noEmit         # type check backend
+npx vitest run           # unit tests
+npx svelte-check         # type check frontend
+```
+
+---
+*Last Updated: February 2026*
+*Version: 1.1.0*
 

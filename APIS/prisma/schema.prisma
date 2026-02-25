@@ -69,9 +69,19 @@ model Store {
     updatedAt   DateTime @updatedAt
 
     // Relations
-    branch       Branch      @relation(fields: [branchId], references: [id])
-    userAccess   UserStore[]
-    products     ProductStore[]
+    branch         Branch             @relation(fields: [branchId], references: [id])
+    userAccess     UserStore[]
+    products       ProductStore[]
+    customers      Customer[]
+    inventory      Inventory[]
+    stockMovements StockMovement[]
+    transactions   Transaction[]
+    promotions     Promotion[]
+    coupons        Coupon[]
+    discounts      Discount[]
+    heldSales      HeldSale[]
+    shifts         Shift[]
+    documents      Document[]
 
     @@map("stores")
 }
@@ -199,9 +209,53 @@ model Role {
     createdAt   DateTime @default(now())
     updatedAt   DateTime @updatedAt
 
-    users User[]
+    users     User[]
+    roleRules RoleRule[]
 
     @@map("roles")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RULE-BASED ACCESS CONTROL
+// 1 Rule = many routes (sidebar paths)
+// 1 Role = many Rules (via RoleRule junction with CRUD flags)
+// 1 User = 1 Role
+// ═══════════════════════════════════════════════════════════════════════════
+
+model Rule {
+    id          String   @id @default(auto()) @map("_id") @db.ObjectId
+    name        String   @unique   // e.g. "products", "inventory", "sales"
+    displayName String              // e.g. "ການຈັດການສິນຄ້າ"
+    description String?
+    module      String              // module key for API permission prefix
+    icon        String?             // lucide icon name
+    routes      String[]            // frontend routes: ["/products", "/categories"]
+    permissions String[]            // API permission keys: ["products:read", "products:create"]
+    order       Int      @default(0)
+    isActive    Boolean  @default(true)
+    isSystem    Boolean  @default(false)
+    createdAt   DateTime @default(now())
+    updatedAt   DateTime @updatedAt
+
+    roleRules RoleRule[]
+
+    @@map("rules")
+}
+
+model RoleRule {
+    id        String  @id @default(auto()) @map("_id") @db.ObjectId
+    roleId    String  @db.ObjectId
+    ruleId    String  @db.ObjectId
+    canRead   Boolean @default(true)
+    canCreate Boolean @default(false)
+    canUpdate Boolean @default(false)
+    canDelete Boolean @default(false)
+
+    role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+    rule Rule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+
+    @@unique([roleId, ruleId])
+    @@map("role_rules")
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -244,17 +298,18 @@ model Permission {
 // ═══════════════════════════════════════════════════════════════════════════
 
 model MenuPermission {
-    id          String   @id @default(auto()) @map("_id") @db.ObjectId
-    key         String   @unique
-    label       String
-    labelLao    String?
-    icon        String?
-    path        String?
-    parentId    String?  @db.ObjectId
-    order       Int      @default(0)
-    isActive    Boolean  @default(true)
-    createdAt   DateTime @default(now())
-    updatedAt   DateTime @updatedAt
+    id                 String   @id @default(auto()) @map("_id") @db.ObjectId
+    key                String   @unique
+    label              String
+    labelLao           String?
+    icon               String?
+    path               String?
+    parentId           String?  @db.ObjectId
+    requiredPermission String?  // API permission needed to view this menu (e.g. "products:view")
+    order              Int      @default(0)
+    isActive           Boolean  @default(true)
+    createdAt          DateTime @default(now())
+    updatedAt          DateTime @updatedAt
 
     parent   MenuPermission?  @relation("MenuHierarchy", fields: [parentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
     children MenuPermission[] @relation("MenuHierarchy")
@@ -295,6 +350,7 @@ model Branch {
     stores        Store[]        // Multi-store support
     userStores    UserStore[]    // User-store assignments
     storeRequests StoreRequest[] // Store/Branch requests
+    documents     Document[]
 
     @@map("branches")
 }
@@ -386,6 +442,7 @@ model Inventory {
     productId    String    @db.ObjectId
     skuVariantId String?   @db.ObjectId
     branchId     String    @db.ObjectId
+    storeId      String?   @db.ObjectId  // Store-level isolation
     quantity     Float     @default(0)
     reserved     Float     @default(0)
     available    Float     @default(0)
@@ -398,8 +455,10 @@ model Inventory {
     product    Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
     skuVariant SKUVariant? @relation(fields: [skuVariantId], references: [id])
     branch     Branch      @relation(fields: [branchId], references: [id])
+    store      Store?      @relation(fields: [storeId], references: [id])
 
     @@unique([productId, branchId, skuVariantId, batchNumber])
+    @@index([storeId])
     @@map("inventory")
 }
 
@@ -407,6 +466,7 @@ model StockMovement {
     id            String   @id @default(auto()) @map("_id") @db.ObjectId
     productId     String   @db.ObjectId
     branchId      String   @db.ObjectId
+    storeId       String?  @db.ObjectId  // Store-level isolation
     type          String // IN, OUT, ADJUST, TRANSFER
     quantity      Float
     previousQty   Float
@@ -422,6 +482,9 @@ model StockMovement {
     batchNumber   String?  // Batch/lot number
     createdAt     DateTime @default(now())
 
+    store Store? @relation(fields: [storeId], references: [id])
+
+    @@index([storeId])
     @@map("stock_movements")
 }
 
@@ -484,14 +547,17 @@ model Customer {
     visitCount  Int       @default(0)
     lastVisitAt DateTime?
     branchId    String?   @db.ObjectId
+    storeId     String?   @db.ObjectId
     isActive    Boolean   @default(true)
     createdAt   DateTime  @default(now())
     updatedAt   DateTime  @updatedAt
 
     branch        Branch?         @relation(fields: [branchId], references: [id])
+    store         Store?          @relation(fields: [storeId], references: [id])
     transactions  Transaction[]
     pointsHistory PointsHistory[]
 
+    @@index([storeId])
     @@map("customers")
 }
 
@@ -521,6 +587,7 @@ model Transaction {
     type           String   @default("SALE") // SALE, REFUND, VOID
     status         String   @default("COMPLETED") // PENDING, COMPLETED, VOIDED, REFUNDED
     branchId       String   @db.ObjectId
+    storeId        String?  @db.ObjectId  // Store-level isolation
     userId         String   @db.ObjectId
     shiftId        String?  @db.ObjectId
     memberId       String?  @db.ObjectId
@@ -553,6 +620,7 @@ model Transaction {
 
     // Relations
     branch   Branch               @relation(fields: [branchId], references: [id])
+    store    Store?               @relation(fields: [storeId], references: [id])
     user     User                 @relation(fields: [userId], references: [id])
     shift    Shift?               @relation(fields: [shiftId], references: [id])
     member   Member?              @relation(fields: [memberId], references: [id])
@@ -560,6 +628,7 @@ model Transaction {
     items    TransactionItem[]
     payments TransactionPayment[]
 
+    @@index([storeId])
     @@map("transactions")
 }
 
@@ -615,8 +684,12 @@ model HeldSale {
     discount  Float    @default(0)
     total     Float
     note      String?
+    storeId   String?  @db.ObjectId
     createdAt DateTime @default(now())
 
+    store Store? @relation(fields: [storeId], references: [id])
+
+    @@index([storeId])
     @@map("held_sales")
 }
 
@@ -638,15 +711,18 @@ model Shift {
     openedAt        DateTime  @default(now())
     closedAt        DateTime?
     notes           String?
+    storeId         String?   @db.ObjectId
     createdAt       DateTime  @default(now())
     updatedAt       DateTime  @updatedAt
 
     branch        Branch         @relation(fields: [branchId], references: [id])
     user          User           @relation(fields: [userId], references: [id])
     register      CashRegister?  @relation(fields: [registerId], references: [id])
+    store         Store?         @relation(fields: [storeId], references: [id])
     transactions  Transaction[]
     cashMovements CashMovement[]
 
+    @@index([storeId])
     @@map("shifts")
 }
 
@@ -868,9 +944,13 @@ model Promotion {
     usageLimit   Int?
     usageCount   Int       @default(0)
     memberOnly   Boolean   @default(false)
+    storeId      String?   @db.ObjectId
     createdAt    DateTime  @default(now())
     updatedAt    DateTime  @updatedAt
 
+    store Store? @relation(fields: [storeId], references: [id])
+
+    @@index([storeId])
     @@map("promotions")
 }
 
@@ -889,9 +969,13 @@ model Coupon {
     usageCount   Int       @default(0)
     perUserLimit Int?      @default(1)
     isActive     Boolean   @default(true)
+    storeId      String?   @db.ObjectId
     createdAt    DateTime  @default(now())
     updatedAt    DateTime  @updatedAt
 
+    store Store? @relation(fields: [storeId], references: [id])
+
+    @@index([storeId])
     @@map("coupons")
 }
 
@@ -912,9 +996,13 @@ model Discount {
     usageLimit    Int?
     usageCount    Int       @default(0)
     isActive      Boolean   @default(true)
+    storeId       String?   @db.ObjectId
     createdAt     DateTime  @default(now())
     updatedAt     DateTime  @updatedAt
 
+    store Store? @relation(fields: [storeId], references: [id])
+
+    @@index([storeId])
     @@map("discounts")
 }
 
@@ -1102,12 +1190,19 @@ model Document {
     documentNo    String   @unique
     referenceId   String   @db.ObjectId
     referenceType String // TRANSACTION, ORDER, PURCHASE_ORDER
+    branchId      String?  @db.ObjectId
+    storeId       String?  @db.ObjectId
     data          Json
     status        String   @default("CREATED") // CREATED, PRINTED, SENT, CANCELLED
     printCount    Int      @default(0)
     createdAt     DateTime @default(now())
     updatedAt     DateTime @updatedAt
 
+    branch        Branch?  @relation(fields: [branchId], references: [id])
+    store         Store?   @relation(fields: [storeId], references: [id])
+
+    @@index([branchId])
+    @@index([storeId])
     @@map("documents")
 }
 

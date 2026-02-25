@@ -3,6 +3,7 @@
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
     import { api } from "$api";
+    import { auth } from "$lib/stores/auth.svelte";
     import { toast } from "svelte-sonner";
     import {
         Plus,
@@ -75,11 +76,23 @@
 
     async function handleSubmit() {
         try {
+            const payload: Record<string, any> = {
+                name: formData.name,
+                capacity: Number(formData.capacity),
+                shape: formData.shape.toUpperCase(),
+                floor: String(formData.floor),
+                zone: formData.zoneId || 'main',
+                posX: Number(formData.positionX),
+                posY: Number(formData.positionY),
+                isActive: formData.isActive,
+                status: formData.status.toUpperCase(),
+            };
             if (editingId) {
-                await api.put(`restaurant/tables/${editingId}`, { json: formData }).json();
+                await api.put(`restaurant/tables/${editingId}`, { json: payload }).json();
                 toast.success(t("common.success"));
             } else {
-                await api.post("restaurant/tables", { json: formData }).json();
+                payload.branchId = auth.user?.branchId || '';
+                await api.post("restaurant/tables", { json: payload }).json();
                 toast.success(t("common.success"));
             }
             showModal = false;
@@ -225,7 +238,8 @@
         })
     );
 
-    onMount(() => {
+    $effect(() => {
+        auth.activeStoreId;
         loadData();
     });
 </script>
@@ -359,7 +373,7 @@
                 >
                     {t("restaurant.allZones")}
                 </button>
-                {#each zones as zone}
+                {#each zones as zone (zone.id)}
                     <button
                         onclick={() => (selectedZone = zone.id)}
                         class={cn(
@@ -427,7 +441,7 @@
     {:else if viewMode === "grid"}
         <!-- Grid View -->
         <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-            {#each filteredTables as table}
+            {#each filteredTables as table (table.id)}
                 {@const config = getStatusConfig(table.status || "available")}
                 {@const ShapeIcon = getShapeIcon(table.shape)}
                 <button
@@ -509,7 +523,7 @@
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-gray-100 dark:divide-gray-700">
-                        {#each filteredTables as table}
+                        {#each filteredTables as table (table.id)}
                             {@const config = getStatusConfig(table.status || "available")}
                             {@const ShapeIcon = getShapeIcon(table.shape)}
                             <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
@@ -672,7 +686,7 @@
                             class="w-full rounded-xl border border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-white px-4 py-2.5 focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
                         >
                             <option value="">{t("restaurant.selectZone")}</option>
-                            {#each zones as zone}
+                            {#each zones as zone (zone.id)}
                                 <option value={zone.id}>{zone.name}</option>
                             {/each}
                         </select>
@@ -745,7 +759,7 @@
                             {t("restaurant.status")}
                         </label>
                         <div class="grid grid-cols-4 gap-2">
-                            {#each ["available", "occupied", "reserved", "cleaning"] as status}
+                            {#each ["available", "occupied", "reserved", "cleaning"] as status (status)}
                                 {@const config = getStatusConfig(status)}
                                 <label
                                     class={cn(

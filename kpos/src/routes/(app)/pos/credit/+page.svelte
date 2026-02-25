@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { onMount } from "svelte";
     import { i18n } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
     import { formatCurrency, formatDate, formatDateTime } from "$lib/utils";
@@ -29,7 +30,7 @@
     let currentPage = $state(1);
     let rowsPerPage = $state(10);
 
-    $effect(() => {
+    onMount(() => {
         loadCreditSales();
     });
 
@@ -293,7 +294,7 @@
                         </tr>
                     </thead>
                     <tbody class="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
-                        {#each paginatedSales as sale}
+                        {#each paginatedSales as sale (sale.id)}
                             <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50">
                                 <td class="px-6 py-4 whitespace-nowrap">
                                     <p class="font-medium text-gray-900 dark:text-white">

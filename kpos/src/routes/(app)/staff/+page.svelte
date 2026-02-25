@@ -2,8 +2,9 @@
     import { onMount } from "svelte";
     import { goto } from "$app/navigation";
     import { t } from "$lib/i18n/index.svelte";
-    import { cn } from "$utils";
+    import { cn, formatPhone, formatDate } from "$utils";
     import { api } from "$api";
+    import { auth } from "$stores";
     import { toast } from "svelte-sonner";
     import {
         Users,
@@ -29,6 +30,11 @@
         AlertTriangle,
     } from "lucide-svelte";
 
+    // Rule-based CRUD
+    const canCreateStaff = $derived(auth.canCreate('management.staff'));
+    const canUpdateStaff = $derived(auth.canUpdate('management.staff'));
+    const canDeleteStaff = $derived(auth.canDelete('management.staff'));
+
     // State
     let searchQuery = $state("");
     let activeTab = $state<"all" | "active" | "inactive">("all");
@@ -43,7 +49,8 @@
     let currentPage = $state(1);
     let totalPages = $state(1);
     let totalItems = $state(0);
-    const pageSize = 20;
+    let pageSize = $state(20);
+    const pageSizeOptions = [5, 10, 20, 30, 50, 70, 100];
 
     // Staff data from API
     let staffList = $state<any[]>([]);
@@ -68,8 +75,8 @@
     async function loadDropdownData() {
         try {
             const [branchRes, roleRes] = await Promise.all([
-                api.get("branches").json<any>(),
-                api.get("admin/roles").json<any>()
+                api.get("staff/branches/list").json<any>(),
+                api.get("staff/roles/list").json<any>()
             ]);
             branches = branchRes.data || [];
             roles = roleRes.data || [];
@@ -228,8 +235,12 @@
         showAddModal = true;
     }
 
-    onMount(() => {
+    $effect(() => {
+        auth.activeStoreId;
         loadStaff();
+    });
+
+    onMount(() => {
         loadDropdownData();
     });
 
@@ -242,13 +253,6 @@
         );
     }
 
-    function formatDate(date: string): string {
-        return new Intl.DateTimeFormat("lo-LA", {
-            year: "numeric",
-            month: "short",
-            day: "numeric",
-        }).format(new Date(date));
-    }
 
     function getRoleColor(role: string): string {
         switch (role) {
@@ -308,6 +312,7 @@
                 <Clock class="w-4 h-4" />
                 {t("shifts.title")}
             </button>
+            {#if canCreateStaff}
             <button
                 onclick={openAddModal}
                 class={cn(
@@ -318,6 +323,7 @@
                 <Plus class="w-4 h-4" />
                 {t("staff.addNew")}
             </button>
+            {/if}
         </div>
     </div>
 
@@ -402,7 +408,7 @@
             <div
                 class="flex gap-1 bg-gray-100 dark:bg-gray-700/50 p-1 rounded-lg"
             >
-                {#each [{ id: "all", label: t("staff.all") }, { id: "active", label: t("staff.active") }, { id: "inactive", label: t("staff.inactive") }] as tab}
+                {#each [{ id: "all", label: t("staff.all") }, { id: "active", label: t("staff.active") }, { id: "inactive", label: t("staff.inactive") }] as tab (tab.id)}
                     <button
                         onclick={() => { activeTab = tab.id as any; currentPage = 1; loadStaff(); }}
                         class={cn(
@@ -461,7 +467,7 @@
                     </tr>
                 </thead>
                 <tbody class="divide-y divide-gray-100 dark:divide-gray-700">
-                    {#each filteredStaff as staff}
+                    {#each filteredStaff as staff (staff.id)}
                         <tr
                             class="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
                         >
@@ -500,7 +506,7 @@
                                         class="flex items-center gap-1 text-gray-500 dark:text-gray-400"
                                     >
                                         <Phone class="w-3 h-3" />
-                                        {staff.phone}
+                                        {staff.phone ? formatPhone(staff.phone) : '-'}
                                     </div>
                                 </div>
                             </td>
@@ -556,6 +562,7 @@
                                     >
                                         <Eye class="w-4 h-4" />
                                     </button>
+                                    {#if canUpdateStaff}
                                     <button
                                         onclick={() => editStaff(staff)}
                                         class="p-2 text-gray-500 hover:text-primary-600 dark:text-gray-400 dark:hover:text-primary-400 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
@@ -570,6 +577,8 @@
                                     >
                                         <Shield class="w-4 h-4" />
                                     </button>
+                                    {/if}
+                                    {#if canDeleteStaff}
                                     <button
                                         onclick={() => confirmDelete(staff)}
                                         class="p-2 text-gray-500 hover:text-red-600 dark:text-gray-400 dark:hover:text-red-400 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
@@ -577,6 +586,7 @@
                                     >
                                         <Trash2 class="w-4 h-4" />
                                     </button>
+                                    {/if}
                                 </div>
                             </td>
                         </tr>
@@ -595,11 +605,17 @@
         {/if}
 
         <!-- Pagination -->
-        {#if totalPages > 1}
+        {#if totalItems > 0}
             <div class="flex items-center justify-between px-4 py-3 border-t border-gray-200 dark:border-gray-700">
-                <p class="text-sm text-gray-500 dark:text-gray-400">
-                    {t("common.showing")} {(currentPage - 1) * pageSize + 1} - {Math.min(currentPage * pageSize, totalItems)} {t("common.of")} {totalItems}
-                </p>
+                <div class="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+                    <span>{t("common.showing")}</span>
+                    <select bind:value={pageSize} onchange={() => { currentPage = 1; loadStaff(); }} class="px-2 py-1 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm">
+                        {#each pageSizeOptions as size (size)}
+                            <option value={size}>{size}</option>
+                        {/each}
+                    </select>
+                    <span>{t("common.of")} {totalItems}</span>
+                </div>
                 <div class="flex items-center gap-2">
                     <button
                         onclick={() => { if (currentPage > 1) { currentPage--; loadStaff(); } }}
@@ -708,7 +724,7 @@
                         required
                     >
                         <option value="">-- ເລືອກສາຂາ --</option>
-                        {#each branches as branch}
+                        {#each branches as branch (branch.id)}
                             <option value={branch.id}>{branch.name}</option>
                         {/each}
                     </select>
@@ -727,7 +743,7 @@
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                     >
                         <option value="">-- ເລືອກບົດບາດ --</option>
-                        {#each roles as role}
+                        {#each roles as role (role.id)}
                             <option value={role.id}>{role.displayName || role.name}</option>
                         {/each}
                     </select>
@@ -806,7 +822,7 @@
                     </div>
                     <div>
                         <p class="text-xs text-gray-500 dark:text-gray-400">{t("staff.phone")}</p>
-                        <p class="font-medium text-gray-900 dark:text-white">{selectedStaff.phone || "-"}</p>
+                        <p class="font-medium text-gray-900 dark:text-white">{selectedStaff.phone ? formatPhone(selectedStaff.phone) : '-'}</p>
                     </div>
                     <div>
                         <p class="text-xs text-gray-500 dark:text-gray-400">{t("staff.branch")}</p>

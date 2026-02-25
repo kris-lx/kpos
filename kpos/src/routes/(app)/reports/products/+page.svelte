@@ -1,8 +1,8 @@
 <script lang="ts">
-    import { onMount } from "svelte";
     import { cn, formatCurrency } from "$utils";
     import { api } from "$api";
     import { t } from "$lib/i18n/index.svelte";
+    import { auth } from "$stores";
     import { toast } from "svelte-sonner";
     import {
         Package,
@@ -69,6 +69,11 @@
         }
     }
 
+    $effect(() => {
+        auth.activeStoreId;
+        loadData();
+    });
+
     // For export - use all filtered data
     let filteredProducts = $derived(productReports);
 
@@ -100,8 +105,6 @@
         }, 300);
     }
 
-    onMount(() => loadData());
-
     $effect(() => {
         periodFilter;
         currentPage = 1;
@@ -131,7 +134,7 @@
         exporting = true;
         showExportMenu = false;
         const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${t("reports.inventory")}</title>
-<style>body{font-family:'Phetsarath OT',sans-serif;padding:20px}h1{text-align:center}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ddd;padding:8px}th{background:#f5f5f5}.text-right{text-align:right}</style></head>
+<style>body{font-family:'Noto Sans Lao','Phetsarath OT',sans-serif;padding:20px}h1{text-align:center}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ddd;padding:8px}th{background:#f5f5f5}.text-right{text-align:right}</style></head>
 <body><h1>${t("reports.inventory")}</h1><p style="text-align:center">${new Date().toLocaleDateString('lo-LA')}</p>
 <table><tr><th>ອັນດັບ</th><th>ສິນຄ້າ</th><th>SKU</th><th>ຈຳນວນຂາຍ</th><th>ລາຍຮັບ</th></tr>
 ${filteredProducts.map((p, i) => `<tr><td>${i + 1}</td><td>${p.name || ''}</td><td>${p.sku || ''}</td><td class="text-right">${p.totalSales || 0}</td><td class="text-right">${formatCurrency(p.revenue || 0)}</td></tr>`).join('')}
@@ -357,7 +360,7 @@ ${filteredProducts.map((p, i) => `<tr><td>${i + 1}</td><td>${p.name || ''}</td><
                     onchange={() => changePageSize(itemsPerPage)}
                     class="px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm"
                 >
-                    {#each pageSizeOptions as size}
+                    {#each pageSizeOptions as size (size)}
                         <option value={size}>{size} ລາຍການ</option>
                     {/each}
                 </select>

@@ -87,7 +87,7 @@
         loading = true;
         error = null;
         try {
-            const response = await api.get("management/roles").json<any>();
+            const response = await api.get("roles").json<any>();
             if (response.success) {
                 roles = response.data || [];
             }
@@ -136,11 +136,11 @@
     async function saveRole() {
         try {
             if (editingRole) {
-                await api.put(`management/roles/${editingRole.id}`, {
+                await api.put(`roles/${editingRole.id}`, {
                     json: formData,
                 }).json();
             } else {
-                await api.post("management/roles", { json: formData }).json();
+                await api.post("roles", { json: formData }).json();
             }
             showModal = false;
             toast.success("ບັນທຶກສຳເລັດ");
@@ -158,7 +158,7 @@
         }
         if (!confirm("ຕ້ອງການລົບບົດບາດນີ້ບໍ?")) return;
         try {
-            await api.delete(`management/roles/${role.id}`).json();
+            await api.delete(`roles/${role.id}`).json();
             toast.success("ລົບສຳເລັດ");
             loadRoles();
         } catch (error) {
@@ -236,7 +236,7 @@
         </div>
     {:else}
         <div class="grid gap-4 md:grid-cols-2">
-            {#each paginatedRoles as role}
+            {#each paginatedRoles as role (role.id)}
                 <div
                     class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 hover:shadow-md dark:hover:shadow-gray-900/50 transition-shadow"
                 >
@@ -265,7 +265,7 @@
                             ສິດທັງໝົດ: {role.permissions.length}
                         </p>
                         <div class="flex flex-wrap gap-1">
-                            {#each role.permissions.slice(0, 5) as perm}
+                            {#each role.permissions.slice(0, 5) as perm (perm)}
                                 <span
                                     class="px-2 py-0.5 text-xs bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300 rounded"
                                 >{perm.split(":")[0]}</span>
@@ -309,7 +309,7 @@
                         onchange={(e) => changePageSize(Number((e.target as HTMLSelectElement).value))}
                         class="px-2 py-1 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500"
                     >
-                        {#each pageSizeOptions as size}
+                        {#each pageSizeOptions as size (size)}
                             <option value={size}>{size}</option>
                         {/each}
                     </select>
@@ -390,7 +390,7 @@
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-3"
                         >ສິດ</label>
                     <div class="space-y-4">
-                        {#each allPermissions as category}
+                        {#each allPermissions as category (category.category)}
                             <div class="border border-gray-200 dark:border-gray-700 rounded-lg p-3">
                                 <label
                                     class="flex items-center gap-2 font-medium text-gray-700 dark:text-gray-300 cursor-pointer"
@@ -410,7 +410,7 @@
                                     {category.category}
                                 </label>
                                 <div class="mt-2 ml-6 grid grid-cols-2 gap-2">
-                                    {#each category.permissions as perm}
+                                    {#each category.permissions as perm (perm)}
                                         <label
                                             class="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400 cursor-pointer"
                                         >

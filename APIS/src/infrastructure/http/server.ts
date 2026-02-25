@@ -8,6 +8,7 @@ import helmet from 'helmet';
 import { createServer, type Server as HttpServer } from 'http';
 import { Server as SocketServer } from 'socket.io';
 import { appConfig } from '@/config/app.config';
+import { isDatabaseConnected } from '@/config/database.config';
 import { errorHandler, notFoundHandler } from './middleware/error.middleware';
 import { requestLogger } from './middleware/logger.middleware';
 import { rateLimiter } from './middleware/rateLimit.middleware';
@@ -57,10 +58,15 @@ export class AppServer {
 
         // Health check
         this.app.get('/health', (_, res) => {
-            res.json({
-                status: 'ok',
+            const dbOk = isDatabaseConnected();
+            const status = dbOk ? 'ok' : 'degraded';
+            res.status(dbOk ? 200 : 503).json({
+                status,
                 timestamp: new Date().toISOString(),
                 environment: appConfig.env,
+                services: {
+                    database: dbOk ? 'connected' : 'disconnected',
+                },
             });
         });
     }

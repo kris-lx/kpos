@@ -223,7 +223,7 @@
                 >
                     {t("common.all")}
                 </button>
-                {#each categories as category}
+                {#each categories as category (category.id)}
                     <button
                         onclick={() => (selectedCategory = category.id)}
                         class={cn(
@@ -271,7 +271,7 @@
             </div>
         {:else}
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {#each filteredItems as item}
+                {#each filteredItems as item (item.id)}
                     <button
                         onclick={() => openItemModal(item)}
                         disabled={!item.isAvailable}

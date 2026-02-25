@@ -4,6 +4,7 @@
     import { cn, formatCurrency, formatDateTime } from "$lib/utils";
     import { onMount } from "svelte";
     import { toast } from "svelte-sonner";
+    import { auth } from "$stores";
     import {
         TrendingUp,
         TrendingDown,
@@ -47,7 +48,8 @@
         year: t("reports.thisYear"),
     });
 
-    onMount(() => {
+    $effect(() => {
+        auth.activeStoreId;
         loadData();
     });
 
@@ -56,18 +58,30 @@
         error = null;
         try {
             const params = getDateParams();
+            const now = new Date().toISOString().split("T")[0];
+            const pastDate = new Date();
+            switch (dateRange) {
+                case "today": pastDate.setHours(0,0,0,0); break;
+                case "week": pastDate.setDate(pastDate.getDate() - 7); break;
+                case "year": pastDate.setFullYear(pastDate.getFullYear() - 1); break;
+                default: pastDate.setMonth(pastDate.getMonth() - 1);
+            }
+            const fromDate = pastDate.toISOString().split("T")[0];
+
             const [summaryRes, salesRes, productsRes, customersRes] =
                 await Promise.all([
                     api.get(`reports/summary`).json<any>().catch(() => ({ data: {} })),
                     api.get(`reports/sales?${params}`).json<any>().catch(() => ({ data: [] })),
                     api.get(`reports/top-products?${params}&limit=10`).json<any>().catch(() => ({ data: [] })),
-                    api.get(`reports/customers?limit=10`).json<any>().catch(() => ({ data: [] })),
+                    api.get(`reports/customers?limit=10&from=${fromDate}&to=${now}`).json<any>().catch(() => ({ data: { topCustomers: [], summary: {} } })),
                 ]);
 
             summary = summaryRes.data || {};
             salesData = salesRes.data || [];
             topProducts = productsRes.data || [];
-            topCustomers = customersRes.data || [];
+            // customers endpoint returns { data: { topCustomers, summary, ... } }
+            const custData = customersRes.data || {};
+            topCustomers = custData.topCustomers || [];
         } catch (e) {
             console.error("Failed to load reports:", e);
             error = "ບໍ່ສາມາດໂຫຼດຂໍ້ມູນໄດ້";
@@ -106,6 +120,7 @@
 
     $effect(() => {
         dateRange;
+        auth.activeStoreId; // re-run when store switches
         loadData();
     });
 
@@ -152,7 +167,7 @@
     <meta charset="utf-8">
     <title>${t("reports.title")} - ${dateRangeLabels[dateRange]}</title>
     <style>
-        body { font-family: 'Phetsarath OT', 'Noto Sans Lao', sans-serif; padding: 20px; }
+        body { font-family: 'Noto Sans Lao', 'Phetsarath OT', sans-serif; padding: 20px; }
         h1 { text-align: center; margin-bottom: 20px; }
         table { width: 100%; border-collapse: collapse; }
         th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
@@ -206,7 +221,7 @@
     <meta charset="utf-8">
     <title>${t("reports.title")}</title>
     <style>
-        body { font-family: 'Phetsarath OT', 'Noto Sans Lao', sans-serif; }
+        body { font-family: 'Noto Sans Lao', 'Phetsarath OT', sans-serif; }
         table { width: 100%; border-collapse: collapse; }
         th, td { border: 1px solid #000; padding: 8px; }
         th { background: #f0f0f0; }
@@ -289,6 +304,55 @@
     function handlePrint() {
         showExportMenu = false;
         window.print();
+    }
+
+    function printAsReceipt() {
+        showExportMenu = false;
+        const data = getExportData();
+        const headers = getExportHeaders();
+        const title = selectedReport === 'sales' ? 'ລາຍງານການຂາຍ' : selectedReport === 'products' ? 'ລາຍງານສິນຄ້າ' : 'ລາຍງານລູກຄ້າ';
+        const now = new Date().toLocaleString('lo-LA');
+        const divider = '─'.repeat(32);
+
+        let lines = [
+            'KPOS',
+            title,
+            dateRangeLabels[dateRange],
+            now,
+            divider,
+        ];
+
+        data.forEach((row, i) => {
+            const vals = headers.map(h => `${h}: ${row[h] ?? ''}`);
+            lines.push(`${i + 1}. ${vals.join(' | ')}`);
+        });
+
+        lines.push(divider);
+        if (selectedReport === 'sales') {
+            const totalAmount = salesData.reduce((s: number, r: any) => s + (r.total || 0), 0);
+            const totalCount = salesData.reduce((s: number, r: any) => s + (r.count || 0), 0);
+            lines.push(`ລວມ: ${totalCount} ລາຍການ`);
+            lines.push(`ຍອດລວມ: ${formatCurrency(totalAmount)}`);
+        }
+        lines.push('', 'ພິມໂດຍ: KPOS System');
+
+        const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${title}</title>
+<style>
+@page { margin: 0; size: 80mm auto; }
+body { font-family: 'Noto Sans Lao', 'Phetsarath OT', monospace; font-size: 12px; width: 72mm; margin: 4mm auto; line-height: 1.6; }
+.center { text-align: center; }
+.bold { font-weight: bold; }
+.divider { border-top: 1px dashed #000; margin: 4px 0; }
+</style></head><body>
+${lines.map(l => l === divider ? '<div class="divider"></div>' : `<div${l === 'KPOS' || l === title ? ' class="center bold"' : ''}>${l}</div>`).join('\n')}
+</body></html>`;
+
+        const win = window.open('', '_blank', 'width=320,height=600');
+        if (win) {
+            win.document.write(html);
+            win.document.close();
+            win.onload = () => win.print();
+        }
     }
 </script>
 
@@ -377,6 +441,13 @@
                         >
                             <Printer class="w-5 h-5 text-gray-600" />
                             <span>{t("reports.print")}</span>
+                        </button>
+                        <button
+                            onclick={() => printAsReceipt()}
+                            class="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300"
+                        >
+                            <FileText class="w-5 h-5 text-orange-600" />
+                            <span>ພິມແບບໃບບິນ</span>
                         </button>
                     </div>
                 {/if}

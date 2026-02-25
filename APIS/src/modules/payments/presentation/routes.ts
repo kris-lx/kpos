@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, branchFilter, applyScopeFilter, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { prisma } from '@/config/database.config';
 
 export const paymentRoutes = Router();
@@ -13,7 +13,7 @@ export const paymentRoutes = Router();
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all transactions
-paymentRoutes.get('/transactions', authenticate, async (req, res, next) => {
+paymentRoutes.get('/transactions', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const {
             page = 1,
@@ -25,8 +25,10 @@ paymentRoutes.get('/transactions', authenticate, async (req, res, next) => {
             search
         } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
+        const filter = (req as any).branchFilter as ScopeFilter | undefined;
 
         const where: Record<string, unknown> = {};
+        applyScopeFilter(where, filter, 'storeId');
         if (branchId) where.branchId = String(branchId);
         if (status) where.status = String(status);
 
@@ -50,6 +52,7 @@ paymentRoutes.get('/transactions', authenticate, async (req, res, next) => {
                 include: {
                     customer: { select: { name: true } },
                     user: { select: { name: true } },
+                    store: { select: { name: true } },
                     payments: {
                         include: { paymentMethod: { select: { name: true, code: true } } },
                     },
@@ -415,6 +418,7 @@ paymentRoutes.post('/settlements', authenticate, authorize('payments:settle'), a
     try {
         const { date } = req.body;
         const userId = req.user!.userId;
+        const branchId = req.user!.branchId;
         const settlementDate = new Date(date);
         
         // Get totals for the date
@@ -423,16 +427,36 @@ paymentRoutes.post('/settlements', authenticate, authorize('payments:settle'), a
         const endOfDay = new Date(settlementDate);
         endOfDay.setHours(23, 59, 59, 999);
 
+        // Get transactions with their payments for the date
         const transactions = await prisma.transaction.findMany({
             where: {
                 createdAt: { gte: startOfDay, lte: endOfDay },
                 status: 'COMPLETED',
+                branchId,
+            },
+            include: {
+                payments: true,
             },
         });
 
-        const totalAmount = transactions.reduce((sum, t) => sum + (t.totalAmount || 0), 0);
-        const totalCash = transactions.filter(t => t.paymentMethod === 'CASH').reduce((sum, t) => sum + (t.totalAmount || 0), 0);
-        const totalCard = transactions.filter(t => t.paymentMethod === 'CARD').reduce((sum, t) => sum + (t.totalAmount || 0), 0);
+        const totalAmount = transactions.reduce((sum, t) => sum + t.total, 0);
+        
+        // Calculate cash/card/other from TransactionPayment records
+        let totalCash = 0;
+        let totalCard = 0;
+        let totalOther = 0;
+        for (const t of transactions) {
+            for (const p of t.payments) {
+                const name = p.methodName?.toUpperCase() || '';
+                if (name.includes('CASH')) {
+                    totalCash += p.amount;
+                } else if (name.includes('CARD') || name.includes('CREDIT') || name.includes('DEBIT')) {
+                    totalCard += p.amount;
+                } else {
+                    totalOther += p.amount;
+                }
+            }
+        }
 
         const settlement = await prisma.settlement.create({
             data: {
@@ -440,6 +464,7 @@ paymentRoutes.post('/settlements', authenticate, authorize('payments:settle'), a
                 totalAmount,
                 cashAmount: totalCash,
                 cardAmount: totalCard,
+                otherAmount: totalOther,
                 transactionCount: transactions.length,
                 status: 'completed',
                 settledBy: userId,

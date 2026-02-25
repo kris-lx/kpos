@@ -28,6 +28,7 @@
     // Dashboard state
     let isLoading = $state(true);
     let error = $state("");
+    let loadError = $state("");
     let lastUpdated = $state<Date | null>(null);
     
     // Chart references
@@ -175,76 +176,11 @@
                     sales: d.total || 0,
                 }));
             } else {
-                // Generate sample hourly data for chart if no data
-                hourlyData = Array.from({ length: 7 }, (_, i) => {
-                    const date = new Date();
-                    date.setDate(date.getDate() - (6 - i));
-                    return {
-                        hour: date.toLocaleDateString('lo-LA', { weekday: 'short' }),
-                        sales: Math.floor(Math.random() * 100000) + 50000,
-                    };
-                });
+                hourlyData = [];
             }
         } catch (e) {
             console.error("Dashboard load error:", e);
-            // Use sample data for demo
-            salesSummary = {
-                todaySales: 125680,
-                todayOrders: 48,
-                todayCustomers: 35,
-                avgOrderValue: 2618,
-                salesGrowth: 12.5,
-                ordersGrowth: 8.3,
-                customersGrowth: 5.2,
-            };
-
-            recentTransactions = [
-                {
-                    id: "TXN001",
-                    time: new Date(),
-                    total: 1250,
-                    items: 3,
-                    paymentMethod: "cash",
-                },
-                {
-                    id: "TXN002",
-                    time: new Date(),
-                    total: 3480,
-                    items: 5,
-                    paymentMethod: "card",
-                },
-                {
-                    id: "TXN003",
-                    time: new Date(),
-                    total: 890,
-                    items: 2,
-                    paymentMethod: "promptpay",
-                },
-            ];
-
-            topProducts = [
-                { name: "ກາເຟລາເຕ້", sold: 45, revenue: 4050000 },
-                { name: "ເອັສເປຣສໂຊ່", sold: 38, revenue: 2280000 },
-                { name: "ຄາປູຊີໂນ່", sold: 32, revenue: 3200000 },
-                { name: "ຊາຂຽວ", sold: 28, revenue: 2240000 },
-                { name: "ໂມກກາ", sold: 25, revenue: 2750000 },
-            ];
-
-            lowStockAlerts = [
-                { name: "ນົມສົດ", currentStock: 5, minStock: 10 },
-                { name: "ນ້ຳຕານ", currentStock: 2, minStock: 5 },
-                { name: "ຈອກພລາສຕິກ", currentStock: 50, minStock: 100 },
-            ];
-
-            // Sample chart data for 7 days
-            hourlyData = Array.from({ length: 7 }, (_, i) => {
-                const date = new Date();
-                date.setDate(date.getDate() - (6 - i));
-                return {
-                    hour: date.toLocaleDateString('lo-LA', { weekday: 'short' }),
-                    sales: Math.floor(Math.random() * 100000) + 50000,
-                };
-            });
+            loadError = String(e);
         } finally {
             isLoading = false;
             lastUpdated = new Date();
@@ -352,9 +288,13 @@
         }
     }
 
-    onMount(() => {
+    // Reload when active store changes
+    $effect(() => {
+        const _storeId = auth.activeStoreId;
         loadDashboardData();
+    });
 
+    onMount(() => {
         // Auto refresh every 5 minutes
         const interval = setInterval(loadDashboardData, 5 * 60 * 1000);
         return () => {
@@ -390,7 +330,7 @@
             </p>
         </div>
         <div class="flex items-center gap-3 mt-4 sm:mt-0">
-            <StoreBranchSelector on:change={() => loadDashboardData()} />
+            <StoreBranchSelector onchange={() => loadDashboardData()} />
             {#if lastUpdated}
                 <span class="text-xs text-gray-500 dark:text-gray-400">
                     {t("dashboard.lastUpdated")}: {formatTime(lastUpdated)}
@@ -411,9 +351,21 @@
         </div>
     </div>
 
+    <!-- Error Alert -->
+    {#if loadError}
+        <div class="mb-6 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl flex items-center gap-3">
+            <AlertTriangle class="w-5 h-5 text-red-500 shrink-0" />
+            <div class="flex-1">
+                <p class="text-sm font-medium text-red-800 dark:text-red-200">{t("common.error")}</p>
+                <p class="text-xs text-red-600 dark:text-red-400 mt-1">{loadError}</p>
+            </div>
+            <button onclick={() => { loadError = ''; loadDashboardData(); }} class="text-sm text-red-600 dark:text-red-400 hover:underline">{t("common.retry") || 'ລອງໃໝ່'}</button>
+        </div>
+    {/if}
+
     <!-- Stats Cards -->
     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        {#each statsCards as card}
+        {#each statsCards as card (card.title)}
             <div
                 class="bg-white dark:bg-gray-800 rounded-xl p-6 shadow-sm"
             >
@@ -566,7 +518,7 @@
                     <tbody
                         class="divide-y divide-gray-100 dark:divide-gray-700"
                     >
-                        {#each recentTransactions.slice(0, 5) as txn}
+                        {#each recentTransactions.slice(0, 5) as txn (txn.id)}
                             <tr class="text-sm">
                                 <td
                                     class="py-3 font-medium text-gray-900 dark:text-white"
@@ -587,6 +539,13 @@
                                     class="py-3 text-right font-medium text-gray-900 dark:text-white"
                                 >
                                     {formatCurrency(txn.total)}
+                                </td>
+                            </tr>
+                        {:else}
+                            <tr>
+                                <td colspan="4" class="py-8 text-center text-gray-400 dark:text-gray-500 text-sm">
+                                    <Clock class="w-8 h-8 mx-auto mb-2 opacity-50" />
+                                    ບໍ່ມີທຸລະກຳຫຼ້າສຸດ
                                 </td>
                             </tr>
                         {/each}
@@ -622,7 +581,7 @@
                 </div>
             {:else}
                 <div class="space-y-3">
-                    {#each lowStockAlerts as alert}
+                    {#each lowStockAlerts as alert (alert.id)}
                         <div
                             class="flex items-center justify-between p-3 bg-orange-50 dark:bg-orange-900/20 rounded-lg border border-orange-200 dark:border-orange-800"
                         >

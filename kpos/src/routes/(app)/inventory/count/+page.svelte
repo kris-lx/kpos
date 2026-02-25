@@ -5,6 +5,7 @@
     import { api } from "$api";
     import { formatDate } from "$lib/utils";
     import { toast } from "svelte-sonner";
+    import { auth } from "$stores";
     import {
         ClipboardList,
         Plus,
@@ -148,7 +149,10 @@
         }
     }
 
-    onMount(() => loadData());
+    $effect(() => {
+        auth.activeStoreId;
+        loadData();
+    });
 </script>
 
 <svelte:head>
@@ -233,7 +237,7 @@
                 <input type="text" bind:value={searchQuery} oninput={handleSearch} placeholder="ຄົ້ນຫາ..." class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-violet-500" />
             </div>
             <div class="flex gap-2">
-                {#each [{ id: null, label: "ທັງໝົດ" }, { id: "pending", label: "ລໍຖ້າ" }, { id: "completed", label: "ສຳເລັດ" }] as filter}
+                {#each [{ id: null, label: "ທັງໝົດ" }, { id: "pending", label: "ລໍຖ້າ" }, { id: "completed", label: "ສຳເລັດ" }] as filter (filter.id)}
                     <button
                         onclick={() => { statusFilter = filter.id; handleFilterChange(); }}
                         class={cn("px-3 py-2 rounded-lg text-sm font-medium transition-all", statusFilter === filter.id ? "bg-violet-100 dark:bg-violet-900/50 text-violet-700 dark:text-violet-400" : "text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700")}
@@ -269,7 +273,7 @@
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-gray-200 dark:divide-gray-700">
-                        {#each stockCounts as count}
+                        {#each stockCounts as count (count.id)}
                             {@const statusConfig = getStatusConfig(count.status)}
                             <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-all">
                                 <td class="px-6 py-4">
@@ -318,7 +322,7 @@
                     onchange={() => { currentPage = 1; loadData(); }}
                     class="px-2 py-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm"
                 >
-                    {#each [10, 20, 50, 100] as size}
+                    {#each [10, 20, 50, 100] as size (size)}
                         <option value={size}>{size}</option>
                     {/each}
                 </select>
@@ -364,7 +368,7 @@
                             <div class="flex gap-2 items-center p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
                                 <select bind:value={item.productId} class="flex-1 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm">
                                     <option value="">ເລືອກສິນຄ້າ</option>
-                                    {#each products as product}
+                                    {#each products as product (product.id)}
                                         <option value={product.id}>{product.name}</option>
                                     {/each}
                                 </select>
@@ -411,7 +415,7 @@
                 <div class="border-t border-gray-200 dark:border-gray-700 pt-4">
                     <h4 class="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ລາຍການ:</h4>
                     <div class="space-y-2 max-h-60 overflow-y-auto">
-                        {#each selectedCount.items || [] as item}
+                        {#each selectedCount.items || [] as item (item.productId)}
                             <div class="flex justify-between p-2 bg-gray-50 dark:bg-gray-700/50 rounded-lg text-sm">
                                 <span class="text-gray-900 dark:text-white">{getProductName(item.productId)}</span>
                                 <span class={cn(item.systemQty !== item.actualQty ? "text-red-600" : "text-gray-500")}>

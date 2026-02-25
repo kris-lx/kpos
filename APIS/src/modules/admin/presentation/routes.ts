@@ -3,8 +3,9 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, requireSuperAdmin, requireAdmin, isSuperAdmin, isAdmin } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, requireSuperAdmin, requireAdmin, isSuperAdmin, isAdmin, invalidateRoleRulesCache, invalidateAllUserStoreCache } from '@/infrastructure/http/middleware/auth.middleware';
 import { prisma } from '@/config/database.config';
+import { publish, QUEUES, isRabbitMQConnected } from '@/config/rabbitmq.config';
 
 export const adminRoutes = Router();
 
@@ -145,13 +146,29 @@ adminRoutes.post('/requests/:id/approve', authenticate, requireAdmin(), async (r
                     isActive: true
                 }
             });
-        } else if (request.type === 'new_store' && request.storeName && request.storeCode && request.branchId) {
+        } else if (request.type === 'new_store' && request.storeName && request.storeCode) {
+            // Determine branchId — use existing or create a default branch
+            let targetBranchId = request.branchId;
+            if (!targetBranchId) {
+                const defaultBranch = await prisma.branch.create({
+                    data: {
+                        name: `${request.storeName} - ສາຂາຫຼັກ`,
+                        code: `BR-${request.storeCode}`,
+                        address: request.storeAddress,
+                        phone: request.storePhone,
+                        email: request.storeEmail,
+                        isActive: true
+                    }
+                });
+                targetBranchId = defaultBranch.id;
+            }
+
             // Create new store
             createdEntity = await prisma.store.create({
                 data: {
                     name: request.storeName,
                     code: request.storeCode,
-                    branchId: request.branchId,
+                    branchId: targetBranchId,
                     address: request.storeAddress,
                     phone: request.storePhone,
                     email: request.storeEmail,
@@ -164,13 +181,35 @@ adminRoutes.post('/requests/:id/approve', authenticate, requireAdmin(), async (r
                 data: {
                     userId: request.requesterId,
                     storeId: createdEntity.id,
-                    branchId: request.branchId,
+                    branchId: targetBranchId,
                     canRead: true,
                     canWrite: true,
                     canDelete: true,
                     canManage: true,
                     isDefault: true,
                     assignedBy: reviewerId
+                }
+            });
+
+            // Assign store_owner role to requester
+            let storeOwnerRole = await prisma.role.findFirst({ where: { name: 'store_owner' } });
+            if (!storeOwnerRole) {
+                storeOwnerRole = await prisma.role.create({
+                    data: {
+                        name: 'store_owner',
+                        displayName: 'Store Owner',
+                        description: 'ເຈົ້າຂອງຮ້ານ - ສິດຄວບຄຸມຮ້ານທັງໝົດ',
+                        permissions: DEFAULT_ROLES.find(r => r.name === 'store_owner')?.permissions || [],
+                        isSystem: true
+                    }
+                });
+            }
+            await prisma.user.update({
+                where: { id: request.requesterId },
+                data: {
+                    roleId: storeOwnerRole.id,
+                    role: 'store_owner',
+                    branchId: targetBranchId
                 }
             });
         }
@@ -314,8 +353,15 @@ adminRoutes.post('/branches', authenticate, requireAdmin(), async (req, res, nex
     try {
         const { name, code, address, phone, email, taxId, logo, isMain, settings } = req.body;
 
+        if (!name || !String(name).trim()) {
+            return res.status(400).json({ success: false, error: { code: 'VALIDATION', message: 'Branch name is required' } });
+        }
+        if (!code || !String(code).trim()) {
+            return res.status(400).json({ success: false, error: { code: 'VALIDATION', message: 'Branch code is required' } });
+        }
+
         // Check for duplicate code
-        const existing = await prisma.branch.findUnique({ where: { code } });
+        const existing = await prisma.branch.findUnique({ where: { code: String(code).trim() } });
         if (existing) {
             return res.status(400).json({
                 success: false,
@@ -333,16 +379,16 @@ adminRoutes.post('/branches', authenticate, requireAdmin(), async (req, res, nex
 
         const branch = await prisma.branch.create({
             data: {
-                name,
-                code,
-                address,
-                phone,
-                email,
-                taxId,
-                logo,
+                name: String(name).trim(),
+                code: String(code).trim(),
+                address: address || undefined,
+                phone: phone || undefined,
+                email: email || undefined,
+                taxId: taxId || undefined,
+                logo: logo || undefined,
                 isMain: isMain || false,
                 settings: settings || {},
-                isActive: true
+                isActive: isActive !== undefined ? Boolean(isActive) : true
             }
         });
 
@@ -482,7 +528,7 @@ adminRoutes.get('/stores', authenticate, requireAdmin(), async (req, res, next) 
                 take: Number(limit),
                 include: {
                     branch: { select: { id: true, name: true, code: true } },
-                    _count: { select: { users: true } }
+                    _count: { select: { userAccess: true } }
                 },
                 orderBy: { name: 'asc' }
             }),
@@ -605,6 +651,144 @@ adminRoutes.delete('/stores/:id', authenticate, requireAdmin(), async (req, res,
 
         res.json({ success: true, message: 'Store deactivated successfully' });
     } catch (error) {
+        next(error);
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STORE DETAIL ENDPOINTS (for My Store page)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * GET /admin/stores/:id/details - Get store with full details
+ */
+adminRoutes.get('/stores/:id/details', authenticate, async (req, res, next) => {
+    try {
+        const store = await prisma.store.findUnique({
+            where: { id: req.params.id },
+            include: {
+                branch: { select: { id: true, name: true, code: true, address: true, phone: true } },
+            },
+        });
+        if (!store) {
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Store not found' } });
+        }
+        res.json({ success: true, data: store });
+    } catch (error) {
+        next(error);
+    }
+});
+
+/**
+ * GET /admin/stores/:id/stats - Get store statistics
+ */
+adminRoutes.get('/stores/:id/stats', authenticate, async (req, res, next) => {
+    try {
+        const store = await prisma.store.findUnique({ where: { id: req.params.id } });
+        if (!store) {
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Store not found' } });
+        }
+
+        const branchId = store.branchId;
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        const [totalProducts, totalUsers, todayTransactions, todaySales] = await Promise.all([
+            prisma.productStore.count({ where: { storeId: req.params.id, isActive: true } }),
+            prisma.userStore.count({ where: { storeId: req.params.id } }),
+            prisma.transaction.count({ where: { branchId, createdAt: { gte: today }, status: 'COMPLETED' } }),
+            prisma.transaction.findMany({
+                where: { branchId, createdAt: { gte: today }, status: 'COMPLETED' },
+                select: { total: true },
+            }),
+        ]);
+
+        const totalSalesToday = todaySales.reduce((sum, t) => sum + t.total, 0);
+
+        res.json({
+            success: true,
+            data: {
+                totalProducts,
+                totalUsers,
+                todayTransactions,
+                totalSalesToday,
+            },
+        });
+    } catch (error) {
+        next(error);
+    }
+});
+
+/**
+ * GET /admin/stores/:id/branches - Get branches related to store
+ */
+adminRoutes.get('/stores/:id/branches', authenticate, async (req, res, next) => {
+    try {
+        const store = await prisma.store.findUnique({
+            where: { id: req.params.id },
+            select: { branchId: true },
+        });
+        if (!store) {
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Store not found' } });
+        }
+        const branches = await prisma.branch.findMany({
+            where: { id: store.branchId },
+            select: { id: true, name: true, code: true, address: true, phone: true, isActive: true },
+        });
+        res.json({ success: true, data: branches });
+    } catch (error) {
+        next(error);
+    }
+});
+
+/**
+ * GET /admin/stores/:id/users - Get users with access to store
+ */
+adminRoutes.get('/stores/:id/users', authenticate, async (req, res, next) => {
+    try {
+        const userStores = await prisma.userStore.findMany({
+            where: { storeId: req.params.id },
+            include: {
+                user: { select: { id: true, name: true, email: true, phone: true, role: true, avatar: true, isActive: true } },
+            },
+        });
+        const users = userStores.map(us => ({
+            ...us.user,
+            canRead: us.canRead,
+            canWrite: us.canWrite,
+            canDelete: us.canDelete,
+            canManage: us.canManage,
+            isDefault: us.isDefault,
+        }));
+        res.json({ success: true, data: users });
+    } catch (error) {
+        next(error);
+    }
+});
+
+/**
+ * PUT /admin/stores/:id/update - Update store (non-admin users for their own store)
+ */
+adminRoutes.put('/stores/:id/update', authenticate, async (req, res, next) => {
+    try {
+        const { name, address, phone, email, description, settings } = req.body;
+        const updateData: Record<string, unknown> = {};
+        if (name !== undefined) updateData.name = name;
+        if (address !== undefined) updateData.address = address;
+        if (phone !== undefined) updateData.phone = phone;
+        if (email !== undefined) updateData.email = email;
+        if (description !== undefined) updateData.description = description;
+        if (settings !== undefined) updateData.settings = settings;
+
+        const store = await prisma.store.update({
+            where: { id: req.params.id },
+            data: updateData,
+        });
+        res.json({ success: true, data: store });
+    } catch (error: any) {
+        if (error.code === 'P2025') {
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Store not found' } });
+        }
         next(error);
     }
 });
@@ -794,13 +978,7 @@ adminRoutes.post('/requests', authenticate, async (req, res, next) => {
             });
         }
 
-        // For new_store, branchId is required
-        if (type === 'new_store' && !branchId) {
-            return res.status(400).json({
-                success: false,
-                error: { code: 'MISSING_BRANCH', message: 'Branch ID required for new store request' }
-            });
-        }
+
 
         // Check for duplicate pending requests
         const existingRequest = await prisma.storeRequest.findFirst({
@@ -935,165 +1113,9 @@ adminRoutes.get('/permissions', authenticate, requireAdmin(), async (req, res, n
         }
 
         // Return default permission groups if none in database
-        const defaultPermissions = [
-            {
-                key: "pos",
-                label: "ຂາຍໜ້າຮ້ານ (POS)",
-                icon: "ShoppingCart",
-                color: "from-emerald-500 to-green-500",
-                permissions: [
-                    { key: "pos.view", label: "ເບິ່ງໜ້າ POS" },
-                    { key: "pos.sale", label: "ຂາຍສິນຄ້າ" },
-                    { key: "pos.discount", label: "ໃຫ້ສ່ວນຫຼຸດ" },
-                    { key: "pos.void", label: "ຍົກເລີກລາຍການ" },
-                    { key: "pos.refund", label: "ຄືນເງິນ" }
-                ]
-            },
-            {
-                key: "products",
-                label: "ສິນຄ້າ",
-                icon: "Package",
-                color: "from-blue-500 to-cyan-500",
-                permissions: [
-                    { key: "products.view", label: "ເບິ່ງສິນຄ້າ" },
-                    { key: "products.create", label: "ເພີ່ມສິນຄ້າ" },
-                    { key: "products.edit", label: "ແກ້ໄຂສິນຄ້າ" },
-                    { key: "products.delete", label: "ລຶບສິນຄ້າ" },
-                    { key: "products.import", label: "ນຳເຂົ້າສິນຄ້າ" }
-                ]
-            },
-            {
-                key: "inventory",
-                label: "ສາງສິນຄ້າ",
-                icon: "Package",
-                color: "from-amber-500 to-orange-500",
-                permissions: [
-                    { key: "inventory.view", label: "ເບິ່ງສາງ" },
-                    { key: "inventory.adjust", label: "ປັບສາງ" },
-                    { key: "inventory.transfer", label: "ໂອນສິນຄ້າ" },
-                    { key: "inventory.count", label: "ນັບສາງ" }
-                ]
-            },
-            {
-                key: "reports",
-                label: "ລາຍງານ",
-                icon: "BarChart3",
-                color: "from-violet-500 to-purple-500",
-                permissions: [
-                    { key: "reports.sales", label: "ລາຍງານຂາຍ" },
-                    { key: "reports.products", label: "ລາຍງານສິນຄ້າ" },
-                    { key: "reports.inventory", label: "ລາຍງານສາງ" },
-                    { key: "reports.staff", label: "ລາຍງານພະນັກງານ" },
-                    { key: "reports.customers", label: "ລາຍງານລູກຄ້າ" },
-                    { key: "reports.export", label: "ສົ່ງອອກລາຍງານ" }
-                ]
-            },
-            {
-                key: "restaurant",
-                label: "ຮ້ານອາຫານ",
-                icon: "Utensils",
-                color: "from-pink-500 to-rose-500",
-                permissions: [
-                    { key: "restaurant.view", label: "ເບິ່ງໂຕະ" },
-                    { key: "restaurant.manage", label: "ຈັດການໂຕະ" },
-                    { key: "restaurant.kitchen", label: "ເບິ່ງຄົວ" }
-                ]
-            },
-            {
-                key: "settings",
-                label: "ຕັ້ງຄ່າ",
-                icon: "Settings",
-                color: "from-gray-500 to-slate-500",
-                permissions: [
-                    { key: "settings.general", label: "ຕັ້ງຄ່າທົ່ວໄປ" },
-                    { key: "settings.payment", label: "ຕັ້ງຄ່າການຊຳລະ" },
-                    { key: "settings.printer", label: "ຕັ້ງຄ່າເຄື່ອງພິມ" },
-                    { key: "settings.tax", label: "ຕັ້ງຄ່າອາກອນ" }
-                ]
-            }
-        ];
-
-        res.json({ success: true, data: defaultPermissions });
+        res.json({ success: true, data: DEFAULT_PERMISSION_GROUPS });
     } catch (error) {
-        // If table doesn't exist, return defaults
-        const defaultPermissions = [
-            {
-                key: "pos",
-                label: "ຂາຍໜ້າຮ້ານ (POS)",
-                icon: "ShoppingCart",
-                color: "from-emerald-500 to-green-500",
-                permissions: [
-                    { key: "pos.view", label: "ເບິ່ງໜ້າ POS" },
-                    { key: "pos.sale", label: "ຂາຍສິນຄ້າ" },
-                    { key: "pos.discount", label: "ໃຫ້ສ່ວນຫຼຸດ" },
-                    { key: "pos.void", label: "ຍົກເລີກລາຍການ" },
-                    { key: "pos.refund", label: "ຄືນເງິນ" }
-                ]
-            },
-            {
-                key: "products",
-                label: "ສິນຄ້າ",
-                icon: "Package",
-                color: "from-blue-500 to-cyan-500",
-                permissions: [
-                    { key: "products.view", label: "ເບິ່ງສິນຄ້າ" },
-                    { key: "products.create", label: "ເພີ່ມສິນຄ້າ" },
-                    { key: "products.edit", label: "ແກ້ໄຂສິນຄ້າ" },
-                    { key: "products.delete", label: "ລຶບສິນຄ້າ" },
-                    { key: "products.import", label: "ນຳເຂົ້າສິນຄ້າ" }
-                ]
-            },
-            {
-                key: "inventory",
-                label: "ສາງສິນຄ້າ",
-                icon: "Package",
-                color: "from-amber-500 to-orange-500",
-                permissions: [
-                    { key: "inventory.view", label: "ເບິ່ງສາງ" },
-                    { key: "inventory.adjust", label: "ປັບສາງ" },
-                    { key: "inventory.transfer", label: "ໂອນສິນຄ້າ" },
-                    { key: "inventory.count", label: "ນັບສາງ" }
-                ]
-            },
-            {
-                key: "reports",
-                label: "ລາຍງານ",
-                icon: "BarChart3",
-                color: "from-violet-500 to-purple-500",
-                permissions: [
-                    { key: "reports.sales", label: "ລາຍງານຂາຍ" },
-                    { key: "reports.products", label: "ລາຍງານສິນຄ້າ" },
-                    { key: "reports.inventory", label: "ລາຍງານສາງ" },
-                    { key: "reports.staff", label: "ລາຍງານພະນັກງານ" },
-                    { key: "reports.customers", label: "ລາຍງານລູກຄ້າ" },
-                    { key: "reports.export", label: "ສົ່ງອອກລາຍງານ" }
-                ]
-            },
-            {
-                key: "restaurant",
-                label: "ຮ້ານອາຫານ",
-                icon: "Utensils",
-                color: "from-pink-500 to-rose-500",
-                permissions: [
-                    { key: "restaurant.view", label: "ເບິ່ງໂຕະ" },
-                    { key: "restaurant.manage", label: "ຈັດການໂຕະ" },
-                    { key: "restaurant.kitchen", label: "ເບິ່ງຄົວ" }
-                ]
-            },
-            {
-                key: "settings",
-                label: "ຕັ້ງຄ່າ",
-                icon: "Settings",
-                color: "from-gray-500 to-slate-500",
-                permissions: [
-                    { key: "settings.general", label: "ຕັ້ງຄ່າທົ່ວໄປ" },
-                    { key: "settings.payment", label: "ຕັ້ງຄ່າການຊຳລະ" },
-                    { key: "settings.printer", label: "ຕັ້ງຄ່າເຄື່ອງພິມ" },
-                    { key: "settings.tax", label: "ຕັ້ງຄ່າອາກອນ" }
-                ]
-            }
-        ];
-        res.json({ success: true, data: defaultPermissions });
+        res.json({ success: true, data: DEFAULT_PERMISSION_GROUPS });
     }
 });
 
@@ -1175,6 +1197,52 @@ adminRoutes.get('/roles', authenticate, requireAdmin(), async (req, res, next) =
             data: roles,
             meta: { page: Number(page), limit: Number(limit), total }
         });
+    } catch (error) {
+        next(error);
+    }
+});
+
+/**
+ * GET /admin/roles/templates - Get default role templates
+ * MUST be before /roles/:id to prevent Express matching 'templates' as :id
+ */
+adminRoutes.get('/roles/templates', authenticate, requireAdmin(), async (req, res) => {
+    res.json({ success: true, data: DEFAULT_ROLES });
+});
+
+/**
+ * POST /admin/roles/seed - Seed default roles to database
+ * MUST be before /roles/:id to prevent Express matching 'seed' as :id
+ */
+adminRoutes.post('/roles/seed', authenticate, requireAdmin(), async (req, res, next) => {
+    try {
+        const results = [];
+
+        for (const roleData of DEFAULT_ROLES) {
+            const existing = await prisma.role.findUnique({ where: { name: roleData.name } });
+            
+            if (existing) {
+                const updated = await prisma.role.update({
+                    where: { name: roleData.name },
+                    data: {
+                        displayName: roleData.displayName,
+                        description: roleData.description,
+                        permissions: roleData.permissions,
+                        isSystem: roleData.isSystem
+                    }
+                });
+                results.push({ ...updated, action: 'updated' });
+            } else {
+                const created = await prisma.role.create({
+                    data: roleData
+                });
+                results.push({ ...created, action: 'created' });
+            }
+        }
+
+        await logActivity(req.authUser!.userId, 'roles_seeded', 'ສ້າງບົດບາດເລີ່ມຕົ້ນ', { count: results.length }, req);
+
+        res.json({ success: true, data: results, message: `${results.length} roles seeded` });
     } catch (error) {
         next(error);
     }
@@ -1337,7 +1405,7 @@ adminRoutes.delete('/roles/:id', authenticate, requireAdmin(), async (req, res, 
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Helper function to log activity
+ * Helper function to log activity — publishes to queue if available, else writes sync
  */
 async function logActivity(
     userId: string,
@@ -1347,16 +1415,30 @@ async function logActivity(
     req?: any
 ) {
     try {
-        await prisma.activityLog.create({
-            data: {
-                userId,
-                action,
-                description,
-                metadata: metadata || {},
-                ip: req?.ip || req?.headers?.['x-forwarded-for'] || null,
-                userAgent: req?.headers?.['user-agent'] || null
-            }
-        });
+        const payload = {
+            userId,
+            action,
+            resource: action.split('_')[0] || 'admin',
+            details: description,
+            metadata: metadata || {},
+            ip: req?.ip || req?.headers?.['x-forwarded-for'] || null,
+            userAgent: req?.headers?.['user-agent'] || null,
+        };
+
+        // Try async queue first; fall back to synchronous DB write
+        const queued = isRabbitMQConnected() && publish(QUEUES.ACTIVITY_LOG, payload as Record<string, unknown>);
+        if (!queued) {
+            await prisma.activityLog.create({
+                data: {
+                    userId,
+                    action,
+                    description,
+                    metadata: metadata || {},
+                    ip: payload.ip,
+                    userAgent: payload.userAgent,
+                }
+            });
+        }
     } catch (error) {
         console.error('Failed to log activity:', error);
     }
@@ -1760,6 +1842,170 @@ adminRoutes.patch('/users/:id/super-admin', authenticate, requireAdmin(), async 
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// DEFAULT PERMISSION GROUPS (CRUD structure matching ALL_PERMISSIONS)
+// ═══════════════════════════════════════════════════════════════════════════
+
+const DEFAULT_PERMISSION_GROUPS = [
+    {
+        key: "dashboard", label: "ແຜງຄວບຄຸມ", icon: "LayoutDashboard", color: "from-indigo-500 to-blue-500",
+        permissions: [
+            { key: "dashboard:view", label: "ເບິ່ງແຜງຄວບຄຸມ" },
+        ]
+    },
+    {
+        key: "pos", label: "ຂາຍໜ້າຮ້ານ (POS)", icon: "ShoppingCart", color: "from-emerald-500 to-green-500",
+        permissions: [
+            { key: "pos:access", label: "ເຂົ້າໃຊ້ POS" },
+            { key: "pos:discount", label: "ໃຫ້ສ່ວນຫຼຸດ" },
+            { key: "pos:void", label: "ຍົກເລີກລາຍການ" },
+            { key: "pos:credit", label: "ຂາຍສິນເຊື່ອ" },
+        ]
+    },
+    {
+        key: "sales", label: "ການຂາຍ", icon: "ShoppingBag", color: "from-teal-500 to-emerald-500",
+        permissions: [
+            { key: "sales:view", label: "ເບິ່ງການຂາຍ" },
+            { key: "sales:create", label: "ສ້າງການຂາຍ" },
+            { key: "sales:update", label: "ແກ້ໄຂການຂາຍ" },
+            { key: "sales:delete", label: "ລຶບການຂາຍ" },
+            { key: "sales:void", label: "ຍົກເລີກບິນ" },
+            { key: "sales:refund", label: "ຄືນເງິນ" },
+        ]
+    },
+    {
+        key: "products", label: "ສິນຄ້າ", icon: "Package", color: "from-blue-500 to-cyan-500",
+        permissions: [
+            { key: "products:view", label: "ເບິ່ງສິນຄ້າ" },
+            { key: "products:create", label: "ເພີ່ມສິນຄ້າ" },
+            { key: "products:update", label: "ແກ້ໄຂສິນຄ້າ" },
+            { key: "products:delete", label: "ລຶບສິນຄ້າ" },
+        ]
+    },
+    {
+        key: "categories", label: "ໝວດໝູ່", icon: "Tags", color: "from-sky-500 to-blue-500",
+        permissions: [
+            { key: "categories:view", label: "ເບິ່ງໝວດໝູ່" },
+            { key: "categories:create", label: "ເພີ່ມໝວດໝູ່" },
+            { key: "categories:update", label: "ແກ້ໄຂໝວດໝູ່" },
+            { key: "categories:delete", label: "ລຶບໝວດໝູ່" },
+        ]
+    },
+    {
+        key: "inventory", label: "ສາງສິນຄ້າ", icon: "Boxes", color: "from-amber-500 to-orange-500",
+        permissions: [
+            { key: "inventory:view", label: "ເບິ່ງສາງ" },
+            { key: "inventory:create", label: "ນຳເຂົ້າ/ນຳອອກ" },
+            { key: "inventory:update", label: "ແກ້ໄຂສາງ" },
+            { key: "inventory:delete", label: "ລຶບສາງ" },
+            { key: "inventory:transfer", label: "ໂອນຍ້າຍສິນຄ້າ" },
+            { key: "inventory:adjust", label: "ປັບປ່ຽນສະຕ໋ອກ" },
+            { key: "inventory:stockin", label: "ນຳເຂົ້າສິນຄ້າ" },
+            { key: "inventory:stockout", label: "ນຳອອກສິນຄ້າ" },
+        ]
+    },
+    {
+        key: "customers", label: "ລູກຄ້າ (CRM)", icon: "Users", color: "from-rose-500 to-pink-500",
+        permissions: [
+            { key: "customers:view", label: "ເບິ່ງລູກຄ້າ" },
+            { key: "customers:create", label: "ເພີ່ມລູກຄ້າ" },
+            { key: "customers:update", label: "ແກ້ໄຂລູກຄ້າ" },
+            { key: "customers:delete", label: "ລຶບລູກຄ້າ" },
+        ]
+    },
+    {
+        key: "promotions", label: "ໂປຣໂມຊັ່ນ", icon: "Gift", color: "from-fuchsia-500 to-purple-500",
+        permissions: [
+            { key: "promotions:view", label: "ເບິ່ງໂປຣໂມຊັ່ນ" },
+            { key: "promotions:create", label: "ສ້າງໂປຣໂມຊັ່ນ" },
+            { key: "promotions:update", label: "ແກ້ໄຂໂປຣໂມຊັ່ນ" },
+            { key: "promotions:delete", label: "ລຶບໂປຣໂມຊັ່ນ" },
+        ]
+    },
+    {
+        key: "payments", label: "ການຊຳລະ", icon: "Wallet", color: "from-lime-500 to-green-500",
+        permissions: [
+            { key: "payments:view", label: "ເບິ່ງການຊຳລະ" },
+            { key: "payments:create", label: "ສ້າງການຊຳລະ" },
+            { key: "payments:void", label: "ຍົກເລີກການຊຳລະ" },
+            { key: "payments:settle", label: "ປິດບັນຊີ" },
+            { key: "payments:manage", label: "ຈັດການການຊຳລະ" },
+        ]
+    },
+    {
+        key: "documents", label: "ເອກະສານ", icon: "FileText", color: "from-cyan-500 to-teal-500",
+        permissions: [
+            { key: "documents:view", label: "ເບິ່ງເອກະສານ" },
+            { key: "documents:create", label: "ສ້າງເອກະສານ" },
+            { key: "documents:update", label: "ແກ້ໄຂເອກະສານ" },
+            { key: "documents:delete", label: "ລຶບເອກະສານ" },
+        ]
+    },
+    {
+        key: "reports", label: "ລາຍງານ", icon: "BarChart3", color: "from-violet-500 to-purple-500",
+        permissions: [
+            { key: "reports:view", label: "ເບິ່ງລາຍງານ" },
+            { key: "reports:sales", label: "ລາຍງານຂາຍ" },
+            { key: "reports:inventory", label: "ລາຍງານສາງ" },
+            { key: "reports:financial", label: "ລາຍງານການເງິນ" },
+            { key: "reports:staff", label: "ລາຍງານພະນັກງານ" },
+        ]
+    },
+    {
+        key: "staff", label: "ພະນັກງານ", icon: "UserCog", color: "from-orange-500 to-red-500",
+        permissions: [
+            { key: "staff:view", label: "ເບິ່ງພະນັກງານ" },
+            { key: "staff:create", label: "ເພີ່ມພະນັກງານ" },
+            { key: "staff:update", label: "ແກ້ໄຂພະນັກງານ" },
+            { key: "staff:delete", label: "ລຶບພະນັກງານ" },
+        ]
+    },
+    {
+        key: "roles", label: "ບົດບາດ", icon: "Key", color: "from-yellow-500 to-amber-500",
+        permissions: [
+            { key: "roles:view", label: "ເບິ່ງບົດບາດ" },
+            { key: "roles:create", label: "ສ້າງບົດບາດ" },
+            { key: "roles:update", label: "ແກ້ໄຂບົດບາດ" },
+            { key: "roles:delete", label: "ລຶບບົດບາດ" },
+        ]
+    },
+    {
+        key: "branches", label: "ສາຂາ", icon: "Building2", color: "from-stone-500 to-zinc-500",
+        permissions: [
+            { key: "branches:view", label: "ເບິ່ງສາຂາ" },
+            { key: "branches:create", label: "ສ້າງສາຂາ" },
+            { key: "branches:update", label: "ແກ້ໄຂສາຂາ" },
+            { key: "branches:delete", label: "ລຶບສາຂາ" },
+        ]
+    },
+    {
+        key: "stores", label: "ຮ້ານຄ້າ", icon: "Store", color: "from-emerald-500 to-teal-500",
+        permissions: [
+            { key: "stores:view", label: "ເບິ່ງຮ້ານຄ້າ" },
+            { key: "stores:create", label: "ສ້າງຮ້ານຄ້າ" },
+            { key: "stores:update", label: "ແກ້ໄຂຮ້ານຄ້າ" },
+            { key: "stores:delete", label: "ລຶບຮ້ານຄ້າ" },
+        ]
+    },
+    {
+        key: "settings", label: "ຕັ້ງຄ່າ", icon: "Settings", color: "from-gray-500 to-slate-500",
+        permissions: [
+            { key: "settings:view", label: "ເບິ່ງຕັ້ງຄ່າ" },
+            { key: "settings:update", label: "ແກ້ໄຂຕັ້ງຄ່າ" },
+        ]
+    },
+    {
+        key: "restaurant", label: "ຮ້ານອາຫານ", icon: "UtensilsCrossed", color: "from-pink-500 to-rose-500",
+        permissions: [
+            { key: "restaurant:view", label: "ເບິ່ງຮ້ານອາຫານ" },
+            { key: "restaurant:manage", label: "ຈັດການຮ້ານອາຫານ" },
+            { key: "tables:create", label: "ສ້າງໂຕະ" },
+            { key: "tables:update", label: "ແກ້ໄຂໂຕະ" },
+            { key: "tables:delete", label: "ລຶບໂຕະ" },
+        ]
+    },
+];
+
+// ═══════════════════════════════════════════════════════════════════════════
 // MENU PERMISSIONS (Tree Structure)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1773,6 +2019,7 @@ const DEFAULT_MENU_STRUCTURE = [
         labelLao: "ແຜງຄວບຄຸມ",
         icon: "LayoutDashboard",
         path: "/dashboard",
+        requiredPermission: "dashboard:view",
         children: []
     },
     {
@@ -1780,12 +2027,13 @@ const DEFAULT_MENU_STRUCTURE = [
         label: "Sales",
         labelLao: "ຂາຍ",
         icon: "ShoppingCart",
+        requiredPermission: "sales:create",
         children: [
-            { key: "sales.pos", label: "POS", labelLao: "ໜ້າຂາຍ POS", icon: "ShoppingCart", path: "/pos" },
-            { key: "sales.pos_fullscreen", label: "POS Fullscreen", labelLao: "ໜ້າຂາຍເຕັມຈໍ", icon: "Monitor", path: "/pos?mode=fullscreen" },
-            { key: "sales.credit", label: "Credit Sales", labelLao: "ຂາຍສິນເຊື່ອ", icon: "CreditCard", path: "/pos/credit" },
-            { key: "sales.held", label: "Held Orders", labelLao: "ບິນທີ່ພັກໄວ້", icon: "ClipboardList", path: "/pos/held" },
-            { key: "sales.display", label: "Customer Display", labelLao: "ຈໍລູກຄ້າ", icon: "Monitor", path: "/display/customer" },
+            { key: "sales.pos", label: "POS", labelLao: "ໜ້າຂາຍ POS", icon: "ShoppingCart", path: "/pos", requiredPermission: "sales:create" },
+            { key: "sales.pos_fullscreen", label: "POS Fullscreen", labelLao: "ໜ້າຂາຍເຕັມຈໍ", icon: "Monitor", path: "/pos?mode=fullscreen", requiredPermission: "sales:create" },
+            { key: "sales.credit", label: "Credit Sales", labelLao: "ຂາຍສິນເຊື່ອ", icon: "CreditCard", path: "/pos/credit", requiredPermission: "sales:create" },
+            { key: "sales.held", label: "Held Orders", labelLao: "ບິນທີ່ພັກໄວ້", icon: "ClipboardList", path: "/pos/held", requiredPermission: "sales:create" },
+            { key: "sales.display", label: "Customer Display", labelLao: "ຈໍລູກຄ້າ", icon: "Monitor", path: "/display/customer", requiredPermission: "sales:view" },
         ]
     },
     {
@@ -1793,12 +2041,13 @@ const DEFAULT_MENU_STRUCTURE = [
         label: "Products",
         labelLao: "ສິນຄ້າ",
         icon: "Package",
+        requiredPermission: "products:view",
         children: [
-            { key: "products.list", label: "Product List", labelLao: "ລາຍການສິນຄ້າ", icon: "Package", path: "/products" },
-            { key: "products.categories", label: "Categories", labelLao: "ໝວດໝູ່", icon: "Tags", path: "/categories" },
-            { key: "products.barcode", label: "Barcode/QR", labelLao: "Barcode / QR Code", icon: "Barcode", path: "/barcode" },
-            { key: "products.sku", label: "SKU/Variants", labelLao: "SKU / ຕົວເລືອກ", icon: "Layers", path: "/products/sku" },
-            { key: "products.pricing", label: "Pricing", labelLao: "ລະດັບລາຄາ", icon: "DollarSign", path: "/products/pricing" },
+            { key: "products.list", label: "Product List", labelLao: "ລາຍການສິນຄ້າ", icon: "Package", path: "/products", requiredPermission: "products:view" },
+            { key: "products.categories", label: "Categories", labelLao: "ໝວດໝູ່", icon: "Tags", path: "/categories", requiredPermission: "categories:view" },
+            { key: "products.barcode", label: "Barcode/QR", labelLao: "Barcode / QR Code", icon: "Barcode", path: "/barcode", requiredPermission: "products:view" },
+            { key: "products.sku", label: "SKU/Variants", labelLao: "SKU / ຕົວເລືອກ", icon: "Layers", path: "/products/sku", requiredPermission: "products:view" },
+            { key: "products.pricing", label: "Pricing", labelLao: "ລະດັບລາຄາ", icon: "DollarSign", path: "/products/pricing", requiredPermission: "products:update" },
         ]
     },
     {
@@ -1806,17 +2055,18 @@ const DEFAULT_MENU_STRUCTURE = [
         label: "Inventory",
         labelLao: "ສາງ",
         icon: "Boxes",
+        requiredPermission: "inventory:view",
         children: [
-            { key: "inventory.stock", label: "Stock", labelLao: "ສາງສິນຄ້າ", icon: "Boxes", path: "/inventory" },
-            { key: "inventory.stockin", label: "Stock In", labelLao: "ນຳເຂົ້າສິນຄ້າ", icon: "TrendingUp", path: "/inventory/stockin" },
-            { key: "inventory.stockout", label: "Stock Out", labelLao: "ນຳອອກສິນຄ້າ", icon: "TrendingDown", path: "/inventory/stockout" },
-            { key: "inventory.adjust", label: "Adjust", labelLao: "ປັບປ່ຽນສະຕ໋ອກ", icon: "Scale", path: "/inventory/adjust" },
-            { key: "inventory.transfer", label: "Transfer", labelLao: "ໂອນຍ້າຍສິນຄ້າ", icon: "ArrowRightLeft", path: "/inventory/transfer" },
-            { key: "inventory.count", label: "Stock Count", labelLao: "ກວດນັບສະຕ໋ອກ", icon: "ClipboardCheck", path: "/inventory/count" },
-            { key: "inventory.po", label: "Purchase Orders", labelLao: "ສັ່ງຊື້ (PO)", icon: "ClipboardList", path: "/inventory/purchase-orders" },
-            { key: "inventory.vendors", label: "Vendors", labelLao: "ຜູ້ສະໜອງ", icon: "Truck", path: "/inventory/vendors" },
-            { key: "inventory.expiry", label: "Expiry", labelLao: "ວັນໝົດອາຍຸ", icon: "CalendarClock", path: "/inventory/expiry" },
-            { key: "inventory.outofstock", label: "Out of Stock", labelLao: "ສິນຄ້າໝົດສະຕ໋ອກ", icon: "PackageX", path: "/inventory/out-of-stock" },
+            { key: "inventory.stock", label: "Stock", labelLao: "ສາງສິນຄ້າ", icon: "Boxes", path: "/inventory", requiredPermission: "inventory:view" },
+            { key: "inventory.stockin", label: "Stock In", labelLao: "ນຳເຂົ້າສິນຄ້າ", icon: "TrendingUp", path: "/inventory/stockin", requiredPermission: "inventory:create" },
+            { key: "inventory.stockout", label: "Stock Out", labelLao: "ນຳອອກສິນຄ້າ", icon: "TrendingDown", path: "/inventory/stockout", requiredPermission: "inventory:create" },
+            { key: "inventory.adjust", label: "Adjust", labelLao: "ປັບປ່ຽນສະຕ໋ອກ", icon: "Scale", path: "/inventory/adjust", requiredPermission: "inventory:update" },
+            { key: "inventory.transfer", label: "Transfer", labelLao: "ໂອນຍ້າຍສິນຄ້າ", icon: "ArrowRightLeft", path: "/inventory/transfer", requiredPermission: "inventory:transfer" },
+            { key: "inventory.count", label: "Stock Count", labelLao: "ກວດນັບສະຕ໋ອກ", icon: "ClipboardCheck", path: "/inventory/count", requiredPermission: "inventory:adjust" },
+            { key: "inventory.po", label: "Purchase Orders", labelLao: "ສັ່ງຊື້ (PO)", icon: "ClipboardList", path: "/inventory/purchase-orders", requiredPermission: "inventory:create" },
+            { key: "inventory.vendors", label: "Vendors", labelLao: "ຜູ້ສະໜອງ", icon: "Truck", path: "/inventory/vendors", requiredPermission: "inventory:view" },
+            { key: "inventory.expiry", label: "Expiry", labelLao: "ວັນໝົດອາຍຸ", icon: "CalendarClock", path: "/inventory/expiry", requiredPermission: "inventory:view" },
+            { key: "inventory.outofstock", label: "Out of Stock", labelLao: "ສິນຄ້າໝົດສະຕ໋ອກ", icon: "PackageX", path: "/inventory/out-of-stock", requiredPermission: "inventory:view" },
         ]
     },
     {
@@ -1824,12 +2074,13 @@ const DEFAULT_MENU_STRUCTURE = [
         label: "Restaurant",
         labelLao: "ຮ້ານອາຫານ",
         icon: "UtensilsCrossed",
+        requiredPermission: "restaurant:view",
         children: [
-            { key: "restaurant.tables", label: "Tables", labelLao: "ໂຕະ", icon: "Table", path: "/restaurant/tables" },
-            { key: "restaurant.orders", label: "Orders", labelLao: "ອໍເດີ", icon: "ClipboardList", path: "/restaurant/orders" },
-            { key: "restaurant.kitchen", label: "Kitchen (KDS)", labelLao: "ຄົວ (KDS)", icon: "ChefHat", path: "/restaurant/kitchen" },
-            { key: "restaurant.reservations", label: "Reservations", labelLao: "ຈອງໂຕະ", icon: "CalendarClock", path: "/restaurant/reservations" },
-            { key: "restaurant.emenu", label: "e-Menu", labelLao: "e-Menu", icon: "QrCode", path: "/restaurant/e-menu" },
+            { key: "restaurant.tables", label: "Tables", labelLao: "ໂຕະ", icon: "Table", path: "/restaurant/tables", requiredPermission: "restaurant:view" },
+            { key: "restaurant.orders", label: "Orders", labelLao: "ອໍເດີ", icon: "ClipboardList", path: "/restaurant/orders", requiredPermission: "restaurant:view" },
+            { key: "restaurant.kitchen", label: "Kitchen (KDS)", labelLao: "ຄົວ (KDS)", icon: "ChefHat", path: "/restaurant/kitchen", requiredPermission: "restaurant:manage" },
+            { key: "restaurant.reservations", label: "Reservations", labelLao: "ຈອງໂຕະ", icon: "CalendarClock", path: "/restaurant/reservations", requiredPermission: "restaurant:view" },
+            { key: "restaurant.emenu", label: "e-Menu", labelLao: "e-Menu", icon: "QrCode", path: "/restaurant/e-menu", requiredPermission: "restaurant:view" },
         ]
     },
     {
@@ -1837,10 +2088,11 @@ const DEFAULT_MENU_STRUCTURE = [
         label: "Promotions",
         labelLao: "ໂປຣໂມຊັ່ນ",
         icon: "Gift",
+        requiredPermission: "promotions:view",
         children: [
-            { key: "promotions.list", label: "Promotions", labelLao: "ໂປຣໂມຊັ່ນ", icon: "Gift", path: "/promotions" },
-            { key: "promotions.coupons", label: "Coupons", labelLao: "ຄູປອງ", icon: "TicketPercent", path: "/promotions/coupons" },
-            { key: "promotions.discounts", label: "Discounts", labelLao: "ສ່ວນຫຼຸດ", icon: "Percent", path: "/promotions/discounts" },
+            { key: "promotions.list", label: "Promotions", labelLao: "ໂປຣໂມຊັ່ນ", icon: "Gift", path: "/promotions", requiredPermission: "promotions:view" },
+            { key: "promotions.coupons", label: "Coupons", labelLao: "ຄູປອງ", icon: "TicketPercent", path: "/promotions/coupons", requiredPermission: "promotions:view" },
+            { key: "promotions.discounts", label: "Discounts", labelLao: "ສ່ວນຫຼຸດ", icon: "Percent", path: "/promotions/discounts", requiredPermission: "promotions:view" },
         ]
     },
     {
@@ -1848,11 +2100,12 @@ const DEFAULT_MENU_STRUCTURE = [
         label: "Customers (CRM)",
         labelLao: "ລູກຄ້າ (CRM)",
         icon: "Users",
+        requiredPermission: "customers:view",
         children: [
-            { key: "customers.list", label: "Customers", labelLao: "ລູກຄ້າ", icon: "Users", path: "/customers" },
-            { key: "customers.members", label: "Members", labelLao: "ສະມາຊິກ", icon: "Crown", path: "/customers/members" },
-            { key: "customers.points", label: "Points", labelLao: "ຄະແນນສະສົມ", icon: "Star", path: "/customers/points" },
-            { key: "customers.loyalty", label: "Loyalty Program", labelLao: "ໂປຣແກຣມ Loyalty", icon: "Heart", path: "/customers/loyalty" },
+            { key: "customers.list", label: "Customers", labelLao: "ລູກຄ້າ", icon: "Users", path: "/customers", requiredPermission: "customers:view" },
+            { key: "customers.members", label: "Members", labelLao: "ສະມາຊິກ", icon: "Crown", path: "/customers/members", requiredPermission: "customers:view" },
+            { key: "customers.points", label: "Points", labelLao: "ຄະແນນສະສົມ", icon: "Star", path: "/customers/points", requiredPermission: "customers:view" },
+            { key: "customers.loyalty", label: "Loyalty Program", labelLao: "ໂປຣແກຣມ Loyalty", icon: "Heart", path: "/customers/loyalty", requiredPermission: "customers:update" },
         ]
     },
     {
@@ -1860,10 +2113,11 @@ const DEFAULT_MENU_STRUCTURE = [
         label: "Payments",
         labelLao: "ການຊຳລະ",
         icon: "Wallet",
+        requiredPermission: "payments:view",
         children: [
-            { key: "payments.methods", label: "Payment Methods", labelLao: "ວິທີຊຳລະ", icon: "CreditCard", path: "/payments" },
-            { key: "payments.transactions", label: "Transactions", labelLao: "ລາຍການຊຳລະ", icon: "Receipt", path: "/payments/transactions" },
-            { key: "payments.settlements", label: "Settlements", labelLao: "ປິດບັນຊີ", icon: "DollarSign", path: "/payments/settlements" },
+            { key: "payments.methods", label: "Payment Methods", labelLao: "ວິທີຊຳລະ", icon: "CreditCard", path: "/payments", requiredPermission: "payments:view" },
+            { key: "payments.transactions", label: "Transactions", labelLao: "ລາຍການຊຳລະ", icon: "Receipt", path: "/payments/transactions", requiredPermission: "payments:view" },
+            { key: "payments.settlements", label: "Settlements", labelLao: "ປິດບັນຊີ", icon: "DollarSign", path: "/payments/settlements", requiredPermission: "payments:manage" },
         ]
     },
     {
@@ -1871,11 +2125,12 @@ const DEFAULT_MENU_STRUCTURE = [
         label: "Documents",
         labelLao: "ເອກະສານ",
         icon: "FileText",
+        requiredPermission: "documents:view",
         children: [
-            { key: "documents.receipts", label: "Receipts", labelLao: "ໃບບິນ", icon: "Receipt", path: "/documents" },
-            { key: "documents.design", label: "Receipt Design", labelLao: "ອອກແບບໃບບິນ", icon: "Printer", path: "/documents/design" },
-            { key: "documents.invoices", label: "Invoices", labelLao: "ໃບແຈ້ງໜີ້", icon: "FileText", path: "/documents/invoices" },
-            { key: "documents.tax", label: "Tax Invoices", labelLao: "ໃບກຳກັບພາສີ", icon: "FileSpreadsheet", path: "/documents/tax-invoices" },
+            { key: "documents.receipts", label: "Receipts", labelLao: "ໃບບິນ", icon: "Receipt", path: "/documents", requiredPermission: "documents:view" },
+            { key: "documents.design", label: "Receipt Design", labelLao: "ອອກແບບໃບບິນ", icon: "Printer", path: "/documents/design", requiredPermission: "settings:update" },
+            { key: "documents.invoices", label: "Invoices", labelLao: "ໃບແຈ້ງໜີ້", icon: "FileText", path: "/documents/invoices", requiredPermission: "documents:view" },
+            { key: "documents.tax", label: "Tax Invoices", labelLao: "ໃບກຳກັບພາສີ", icon: "FileSpreadsheet", path: "/documents/tax-invoices", requiredPermission: "documents:view" },
         ]
     },
     {
@@ -1883,13 +2138,14 @@ const DEFAULT_MENU_STRUCTURE = [
         label: "Reports",
         labelLao: "ລາຍງານ",
         icon: "BarChart3",
+        requiredPermission: "reports:view",
         children: [
-            { key: "reports.sales", label: "Sales Report", labelLao: "ລາຍງານການຂາຍ", icon: "BarChart3", path: "/reports" },
-            { key: "reports.products", label: "Product Report", labelLao: "ລາຍງານສິນຄ້າ", icon: "Package", path: "/reports/products" },
-            { key: "reports.inventory", label: "Inventory Report", labelLao: "ລາຍງານສາງ", icon: "Boxes", path: "/reports/inventory" },
-            { key: "reports.financial", label: "Financial Report", labelLao: "ລາຍງານການເງິນ", icon: "DollarSign", path: "/reports/financial" },
-            { key: "reports.staff", label: "Staff Report", labelLao: "ລາຍງານພະນັກງານ", icon: "UserCog", path: "/reports/staff" },
-            { key: "reports.customers", label: "Customer Report", labelLao: "ລາຍງານລູກຄ້າ", icon: "Users", path: "/reports/customers" },
+            { key: "reports.sales", label: "Sales Report", labelLao: "ລາຍງານການຂາຍ", icon: "BarChart3", path: "/reports", requiredPermission: "reports:view" },
+            { key: "reports.products", label: "Product Report", labelLao: "ລາຍງານສິນຄ້າ", icon: "Package", path: "/reports/products", requiredPermission: "reports:view" },
+            { key: "reports.inventory", label: "Inventory Report", labelLao: "ລາຍງານສາງ", icon: "Boxes", path: "/reports/inventory", requiredPermission: "reports:view" },
+            { key: "reports.financial", label: "Financial Report", labelLao: "ລາຍງານການເງິນ", icon: "DollarSign", path: "/reports/financial", requiredPermission: "reports:view" },
+            { key: "reports.staff", label: "Staff Report", labelLao: "ລາຍງານພະນັກງານ", icon: "UserCog", path: "/reports/staff", requiredPermission: "reports:view" },
+            { key: "reports.customers", label: "Customer Report", labelLao: "ລາຍງານລູກຄ້າ", icon: "Users", path: "/reports/customers", requiredPermission: "reports:view" },
         ]
     },
     {
@@ -1897,13 +2153,14 @@ const DEFAULT_MENU_STRUCTURE = [
         label: "Management",
         labelLao: "ຈັດການ",
         icon: "Building2",
+        requiredPermission: "staff:view",
         children: [
-            { key: "management.branches", label: "Branches", labelLao: "ສາຂາ", icon: "Building2", path: "/branches" },
-            { key: "management.stores", label: "Stores", labelLao: "ຮ້ານຄ້າ", icon: "Store", path: "/management/stores" },
-            { key: "management.staff", label: "Staff", labelLao: "ພະນັກງານ", icon: "Users", path: "/staff" },
-            { key: "management.roles", label: "Roles", labelLao: "ບົດບາດ", icon: "Key", path: "/management/roles" },
-            { key: "management.shifts", label: "Shifts", labelLao: "ກະວຽກ", icon: "Clock", path: "/management/shifts" },
-            { key: "management.registers", label: "Cash Registers", labelLao: "ເຄື່ອງຄິດເງິນ", icon: "Monitor", path: "/management/cashregisters" },
+            { key: "management.branches", label: "Branches", labelLao: "ສາຂາ", icon: "Building2", path: "/branches", requiredPermission: "branches:view" },
+            { key: "management.stores", label: "Stores", labelLao: "ຮ້ານຄ້າ", icon: "Store", path: "/management/stores", requiredPermission: "stores:view" },
+            { key: "management.staff", label: "Staff", labelLao: "ພະນັກງານ", icon: "Users", path: "/staff", requiredPermission: "staff:view" },
+            { key: "management.roles", label: "Roles", labelLao: "ບົດບາດ", icon: "Key", path: "/staff/roles", requiredPermission: "roles:view" },
+            { key: "management.shifts", label: "Shifts", labelLao: "ກະວຽກ", icon: "Clock", path: "/staff/shifts", requiredPermission: "staff:view" },
+            { key: "management.registers", label: "Cash Registers", labelLao: "ເຄື່ອງຄິດເງິນ", icon: "Monitor", path: "/management/cashregisters", requiredPermission: "settings:view" },
         ]
     },
     {
@@ -1911,15 +2168,40 @@ const DEFAULT_MENU_STRUCTURE = [
         label: "Settings",
         labelLao: "ຕັ້ງຄ່າ",
         icon: "Settings",
+        requiredPermission: "settings:view",
         children: [
-            { key: "settings.general", label: "General", labelLao: "ທົ່ວໄປ", icon: "Settings", path: "/settings" },
-            { key: "settings.store", label: "Store Settings", labelLao: "ຕັ້ງຄ່າຮ້ານ", icon: "Store", path: "/settings/store" },
-            { key: "settings.payment", label: "Payment Settings", labelLao: "ຕັ້ງຄ່າການຊຳລະ", icon: "CreditCard", path: "/settings/payment" },
-            { key: "settings.printer", label: "Printer Settings", labelLao: "ຕັ້ງຄ່າເຄື່ອງພິມ", icon: "Printer", path: "/settings/printer" },
-            { key: "settings.tax", label: "Tax Settings", labelLao: "ຕັ້ງຄ່າອາກອນ", icon: "Percent", path: "/settings/tax" },
-            { key: "settings.notifications", label: "Notifications", labelLao: "ການແຈ້ງເຕືອນ", icon: "Bell", path: "/settings/notifications" },
-            { key: "settings.integrations", label: "Integrations", labelLao: "ເຊື່ອມຕໍ່", icon: "Plug", path: "/settings/integrations" },
+            { key: "settings.general", label: "General", labelLao: "ທົ່ວໄປ", icon: "Settings", path: "/settings", requiredPermission: "settings:view" },
+            { key: "settings.display", label: "Display", labelLao: "ຈໍສະແດງ", icon: "Monitor", path: "/settings/display", requiredPermission: "settings:view" },
+            { key: "settings.receipt", label: "Receipt Settings", labelLao: "ຕັ້ງຄ່າໃບບິນ", icon: "Receipt", path: "/settings/receipt", requiredPermission: "settings:update" },
+            { key: "settings.payment", label: "Payment Settings", labelLao: "ຕັ້ງຄ່າການຊຳລະ", icon: "CreditCard", path: "/settings/payments", requiredPermission: "settings:update" },
+            { key: "settings.printer", label: "Printer Settings", labelLao: "ຕັ້ງຄ່າເຄື່ອງພິມ", icon: "Printer", path: "/settings/printers", requiredPermission: "settings:update" },
+            { key: "settings.tax", label: "Tax Settings", labelLao: "ຕັ້ງຄ່າອາກອນ", icon: "Percent", path: "/settings/tax", requiredPermission: "settings:update" },
+            { key: "settings.notifications", label: "Notifications", labelLao: "ການແຈ້ງເຕືອນ", icon: "Bell", path: "/settings/notifications", requiredPermission: "settings:view" },
+            { key: "settings.integrations", label: "Integrations", labelLao: "ເຊື່ອມຕໍ່", icon: "Plug", path: "/settings/integrations", requiredPermission: "settings:update" },
         ]
+    },
+    {
+        key: "super-admin",
+        label: "Super Admin",
+        labelLao: "Super Admin",
+        icon: "ShieldCheck",
+        requiredPermission: "*",
+        children: [
+            { key: "super-admin.dashboard", label: "Admin Dashboard", labelLao: "ແຜງຄວບຄຸມ", icon: "Shield", path: "/admin", requiredPermission: "*" },
+            { key: "super-admin.requests", label: "Store Requests", labelLao: "ຄຳຂໍເປີດຮ້ານ", icon: "FileCheck", path: "/admin/requests", requiredPermission: "*" },
+            { key: "super-admin.branches", label: "All Branches", labelLao: "ຈັດການສາຂາ", icon: "Building2", path: "/admin/branches", requiredPermission: "*" },
+            { key: "super-admin.users", label: "All Users", labelLao: "ຈັດການຜູ້ໃຊ້", icon: "Users", path: "/admin/users", requiredPermission: "*" },
+            { key: "super-admin.roles", label: "System Roles", labelLao: "ຈັດການບົດບາດ", icon: "Key", path: "/admin/roles", requiredPermission: "*" },
+            { key: "super-admin.permissions", label: "Permissions", labelLao: "ຈັດການສິດ", icon: "Shield", path: "/admin/permissions", requiredPermission: "*" },
+            { key: "super-admin.audit", label: "Audit Log", labelLao: "ປະຫວັດການໃຊ້ງານ", icon: "History", path: "/admin/audit", requiredPermission: "*" },
+        ]
+    },
+    {
+        key: "help",
+        label: "Help",
+        labelLao: "ຊ່ວຍເຫຼືອ",
+        icon: "HelpCircle",
+        path: "/help",
     },
 ];
 
@@ -1931,7 +2213,7 @@ const DEFAULT_ROLES = [
         name: "super_admin",
         displayName: "Super Admin",
         description: "ຜູ້ດູແລລະບົບສູງສຸດ - ເຂົ້າເຖິງທຸກຢ່າງ",
-        permissions: ["*"], // All permissions
+        permissions: ["*"],
         isSystem: true
     },
     {
@@ -1939,16 +2221,23 @@ const DEFAULT_ROLES = [
         displayName: "Admin",
         description: "ຜູ້ດູແລລະບົບ - ຈັດການຮ້ານ ແລະ ພະນັກງານ",
         permissions: [
-            "dashboard", "sales", "sales.pos", "sales.pos_fullscreen", "sales.credit", "sales.held",
-            "products", "products.list", "products.categories", "products.barcode", "products.sku", "products.pricing",
-            "inventory", "inventory.stock", "inventory.stockin", "inventory.stockout", "inventory.adjust", "inventory.transfer", "inventory.count", "inventory.po", "inventory.vendors", "inventory.expiry", "inventory.outofstock",
-            "promotions", "promotions.list", "promotions.coupons", "promotions.discounts",
-            "customers", "customers.list", "customers.members", "customers.points", "customers.loyalty",
-            "payments", "payments.methods", "payments.transactions", "payments.settlements",
-            "documents", "documents.receipts", "documents.design", "documents.invoices", "documents.tax",
-            "reports", "reports.sales", "reports.products", "reports.inventory", "reports.financial", "reports.staff", "reports.customers",
-            "management", "management.stores", "management.staff", "management.roles", "management.shifts", "management.registers",
-            "settings", "settings.general", "settings.store", "settings.payment", "settings.printer", "settings.tax", "settings.notifications"
+            "dashboard:view",
+            "sales:view", "sales:create", "sales:update", "sales:delete", "sales:void", "sales:refund",
+            "pos:access", "pos:discount", "pos:void", "pos:credit",
+            "products:view", "products:create", "products:update", "products:delete",
+            "categories:view", "categories:create", "categories:update", "categories:delete",
+            "inventory:view", "inventory:create", "inventory:update", "inventory:delete", "inventory:transfer", "inventory:adjust", "inventory:stockin", "inventory:stockout",
+            "promotions:view", "promotions:create", "promotions:update", "promotions:delete",
+            "customers:view", "customers:create", "customers:update", "customers:delete",
+            "payments:view", "payments:create", "payments:void", "payments:settle", "payments:manage",
+            "documents:view", "documents:create", "documents:update", "documents:delete",
+            "reports:view", "reports:sales", "reports:inventory", "reports:financial", "reports:staff",
+            "staff:view", "staff:create", "staff:update", "staff:delete",
+            "roles:view", "roles:create", "roles:update", "roles:delete",
+            "branches:view", "branches:create", "branches:update", "branches:delete",
+            "stores:view", "stores:create", "stores:update", "stores:delete",
+            "settings:view", "settings:update",
+            "restaurant:view", "restaurant:manage", "tables:create", "tables:update", "tables:delete",
         ],
         isSystem: true
     },
@@ -1957,15 +2246,45 @@ const DEFAULT_ROLES = [
         displayName: "Branch Admin",
         description: "ຜູ້ຈັດການສາຂາ - ຈັດການສາຂາ ແລະ ຮ້ານໃນສາຂາ",
         permissions: [
-            "dashboard", "sales", "sales.pos", "sales.pos_fullscreen", "sales.credit", "sales.held",
-            "products", "products.list", "products.categories",
-            "inventory", "inventory.stock", "inventory.stockin", "inventory.stockout", "inventory.adjust", "inventory.transfer", "inventory.count",
-            "promotions", "promotions.list",
-            "customers", "customers.list", "customers.members", "customers.points",
-            "payments", "payments.methods", "payments.transactions",
-            "documents", "documents.receipts", "documents.invoices",
-            "reports", "reports.sales", "reports.products", "reports.inventory",
-            "management", "management.stores", "management.staff", "management.shifts", "management.registers"
+            "dashboard:view",
+            "sales:view", "sales:create", "sales:update", "pos:access", "pos:discount", "pos:credit",
+            "products:view", "products:create", "products:update",
+            "categories:view", "categories:create", "categories:update",
+            "inventory:view", "inventory:create", "inventory:update", "inventory:transfer", "inventory:adjust", "inventory:stockin", "inventory:stockout",
+            "promotions:view", "promotions:create",
+            "customers:view", "customers:create", "customers:update",
+            "payments:view", "payments:create", "payments:manage",
+            "documents:view", "documents:create",
+            "reports:view", "reports:sales", "reports:inventory",
+            "staff:view", "staff:create", "staff:update",
+            "roles:view",
+            "stores:view", "stores:update",
+            "settings:view", "settings:update",
+            "restaurant:view", "restaurant:manage", "tables:create", "tables:update",
+        ],
+        isSystem: true
+    },
+    {
+        name: "store_owner",
+        displayName: "Store Owner",
+        description: "ເຈົ້າຂອງຮ້ານ - ສິດຄວບຄຸມຮ້ານທັງໝົດ",
+        permissions: [
+            "dashboard:view",
+            "sales:view", "sales:create", "sales:update", "sales:delete", "sales:void", "sales:refund",
+            "pos:access", "pos:discount", "pos:void", "pos:credit",
+            "products:view", "products:create", "products:update", "products:delete",
+            "categories:view", "categories:create", "categories:update", "categories:delete",
+            "inventory:view", "inventory:create", "inventory:update", "inventory:delete", "inventory:transfer", "inventory:adjust", "inventory:stockin", "inventory:stockout",
+            "promotions:view", "promotions:create", "promotions:update", "promotions:delete",
+            "customers:view", "customers:create", "customers:update", "customers:delete",
+            "payments:view", "payments:create", "payments:void", "payments:settle", "payments:manage",
+            "documents:view", "documents:create", "documents:update", "documents:delete",
+            "reports:view", "reports:sales", "reports:inventory", "reports:financial", "reports:staff",
+            "staff:view", "staff:create", "staff:update", "staff:delete",
+            "roles:view", "roles:create", "roles:update", "roles:delete",
+            "stores:view", "stores:update",
+            "settings:view", "settings:update",
+            "restaurant:view", "restaurant:manage", "tables:create", "tables:update", "tables:delete",
         ],
         isSystem: true
     },
@@ -1974,15 +2293,19 @@ const DEFAULT_ROLES = [
         displayName: "Store Manager",
         description: "ຜູ້ຈັດການຮ້ານ - ຈັດການຮ້ານດຽວ",
         permissions: [
-            "dashboard", "sales", "sales.pos", "sales.pos_fullscreen", "sales.credit", "sales.held",
-            "products", "products.list", "products.categories",
-            "inventory", "inventory.stock", "inventory.stockin", "inventory.stockout", "inventory.adjust",
-            "promotions", "promotions.list",
-            "customers", "customers.list", "customers.members",
-            "payments", "payments.methods", "payments.transactions",
-            "documents", "documents.receipts",
-            "reports", "reports.sales", "reports.products",
-            "management", "management.staff", "management.shifts", "management.registers"
+            "dashboard:view",
+            "sales:view", "sales:create", "sales:update", "pos:access", "pos:discount", "pos:credit",
+            "products:view", "products:create", "products:update",
+            "categories:view", "categories:create",
+            "inventory:view", "inventory:create", "inventory:update", "inventory:stockin", "inventory:stockout",
+            "promotions:view", "promotions:create",
+            "customers:view", "customers:create", "customers:update",
+            "payments:view", "payments:create",
+            "documents:view", "documents:create",
+            "reports:view", "reports:sales",
+            "staff:view", "staff:create", "staff:update",
+            "roles:view",
+            "settings:view",
         ],
         isSystem: true
     },
@@ -1991,11 +2314,12 @@ const DEFAULT_ROLES = [
         displayName: "Cashier",
         description: "ພະນັກງານຂາຍ - ຂາຍສິນຄ້າ ແລະ ຮັບເງິນ",
         permissions: [
-            "dashboard", "sales", "sales.pos", "sales.pos_fullscreen", "sales.held",
-            "products", "products.list",
-            "customers", "customers.list",
-            "payments", "payments.transactions",
-            "documents", "documents.receipts"
+            "dashboard:view",
+            "sales:view", "sales:create", "pos:access",
+            "products:view",
+            "customers:view",
+            "payments:view", "payments:create",
+            "documents:view",
         ],
         isSystem: true
     },
@@ -2004,10 +2328,10 @@ const DEFAULT_ROLES = [
         displayName: "Inventory Staff",
         description: "ພະນັກງານສາງ - ຈັດການສາງສິນຄ້າ",
         permissions: [
-            "dashboard",
-            "products", "products.list", "products.categories",
-            "inventory", "inventory.stock", "inventory.stockin", "inventory.stockout", "inventory.adjust", "inventory.transfer", "inventory.count", "inventory.expiry", "inventory.outofstock",
-            "reports", "reports.inventory"
+            "dashboard:view",
+            "products:view", "categories:view",
+            "inventory:view", "inventory:create", "inventory:update", "inventory:adjust", "inventory:transfer", "inventory:stockin", "inventory:stockout",
+            "reports:view", "reports:inventory",
         ],
         isSystem: true
     },
@@ -2016,7 +2340,7 @@ const DEFAULT_ROLES = [
         displayName: "Kitchen Staff",
         description: "ພະນັກງານຄົວ - ເບິ່ງອໍເດີ ແລະ ຈັດການຄົວ",
         permissions: [
-            "restaurant", "restaurant.orders", "restaurant.kitchen"
+            "restaurant:view", "restaurant:manage",
         ],
         isSystem: true
     },
@@ -2025,11 +2349,306 @@ const DEFAULT_ROLES = [
         displayName: "Waiter",
         description: "ພະນັກງານເສີບ - ຮັບອໍເດີ ແລະ ຈັດການໂຕະ",
         permissions: [
-            "restaurant", "restaurant.tables", "restaurant.orders", "restaurant.reservations"
+            "restaurant:view", "tables:create", "tables:update",
         ],
         isSystem: true
     }
 ];
+
+/**
+ * Default Rules: Each rule groups sidebar routes + API permissions for a module
+ */
+const DEFAULT_RULES = [
+    {
+        name: "dashboard",
+        displayName: "Dashboard",
+        description: "ໜ້າ Dashboard ຫຼັກ",
+        module: "dashboard",
+        icon: "LayoutDashboard",
+        routes: ["/dashboard"],
+        permissions: ["dashboard:view"],
+        order: 0,
+        isSystem: true,
+    },
+    {
+        name: "sales",
+        displayName: "ການຂາຍ (POS)",
+        description: "ໜ້າຂາຍ POS, ຂາຍສິນເຊື່ອ, ບິນພັກໄວ້",
+        module: "sales",
+        icon: "ShoppingCart",
+        routes: ["/pos", "/pos/credit", "/pos/held"],
+        permissions: ["sales:view", "sales:create", "sales:update", "sales:delete", "sales:void", "sales:refund", "pos:access", "pos:discount", "pos:void", "pos:credit"],
+        order: 1,
+        isSystem: true,
+    },
+    {
+        name: "products",
+        displayName: "ການຈັດການສິນຄ້າ",
+        description: "ສິນຄ້າ, ໝວດໝູ່, Barcode, SKU, ລະດັບລາຄາ",
+        module: "products",
+        icon: "Package",
+        routes: ["/products", "/products/sku", "/products/pricing", "/categories", "/barcode"],
+        permissions: ["products:view", "products:create", "products:update", "products:delete", "categories:view", "categories:create", "categories:update", "categories:delete"],
+        order: 2,
+        isSystem: true,
+    },
+    {
+        name: "inventory",
+        displayName: "ການຈັດການສາງ",
+        description: "ສາງ, ນຳເຂົ້າ/ອອກ, ປັບ, ໂອນ, ກວດນັບ, PO, ຜູ້ສະໜອງ",
+        module: "inventory",
+        icon: "Boxes",
+        routes: ["/inventory", "/inventory/stockin", "/inventory/stockout", "/inventory/adjust", "/inventory/transfer", "/inventory/count", "/inventory/purchase-orders", "/inventory/vendors", "/inventory/expiry", "/inventory/out-of-stock"],
+        permissions: ["inventory:view", "inventory:create", "inventory:update", "inventory:delete", "inventory:transfer", "inventory:adjust", "inventory:stockin", "inventory:stockout"],
+        order: 3,
+        isSystem: true,
+    },
+    {
+        name: "restaurant",
+        displayName: "ຮ້ານອາຫານ",
+        description: "ໂຕະ, ອໍເດີ, ຄົວ KDS, ຈອງໂຕະ, e-Menu",
+        module: "restaurant",
+        icon: "UtensilsCrossed",
+        routes: ["/restaurant/tables", "/restaurant/orders", "/restaurant/kitchen", "/restaurant/reservations", "/restaurant/e-menu"],
+        permissions: ["restaurant:view", "restaurant:manage", "tables:create", "tables:update", "tables:delete"],
+        order: 4,
+        isSystem: true,
+    },
+    {
+        name: "promotions",
+        displayName: "ໂປຣໂມຊັ່ນ",
+        description: "ໂປຣໂມຊັ່ນ, ຄູປອງ, ສ່ວນຫຼຸດ",
+        module: "promotions",
+        icon: "Gift",
+        routes: ["/promotions", "/promotions/coupons", "/promotions/discounts"],
+        permissions: ["promotions:view", "promotions:create", "promotions:update", "promotions:delete"],
+        order: 5,
+        isSystem: true,
+    },
+    {
+        name: "customers",
+        displayName: "ລູກຄ້າ (CRM)",
+        description: "ລູກຄ້າ, ສະມາຊິກ, ຄະແນນ, Loyalty",
+        module: "customers",
+        icon: "Users",
+        routes: ["/customers", "/customers/members", "/customers/points", "/customers/loyalty"],
+        permissions: ["customers:view", "customers:create", "customers:update", "customers:delete"],
+        order: 6,
+        isSystem: true,
+    },
+    {
+        name: "payments",
+        displayName: "ການຊຳລະ",
+        description: "ວິທີຊຳລະ, ລາຍການ, ປິດບັນຊີ",
+        module: "payments",
+        icon: "Wallet",
+        routes: ["/payments", "/payments/transactions", "/payments/settlements"],
+        permissions: ["payments:view", "payments:create", "payments:void", "payments:settle", "payments:manage"],
+        order: 7,
+        isSystem: true,
+    },
+    {
+        name: "documents",
+        displayName: "ເອກະສານ",
+        description: "ໃບບິນ, ອອກແບບໃບບິນ, ໃບແຈ້ງໜີ້, ໃບກຳກັບພາສີ",
+        module: "documents",
+        icon: "FileText",
+        routes: ["/documents", "/documents/design", "/documents/invoices", "/documents/tax-invoices"],
+        permissions: ["documents:view", "documents:create", "documents:update", "documents:delete"],
+        order: 8,
+        isSystem: true,
+    },
+    {
+        name: "reports",
+        displayName: "ລາຍງານ",
+        description: "ລາຍງານການຂາຍ, ສິນຄ້າ, ສາງ, ການເງິນ, ພະນັກງານ, ລູກຄ້າ",
+        module: "reports",
+        icon: "BarChart3",
+        routes: ["/reports", "/reports/products", "/reports/inventory", "/reports/financial", "/reports/staff", "/reports/customers"],
+        permissions: ["reports:view", "reports:sales", "reports:inventory", "reports:financial", "reports:staff"],
+        order: 9,
+        isSystem: true,
+    },
+    {
+        name: "management.stores",
+        displayName: "ຈັດການຮ້ານ/ສາຂາ",
+        description: "ຮ້ານ, ສາຂາ, ຄຳຂໍເປີດຮ້ານ",
+        module: "management.stores",
+        icon: "Store",
+        routes: ["/branches", "/management/stores", "/my-store", "/store-request"],
+        permissions: ["branches:view", "branches:create", "branches:update", "branches:delete", "stores:view", "stores:create", "stores:update", "stores:delete"],
+        order: 10,
+        isSystem: true,
+    },
+    {
+        name: "management.staff",
+        displayName: "ຈັດການພະນັກງານ",
+        description: "ພະນັກງານ, ກະວຽກ",
+        module: "management.staff",
+        icon: "UserCog",
+        routes: ["/staff", "/staff/shifts", "/management/shifts"],
+        permissions: ["staff:view", "staff:create", "staff:update", "staff:delete"],
+        order: 11,
+        isSystem: true,
+    },
+    {
+        name: "management.roles",
+        displayName: "ຈັດການບົດບາດ",
+        description: "ບົດບາດ, ສິດ",
+        module: "management.roles",
+        icon: "Shield",
+        routes: ["/staff/roles"],
+        permissions: ["roles:view", "roles:create", "roles:update", "roles:delete"],
+        order: 12,
+        isSystem: true,
+    },
+    {
+        name: "management.operations",
+        displayName: "ຈັດການປະຈຳວັນ",
+        description: "ເຄື່ອງ POS, ກະວຽກ",
+        module: "management.operations",
+        icon: "Monitor",
+        routes: ["/management/cashregisters"],
+        permissions: ["stores:view", "stores:update"],
+        order: 13,
+        isSystem: true,
+    },
+    {
+        name: "settings",
+        displayName: "ຕັ້ງຄ່າ",
+        description: "ຕັ້ງຄ່າທົ່ວໄປ, ຈໍສະແດງ, ໃບບິນ, ພາສີ, ການຊຳລະ, ເຄື່ອງພິມ",
+        module: "settings",
+        icon: "Settings",
+        routes: ["/settings", "/settings/display", "/settings/receipt", "/settings/tax", "/settings/payments", "/settings/printers", "/settings/notifications", "/settings/integrations"],
+        permissions: ["settings:view", "settings:update"],
+        order: 11,
+        isSystem: true,
+    },
+    {
+        name: "admin",
+        displayName: "Super Admin",
+        description: "ແຜງຄວບຄຸມລະບົບ, ຄຳຂໍເປີດຮ້ານ, ຈັດການທຸກຢ່າງ",
+        module: "admin",
+        icon: "ShieldCheck",
+        routes: ["/admin", "/admin/requests", "/admin/branches", "/admin/users", "/admin/roles", "/admin/rules", "/admin/permissions", "/admin/audit"],
+        permissions: ["*"],
+        order: 12,
+        isSystem: true,
+    },
+];
+
+/**
+ * Default Role→Rule CRUD mapping
+ * { roleName: { ruleName: { read, create, update, delete } } }
+ */
+const DEFAULT_ROLE_RULES: Record<string, Record<string, { r: boolean; c: boolean; u: boolean; d: boolean }>> = {
+    super_admin: {
+        dashboard: { r: true, c: true, u: true, d: true },
+        sales: { r: true, c: true, u: true, d: true },
+        products: { r: true, c: true, u: true, d: true },
+        inventory: { r: true, c: true, u: true, d: true },
+        restaurant: { r: true, c: true, u: true, d: true },
+        promotions: { r: true, c: true, u: true, d: true },
+        customers: { r: true, c: true, u: true, d: true },
+        payments: { r: true, c: true, u: true, d: true },
+        documents: { r: true, c: true, u: true, d: true },
+        reports: { r: true, c: true, u: true, d: true },
+        "management.stores": { r: true, c: true, u: true, d: true },
+        "management.staff": { r: true, c: true, u: true, d: true },
+        "management.roles": { r: true, c: true, u: true, d: true },
+        "management.operations": { r: true, c: true, u: true, d: true },
+        settings: { r: true, c: true, u: true, d: true },
+        admin: { r: true, c: true, u: true, d: true },
+    },
+    admin: {
+        dashboard: { r: true, c: true, u: true, d: true },
+        sales: { r: true, c: true, u: true, d: true },
+        products: { r: true, c: true, u: true, d: true },
+        inventory: { r: true, c: true, u: true, d: true },
+        restaurant: { r: true, c: true, u: true, d: true },
+        promotions: { r: true, c: true, u: true, d: true },
+        customers: { r: true, c: true, u: true, d: true },
+        payments: { r: true, c: true, u: true, d: true },
+        documents: { r: true, c: true, u: true, d: true },
+        reports: { r: true, c: true, u: true, d: true },
+        "management.stores": { r: true, c: true, u: true, d: true },
+        "management.staff": { r: true, c: true, u: true, d: true },
+        "management.roles": { r: true, c: true, u: true, d: true },
+        "management.operations": { r: true, c: true, u: true, d: true },
+        settings: { r: true, c: true, u: true, d: true },
+    },
+    store_owner: {
+        dashboard: { r: true, c: false, u: false, d: false },
+        sales: { r: true, c: true, u: true, d: true },
+        products: { r: true, c: true, u: true, d: true },
+        inventory: { r: true, c: true, u: true, d: false },
+        restaurant: { r: true, c: true, u: true, d: false },
+        promotions: { r: true, c: true, u: true, d: true },
+        customers: { r: true, c: true, u: true, d: false },
+        payments: { r: true, c: true, u: false, d: false },
+        documents: { r: true, c: true, u: false, d: false },
+        reports: { r: true, c: false, u: false, d: false },
+        "management.stores": { r: true, c: true, u: true, d: true },
+        "management.staff": { r: true, c: true, u: true, d: true },
+        "management.roles": { r: true, c: false, u: false, d: false },
+        "management.operations": { r: true, c: true, u: true, d: false },
+        settings: { r: true, c: false, u: true, d: false },
+    },
+    branch_admin: {
+        dashboard: { r: true, c: false, u: false, d: false },
+        sales: { r: true, c: true, u: true, d: false },
+        products: { r: true, c: true, u: true, d: false },
+        inventory: { r: true, c: true, u: true, d: false },
+        restaurant: { r: true, c: true, u: true, d: false },
+        promotions: { r: true, c: true, u: false, d: false },
+        customers: { r: true, c: true, u: true, d: false },
+        payments: { r: true, c: true, u: false, d: false },
+        documents: { r: true, c: true, u: false, d: false },
+        reports: { r: true, c: false, u: false, d: false },
+        "management.stores": { r: true, c: true, u: true, d: false },
+        "management.staff": { r: true, c: true, u: true, d: false },
+        "management.roles": { r: true, c: false, u: false, d: false },
+        "management.operations": { r: true, c: true, u: true, d: false },
+        settings: { r: true, c: false, u: true, d: false },
+    },
+    store_manager: {
+        dashboard: { r: true, c: false, u: false, d: false },
+        sales: { r: true, c: true, u: true, d: false },
+        products: { r: true, c: true, u: true, d: false },
+        inventory: { r: true, c: true, u: true, d: false },
+        promotions: { r: true, c: true, u: false, d: false },
+        customers: { r: true, c: true, u: true, d: false },
+        payments: { r: true, c: true, u: false, d: false },
+        documents: { r: true, c: true, u: false, d: false },
+        reports: { r: true, c: false, u: false, d: false },
+        "management.stores": { r: true, c: false, u: false, d: false },
+        "management.staff": { r: true, c: true, u: true, d: false },
+        "management.roles": { r: false, c: false, u: false, d: false },
+        "management.operations": { r: true, c: true, u: true, d: false },
+        settings: { r: true, c: false, u: false, d: false },
+    },
+    cashier: {
+        dashboard: { r: true, c: false, u: false, d: false },
+        sales: { r: true, c: true, u: false, d: false },
+        products: { r: true, c: false, u: false, d: false },
+        customers: { r: true, c: false, u: false, d: false },
+        payments: { r: true, c: true, u: false, d: false },
+        documents: { r: true, c: false, u: false, d: false },
+    },
+    inventory_staff: {
+        dashboard: { r: true, c: false, u: false, d: false },
+        products: { r: true, c: false, u: false, d: false },
+        inventory: { r: true, c: true, u: true, d: false },
+        reports: { r: true, c: false, u: false, d: false },
+    },
+    kitchen_staff: {
+        restaurant: { r: true, c: true, u: true, d: false },
+    },
+    waiter: {
+        restaurant: { r: true, c: true, u: true, d: false },
+        sales: { r: true, c: true, u: false, d: false },
+    },
+};
 
 /**
  * GET /admin/menu-permissions - Get menu structure for role assignment
@@ -2077,7 +2696,8 @@ adminRoutes.post('/menu-permissions/seed', authenticate, requireAdmin(), async (
                     label: menu.label,
                     labelLao: menu.labelLao,
                     icon: menu.icon,
-                    path: menu.path || null,
+                    path: (menu as any).path || null,
+                    requiredPermission: menu.requiredPermission || null,
                     order: i,
                     isActive: true
                 }
@@ -2094,6 +2714,7 @@ adminRoutes.post('/menu-permissions/seed', authenticate, requireAdmin(), async (
                             labelLao: child.labelLao,
                             icon: child.icon,
                             path: child.path,
+                            requiredPermission: child.requiredPermission || null,
                             parentId: parent.id,
                             order: j,
                             isActive: true
@@ -2110,137 +2731,215 @@ adminRoutes.post('/menu-permissions/seed', authenticate, requireAdmin(), async (
 });
 
 /**
- * POST /admin/roles/seed - Seed default roles to database
+ * POST /admin/rules/seed - Seed default rules + role-rule CRUD mappings
  */
-adminRoutes.post('/roles/seed', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.post('/rules/seed', authenticate, requireAdmin(), async (req, res, next) => {
     try {
-        const results = [];
+        // Clear existing
+        await prisma.roleRule.deleteMany({});
+        await prisma.rule.deleteMany({});
 
-        for (const roleData of DEFAULT_ROLES) {
-            // Check if role exists
-            const existing = await prisma.role.findUnique({ where: { name: roleData.name } });
-            
-            if (existing) {
-                // Update existing
-                const updated = await prisma.role.update({
-                    where: { name: roleData.name },
+        // Create rules
+        const ruleMap: Record<string, string> = {}; // name → id
+        for (const ruleDef of DEFAULT_RULES) {
+            const rule = await prisma.rule.create({
+                data: {
+                    name: ruleDef.name,
+                    displayName: ruleDef.displayName,
+                    description: ruleDef.description || null,
+                    module: ruleDef.module,
+                    icon: ruleDef.icon || null,
+                    routes: ruleDef.routes,
+                    permissions: ruleDef.permissions,
+                    order: ruleDef.order,
+                    isSystem: ruleDef.isSystem,
+                    isActive: true,
+                }
+            });
+            ruleMap[ruleDef.name] = rule.id;
+        }
+
+        // Load existing roles
+        const roles = await prisma.role.findMany();
+        const roleMap: Record<string, string> = {};
+        for (const role of roles) {
+            roleMap[role.name] = role.id;
+        }
+
+        // Create RoleRule entries
+        let roleRuleCount = 0;
+        for (const [roleName, rules] of Object.entries(DEFAULT_ROLE_RULES)) {
+            const roleId = roleMap[roleName];
+            if (!roleId) continue;
+
+            for (const [ruleName, crud] of Object.entries(rules)) {
+                const ruleId = ruleMap[ruleName];
+                if (!ruleId) continue;
+
+                await prisma.roleRule.create({
                     data: {
-                        displayName: roleData.displayName,
-                        description: roleData.description,
-                        permissions: roleData.permissions,
-                        isSystem: roleData.isSystem
+                        roleId,
+                        ruleId,
+                        canRead: crud.r,
+                        canCreate: crud.c,
+                        canUpdate: crud.u,
+                        canDelete: crud.d,
                     }
                 });
-                results.push({ ...updated, action: 'updated' });
-            } else {
-                // Create new
-                const created = await prisma.role.create({
-                    data: roleData
-                });
-                results.push({ ...created, action: 'created' });
+                roleRuleCount++;
             }
         }
 
-        await logActivity(req.authUser!.userId, 'roles_seeded', 'ສ້າງບົດບາດເລີ່ມຕົ້ນ', { count: results.length }, req);
+        await logActivity(req.authUser!.userId, 'rules_seeded', `ສ້າງ ${Object.keys(ruleMap).length} rules, ${roleRuleCount} role-rules`, {}, req);
 
-        res.json({ success: true, data: results, message: `${results.length} roles seeded` });
+        // Invalidate all cached role rules so middleware picks up new mappings
+        await invalidateRoleRulesCache();
+        await invalidateAllUserStoreCache();
+
+        res.json({
+            success: true,
+            message: `Seeded ${Object.keys(ruleMap).length} rules, ${roleRuleCount} role-rule mappings`,
+            data: { rules: Object.keys(ruleMap).length, roleRules: roleRuleCount }
+        });
     } catch (error) {
         next(error);
     }
 });
 
 /**
- * GET /admin/roles/templates - Get default role templates
+ * GET /admin/rules - Get all rules
  */
-adminRoutes.get('/roles/templates', authenticate, requireAdmin(), async (req, res) => {
-    res.json({ success: true, data: DEFAULT_ROLES });
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
-// STORE OWNER ENDPOINTS (For store owners to manage their store)
-// ═══════════════════════════════════════════════════════════════════════════
-
-/**
- * GET /stores/:id - Get store details (for store owner)
- */
-adminRoutes.get('/stores/:id/details', authenticate, async (req, res, next) => {
+adminRoutes.get('/rules', authenticate, requireAdmin(), async (req, res, next) => {
     try {
-        const { id } = req.params;
-        const userId = req.authUser!.userId;
-
-        // Check if user has access to this store
-        const store = await prisma.store.findUnique({
-            where: { id },
+        const rules = await prisma.rule.findMany({
+            where: { isActive: true },
+            orderBy: { order: 'asc' },
             include: {
-                branch: { select: { id: true, name: true, code: true } },
-                _count: { select: { users: true } }
+                roleRules: {
+                    include: { role: { select: { id: true, name: true, displayName: true } } }
+                }
             }
         });
-
-        if (!store) {
-            return res.status(404).json({
-                success: false,
-                error: { code: 'NOT_FOUND', message: 'Store not found' }
-            });
-        }
-
-        // Check access (Super Admin, Admin, or store owner)
-        const hasAccess = req.authUser!.isSuperAdmin || 
-                          req.authUser!.role === 'admin' ||
-                          req.authUser!.storeId === id;
-
-        if (!hasAccess) {
-            return res.status(403).json({
-                success: false,
-                error: { code: 'FORBIDDEN', message: 'Access denied' }
-            });
-        }
-
-        res.json({ success: true, data: store });
+        res.json({ success: true, data: rules });
     } catch (error) {
         next(error);
     }
 });
 
 /**
- * GET /stores/:id/stats - Get store statistics
+ * GET /admin/roles/:id/rules - Get rules for a specific role with CRUD flags
  */
-adminRoutes.get('/stores/:id/stats', authenticate, async (req, res, next) => {
+adminRoutes.get('/roles/:id/rules', authenticate, requireAdmin(), async (req, res, next) => {
     try {
-        const { id } = req.params;
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
+        const roleRules = await prisma.roleRule.findMany({
+            where: { roleId: req.params.id },
+            include: {
+                rule: true,
+            }
+        });
+        res.json({ success: true, data: roleRules });
+    } catch (error) {
+        next(error);
+    }
+});
 
-        const [todaySales, todayOrders, totalProducts, totalUsers] = await Promise.all([
-            prisma.transaction.aggregate({
-                where: {
-                    storeId: id,
-                    createdAt: { gte: today },
-                    status: 'completed'
-                },
-                _sum: { total: true }
-            }),
-            prisma.transaction.count({
-                where: {
-                    storeId: id,
-                    createdAt: { gte: today }
+/**
+ * PUT /admin/roles/:id/rules - Update rules for a specific role
+ * Body: { rules: [{ ruleId, canRead, canCreate, canUpdate, canDelete }] }
+ */
+adminRoutes.put('/roles/:id/rules', authenticate, requireAdmin(), async (req, res, next) => {
+    try {
+        const { id: roleId } = req.params;
+        const { rules } = req.body;
+
+        if (!Array.isArray(rules)) {
+            return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'rules must be an array' } });
+        }
+
+        // Delete existing role-rules
+        await prisma.roleRule.deleteMany({ where: { roleId } });
+
+        // Create new ones
+        const created = [];
+        for (const rr of rules) {
+            if (!rr.ruleId) continue;
+            const entry = await prisma.roleRule.create({
+                data: {
+                    roleId,
+                    ruleId: rr.ruleId,
+                    canRead: rr.canRead ?? true,
+                    canCreate: rr.canCreate ?? false,
+                    canUpdate: rr.canUpdate ?? false,
+                    canDelete: rr.canDelete ?? false,
                 }
-            }),
-            prisma.product.count({
-                where: { storeId: id, isActive: true }
-            }),
-            prisma.user.count({
-                where: { storeId: id, isActive: true }
-            })
+            });
+            created.push(entry);
+        }
+
+        const role = await prisma.role.findUnique({ where: { id: roleId }, select: { name: true } });
+        await logActivity(req.authUser!.userId, 'role_rules_updated', `ອັບເດດ rules ສຳລັບ ${role?.name}: ${created.length} rules`, { roleId }, req);
+
+        // Invalidate cached rules for this role
+        await invalidateRoleRulesCache(roleId);
+
+        res.json({ success: true, data: created, message: `${created.length} rules assigned` });
+    } catch (error) {
+        next(error);
+    }
+});
+
+/**
+ * GET /admin/rules/matrix - Get the full CRUD matrix in one call
+ * Returns: { roles, rules, matrix: { [roleId]: { [ruleId]: { r, c, u, d } } } }
+ */
+adminRoutes.get('/rules/matrix', authenticate, requireAdmin(), async (req, res, next) => {
+    try {
+        const [rules, roles, roleRules] = await Promise.all([
+            prisma.rule.findMany({ where: { isActive: true }, orderBy: { order: 'asc' } }),
+            prisma.role.findMany({ orderBy: { name: 'asc' } }),
+            prisma.roleRule.findMany(),
         ]);
+
+        // Build matrix
+        const matrix: Record<string, Record<string, { r: boolean; c: boolean; u: boolean; d: boolean }>> = {};
+        for (const role of roles) {
+            matrix[role.id] = {};
+            for (const rule of rules) {
+                matrix[role.id][rule.id] = { r: false, c: false, u: false, d: false };
+            }
+        }
+        for (const rr of roleRules) {
+            if (matrix[rr.roleId]?.[rr.ruleId]) {
+                matrix[rr.roleId][rr.ruleId] = {
+                    r: rr.canRead,
+                    c: rr.canCreate,
+                    u: rr.canUpdate,
+                    d: rr.canDelete,
+                };
+            }
+        }
+
+        // Compute stats per role
+        const roleStats: Record<string, { total: number; read: number; create: number; update: number; delete: number }> = {};
+        for (const role of roles) {
+            const stats = { total: rules.length, read: 0, create: 0, update: 0, delete: 0 };
+            for (const rule of rules) {
+                const crud = matrix[role.id]?.[rule.id];
+                if (crud?.r) stats.read++;
+                if (crud?.c) stats.create++;
+                if (crud?.u) stats.update++;
+                if (crud?.d) stats.delete++;
+            }
+            roleStats[role.id] = stats;
+        }
 
         res.json({
             success: true,
             data: {
-                todaySales: todaySales._sum.total || 0,
-                todayOrders,
-                totalProducts,
-                totalUsers
+                roles: roles.map(r => ({ id: r.id, name: r.name, displayName: r.displayName, description: r.description, isSystem: r.isSystem })),
+                rules: rules.map(r => ({ id: r.id, name: r.name, displayName: r.displayName, module: r.module, icon: r.icon, routes: r.routes, permissions: r.permissions, order: r.order })),
+                matrix,
+                roleStats,
             }
         });
     } catch (error) {
@@ -2249,106 +2948,99 @@ adminRoutes.get('/stores/:id/stats', authenticate, async (req, res, next) => {
 });
 
 /**
- * GET /stores/:id/branches - Get store branches
+ * PUT /admin/rules/matrix - Batch save the entire CRUD matrix in one call
+ * Body: { matrix: { [roleId]: { [ruleId]: { r, c, u, d } } } }
  */
-adminRoutes.get('/stores/:id/branches', authenticate, async (req, res, next) => {
+adminRoutes.put('/rules/matrix', authenticate, requireAdmin(), async (req, res, next) => {
     try {
-        const { id } = req.params;
-
-        const store = await prisma.store.findUnique({
-            where: { id },
-            select: { branchId: true }
-        });
-
-        if (!store) {
-            return res.status(404).json({
-                success: false,
-                error: { code: 'NOT_FOUND', message: 'Store not found' }
-            });
+        const { matrix } = req.body;
+        if (!matrix || typeof matrix !== 'object') {
+            return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'matrix is required' } });
         }
 
-        // Get branches related to this store's branch
-        const branches = await prisma.branch.findMany({
-            where: {
-                OR: [
-                    { id: store.branchId },
-                    { stores: { some: { id } } }
-                ]
-            },
-            select: {
-                id: true,
-                name: true,
-                code: true,
-                address: true,
-                phone: true,
-                isActive: true,
-                isMain: true
-            },
-            orderBy: { isMain: 'desc' }
-        });
+        // Delete all existing role-rules and recreate
+        await prisma.roleRule.deleteMany({});
 
-        res.json({ success: true, data: branches });
+        let count = 0;
+        const entries: { roleId: string; ruleId: string; canRead: boolean; canCreate: boolean; canUpdate: boolean; canDelete: boolean }[] = [];
+        
+        for (const [roleId, ruleMap] of Object.entries(matrix) as [string, Record<string, { r: boolean; c: boolean; u: boolean; d: boolean }>][]) {
+            for (const [ruleId, crud] of Object.entries(ruleMap)) {
+                if (crud.r || crud.c || crud.u || crud.d) {
+                    entries.push({
+                        roleId,
+                        ruleId,
+                        canRead: crud.r,
+                        canCreate: crud.c,
+                        canUpdate: crud.u,
+                        canDelete: crud.d,
+                    });
+                }
+            }
+        }
+
+        // Batch create
+        for (const entry of entries) {
+            await prisma.roleRule.create({ data: entry });
+            count++;
+        }
+
+        await logActivity(req.authUser!.userId, 'rules_matrix_saved', `ບັນທຶກ CRUD matrix: ${count} role-rules`, {}, req);
+
+        // Invalidate all cached role rules (matrix affects all roles)
+        await invalidateRoleRulesCache();
+
+        res.json({ success: true, message: `ບັນທຶກ ${count} role-rules ສຳເລັດ`, data: { count } });
     } catch (error) {
         next(error);
     }
 });
 
 /**
- * GET /stores/:id/users - Get store users
+ * POST /admin/roles/:id/copy-rules - Copy rules from one role to another
+ * Body: { sourceRoleId: string }
  */
-adminRoutes.get('/stores/:id/users', authenticate, async (req, res, next) => {
+adminRoutes.post('/roles/:id/copy-rules', authenticate, requireAdmin(), async (req, res, next) => {
     try {
-        const { id } = req.params;
+        const targetRoleId = req.params.id;
+        const { sourceRoleId } = req.body;
 
-        const users = await prisma.user.findMany({
-            where: { storeId: id },
-            select: {
-                id: true,
-                name: true,
-                email: true,
-                phone: true,
-                role: true,
-                isActive: true,
-                isSuperAdmin: true,
-                lastLoginAt: true,
-                roleRelation: { select: { id: true, displayName: true } }
-            },
-            orderBy: { name: 'asc' }
-        });
-
-        res.json({ success: true, data: users });
-    } catch (error) {
-        next(error);
-    }
-});
-
-/**
- * PUT /stores/:id - Update store (for store owner)
- */
-adminRoutes.put('/stores/:id/update', authenticate, async (req, res, next) => {
-    try {
-        const { id } = req.params;
-        const { name, address, phone, email, description } = req.body;
-        const userId = req.authUser!.userId;
-
-        // Check access
-        const hasAccess = req.authUser!.isSuperAdmin || 
-                          req.authUser!.role === 'admin' ||
-                          req.authUser!.storeId === id;
-
-        if (!hasAccess) {
-            return res.status(403).json({
-                success: false,
-                error: { code: 'FORBIDDEN', message: 'Access denied' }
-            });
+        if (!sourceRoleId) {
+            return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'sourceRoleId is required' } });
         }
 
-        const store = await prisma.store.update({
-            where: { id },
-            data: { name, address, phone, email, description }
-        });
+        // Get source role rules
+        const sourceRules = await prisma.roleRule.findMany({ where: { roleId: sourceRoleId } });
+        
+        // Delete target's existing rules
+        await prisma.roleRule.deleteMany({ where: { roleId: targetRoleId } });
 
-        res.json({ success: true, data: store });
+        // Copy
+        let count = 0;
+        for (const sr of sourceRules) {
+            await prisma.roleRule.create({
+                data: {
+                    roleId: targetRoleId,
+                    ruleId: sr.ruleId,
+                    canRead: sr.canRead,
+                    canCreate: sr.canCreate,
+                    canUpdate: sr.canUpdate,
+                    canDelete: sr.canDelete,
+                }
+            });
+            count++;
+        }
+
+        const [sourceRole, targetRole] = await Promise.all([
+            prisma.role.findUnique({ where: { id: sourceRoleId }, select: { name: true } }),
+            prisma.role.findUnique({ where: { id: targetRoleId }, select: { name: true } }),
+        ]);
+        await logActivity(req.authUser!.userId, 'role_rules_copied', `ຄັດລອກ rules ຈາກ ${sourceRole?.name} → ${targetRole?.name}: ${count} rules`, { sourceRoleId, targetRoleId }, req);
+
+        // Invalidate cached rules for the target role
+        await invalidateRoleRulesCache(targetRoleId);
+
+        res.json({ success: true, message: `ຄັດລອກ ${count} rules ສຳເລັດ`, data: { count } });
     } catch (error) {
         next(error);
     }
@@ -2365,7 +3057,7 @@ adminRoutes.patch('/stores/:id/status', authenticate, async (req, res, next) => 
         // Check access
         const hasAccess = req.authUser!.isSuperAdmin || 
                           req.authUser!.role === 'admin' ||
-                          req.authUser!.storeId === id;
+                          (req.authUser as any).storeId === id;
 
         if (!hasAccess) {
             return res.status(403).json({

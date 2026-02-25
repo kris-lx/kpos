@@ -2,17 +2,16 @@
     import { auth } from "$lib/stores/auth.svelte";
     import { cn } from "$lib/utils";
     import { Building2, Store, ChevronDown, Check } from "lucide-svelte";
-    import { createEventDispatcher } from "svelte";
-
-    const dispatch = createEventDispatcher();
 
     let { 
         showBranchSelector = true,
-        compact = false 
-    } = $props<{
+        compact = false,
+        onchange
+    }: {
         showBranchSelector?: boolean;
         compact?: boolean;
-    }>();
+        onchange?: (detail: { storeId: string }) => void;
+    } = $props();
 
     let isOpen = $state(false);
 
@@ -27,7 +26,7 @@
     function selectStore(storeId: string) {
         auth.setActiveStore(storeId);
         isOpen = false;
-        dispatch('change', { storeId });
+        onchange?.({ storeId });
     }
 
     function handleClickOutside(event: MouseEvent) {

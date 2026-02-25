@@ -3,6 +3,7 @@
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
     import { api } from "$api";
+    import { auth } from "$stores";
     import { formatDateTime } from "$lib/utils";
     import { toast } from "svelte-sonner";
     import {
@@ -140,8 +141,12 @@
         }
     }
 
-    onMount(() => {
+    $effect(() => {
+        auth.activeStoreId;
         loadData();
+    });
+
+    onMount(() => {
         refreshInterval = setInterval(() => loadData(), refreshSeconds * 1000);
     });
 
@@ -274,7 +279,7 @@
         </div>
     {:else}
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {#each orders as order}
+            {#each orders as order (order.id)}
                 {@const timeColor = getTimeColor(order.createdAt)}
                 {@const completedItems = (order.items || []).filter((i: any) => i.status === "done").length}
                 {@const totalItems = (order.items || []).length}
@@ -343,7 +348,7 @@
 
                     <!-- Items -->
                     <div class="divide-y divide-gray-700/50">
-                        {#each order.items || [] as item}
+                        {#each order.items || [] as item (item.id)}
                             {@const isDone = item.status === "done"}
                             <div class={cn(
                                 "flex items-center gap-3 p-3 transition-all",

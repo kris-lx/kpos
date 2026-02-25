@@ -4,6 +4,7 @@
     import { api } from "$lib/api";
     import { formatCurrency, formatDate } from "$lib/utils";
     import { toast } from "svelte-sonner";
+    import { auth } from "$stores";
     import { Minus, Search, Package, X, ChevronLeft, ChevronRight, Loader2, Trash2, AlertCircle, Pencil } from "lucide-svelte";
 
     const t = i18n.t;
@@ -160,7 +161,7 @@
     }
 
     // Generate visible page numbers
-    let visiblePages = $derived(() => {
+    let visiblePages = $derived.by(() => {
         const pages: number[] = [];
         const maxVisible = 5;
         
@@ -179,7 +180,8 @@
         return pages;
     });
 
-    onMount(() => {
+    $effect(() => {
+        auth.activeStoreId;
         loadData();
     });
 </script>
@@ -301,7 +303,7 @@
                     onchange={() => handlePageSizeChange()}
                     class="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm py-1 px-2 text-gray-900 dark:text-white"
                 >
-                    {#each pageSizeOptions as size}
+                    {#each pageSizeOptions as size (size)}
                         <option value={size}>{size}</option>
                     {/each}
                 </select>
@@ -320,7 +322,7 @@
                         <ChevronLeft class="w-5 h-5 text-gray-600 dark:text-gray-400" />
                     </button>
                     
-                    {#each visiblePages() as page}
+                    {#each visiblePages as page, idx (idx)}
                         {#if page < 0}
                             <span class="px-2 text-gray-400">...</span>
                         {:else}

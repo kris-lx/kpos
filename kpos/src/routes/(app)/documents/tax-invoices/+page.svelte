@@ -3,6 +3,7 @@
     import { api } from "$lib/api";
     import { formatCurrency, formatDate, formatDateTime } from "$lib/utils";
     import { onMount } from "svelte";
+    import { auth } from "$stores";
     import {
         FileText,
         Eye,
@@ -23,6 +24,8 @@
         Loader2,
         RefreshCw,
         Building2,
+        Download,
+        FileType,
     } from "lucide-svelte";
 
     // State
@@ -42,6 +45,9 @@
     let totalItems = $state(0);
     let totalPages = $derived(Math.ceil(totalItems / pageSize));
 
+    // Tax rate from settings (loaded dynamically)
+    let defaultTaxRate = $state(10);
+
     // Toast state
     let toasts = $state<Array<{ id: number; message: string; type: "success" | "error" | "info" }>>([]);
     let toastId = 0;
@@ -52,7 +58,7 @@
         taxId: "",
         orderId: "",
         subtotal: 0,
-        taxRate: 10,
+        taxRate: defaultTaxRate,
     });
 
     const statusOptions = [
@@ -77,9 +83,26 @@
         toasts = toasts.filter((t) => t.id !== id);
     }
 
-    onMount(() => {
+    $effect(() => {
+        auth.activeStoreId; // reload on store switch
         loadTaxInvoices();
     });
+
+    onMount(() => {
+        loadDefaultTaxRate();
+    });
+
+    async function loadDefaultTaxRate() {
+        try {
+            const res = await api.get('settings/taxes').json<any>();
+            const taxes = res.data || [];
+            const defaultTax = taxes.find((t: any) => t.isDefault && t.isActive);
+            if (defaultTax?.rate) {
+                defaultTaxRate = defaultTax.rate;
+                formData.taxRate = defaultTax.rate;
+            }
+        } catch { /* keep default */ }
+    }
 
     async function loadTaxInvoices() {
         loading = true;
@@ -137,7 +160,7 @@
             taxId: "",
             orderId: "",
             subtotal: 0,
-            taxRate: 10,
+            taxRate: defaultTaxRate,
         };
         modalMode = "create";
         showModal = true;
@@ -156,7 +179,7 @@
             taxId: invoice.taxId,
             orderId: invoice.orderId,
             subtotal: invoice.subtotal,
-            taxRate: 10,
+            taxRate: invoice.taxRate || defaultTaxRate,
         };
         modalMode = "edit";
         showModal = true;
@@ -266,6 +289,138 @@
         }
     }
 
+    function downloadFile(content: string, filename: string, mimeType: string) {
+        const blob = new Blob(['\ufeff' + content], { type: `${mimeType};charset=utf-8` });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
+    function buildInvoiceHtml(invoice: any): string {
+        return `
+        <div style="max-width:700px;margin:0 auto;padding:30px;font-family:'Noto Sans Lao','Phetsarath OT',sans-serif;">
+            <div style="text-align:center;margin-bottom:30px;">
+                <h1 style="margin:0;font-size:24px;">ໃບກຳກັບພາສີ / Tax Invoice</h1>
+                <p style="color:#666;margin:5px 0;">ເລກທີ: ${invoice.invoiceNumber}</p>
+                <p style="color:#666;margin:5px 0;">ວັນທີ: ${formatDate(invoice.issuedAt || invoice.createdAt)}</p>
+            </div>
+            <table style="width:100%;margin-bottom:20px;">
+                <tr><td style="padding:4px 0;"><strong>ຊື່ລູກຄ້າ:</strong></td><td>${invoice.customerName}</td></tr>
+                <tr><td style="padding:4px 0;"><strong>ເລກປະຈຳຕົວຜູ້ເສຍອາກອນ:</strong></td><td>${invoice.taxId}</td></tr>
+                <tr><td style="padding:4px 0;"><strong>ສະຖານະ:</strong></td><td>${getStatusLabel(invoice.status)}</td></tr>
+            </table>
+            <table style="width:100%;border-collapse:collapse;margin-bottom:20px;">
+                <thead>
+                    <tr style="background:#f5f5f5;">
+                        <th style="border:1px solid #ddd;padding:10px;text-align:left;">ລາຍການ</th>
+                        <th style="border:1px solid #ddd;padding:10px;text-align:right;">ຈຳນວນເງິນ</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr><td style="border:1px solid #ddd;padding:10px;">ຍອດກ່ອນອາກອນ (Subtotal)</td><td style="border:1px solid #ddd;padding:10px;text-align:right;">${formatCurrency(invoice.subtotal)}</td></tr>
+                    <tr><td style="border:1px solid #ddd;padding:10px;">ອາກອນ (Tax)</td><td style="border:1px solid #ddd;padding:10px;text-align:right;">${formatCurrency(invoice.taxAmount)}</td></tr>
+                    <tr style="font-weight:bold;background:#f9f9f9;"><td style="border:1px solid #ddd;padding:10px;">ຍອດລວມ (Total)</td><td style="border:1px solid #ddd;padding:10px;text-align:right;">${formatCurrency(invoice.total)}</td></tr>
+                </tbody>
+            </table>
+        </div>`;
+    }
+
+    function exportInvoiceToPdf(invoice: any) {
+        const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Tax Invoice - ${invoice.invoiceNumber}</title>
+            <style>@media print { body { margin: 0; } }</style></head><body>${buildInvoiceHtml(invoice)}</body></html>`;
+        const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const printWindow = window.open(url, '_blank');
+        if (printWindow) {
+            printWindow.onload = () => printWindow.print();
+        }
+        showToast("ກຳລັງສົ່ງອອກ PDF", "info");
+    }
+
+    function exportInvoiceToWord(invoice: any) {
+        const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word">
+            <head><meta charset="utf-8"><title>Tax Invoice</title></head><body>${buildInvoiceHtml(invoice)}</body></html>`;
+        downloadFile(html, `tax-invoice-${invoice.invoiceNumber}.doc`, 'application/msword');
+        showToast("ສົ່ງອອກ Word ສຳເລັດ", "success");
+    }
+
+    function exportListToPdf() {
+        const rows = filteredInvoices.map(inv => `
+            <tr>
+                <td style="border:1px solid #ddd;padding:8px;">${inv.invoiceNumber}</td>
+                <td style="border:1px solid #ddd;padding:8px;">${formatDate(inv.issuedAt || inv.createdAt)}</td>
+                <td style="border:1px solid #ddd;padding:8px;">${inv.customerName}</td>
+                <td style="border:1px solid #ddd;padding:8px;">${inv.taxId}</td>
+                <td style="border:1px solid #ddd;padding:8px;text-align:right;">${formatCurrency(inv.subtotal)}</td>
+                <td style="border:1px solid #ddd;padding:8px;text-align:right;">${formatCurrency(inv.taxAmount)}</td>
+                <td style="border:1px solid #ddd;padding:8px;text-align:right;">${formatCurrency(inv.total)}</td>
+                <td style="border:1px solid #ddd;padding:8px;text-align:center;">${getStatusLabel(inv.status)}</td>
+            </tr>`).join('');
+
+        const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>ລາຍການໃບກຳກັບພາສີ</title>
+            <style>body{font-family:'Noto Sans Lao','Phetsarath OT',sans-serif;padding:20px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ddd;padding:8px}th{background:#f5f5f5}.text-right{text-align:right}@media print{body{margin:0}}</style>
+            </head><body>
+            <h1 style="text-align:center;">ລາຍການໃບກຳກັບພາສີ</h1>
+            <p style="text-align:center;color:#666;">${new Date().toLocaleDateString('lo-LA')}</p>
+            <table><thead><tr>
+                <th>ເລກທີ</th><th>ວັນທີ</th><th>ລູກຄ້າ</th><th>ເລກອາກອນ</th><th class="text-right">ກ່ອນອາກອນ</th><th class="text-right">ອາກອນ</th><th class="text-right">ລວມ</th><th>ສະຖານະ</th>
+            </tr></thead><tbody>${rows}</tbody>
+            <tfoot><tr style="font-weight:bold;background:#f9f9f9;">
+                <td colspan="4" style="border:1px solid #ddd;padding:8px;">ລວມທັງໝົດ (${filteredInvoices.length} ລາຍການ)</td>
+                <td style="border:1px solid #ddd;padding:8px;text-align:right;">${formatCurrency(totals.subtotal)}</td>
+                <td style="border:1px solid #ddd;padding:8px;text-align:right;">${formatCurrency(totals.tax)}</td>
+                <td style="border:1px solid #ddd;padding:8px;text-align:right;">${formatCurrency(totals.total)}</td>
+                <td style="border:1px solid #ddd;padding:8px;"></td>
+            </tr></tfoot></table></body></html>`;
+
+        const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const printWindow = window.open(url, '_blank');
+        if (printWindow) {
+            printWindow.onload = () => printWindow.print();
+        }
+        showToast("ກຳລັງສົ່ງອອກ PDF", "info");
+    }
+
+    function exportListToWord() {
+        const rows = filteredInvoices.map(inv => `
+            <tr>
+                <td style="border:1px solid #000;padding:8px;">${inv.invoiceNumber}</td>
+                <td style="border:1px solid #000;padding:8px;">${formatDate(inv.issuedAt || inv.createdAt)}</td>
+                <td style="border:1px solid #000;padding:8px;">${inv.customerName}</td>
+                <td style="border:1px solid #000;padding:8px;">${inv.taxId}</td>
+                <td style="border:1px solid #000;padding:8px;text-align:right;">${formatCurrency(inv.subtotal)}</td>
+                <td style="border:1px solid #000;padding:8px;text-align:right;">${formatCurrency(inv.taxAmount)}</td>
+                <td style="border:1px solid #000;padding:8px;text-align:right;">${formatCurrency(inv.total)}</td>
+                <td style="border:1px solid #000;padding:8px;text-align:center;">${getStatusLabel(inv.status)}</td>
+            </tr>`).join('');
+
+        const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word">
+            <head><meta charset="utf-8"><title>ລາຍການໃບກຳກັບພາສີ</title>
+            <style>body{font-family:'Noto Sans Lao','Phetsarath OT',sans-serif}table{width:100%;border-collapse:collapse}th,td{border:1px solid #000;padding:8px}th{background:#f0f0f0}</style>
+            </head><body>
+            <h1 style="text-align:center;">ລາຍການໃບກຳກັບພາສີ</h1>
+            <p style="text-align:center;">${new Date().toLocaleDateString('lo-LA')}</p>
+            <table><tr>
+                <th>ເລກທີ</th><th>ວັນທີ</th><th>ລູກຄ້າ</th><th>ເລກອາກອນ</th><th>ກ່ອນອາກອນ</th><th>ອາກອນ</th><th>ລວມ</th><th>ສະຖານະ</th>
+            </tr>${rows}
+            <tr style="font-weight:bold;background:#f0f0f0;">
+                <td colspan="4" style="border:1px solid #000;padding:8px;">ລວມທັງໝົດ (${filteredInvoices.length} ລາຍການ)</td>
+                <td style="border:1px solid #000;padding:8px;text-align:right;">${formatCurrency(totals.subtotal)}</td>
+                <td style="border:1px solid #000;padding:8px;text-align:right;">${formatCurrency(totals.tax)}</td>
+                <td style="border:1px solid #000;padding:8px;text-align:right;">${formatCurrency(totals.total)}</td>
+                <td style="border:1px solid #000;padding:8px;"></td>
+            </tr></table></body></html>`;
+
+        downloadFile(html, `tax-invoices-${new Date().toISOString().slice(0,10)}.doc`, 'application/msword');
+        showToast("ສົ່ງອອກ Word ສຳເລັດ", "success");
+    }
+
     function getStatusLabel(status: string): string {
         const labels: Record<string, string> = {
             pending: "ລໍຖ້າ",
@@ -356,13 +511,29 @@
             <h1 class="text-2xl font-bold text-gray-900 dark:text-white">ໃບກຳກັບພາສີ</h1>
             <p class="text-gray-500 dark:text-gray-400">ຈັດການໃບກຳກັບພາສີ</p>
         </div>
-        <button
-            onclick={openCreateModal}
-            class="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
-        >
-            <Plus class="w-5 h-5" />
-            ສ້າງໃບກຳກັບພາສີ
-        </button>
+        <div class="flex items-center gap-2">
+            <button
+                onclick={exportListToPdf}
+                class="flex items-center gap-2 px-3 py-2 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors text-sm font-medium"
+            >
+                <FileType class="w-4 h-4" />
+                PDF
+            </button>
+            <button
+                onclick={exportListToWord}
+                class="flex items-center gap-2 px-3 py-2 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-colors text-sm font-medium"
+            >
+                <Download class="w-4 h-4" />
+                Word
+            </button>
+            <button
+                onclick={openCreateModal}
+                class="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
+            >
+                <Plus class="w-5 h-5" />
+                ສ້າງໃບກຳກັບພາສີ
+            </button>
+        </div>
     </div>
 
     <!-- Summary -->
@@ -378,7 +549,7 @@
             </p>
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-lg border dark:border-gray-700 p-4">
-            <p class="text-sm text-gray-500 dark:text-gray-400">ພາສີມູນຄ່າເພີ່ມ (10%)</p>
+            <p class="text-sm text-gray-500 dark:text-gray-400">ພາສີມູນຄ່າເພີ່ມ ({defaultTaxRate}%)</p>
             <p class="text-2xl font-bold text-orange-600 dark:text-orange-400">
                 {formatCurrency(totals.tax)}
             </p>
@@ -440,7 +611,7 @@
                         onchange={() => { currentPage = 1; loadTaxInvoices(); }}
                         class="w-full pl-10 pr-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white appearance-none"
                     >
-                        {#each statusOptions as option}
+                        {#each statusOptions as option (option.value)}
                             <option value={option.value}>{option.label}</option>
                         {/each}
                     </select>
@@ -497,7 +668,7 @@
                         </tr>
                     </thead>
                     <tbody class="divide-y dark:divide-gray-700">
-                        {#each paginatedInvoices as invoice}
+                        {#each paginatedInvoices as invoice (invoice.id)}
                             <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
                                 <td class="px-4 py-3">
                                     <p class="font-medium text-primary-600 dark:text-primary-400">
@@ -554,6 +725,20 @@
                                                 <Printer class="w-4 h-4" />
                                             </button>
                                         {/if}
+                                        <button
+                                            onclick={() => exportInvoiceToPdf(invoice)}
+                                            class="p-1.5 text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 rounded transition-colors"
+                                            title="ສົ່ງອອກ PDF"
+                                        >
+                                            <FileType class="w-4 h-4" />
+                                        </button>
+                                        <button
+                                            onclick={() => exportInvoiceToWord(invoice)}
+                                            class="p-1.5 text-blue-500 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded transition-colors"
+                                            title="ສົ່ງອອກ Word"
+                                        >
+                                            <Download class="w-4 h-4" />
+                                        </button>
                                         {#if invoice.status !== "cancelled"}
                                             <button
                                                 onclick={() => cancelInvoice(invoice)}
@@ -589,7 +774,7 @@
                         onchange={(e) => changePageSize(Number((e.target as HTMLSelectElement).value))}
                         class="px-2 py-1 border dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
                     >
-                        {#each pageSizeOptions as size}
+                        {#each pageSizeOptions as size (size)}
                             <option value={size}>{size}</option>
                         {/each}
                     </select>
@@ -704,7 +889,7 @@
                             <span class="font-medium text-gray-900 dark:text-white">{formatCurrency(selectedInvoice.subtotal)}</span>
                         </div>
                         <div class="flex justify-between py-2">
-                            <span class="text-gray-600 dark:text-gray-400">ພາສີມູນຄ່າເພີ່ມ (10%)</span>
+                            <span class="text-gray-600 dark:text-gray-400">ພາສີມູນຄ່າເພີ່ມ ({defaultTaxRate}%)</span>
                             <span class="font-medium text-orange-600 dark:text-orange-400">{formatCurrency(selectedInvoice.taxAmount)}</span>
                         </div>
                         <div class="flex justify-between py-2 border-t dark:border-gray-600 font-bold text-lg">

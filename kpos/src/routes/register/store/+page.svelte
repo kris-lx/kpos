@@ -27,6 +27,7 @@
         phone: "",
         email: "",
         taxId: "",
+        description: "",
         
         // Step 3 - Additional Info
         reason: "",
@@ -447,6 +448,42 @@
                                     />
                                 </div>
                             </div>
+                        </div>
+
+                        <!-- Tax ID -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                                ເລກປະຈຳຕົວຜູ້ເສຍອາກອນ
+                            </label>
+                            <input
+                                type="text"
+                                bind:value={formData.taxId}
+                                class={cn(
+                                    "w-full px-4 py-3 rounded-xl border transition-colors",
+                                    "bg-white dark:bg-gray-700 text-gray-900 dark:text-white",
+                                    "border-gray-300 dark:border-gray-600",
+                                    "focus:ring-2 focus:ring-primary-500 focus:border-primary-500",
+                                )}
+                                placeholder="ເລກປະຈຳຕົວຜູ້ເສຍອາກອນ (ຖ້າມີ)"
+                            />
+                        </div>
+
+                        <!-- Description -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                                ລາຍລະອຽດຮ້ານ
+                            </label>
+                            <textarea
+                                bind:value={formData.description}
+                                rows="2"
+                                class={cn(
+                                    "w-full px-4 py-3 rounded-xl border transition-colors resize-none",
+                                    "bg-white dark:bg-gray-700 text-gray-900 dark:text-white",
+                                    "border-gray-300 dark:border-gray-600",
+                                    "focus:ring-2 focus:ring-primary-500 focus:border-primary-500",
+                                )}
+                                placeholder="ອະທິບາຍກ່ຽວກັບຮ້ານ/ສາຂາ"
+                            ></textarea>
                         </div>
                     </div>
                 </div>

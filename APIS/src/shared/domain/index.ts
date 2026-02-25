@@ -3,3 +3,4 @@ export * from './AggregateRoot';
 export * from './ValueObject';
 export * from './DomainEvent';
 export * from './Result';
+export * from './errors';

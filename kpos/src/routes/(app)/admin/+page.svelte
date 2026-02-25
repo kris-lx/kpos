@@ -50,7 +50,7 @@
     const queryClient = useQueryClient();
 
     let canAccess = $state(false);
-    let userRole = $state<'super_admin' | 'admin' | 'shop_admin' | 'manager' | 'other'>('other');
+    let userRole = $state<'super_admin' | 'admin' | 'store_owner' | 'manager' | 'other'>('other');
     
     onMount(async () => {
         try {
@@ -67,8 +67,8 @@
             } else if (user.role === 'admin') {
                 userRole = 'admin';
                 canAccess = true;
-            } else if (user.role === 'shop_admin') {
-                userRole = 'shop_admin';
+            } else if (user.role === 'store_owner') {
+                userRole = 'store_owner';
                 canAccess = true;
             } else if (user.role === 'manager') {
                 userRole = 'manager';
@@ -231,7 +231,7 @@
         const labels: Record<string, string> = {
             super_admin: "Super Admin",
             admin: "Admin",
-            shop_admin: "Shop Admin",
+            store_owner: "Store Owner",
             manager: "Manager"
         };
         return labels[role] || role;
@@ -241,36 +241,32 @@
         const colors: Record<string, string> = {
             super_admin: "from-violet-600 to-purple-600",
             admin: "from-blue-600 to-cyan-600",
-            shop_admin: "from-emerald-600 to-green-600",
+            store_owner: "from-emerald-600 to-green-600",
             manager: "from-amber-600 to-orange-600"
         };
         return colors[role] || "from-gray-600 to-slate-600";
     }
 
     // Quick Links ຕາມບົດບາດ
-    $effect(() => {
-        // Links ສຳລັບ Super Admin ແລະ Admin
+    let quickLinks = $derived.by(() => {
         if (userRole === 'super_admin' || userRole === 'admin') {
-            quickLinks = [
+            return [
                 { href: "/admin/requests", icon: FileCheck, label: "ຄຳຂໍລໍຖ້າ", desc: "ອະນຸມັດ/ປະຕິເສດຄຳຂໍ", color: "from-violet-500 to-purple-500", roles: ['super_admin', 'admin'] },
                 { href: "/admin/branches", icon: Building2, label: "ຈັດການສາຂາ", desc: "ເບິ່ງ ແລະ ຈັດການສາຂາ", color: "from-blue-500 to-cyan-500", roles: ['super_admin', 'admin'] },
-                { href: "/admin/users", icon: Users, label: "ຈັດການຜູ້ໃຊ້", desc: "ສ້າງ ແລະ ແກ້ໄຂຜູ້ໃຊ້", color: "from-amber-500 to-orange-500", roles: ['super_admin', 'admin', 'shop_admin'] },
+                { href: "/admin/users", icon: Users, label: "ຈັດການຜູ້ໃຊ້", desc: "ສ້າງ ແລະ ແກ້ໄຂຜູ້ໃຊ້", color: "from-amber-500 to-orange-500", roles: ['super_admin', 'admin', 'store_owner'] },
                 { href: "/admin/roles", icon: Key, label: "ຈັດການບົດບາດ", desc: "ກຳນົດສິດ ແລະ ບົດບາດ", color: "from-pink-500 to-rose-500", roles: ['super_admin', 'admin'] },
                 { href: "/admin/permissions", icon: Shield, label: "ຈັດການສິດ", desc: "ກຳນົດເມນູ ແລະ ສິດ", color: "from-teal-500 to-cyan-500", roles: ['super_admin', 'admin'] },
                 { href: "/admin/audit", icon: History, label: "ປະຫວັດການໃຊ້ງານ", desc: "ເບິ່ງ Activity Logs", color: "from-indigo-500 to-blue-500", roles: ['super_admin', 'admin'] },
             ];
-        } else {
-            // Links ສຳລັບ Shop Admin ແລະ Manager
-            quickLinks = [
-                { href: "/admin/users", icon: Users, label: "ຈັດການຜູ້ໃຊ້", desc: "ສ້າງ ແລະ ແກ້ໄຂຜູ້ໃຊ້ໃນຮ້ານ", color: "from-amber-500 to-orange-500", roles: ['shop_admin', 'manager'] },
-                { href: "/admin/branches", icon: Building2, label: "ສາຂາຂອງຂ້ອຍ", desc: "ເບິ່ງສາຂາໃນຮ້ານ", color: "from-blue-500 to-cyan-500", roles: ['shop_admin', 'manager'] },
-                { href: "/products", icon: Package, label: "ຈັດການສິນຄ້າ", desc: "ເພີ່ມ, ແກ້ໄຂ, ລົບສິນຄ້າ", color: "from-emerald-500 to-green-500", roles: ['shop_admin', 'manager'] },
-                { href: "/inventory", icon: Boxes, label: "ຈັດການສາງ", desc: "Stock, SKU, Barcode", color: "from-violet-500 to-purple-500", roles: ['shop_admin', 'manager'] },
-            ];
         }
+        // Links ສຳລັບ Shop Admin ແລະ Manager
+        return [
+            { href: "/admin/users", icon: Users, label: "ຈັດການຜູ້ໃຊ້", desc: "ສ້າງ ແລະ ແກ້ໄຂຜູ້ໃຊ້ໃນຮ້ານ", color: "from-amber-500 to-orange-500", roles: ['store_owner', 'manager'] },
+            { href: "/admin/branches", icon: Building2, label: "ສາຂາຂອງຂ້ອຍ", desc: "ເບິ່ງສາຂາໃນຮ້ານ", color: "from-blue-500 to-cyan-500", roles: ['store_owner', 'manager'] },
+            { href: "/products", icon: Package, label: "ຈັດການສິນຄ້າ", desc: "ເພີ່ມ, ແກ້ໄຂ, ລົບສິນຄ້າ", color: "from-emerald-500 to-green-500", roles: ['store_owner', 'manager'] },
+            { href: "/inventory", icon: Boxes, label: "ຈັດການສາງ", desc: "Stock, SKU, Barcode", color: "from-violet-500 to-purple-500", roles: ['store_owner', 'manager'] },
+        ];
     });
-
-    let quickLinks = $state<any[]>([]);
 </script>
 
 <svelte:head>
@@ -324,7 +320,7 @@
             <!-- Stats Grid -->
             {#if $dashboardQuery.isLoading}
                 <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                    {#each Array(4) as _}
+                    {#each Array(4) as _, i (i)}
                         <div class="h-36 rounded-2xl bg-gray-200 dark:bg-gray-800 animate-pulse"></div>
                     {/each}
                 </div>
@@ -424,7 +420,7 @@
                         </h3>
                     </div>
                     <div class="p-4 space-y-2">
-                        {#each quickLinks as link}
+                        {#each quickLinks as link (link.href)}
                             <a 
                                 href={link.href} 
                                 class="group flex items-center gap-4 p-4 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-all duration-200"
@@ -454,7 +450,7 @@
                     <div class="p-4">
                         {#if $pendingRequestsQuery.isLoading}
                             <div class="space-y-3">
-                                {#each Array(3) as _}
+                                {#each Array(3) as _, i (i)}
                                     <div class="h-20 rounded-xl bg-gray-100 dark:bg-gray-700 animate-pulse"></div>
                                 {/each}
                             </div>
@@ -468,7 +464,7 @@
                             </div>
                         {:else}
                             <div class="space-y-3">
-                                {#each $pendingRequestsQuery.data || [] as request}
+                                {#each $pendingRequestsQuery.data || [] as request (request.id)}
                                     {@const TypeIcon = getRequestTypeIcon(request.type)}
                                     <div class="group flex items-center gap-4 p-4 bg-gradient-to-r from-gray-50 to-white dark:from-gray-800/50 dark:to-gray-800/30 rounded-xl border border-gray-100 dark:border-gray-700/50 hover:border-violet-200 dark:hover:border-violet-800 hover:shadow-lg hover:shadow-violet-500/5 transition-all duration-300">
                                         <div class="w-12 h-12 bg-gradient-to-br from-violet-500 to-purple-500 rounded-xl flex items-center justify-center shadow-lg shadow-violet-500/20">
@@ -562,7 +558,7 @@
                     <div class="p-4 max-h-80 overflow-y-auto">
                         {#if $recentActivityQuery.isLoading}
                             <div class="space-y-3">
-                                {#each Array(5) as _}
+                                {#each Array(5) as _, i (i)}
                                     <div class="h-14 rounded-xl bg-gray-100 dark:bg-gray-700 animate-pulse"></div>
                                 {/each}
                             </div>
@@ -575,7 +571,7 @@
                             </div>
                         {:else}
                             <div class="space-y-2">
-                                {#each $recentActivityQuery.data || [] as activity}
+                                {#each $recentActivityQuery.data || [] as activity (activity.id)}
                                     {@const ActivityIcon = getActivityIcon(activity.action)}
                                     <div class="flex items-center gap-3 p-3 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
                                         <div class={cn("w-10 h-10 rounded-xl flex items-center justify-center", getActivityColor(activity.action))}>

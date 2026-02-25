@@ -8,6 +8,7 @@
     import { themeStore } from "$lib/stores/theme.svelte";
     import Sidebar from "$lib/components/layout/Sidebar.svelte";
     import StoreSelector from "$lib/components/layout/StoreSelector.svelte";
+    import { api } from "$lib/api";
     import {
         Menu,
         Bell,
@@ -23,6 +24,7 @@
         Minimize,
         Monitor,
         X,
+        Clock,
     } from "lucide-svelte";
 
     let { children } = $props();
@@ -35,35 +37,64 @@
     let isFullscreen = $state(false);
     let searchQuery = $state("");
 
-    // Sample notifications
-    let notifications = $state([
-        {
-            id: 1,
-            title: "ສະຕ໋ອກໃກ້ໝົດ",
-            message: "ສິນຄ້າ 5 ລາຍການໃກ້ໝົດສະຕ໋ອກ",
-            time: "5 ນາທີກ່ອນ",
-            read: false,
-            type: "warning",
-        },
-        {
-            id: 2,
-            title: "ອໍເດີໃໝ່",
-            message: "ມີອໍເດີໃໝ່ຈາກໂຕະ 5",
-            time: "10 ນາທີກ່ອນ",
-            read: false,
-            type: "info",
-        },
-        {
-            id: 3,
-            title: "ການຊຳລະສຳເລັດ",
-            message: "ລາຍການຂາຍ #1234 ຊຳລະສຳເລັດ",
-            time: "15 ນາທີກ່ອນ",
-            read: true,
-            type: "success",
-        },
-    ]);
+    // Notifications (loaded from API)
+    let notifications = $state<Array<{id: string; title: string; message: string; time: string; read: boolean; type: string}>>([]);
+    let unreadCount = $state(0);
 
-    const unreadCount = $derived(notifications.filter((n) => !n.read).length);
+    // Shift enforcement
+    const SHIFT_REQUIRED_ROLES = ['cashier', 'store_manager', 'branch_admin', 'inventory_staff', 'waiter', 'kitchen_staff'];
+    let showShiftWarning = $state(false);
+    let currentShift = $state<any>(null);
+    let shiftCheckDone = $state(false);
+
+    async function checkActiveShift() {
+        const user = auth.user;
+        if (!user || !SHIFT_REQUIRED_ROLES.includes(user.role)) {
+            shiftCheckDone = true;
+            return;
+        }
+        try {
+            const res = await api.get('sales/shifts/current').json<any>();
+            currentShift = res.success ? res.data : null;
+            showShiftWarning = !currentShift;
+        } catch {
+            currentShift = null;
+            showShiftWarning = true;
+        } finally {
+            shiftCheckDone = true;
+        }
+    }
+
+    async function clockIn() {
+        try {
+            const res = await api.post('sales/shifts/open', { json: { openingBalance: 0 } }).json<any>();
+            if (res.success) {
+                currentShift = res.data;
+                showShiftWarning = false;
+            }
+        } catch {
+            // handled silently
+        }
+    }
+
+    async function loadNotifications() {
+        try {
+            const res = await api.get("settings/user-notifications?limit=10").json<any>();
+            if (res.success) {
+                notifications = (res.data || []).map((n: any) => ({
+                    id: n.id,
+                    title: n.title,
+                    message: n.message,
+                    time: n.createdAt,
+                    read: n.isRead,
+                    type: n.type,
+                }));
+                unreadCount = res.unreadCount || 0;
+            }
+        } catch (e) {
+            // Silently fail - notifications are non-critical
+        }
+    }
 
     const languages = [
         { code: "th", name: "ภาษาไทย", flag: "🇹🇭" },
@@ -74,7 +105,26 @@
     onMount(() => {
         if (!auth.isAuthenticated) {
             goto("/login");
+            return;
         }
+
+        // If user has no store access and is not admin/super admin, send to store-request
+        const user = auth.user;
+        const isAdmin = user?.isSuperAdmin || user?.role === 'admin' || user?.role === 'super_admin';
+        const currentPath = $page.url.pathname;
+        const storeExemptPaths = ['/store-request', '/help'];
+        if (!isAdmin && auth.accessibleStores.length === 0 && !storeExemptPaths.includes(currentPath)) {
+            goto('/store-request');
+            return;
+        }
+
+        // Load notifications from API
+        loadNotifications();
+        // Auto-refresh notifications every 60 seconds
+        const notifInterval = setInterval(loadNotifications, 60 * 1000);
+
+        // Check if user needs to clock in
+        checkActiveShift();
 
         // Handle fullscreen change
         document.addEventListener("fullscreenchange", () => {
@@ -94,6 +144,8 @@
                 isNotificationOpen = false;
             }
         });
+
+        return () => clearInterval(notifInterval);
     });
 
     function handleLogout() {
@@ -120,16 +172,24 @@
         window.location.reload();
     }
 
-    function markNotificationRead(id: number) {
+    async function markNotificationRead(id: string) {
         const notif = notifications.find((n) => n.id === id);
         if (notif) {
             notif.read = true;
             notifications = [...notifications];
+            unreadCount = Math.max(0, unreadCount - 1);
+            try {
+                await api.put(`settings/user-notifications/${id}/read`).json();
+            } catch (e) { /* ignore */ }
         }
     }
 
-    function markAllRead() {
+    async function markAllRead() {
         notifications = notifications.map((n) => ({ ...n, read: true }));
+        unreadCount = 0;
+        try {
+            await api.put("settings/user-notifications/mark-all-read").json();
+        } catch (e) { /* ignore */ }
     }
 
     function getNotificationIcon(type: string): string {
@@ -287,7 +347,7 @@
                         <div
                             class="absolute right-0 mt-2 w-44 bg-white dark:bg-gray-900 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-50"
                         >
-                            {#each languages as lang}
+                            {#each languages as lang (lang.code)}
                                 <button
                                     onclick={() => changeLanguage(lang.code)}
                                     class={cn(
@@ -344,7 +404,7 @@
                                 {/if}
                             </div>
                             <div class="max-h-80 overflow-y-auto">
-                                {#each notifications as notif}
+                                {#each notifications as notif (notif.id)}
                                     <button
                                         onclick={() =>
                                             markNotificationRead(notif.id)}
@@ -480,6 +540,33 @@
                 </div>
             </div>
         </header>
+
+        <!-- Shift Clock-in Warning Banner -->
+        {#if showShiftWarning && shiftCheckDone}
+            <div class="bg-amber-50 dark:bg-amber-900/30 border-b border-amber-200 dark:border-amber-700 px-4 py-3 flex items-center justify-between gap-4">
+                <div class="flex items-center gap-3">
+                    <Clock class="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0" />
+                    <div>
+                        <p class="text-sm font-semibold text-amber-800 dark:text-amber-200">ທ່ານຍັງບໍ່ໄດ້ເປີດກະວຽກ</p>
+                        <p class="text-xs text-amber-600 dark:text-amber-400">ກະລຸນາເປີດກະວຽກກ່ອນເລີ່ມວຽກ</p>
+                    </div>
+                </div>
+                <div class="flex items-center gap-2 shrink-0">
+                    <button
+                        onclick={clockIn}
+                        class="px-4 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded-lg transition-colors"
+                    >
+                        ເປີດກະວຽກດຽວນີ້
+                    </button>
+                    <a
+                        href="/staff/shifts"
+                        class="px-4 py-1.5 bg-white dark:bg-gray-800 border border-amber-300 dark:border-amber-600 text-amber-700 dark:text-amber-300 text-sm font-medium rounded-lg hover:bg-amber-50 dark:hover:bg-amber-900/50 transition-colors"
+                    >
+                        ໄປໜ້າກະວຽກ
+                    </a>
+                </div>
+            </div>
+        {/if}
 
         <!-- Page Content -->
         <main class="flex-1 overflow-auto">

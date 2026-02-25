@@ -546,7 +546,7 @@
                     class="px-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500"
                 >
                     <option value={null}>ສິນຄ້າທັງໝົດ</option>
-                    {#each products as product}
+                    {#each products as product (product.id)}
                         <option value={product.id}>{product.name}</option>
                     {/each}
                 </select>
@@ -634,7 +634,7 @@
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-gray-200 dark:divide-gray-700">
-                        {#each skuVariants as variant}
+                        {#each skuVariants as variant (variant.id)}
                             {@const margin = getMargin(variant)}
                             <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
                                 <td class="px-6 py-4">
@@ -757,9 +757,11 @@
                             onchange={(e) => changeLimit(Number(e.currentTarget.value))}
                             class="px-2 py-1 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
                         >
+                            <option value={5}>5</option>
                             <option value={10}>10</option>
                             <option value={20}>20</option>
                             <option value={50}>50</option>
+                            <option value={70}>70</option>
                             <option value={100}>100</option>
                         </select>
                         <span>ຕໍ່ໜ້າ</span>
@@ -848,7 +850,7 @@
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500"
                     >
                         <option value="">-- ເລືອກສິນຄ້າ --</option>
-                        {#each products as product}
+                        {#each products as product (product.id)}
                             <option value={product.id}>{product.name}</option>
                         {/each}
                     </select>
@@ -898,7 +900,7 @@
                                 />
                                 {#if showBarcodeDropdown && availableBarcodes.length > 0}
                                     <div class="absolute z-50 w-full mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-xl max-h-48 overflow-y-auto">
-                                        {#each availableBarcodes.filter(b => !formData.barcode || b.includes(formData.barcode)) as barcode}
+                                        {#each availableBarcodes.filter(b => !formData.barcode || b.includes(formData.barcode)) as barcode (barcode)}
                                             <button
                                                 type="button"
                                                 onclick={() => { formData.barcode = barcode; showBarcodeDropdown = false; }}

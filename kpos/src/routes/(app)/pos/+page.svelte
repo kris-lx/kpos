@@ -130,14 +130,16 @@
         }
     });
 
+    // Active store context — queries re-run when store switches
+    const activeStoreId = $derived(auth.activeStoreId);
+
     // Queries - Using any type to avoid TypeScript complexity with TanStack Query
     const productsQuery = createQuery<Product[], Error>({
-        queryKey: ["products"],
+        queryKey: ["products", activeStoreId],
         queryFn: async () => {
             const params = new URLSearchParams();
             params.append("limit", "100");
             const response = await api.get(`products?${params}`).json<{ data: any[] }>();
-            console.log(response);
             // Transform data to include convenience fields
             return (response.data || []).map((p: any) => ({
                 ...p,
@@ -167,9 +169,9 @@
         },
     });
 
-    // Customers query
+    // Customers query — scoped to active store
     const customersQuery = createQuery({
-        queryKey: ["customers"],
+        queryKey: ["customers", activeStoreId],
         queryFn: async () => {
             const response = await api.get("customers?limit=100").json<any>();
             return response.data || [];
@@ -364,10 +366,11 @@
                 response = await api.post("sales", { json: saleData }).json<any>();
             }
 
-            // Invalidate products query to refresh stock
-            queryClient.invalidateQueries({ queryKey: ["products"] });
-            queryClient.invalidateQueries({ queryKey: ["inventory"] });
-            queryClient.invalidateQueries({ queryKey: ["inventory-stats"] });
+            // Invalidate queries to refresh stock (store-scoped)
+            queryClient.invalidateQueries({ queryKey: ["products", activeStoreId] });
+            queryClient.invalidateQueries({ queryKey: ["inventory", activeStoreId] });
+            queryClient.invalidateQueries({ queryKey: ["inventory-stats", activeStoreId] });
+            queryClient.invalidateQueries({ queryKey: ["dashboard", activeStoreId] });
 
             // Broadcast complete status
             if (displayChannel) {
@@ -471,7 +474,7 @@
                     {t('common.all')}
                 </button>
                 {#if $categoriesQuery.data}
-                    {#each $categoriesQuery.data as category}
+                    {#each $categoriesQuery.data as category (category.id)}
                         <button
                             onclick={() => (selectedCategory = category.id)}
                             class={cn(
@@ -494,7 +497,7 @@
                 <div
                     class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4"
                 >
-                    {#each Array(12) as _}
+                    {#each Array(12) as _, i (i)}
                         <div
                             class="bg-white dark:bg-gray-800 rounded-xl p-4 animate-pulse"
                         >
@@ -683,7 +686,7 @@
                 </div>
             {:else}
                 <div class="space-y-3">
-                    {#each cart.items as item}
+                    {#each cart.items as item (item.product.id)}
                         <div class="bg-gray-50 dark:bg-gray-800 rounded-xl p-3">
                             <div class="flex items-start gap-3">
                                 <!-- Product Image -->
@@ -946,7 +949,7 @@
 
                         <!-- Quick Cash Buttons -->
                         <div class="flex flex-wrap gap-2">
-                            {#each quickCashAmounts(cart.total) as amount}
+                            {#each quickCashAmounts(cart.total) as amount (amount)}
                                 <button
                                     onclick={() => (cashReceived = amount)}
                                     class={cn(
@@ -1174,22 +1177,45 @@
                     <label for="discount-value" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                         {cart.discountType === 'PERCENTAGE' ? t('pos.discountPercentLabel') : t('pos.discountFixedLabel')}
                     </label>
-                    <input
-                        id="discount-value"
-                        type="number"
-                        min="0"
-                        max={cart.discountType === 'PERCENTAGE' ? 100 : cart.subtotal}
-                        value={cart.discountValue}
-                        oninput={(e) => cart.setDiscount(cart.discountType || 'FIXED', Number(e.currentTarget.value))}
-                        class="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800 text-right text-xl font-bold focus:ring-2 focus:ring-primary-500"
-                        placeholder="0"
-                    />
+                    {#if cart.discountType === 'PERCENTAGE'}
+                        <input
+                            id="discount-value"
+                            type="number"
+                            min="0"
+                            max="100"
+                            value={cart.discountValue}
+                            oninput={(e) => cart.setDiscount('PERCENTAGE', Number(e.currentTarget.value))}
+                            class="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800 text-right text-xl font-bold focus:ring-2 focus:ring-primary-500"
+                            placeholder="0"
+                        />
+                    {:else}
+                        <input
+                            id="discount-value"
+                            type="text"
+                            inputmode="decimal"
+                            value={cart.discountValue > 0 ? new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(cart.discountValue) : ''}
+                            oninput={(e) => {
+                                const raw = e.currentTarget.value.replace(/,/g, '');
+                                const num = Math.round(parseFloat(raw) * 100) / 100;
+                                if (!isNaN(num)) cart.setDiscount('FIXED', num);
+                                else if (raw === '' || raw === '.') cart.setDiscount('FIXED', 0);
+                            }}
+                            onblur={(e) => {
+                                const raw = e.currentTarget.value.replace(/,/g, '');
+                                const num = parseFloat(raw) || 0;
+                                e.currentTarget.value = num > 0 ? new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(num) : '';
+                                cart.setDiscount('FIXED', num);
+                            }}
+                            class="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800 text-right text-xl font-bold focus:ring-2 focus:ring-primary-500"
+                            placeholder="0.00"
+                        />
+                    {/if}
                 </div>
 
                 <!-- Quick Discount Buttons -->
                 {#if cart.discountType === 'PERCENTAGE'}
                     <div class="flex flex-wrap gap-2">
-                        {#each [5, 10, 15, 20, 25, 30] as percent}
+                        {#each [5, 10, 15, 20, 25, 30] as percent (percent)}
                             <button
                                 onclick={() => cart.setDiscount('PERCENTAGE', percent)}
                                 class={cn(
@@ -1205,7 +1231,7 @@
                     </div>
                 {:else}
                     <div class="flex flex-wrap gap-2">
-                        {#each [50, 100, 200, 500, 1000] as amount}
+                        {#each [50, 100, 200, 500, 1000] as amount (amount)}
                             <button
                                 onclick={() => cart.setDiscount('FIXED', amount)}
                                 class={cn(
@@ -1332,7 +1358,7 @@
                     </div>
                 {:else}
                     <div class="space-y-2">
-                        {#each filteredCustomers as customer}
+                        {#each filteredCustomers as customer (customer.id)}
                             <button
                                 onclick={() => {
                                     cart.setCustomer(customer);
@@ -1412,7 +1438,7 @@
                     </div>
                 {:else}
                     <div class="space-y-3">
-                        {#each heldBills as bill}
+                        {#each heldBills as bill (bill.id)}
                             <div class="bg-gray-50 dark:bg-gray-800 rounded-xl p-4">
                                 <div class="flex items-start justify-between mb-2">
                                     <div>

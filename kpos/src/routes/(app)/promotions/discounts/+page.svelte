@@ -1,9 +1,8 @@
 <script lang="ts">
-    import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
     import { api } from "$api";
-    import { formatCurrency } from "$lib/utils";
+    import { formatCurrency, formatDate } from "$lib/utils";
     import { toast } from "svelte-sonner";
     import {
         BadgePercent,
@@ -213,14 +212,6 @@
         };
     }
 
-    function formatDate(date: string): string {
-        if (!date) return "-";
-        return new Intl.DateTimeFormat("lo-LA", {
-            year: "numeric",
-            month: "short",
-            day: "numeric",
-        }).format(new Date(date));
-    }
 
     function toggleProductSelection(productId: string) {
         if (formData.productIds.includes(productId)) {
@@ -239,21 +230,18 @@
     }
 
     // Filtered and paginated - now using server-side data directly
-    let filteredDiscounts = $derived(() => {
+    let filteredDiscounts = $derived.by(() => {
         // Server already filters, so just return discounts
         return discounts;
     });
 
-    let paginatedDiscounts = $derived(() => {
+    let paginatedDiscounts = $derived.by(() => {
         // Server already paginates, so just return discounts
         return discounts;
     });
 
     let totalPages = $derived(Math.ceil(totalItems / itemsPerPage));
 
-    onMount(() => {
-        // Initial load handled by effect
-    });
 </script>
 
 <svelte:head>
@@ -385,7 +373,7 @@
                 <p class="text-gray-500 dark:text-gray-400">{t("common.loading")}...</p>
             </div>
         </div>
-    {:else if paginatedDiscounts().length === 0}
+    {:else if paginatedDiscounts.length === 0}
         <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-16 text-center shadow-sm">
             <BadgePercent class="w-16 h-16 mx-auto text-gray-300 dark:text-gray-600" />
             <h3 class="text-lg font-semibold text-gray-900 dark:text-white mt-4">ບໍ່ມີສ່ວນຫຼຸດ</h3>
@@ -393,7 +381,7 @@
         </div>
     {:else}
         <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {#each paginatedDiscounts() as discount}
+            {#each paginatedDiscounts as discount (discount.id)}
                 {@const applyConfig = getApplyToConfig(discount.applyTo)}
                 {@const ApplyIcon = applyConfig.icon}
 
@@ -507,7 +495,7 @@
                         onchange={() => { currentPage = 1; }}
                         class="px-2 py-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm"
                     >
-                        {#each [10, 20, 50, 100] as size}
+                        {#each [10, 20, 50, 100] as size (size)}
                             <option value={size}>{size}</option>
                         {/each}
                     </select>
@@ -658,7 +646,7 @@
                             ເລືອກສິນຄ້າ
                         </label>
                         <div class="max-h-40 overflow-y-auto border border-gray-200 dark:border-gray-700 rounded-xl p-2 space-y-1">
-                            {#each products as product}
+                            {#each products as product (product.id)}
                                 <label class="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer">
                                     <input
                                         type="checkbox"
@@ -680,7 +668,7 @@
                             ເລືອກໝວດໝູ່
                         </label>
                         <div class="max-h-40 overflow-y-auto border border-gray-200 dark:border-gray-700 rounded-xl p-2 space-y-1">
-                            {#each categories as category}
+                            {#each categories as category (category.id)}
                                 <label class="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer">
                                     <input
                                         type="checkbox"

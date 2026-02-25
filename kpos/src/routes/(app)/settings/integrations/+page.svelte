@@ -3,13 +3,26 @@
     import { api } from "$lib/api";
     import { onMount } from "svelte";
     import { toast } from "svelte-sonner";
-    import { Loader2, Save, Puzzle, Link, Settings, X } from "lucide-svelte";
+    import { auth } from "$stores";
+    import { Loader2, Save, Puzzle, Link, Settings, X, Plus, Key, Eye, EyeOff, Copy, Trash2, Edit, RefreshCw, Shield } from "lucide-svelte";
     const t = i18n.t;
 
+    let activeTab = $state<"services" | "apikeys">("services");
+
+    // Services
     let integrations = $state<any[]>([]);
     let loading = $state(true);
     let showModal = $state(false);
     let selectedIntegration = $state<any>(null);
+
+    // API Keys
+    let apiKeys = $state<any[]>([]);
+    let apiKeysLoading = $state(false);
+    let showKeyModal = $state(false);
+    let editingKey = $state<any>(null);
+    let showKeyValues = $state<Record<string, boolean>>({});
+    let keyForm = $state({ name: "", service: "", apiKey: "", secretKey: "", isActive: true });
+    let keySaving = $state(false);
 
     const availableIntegrations = [
         {
@@ -78,8 +91,10 @@
         },
     ];
 
-    onMount(() => {
+    $effect(() => {
+        auth.activeStoreId;
         loadIntegrations();
+        loadApiKeys();
     });
 
     async function loadIntegrations() {
@@ -91,17 +106,83 @@
             }
         } catch (error) {
             console.error("Failed to load integrations:", error);
-            // Sample connected integrations
-            integrations = [
-                {
-                    id: "bcel",
-                    connected: true,
-                    lastSync: new Date().toISOString(),
-                },
-            ];
+            integrations = [];
         } finally {
             loading = false;
         }
+    }
+
+    async function loadApiKeys() {
+        apiKeysLoading = true;
+        try {
+            const res = await api.get("settings/api-keys").json<any>();
+            apiKeys = res.data || [];
+        } catch (e) {
+            console.error("Failed to load API keys:", e);
+            apiKeys = [];
+        } finally {
+            apiKeysLoading = false;
+        }
+    }
+
+    function openKeyModal(key?: any) {
+        if (key) {
+            editingKey = key;
+            keyForm = { name: key.name, service: key.service, apiKey: key.apiKey, secretKey: key.secretKey || "", isActive: key.isActive };
+        } else {
+            editingKey = null;
+            keyForm = { name: "", service: "", apiKey: "", secretKey: "", isActive: true };
+        }
+        showKeyModal = true;
+    }
+
+    async function saveKey() {
+        if (!keyForm.name || !keyForm.apiKey) {
+            toast.error("ກະລຸນາປ້ອນຊື່ ແລະ API Key");
+            return;
+        }
+        keySaving = true;
+        try {
+            if (editingKey) {
+                await api.put(`settings/api-keys/${editingKey.id}`, { json: keyForm }).json();
+                toast.success(t("integrations.updateSuccess"));
+            } else {
+                await api.post("settings/api-keys", { json: keyForm }).json();
+                toast.success(t("integrations.createSuccess"));
+            }
+            showKeyModal = false;
+            loadApiKeys();
+        } catch (e) {
+            console.error("Failed to save key:", e);
+            toast.error(t("integrations.saveFailed"));
+        } finally {
+            keySaving = false;
+        }
+    }
+
+    async function deleteKey(key: any) {
+        if (!confirm(t("integrations.confirmDelete"))) return;
+        try {
+            await api.delete(`settings/api-keys/${key.id}`).json();
+            toast.success(t("integrations.deleteSuccess"));
+            loadApiKeys();
+        } catch (e) {
+            toast.error(t("integrations.deleteFailed"));
+        }
+    }
+
+    function copyKey(value: string) {
+        navigator.clipboard.writeText(value);
+        toast.success(t("integrations.keyCopied"));
+    }
+
+    function toggleShowKey(id: string) {
+        showKeyValues = { ...showKeyValues, [id]: !showKeyValues[id] };
+    }
+
+    function maskKey(key: string): string {
+        if (!key) return "";
+        return key.slice(0, 4) + "•".repeat(Math.max(0, key.length - 8)) + key.slice(-4);
     }
 
     function isConnected(integrationId: string): boolean {
@@ -168,14 +249,128 @@
 </svelte:head>
 
 <div class="p-6">
-    <div class="mb-6">
-        <h1 class="text-2xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
-            <Puzzle class="w-6 h-6" />
-            {t("settings.integrations")}
-        </h1>
-        <p class="text-gray-500 dark:text-gray-400">ເຊື່ອມຕໍ່ກັບບໍລິການພາຍນອກ</p>
+    <div class="mb-6 flex items-center justify-between">
+        <div>
+            <h1 class="text-2xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
+                <Puzzle class="w-6 h-6" />
+                {t("settings.integrations")}
+            </h1>
+            <p class="text-gray-500 dark:text-gray-400">{t("integrations.subtitle")}</p>
+        </div>
+        {#if activeTab === "apikeys"}
+            <button
+                onclick={() => openKeyModal()}
+                class="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 text-sm font-medium"
+            >
+                <Plus class="w-4 h-4" />
+                {t("integrations.addKey")}
+            </button>
+        {/if}
     </div>
 
+    <!-- Tabs -->
+    <div class="flex gap-1 mb-6 bg-gray-100 dark:bg-gray-800 p-1 rounded-lg w-fit">
+        <button
+            onclick={() => (activeTab = "services")}
+            class="flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all {activeTab === 'services' ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm' : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
+        >
+            <Link class="w-4 h-4" />
+            ບໍລິການ
+        </button>
+        <button
+            onclick={() => (activeTab = "apikeys")}
+            class="flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all {activeTab === 'apikeys' ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm' : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
+        >
+            <Key class="w-4 h-4" />
+            API Keys
+            {#if apiKeys.length > 0}
+                <span class="px-1.5 py-0.5 text-xs bg-primary-100 dark:bg-primary-900/50 text-primary-700 dark:text-primary-400 rounded-full">{apiKeys.length}</span>
+            {/if}
+        </button>
+    </div>
+
+    <!-- API Keys Tab -->
+    {#if activeTab === "apikeys"}
+        {#if apiKeysLoading}
+            <div class="flex justify-center py-12">
+                <Loader2 class="h-8 w-8 animate-spin text-primary-600" />
+            </div>
+        {:else if apiKeys.length === 0}
+            <div class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-16 text-center">
+                <Shield class="w-16 h-16 mx-auto text-gray-300 dark:text-gray-600 mb-4" />
+                <h3 class="text-lg font-semibold text-gray-900 dark:text-white">{t("integrations.noKeys")}</h3>
+                <p class="text-gray-500 dark:text-gray-400 mt-2 mb-6">ເພີ່ມ API Key ເພື່ອເຊື່ອມຕໍ່ກັບບໍລິການພາຍນອກ</p>
+                <button
+                    onclick={() => openKeyModal()}
+                    class="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 text-sm font-medium mx-auto"
+                >
+                    <Plus class="w-4 h-4" />
+                    {t("integrations.addKey")}
+                </button>
+            </div>
+        {:else}
+            <div class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
+                <table class="w-full">
+                    <thead class="bg-gray-50 dark:bg-gray-700/50">
+                        <tr class="text-left text-xs text-gray-500 dark:text-gray-400 uppercase">
+                            <th class="px-4 py-3">{t("integrations.keyName")}</th>
+                            <th class="px-4 py-3">{t("integrations.service")}</th>
+                            <th class="px-4 py-3">{t("integrations.keyValue")}</th>
+                            <th class="px-4 py-3">{t("integrations.status")}</th>
+                            <th class="px-4 py-3 text-center">{t("common.actions")}</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-gray-100 dark:divide-gray-700">
+                        {#each apiKeys as key (key.id)}
+                            <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50">
+                                <td class="px-4 py-3">
+                                    <div class="flex items-center gap-2">
+                                        <Key class="w-4 h-4 text-gray-400" />
+                                        <span class="font-medium text-gray-900 dark:text-white">{key.name}</span>
+                                    </div>
+                                </td>
+                                <td class="px-4 py-3 text-gray-600 dark:text-gray-400">{key.service || "-"}</td>
+                                <td class="px-4 py-3">
+                                    <div class="flex items-center gap-2">
+                                        <code class="text-xs font-mono text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded">
+                                            {showKeyValues[key.id] ? key.apiKey : maskKey(key.apiKey)}
+                                        </code>
+                                        <button onclick={() => toggleShowKey(key.id)} class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">
+                                            {#if showKeyValues[key.id]}
+                                                <EyeOff class="w-4 h-4" />
+                                            {:else}
+                                                <Eye class="w-4 h-4" />
+                                            {/if}
+                                        </button>
+                                        <button onclick={() => copyKey(key.apiKey)} class="text-gray-400 hover:text-primary-600">
+                                            <Copy class="w-4 h-4" />
+                                        </button>
+                                    </div>
+                                </td>
+                                <td class="px-4 py-3">
+                                    <span class="px-2 py-1 text-xs rounded-full {key.isActive ? 'bg-green-100 dark:bg-green-900/50 text-green-700 dark:text-green-400' : 'bg-gray-100 dark:bg-gray-700 text-gray-500'}">
+                                        {key.isActive ? t("integrations.connected") : t("integrations.disconnected")}
+                                    </span>
+                                </td>
+                                <td class="px-4 py-3 text-center">
+                                    <div class="flex items-center justify-center gap-1">
+                                        <button onclick={() => openKeyModal(key)} class="p-1.5 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">
+                                            <Edit class="w-4 h-4" />
+                                        </button>
+                                        <button onclick={() => deleteKey(key)} class="p-1.5 text-red-500 hover:bg-red-100 dark:hover:bg-red-900/30 rounded-lg">
+                                            <Trash2 class="w-4 h-4" />
+                                        </button>
+                                    </div>
+                                </td>
+                            </tr>
+                        {/each}
+                    </tbody>
+                </table>
+            </div>
+        {/if}
+
+    <!-- Services Tab -->
+    {:else}
     {#if loading}
         <div class="flex justify-center py-12">
             <Loader2 class="h-8 w-8 animate-spin text-primary-600" />
@@ -189,7 +384,7 @@
                     ເຊື່ອມຕໍ່ແລ້ວ
                 </h2>
                 <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-                    {#each integrations.filter((i) => i.connected) as config}
+                    {#each integrations.filter((i) => i.connected) as config (config.id)}
                         {@const integration = availableIntegrations.find(
                             (a) => a.id === config.id,
                         )}
@@ -250,7 +445,7 @@
                 ບໍລິການທີ່ສາມາດເຊື່ອມຕໍ່ໄດ້
             </h2>
             <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-                {#each availableIntegrations.filter((i) => !isConnected(i.id)) as integration}
+                {#each availableIntegrations.filter((i) => !isConnected(i.id)) as integration (integration.id)}
                     <div
                         class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 hover:shadow-md transition-shadow {integration.status ===
                         'coming_soon'
@@ -297,7 +492,55 @@
             </div>
         </div>
     {/if}
+    {/if}
 </div>
+
+{#if showKeyModal}
+    <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+        <div class="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-md">
+            <div class="flex items-center justify-between px-6 py-4 border-b border-gray-200 dark:border-gray-700">
+                <h2 class="text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2">
+                    <Key class="w-5 h-5" />
+                    {editingKey ? t("integrations.editKey") : t("integrations.addKey")}
+                </h2>
+                <button onclick={() => (showKeyModal = false)} class="p-1.5 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">
+                    <X class="w-5 h-5 text-gray-500" />
+                </button>
+            </div>
+            <div class="p-6 space-y-4">
+                <div>
+                    <label for="key-name" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t("integrations.keyName")} *</label>
+                    <input id="key-name" type="text" bind:value={keyForm.name} placeholder="ຊື່ Key" class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm" />
+                </div>
+                <div>
+                    <label for="key-service" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t("integrations.service")}</label>
+                    <input id="key-service" type="text" bind:value={keyForm.service} placeholder="ເຊັ່ນ: BCEL, LINE, Shopee" class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm" />
+                </div>
+                <div>
+                    <label for="key-apikey" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t("integrations.keyValue")} *</label>
+                    <input id="key-apikey" type="text" bind:value={keyForm.apiKey} placeholder="API Key" class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm font-mono" />
+                </div>
+                <div>
+                    <label for="key-secret" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t("integrations.keySecret")}</label>
+                    <input id="key-secret" type="password" bind:value={keyForm.secretKey} placeholder="Secret Key (ຖ້າມີ)" class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm font-mono" />
+                </div>
+                <label class="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" bind:checked={keyForm.isActive} class="rounded border-gray-300 dark:border-gray-600" />
+                    <span class="text-sm text-gray-700 dark:text-gray-300">{t("common.enabled")}</span>
+                </label>
+            </div>
+            <div class="flex justify-end gap-3 px-6 py-4 border-t border-gray-200 dark:border-gray-700">
+                <button onclick={() => (showKeyModal = false)} class="px-4 py-2 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg text-sm">
+                    {t("common.cancel")}
+                </button>
+                <button onclick={saveKey} disabled={keySaving} class="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 text-sm disabled:opacity-50">
+                    {#if keySaving}<Loader2 class="w-4 h-4 animate-spin" />{:else}<Save class="w-4 h-4" />{/if}
+                    {t("common.save")}
+                </button>
+            </div>
+        </div>
+    </div>
+{/if}
 
 {#if showModal && selectedIntegration}
     <div

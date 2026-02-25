@@ -3,6 +3,7 @@
     import { api } from "$lib/api";
     import { toast } from "svelte-sonner";
     import { auth } from "$lib/stores/auth.svelte";
+    import { formatPhone, formatDate } from "$utils";
     import { goto } from "$app/navigation";
     import { 
         Store, Settings, Users, Building2, MapPin, Phone, Mail, 
@@ -118,13 +119,6 @@
         $updateStoreMutation.mutate(editForm);
     }
 
-    function formatDate(date: string) {
-        return new Date(date).toLocaleDateString("lo-LA", {
-            year: "numeric",
-            month: "short",
-            day: "numeric"
-        });
-    }
 
     function formatCurrency(amount: number) {
         return new Intl.NumberFormat("lo-LA").format(amount) + " ₭";
@@ -305,7 +299,7 @@
                                         <Phone class="w-5 h-5 text-gray-400 mt-0.5" />
                                         <div>
                                             <p class="text-sm text-gray-500 dark:text-gray-400">ເບີໂທ</p>
-                                            <p class="text-gray-900 dark:text-white">{$storeQuery.data.phone || "-"}</p>
+                                            <p class="text-gray-900 dark:text-white">{$storeQuery.data.phone ? formatPhone($storeQuery.data.phone) : "-"}</p>
                                         </div>
                                     </div>
                                     <div class="flex items-start gap-3">
@@ -321,7 +315,7 @@
                                 <h3 class="font-semibold text-gray-900 dark:text-white">ສາຂາ</h3>
                                 {#if $branchesQuery.data?.length}
                                     <div class="space-y-2">
-                                        {#each $branchesQuery.data.slice(0, 3) as branch}
+                                        {#each $branchesQuery.data.slice(0, 3) as branch (branch.id)}
                                             <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
                                                 <div class="flex items-center gap-3">
                                                     <Building2 class="w-5 h-5 text-gray-400" />
@@ -347,7 +341,7 @@
                             </div>
                             {#if $branchesQuery.data?.length}
                                 <div class="grid gap-4">
-                                    {#each $branchesQuery.data as branch}
+                                    {#each $branchesQuery.data as branch (branch.id)}
                                         <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-700 rounded-xl">
                                             <div class="flex items-center gap-4">
                                                 <div class="p-3 bg-white dark:bg-gray-600 rounded-lg">
@@ -400,7 +394,7 @@
                                             </tr>
                                         </thead>
                                         <tbody>
-                                            {#each $usersQuery.data as user}
+                                            {#each $usersQuery.data as user (user.id)}
                                                 <tr class="border-b border-gray-100 dark:border-gray-700/50">
                                                     <td class="py-3 px-4">
                                                         <span class="font-medium text-gray-900 dark:text-white">{user.name}</span>

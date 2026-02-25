@@ -3,6 +3,7 @@
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
     import { api } from "$api";
+    import { auth } from "$stores";
     import { toast } from "svelte-sonner";
     import {
         Truck,
@@ -152,7 +153,10 @@
         }
     }
 
-    onMount(() => loadData());
+    $effect(() => {
+        auth.activeStoreId;
+        loadData();
+    });
 </script>
 
 <svelte:head>
@@ -240,7 +244,7 @@
         </div>
     {:else}
         <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {#each vendors as vendor}
+            {#each vendors as vendor (vendor.id)}
                 <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden hover:shadow-md transition-all">
                     <div class="p-4 bg-gradient-to-r from-amber-500 to-orange-600">
                         <div class="flex items-center justify-between">
@@ -299,7 +303,7 @@
                     onchange={() => { currentPage = 1; loadData(); }}
                     class="px-2 py-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm"
                 >
-                    {#each [5, 10, 20, 50, 100] as size}
+                    {#each [5, 10, 20, 50, 100] as size (size)}
                         <option value={size}>{size}</option>
                     {/each}
                 </select>

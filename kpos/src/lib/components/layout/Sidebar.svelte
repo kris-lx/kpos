@@ -4,8 +4,8 @@
     import { t } from "$lib/i18n/index.svelte";
     import { auth } from "$stores";
     import { api } from "$lib/api";
-    import { slide, fade } from "svelte/transition";
-    import { cubicOut } from "svelte/easing";
+    import { fade } from "svelte/transition";
+    import StoreSelector from "./StoreSelector.svelte";
     import { onMount } from "svelte";
     import {
         Store,
@@ -78,14 +78,71 @@
         children?: MenuItem[];
     }
 
-    let { isOpen = true, onToggle } = $props<{
+    let { isOpen = true, onToggle }: {
         isOpen?: boolean;
         onToggle?: () => void;
-    }>();
+    } = $props();
 
     let expandedMenus = $state<Set<string>>(new Set(["sales"]));
+    let hoveredMenu = $state<string | null>(null);
     let heldOrdersCount = $state(0);
     let pendingCreditCount = $state(0);
+    let menuLoaded = $state(false);
+
+    // Helper: check if a menu item should be visible based on rules + permissions
+    function isMenuVisible(item: MenuItem): boolean {
+        // No permission required = always visible
+        if (!item.permission && !item.href) return true;
+        // Super admin sees everything
+        if (auth.user?.isSuperAdmin) return true;
+        // If rules are loaded, use route-based check
+        if (auth.userRules.length > 0 && item.href) {
+            return auth.hasRouteAccess(item.href);
+        }
+        // Fall back to permission check
+        if (item.permission) return auth.hasPermission(item.permission);
+        return true;
+    }
+
+    function isParentVisible(item: MenuItem): boolean {
+        if (!item.children) return isMenuVisible(item);
+        // Parent is visible if at least one child is visible
+        return item.children.some(child => isMenuVisible(child));
+    }
+
+    // Icon resolver: maps backend icon string names to Svelte components
+    const iconMap: Record<string, typeof Icon> = {
+        LayoutDashboard, ShoppingCart, Package, Users, BarChart3, Settings,
+        Boxes, Tags, Building2, Barcode, FileText, Gift, UtensilsCrossed,
+        CreditCard, UserCog, Truck, ClipboardList, DollarSign, Percent,
+        TicketPercent, Receipt, Printer, QrCode, Scale, Box, ArrowRightLeft,
+        PackageSearch, CalendarClock, TrendingUp, TrendingDown, PieChart,
+        FileSpreadsheet, Wallet, BellRing, Plug, Monitor, HelpCircle,
+        Crown, Layers, ShoppingBag, ChefHat, ClipboardCheck, Timer,
+        Star, Heart, PackageX, Shield, ShieldCheck, FileCheck, Key, History,
+        Store, LogOut, ChevronDown,
+    };
+
+    function resolveIcon(name?: string | null): typeof Icon {
+        if (!name) return Package;
+        return iconMap[name] || Package;
+    }
+
+    // Auto-expand parent menu matching current route
+    $effect(() => {
+        const pathname = $page.url.pathname;
+        for (const item of menuItems) {
+            if (item.children) {
+                const hasActiveChild = item.children.some(
+                    (child) => child.href && (pathname === child.href || pathname.startsWith(child.href + "/"))
+                );
+                if (hasActiveChild && !expandedMenus.has(item.id)) {
+                    expandedMenus.add(item.id);
+                    expandedMenus = new Set(expandedMenus);
+                }
+            }
+        }
+    });
 
     // Load held orders count
     async function loadHeldOrdersCount() {
@@ -114,7 +171,45 @@
         }
     }
 
+    async function loadMenuFromApi() {
+        try {
+            const res = await api.get('users/me/menu').json<any>();
+            if (res.success && res.data?.length > 0) {
+                const apiMenus: MenuItem[] = res.data.map((menu: any) => {
+                    const item: MenuItem = {
+                        id: menu.key,
+                        name: menu.labelLao || menu.label,
+                        nameKey: menu.key ? `nav.${menu.key.replace(/\./g, '_')}` : undefined,
+                        icon: resolveIcon(menu.icon),
+                        permission: menu.requiredPermission || undefined,
+                        href: menu.path || undefined,
+                    };
+                    if (menu.children?.length > 0) {
+                        item.children = menu.children.map((child: any) => ({
+                            id: child.key,
+                            name: child.labelLao || child.label,
+                            nameKey: child.key ? `nav.${child.key.replace(/\./g, '_')}` : undefined,
+                            href: child.path,
+                            icon: resolveIcon(child.icon),
+                            permission: child.requiredPermission || undefined,
+                        }));
+                    }
+                    return item;
+                });
+                // Append help link if not present
+                if (!apiMenus.find(m => m.id === 'help')) {
+                    apiMenus.push({ id: 'help', name: 'ຊ່ວຍເຫຼືອ', nameKey: 'nav.help', href: '/help', icon: HelpCircle });
+                }
+                menuItems = apiMenus;
+                menuLoaded = true;
+            }
+        } catch {
+            // Keep hardcoded fallback
+        }
+    }
+
     onMount(() => {
+        loadMenuFromApi();
         loadHeldOrdersCount();
         loadPendingCreditCount();
         // Refresh count every 30 seconds
@@ -125,7 +220,7 @@
         return () => clearInterval(interval);
     });
 
-    const menuItems: MenuItem[] = [
+    let menuItems = $state<MenuItem[]>([
         {
             id: "dashboard",
             name: "Dashboard",
@@ -150,14 +245,6 @@
                     permission: "sales:create",
                 },
                 {
-                    id: "pos-fullscreen",
-                    name: "ໜ້າຂາຍເຕັມຈໍ",
-                    nameKey: "nav.posFullscreen",
-                    href: "/pos?mode=fullscreen",
-                    icon: Monitor,
-                    permission: "sales:create",
-                },
-                {
                     id: "credit-sales",
                     name: "ຂາຍສິນເຊື່ອ",
                     nameKey: "nav.creditSales",
@@ -174,14 +261,6 @@
                     icon: ClipboardList,
                     permission: "sales:create",
                     badgeColor: "warning",
-                },
-                {
-                    id: "customer-display",
-                    name: "ຈໍລູກຄ້າ",
-                    nameKey: "nav.customerDisplay",
-                    href: "/display/customer",
-                    icon: Monitor,
-                    permission: "sales:create",
                 },
             ],
         },
@@ -622,6 +701,13 @@
                     icon: Key,
                 },
                 {
+                    id: "admin-rules",
+                    name: "ຈັດການ Rules",
+                    nameKey: "nav.adminRules",
+                    href: "/admin/rules",
+                    icon: ShieldCheck,
+                },
+                {
                     id: "admin-permissions",
                     name: "ຈັດການສິດ",
                     nameKey: "nav.adminPermissions",
@@ -774,7 +860,7 @@
             href: "/help",
             icon: HelpCircle,
         },
-    ];
+    ]);
 
     function toggleMenu(menuId: string) {
         if (expandedMenus.has(menuId)) {
@@ -788,9 +874,31 @@
     function isActive(href?: string): boolean {
         if (!href) return false;
         const pathname = $page.url.pathname;
-        if (href === "/pos" && pathname === "/pos") return true;
-        if (href !== "/pos" && pathname.startsWith(href)) return true;
-        return pathname === href;
+        if (pathname === href) return true;
+        
+        // Find the most specific match among all menu items
+        let bestMatch = "";
+        for (const item of menuItems) {
+            if (item.href && pathname.startsWith(item.href) && item.href.length > bestMatch.length) {
+                bestMatch = item.href;
+            }
+            if (item.children) {
+                for (const child of item.children) {
+                    if (child.href && pathname.startsWith(child.href) && child.href.length > bestMatch.length) {
+                        bestMatch = child.href;
+                    }
+                }
+            }
+        }
+        
+        // It's only active if this href is the best match
+        if (href === bestMatch) return true;
+        
+        // Fallback for paths that aren't in the menu exactly but share a prefix (like /documents/invoices/123)
+        // We only use this if we didn't find a better match
+        if (href !== "/" && pathname.startsWith(href + "/") && bestMatch === href) return true;
+        
+        return false;
     }
 
     function isParentActive(item: MenuItem): boolean {
@@ -853,52 +961,108 @@
         {/if}
     </div>
 
+    <!-- Store Selector (only show when sidebar is open and user has multiple stores) -->
+    {#if isOpen && auth.accessibleStores.length > 1}
+        <div class="px-3 py-2 border-b border-gray-200 dark:border-gray-800 shrink-0">
+            <StoreSelector />
+        </div>
+    {/if}
+
     <!-- Navigation -->
-    <nav class="flex-1 overflow-y-auto py-4 px-3 scrollbar-thin">
+    <nav class={cn("flex-1 py-4 px-3", isOpen ? "overflow-y-auto scrollbar-thin" : "overflow-visible")}>
         <ul class="space-y-1">
             {#each menuItems as item}
-                {#if !item.permission || auth.hasPermission(item.permission)}
-                    <li>
+                {#if isParentVisible(item)}
+                    <li class="relative">
                         {#if item.children}
                             <!-- Parent Menu with Children -->
-                            <button
-                                onclick={() => toggleMenu(item.id)}
-                                class={cn(
-                                    "flex items-center w-full gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200",
-                                    isParentActive(item)
-                                        ? "bg-primary-50 text-primary-600 dark:bg-primary-900/20 dark:text-primary-400"
-                                        : "text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800",
-                                )}
+                            <!-- svelte-ignore a11y_no_static_element_interactions -->
+                            <div
+                                onmouseenter={() => { if (!isOpen) hoveredMenu = item.id; }}
+                                onmouseleave={() => { if (!isOpen) hoveredMenu = null; }}
                             >
-                                <item.icon class="w-5 h-5 shrink-0" />
-                                {#if isOpen}
-                                    <span class="flex-1 text-left"
-                                        >{item.nameKey
-                                            ? t(item.nameKey)
-                                            : item.name}</span
-                                    >
-                                    <ChevronDown
-                                        class={cn(
-                                            "w-4 h-4 transition-transform duration-200",
-                                            expandedMenus.has(item.id)
-                                                ? "rotate-180"
-                                                : "",
-                                        )}
-                                    />
-                                {/if}
-                            </button>
-
-                            <!-- Submenu -->
-                            {#if isOpen && expandedMenus.has(item.id)}
-                                <ul
-                                    class="mt-1 ml-4 pl-4 border-l-2 border-gray-200 dark:border-gray-700 space-y-1"
-                                    transition:slide={{
-                                        duration: 200,
-                                        easing: cubicOut,
-                                    }}
+                                <button
+                                    onclick={() => { if (isOpen) toggleMenu(item.id); }}
+                                    class={cn(
+                                        "flex items-center w-full gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200",
+                                        isParentActive(item)
+                                            ? "bg-primary-50 text-primary-600 dark:bg-primary-900/20 dark:text-primary-400"
+                                            : "text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800",
+                                        !isOpen && "justify-center",
+                                    )}
+                                    title={!isOpen ? (item.nameKey ? t(item.nameKey) : item.name) : undefined}
                                 >
+                                    <item.icon class="w-5 h-5 shrink-0" />
+                                    {#if isOpen}
+                                        <span class="flex-1 text-left"
+                                            >{item.nameKey
+                                                ? t(item.nameKey)
+                                                : item.name}</span
+                                        >
+                                        <ChevronDown
+                                            class={cn(
+                                                "w-4 h-4 transition-transform duration-200",
+                                                expandedMenus.has(item.id)
+                                                    ? "rotate-180"
+                                                    : "",
+                                            )}
+                                        />
+                                    {/if}
+                                </button>
+
+                                <!-- Collapsed Popup Submenu -->
+                                {#if !isOpen && hoveredMenu === item.id}
+                                    <div
+                                        class="absolute left-full top-0 ml-2 z-60 min-w-56 bg-white dark:bg-gray-900 rounded-xl shadow-xl border border-gray-200 dark:border-gray-700 py-2"
+                                        transition:fade={{ duration: 100 }}
+                                    >
+                                        <div class="px-3 py-2 border-b border-gray-100 dark:border-gray-800 mb-1">
+                                            <span class="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider">
+                                                {item.nameKey ? t(item.nameKey) : item.name}
+                                            </span>
+                                        </div>
+                                        {#each item.children as child}
+                                            {#if isMenuVisible(child)}
+                                                <a
+                                                    href={child.href}
+                                                    class={cn(
+                                                        "flex items-center gap-3 mx-1 px-3 py-2 rounded-lg text-sm transition-all duration-150",
+                                                        isActive(child.href)
+                                                            ? "bg-primary-50 text-primary-600 dark:bg-primary-900/20 dark:text-primary-400 font-medium"
+                                                            : "text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200",
+                                                    )}
+                                                >
+                                                    <child.icon class="w-4 h-4 shrink-0" />
+                                                    <span class="flex-1"
+                                                        >{child.nameKey
+                                                            ? t(child.nameKey)
+                                                            : child.name}</span
+                                                    >
+                                                    {#if child.badge || getDynamicBadge(child.id)}
+                                                        <span
+                                                            class={cn(
+                                                                "px-1.5 py-0.5 text-xs font-medium rounded-full",
+                                                                getBadgeClass(child.badgeColor),
+                                                            )}
+                                                        >
+                                                            {getDynamicBadge(child.id) ?? child.badge}
+                                                        </span>
+                                                    {/if}
+                                                </a>
+                                            {/if}
+                                        {/each}
+                                    </div>
+                                {/if}
+                            </div>
+
+                            <!-- Expanded Submenu (sidebar open) -->
+                            {#if isOpen}
+                                {#if expandedMenus.has(item.id)}
+                                    <ul
+                                        class="mt-1 ml-4 pl-4 border-l-2 border-gray-200 dark:border-gray-700 space-y-1"
+                                    >
                                     {#each item.children as child}
-                                        {#if !child.permission || auth.hasPermission(child.permission)}
+                                        {#if isMenuVisible(child)}
                                             <li>
                                                 <a
                                                     href={child.href}
@@ -934,27 +1098,47 @@
                                         {/if}
                                     {/each}
                                 </ul>
+                                {/if}
                             {/if}
                         {:else}
                             <!-- Single Menu Item -->
-                            <a
-                                href={item.href}
-                                class={cn(
-                                    "flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200",
-                                    isActive(item.href)
-                                        ? "bg-primary-50 text-primary-600 dark:bg-primary-900/20 dark:text-primary-400"
-                                        : "text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800",
-                                )}
+                            <!-- svelte-ignore a11y_no_static_element_interactions -->
+                            <div
+                                onmouseenter={() => { if (!isOpen) hoveredMenu = item.id; }}
+                                onmouseleave={() => { if (!isOpen) hoveredMenu = null; }}
                             >
-                                <item.icon class="w-5 h-5 shrink-0" />
-                                {#if isOpen}
-                                    <span
-                                        >{item.nameKey
-                                            ? t(item.nameKey)
-                                            : item.name}</span
+                                <a
+                                    href={item.href}
+                                    class={cn(
+                                        "flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200",
+                                        isActive(item.href)
+                                            ? "bg-primary-50 text-primary-600 dark:bg-primary-900/20 dark:text-primary-400"
+                                            : "text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800",
+                                        !isOpen && "justify-center",
+                                    )}
+                                    title={!isOpen ? (item.nameKey ? t(item.nameKey) : item.name) : undefined}
+                                >
+                                    <item.icon class="w-5 h-5 shrink-0" />
+                                    {#if isOpen}
+                                        <span
+                                            >{item.nameKey
+                                                ? t(item.nameKey)
+                                                : item.name}</span
+                                        >
+                                    {/if}
+                                </a>
+                                <!-- Collapsed Tooltip for single items -->
+                                {#if !isOpen && hoveredMenu === item.id}
+                                    <div
+                                        class="absolute left-full top-0 ml-2 z-60 bg-white dark:bg-gray-900 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 px-3 py-2 whitespace-nowrap"
+                                        transition:fade={{ duration: 100 }}
                                     >
+                                        <span class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                                            {item.nameKey ? t(item.nameKey) : item.name}
+                                        </span>
+                                    </div>
                                 {/if}
-                            </a>
+                            </div>
                         {/if}
                     </li>
                 {/if}

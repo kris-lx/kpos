@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, branchFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, branchFilter, applyScopeFilter, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { prisma } from '@/config/database.config';
 
 export const promotionRoutes = Router();
@@ -22,10 +22,9 @@ promotionRoutes.get('/coupons/list', authenticate, branchFilter(), async (req, r
 
         const where: Record<string, unknown> = {};
         
-        // Apply branch filter for non-admin users
-        if (filter?.branchIds?.length) {
-            where.branchId = { in: filter.branchIds };
-        }
+        // Apply store scope filter
+        applyScopeFilter(where, filter, 'storeId');
+
         if (search) {
             where.OR = [
                 { code: { contains: String(search), mode: 'insensitive' } },
@@ -149,10 +148,16 @@ promotionRoutes.post('/coupons', authenticate, authorize('promotions:create'), a
         if (data.startDate) data.startDate = new Date(data.startDate);
         if (data.endDate) data.endDate = data.endDate ? new Date(data.endDate) : null;
 
+        // Attach storeId from active store
+        if (req.authUser?.activeStoreId) {
+            data.storeId = req.authUser.activeStoreId;
+        }
+
         const coupon = await prisma.coupon.create({
             data,
         });
 
+        await invalidateQueryCache('promotions*');
         res.status(201).json({ success: true, data: coupon });
     } catch (error) {
         next(error);
@@ -172,6 +177,7 @@ promotionRoutes.put('/coupons/:id', authenticate, authorize('promotions:update')
             data,
         });
 
+        await invalidateQueryCache('promotions*');
         res.json({ success: true, data: coupon });
     } catch (error) {
         next(error);
@@ -185,6 +191,7 @@ promotionRoutes.delete('/coupons/:id', authenticate, authorize('promotions:delet
             where: { id: req.params.id },
         });
 
+        await invalidateQueryCache('promotions*');
         res.json({ success: true, message: 'Coupon deleted successfully' });
     } catch (error) {
         next(error);
@@ -196,12 +203,14 @@ promotionRoutes.delete('/coupons/:id', authenticate, authorize('promotions:delet
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all discounts with pagination
-promotionRoutes.get('/discounts', authenticate, async (req, res, next) => {
+promotionRoutes.get('/discounts', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { page = 1, limit = 20, search, isActive, applyTo } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
+        const filter = (req as any).branchFilter;
         
         const where: Record<string, unknown> = {};
+        applyScopeFilter(where, filter, 'storeId');
         
         if (search) {
             where.OR = [
@@ -273,10 +282,16 @@ promotionRoutes.post('/discounts', authenticate, authorize('promotions:create'),
         if (endDate) discountData.endDate = new Date(endDate);
         if (usageLimit !== undefined) discountData.usageLimit = usageLimit || null;
         
+        // Attach storeId from active store
+        if (req.authUser?.activeStoreId) {
+            discountData.storeId = req.authUser.activeStoreId;
+        }
+
         const discount = await prisma.discount.create({
             data: discountData as any,
         });
 
+        await invalidateQueryCache('promotions*');
         res.status(201).json({ success: true, data: discount });
     } catch (error) {
         console.error('Create discount error:', error);
@@ -316,6 +331,7 @@ promotionRoutes.put('/discounts/:id', authenticate, authorize('promotions:update
             data: discountData as any,
         });
 
+        await invalidateQueryCache('promotions*');
         res.json({ success: true, data: discount });
     } catch (error) {
         console.error('Update discount error:', error);
@@ -330,6 +346,7 @@ promotionRoutes.delete('/discounts/:id', authenticate, authorize('promotions:del
             where: { id: req.params.id },
         });
 
+        await invalidateQueryCache('promotions*');
         res.json({ success: true, message: 'Discount deleted successfully' });
     } catch (error) {
         next(error);
@@ -341,13 +358,15 @@ promotionRoutes.delete('/discounts/:id', authenticate, authorize('promotions:del
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all promotions
-promotionRoutes.get('/', authenticate, async (req, res, next) => {
+promotionRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { page = 1, limit = 20, search, status } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
         const now = new Date();
+        const filter = (req as any).branchFilter;
 
         const where: Record<string, unknown> = {};
+        applyScopeFilter(where, filter, 'storeId');
         if (search) {
             where.OR = [
                 { name: { contains: String(search), mode: 'insensitive' } },
@@ -418,15 +437,33 @@ promotionRoutes.get('/:id', authenticate, async (req, res, next) => {
 // Create promotion
 promotionRoutes.post('/', authenticate, authorize('promotions:create'), async (req, res, next) => {
     try {
-        // Convert date strings to Date objects
-        const data = { ...req.body };
-        if (data.startDate) data.startDate = new Date(data.startDate);
-        if (data.endDate !== undefined) data.endDate = data.endDate ? new Date(data.endDate) : null;
+        // Convert date strings to Date objects and sanitize
+        const { id, _id, createdAt, updatedAt, ...body } = req.body;
+        const data: Record<string, unknown> = {
+            name: body.name,
+            type: body.type || 'PERCENTAGE',
+            value: Number(body.value) || 0,
+            description: body.description || null,
+            conditions: body.conditions || null,
+            applicableTo: body.applicableTo || null,
+            startDate: body.startDate ? new Date(body.startDate) : new Date(),
+            endDate: body.endDate ? new Date(body.endDate) : null,
+            isActive: body.isActive !== undefined ? body.isActive : true,
+            priority: body.priority ? Number(body.priority) : 0,
+            usageLimit: body.usageLimit ? Number(body.usageLimit) : null,
+            memberOnly: body.memberOnly || false,
+        };
+
+        // Attach storeId from active store
+        if (req.authUser?.activeStoreId) {
+            data.storeId = req.authUser.activeStoreId;
+        }
 
         const promotion = await prisma.promotion.create({
             data,
         });
 
+        await invalidateQueryCache('promotions*');
         res.status(201).json({ success: true, data: promotion });
     } catch (error) {
         next(error);
@@ -436,16 +473,28 @@ promotionRoutes.post('/', authenticate, authorize('promotions:create'), async (r
 // Update promotion
 promotionRoutes.put('/:id', authenticate, authorize('promotions:update'), async (req, res, next) => {
     try {
-        // Convert date strings to Date objects
-        const data = { ...req.body };
-        if (data.startDate) data.startDate = new Date(data.startDate);
-        if (data.endDate !== undefined) data.endDate = data.endDate ? new Date(data.endDate) : null;
+        // Convert date strings to Date objects and sanitize
+        const { id, _id, createdAt, updatedAt, ...body } = req.body;
+        const data: Record<string, unknown> = {};
+        if (body.name !== undefined) data.name = body.name;
+        if (body.type !== undefined) data.type = body.type;
+        if (body.value !== undefined) data.value = Number(body.value);
+        if (body.description !== undefined) data.description = body.description || null;
+        if (body.conditions !== undefined) data.conditions = body.conditions;
+        if (body.applicableTo !== undefined) data.applicableTo = body.applicableTo;
+        if (body.startDate !== undefined) data.startDate = body.startDate ? new Date(body.startDate) : undefined;
+        if (body.endDate !== undefined) data.endDate = body.endDate ? new Date(body.endDate) : null;
+        if (body.isActive !== undefined) data.isActive = body.isActive;
+        if (body.priority !== undefined) data.priority = Number(body.priority);
+        if (body.usageLimit !== undefined) data.usageLimit = body.usageLimit ? Number(body.usageLimit) : null;
+        if (body.memberOnly !== undefined) data.memberOnly = body.memberOnly;
 
         const promotion = await prisma.promotion.update({
             where: { id: req.params.id },
             data,
         });
 
+        await invalidateQueryCache('promotions*');
         res.json({ success: true, data: promotion });
     } catch (error) {
         next(error);
@@ -459,6 +508,7 @@ promotionRoutes.delete('/:id', authenticate, authorize('promotions:delete'), asy
             where: { id: req.params.id },
         });
 
+        await invalidateQueryCache('promotions*');
         res.json({ success: true, message: 'Promotion deleted successfully' });
     } catch (error) {
         next(error);

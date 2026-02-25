@@ -99,7 +99,7 @@
         formData = { date: new Date().toISOString().split("T")[0], amount: 0, paymentMethod: "cash", bankAccount: "", reference: "", notes: "" };
     }
 
-    let filteredSettlements = $derived(() => {
+    let filteredSettlements = $derived.by(() => {
         return settlements.filter((s) => {
             const matchSearch = s.reference?.toLowerCase().includes(searchQuery.toLowerCase());
             const matchStatus = !statusFilter || s.status === statusFilter;
@@ -107,12 +107,12 @@
         });
     });
 
-    let paginatedSettlements = $derived(() => {
+    let paginatedSettlements = $derived.by(() => {
         const start = (currentPage - 1) * itemsPerPage;
-        return filteredSettlements().slice(start, start + itemsPerPage);
+        return filteredSettlements.slice(start, start + itemsPerPage);
     });
 
-    let totalPages = $derived(Math.ceil(filteredSettlements().length / itemsPerPage));
+    let totalPages = $derived(Math.ceil(filteredSettlements.length / itemsPerPage));
 
     onMount(() => loadData());
 </script>
@@ -199,7 +199,7 @@
                 <input type="text" bind:value={searchQuery} placeholder="ຄົ້ນຫາ..." class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-indigo-500" />
             </div>
             <div class="flex gap-2">
-                {#each [{ id: null, label: "ທັງໝົດ" }, { id: "pending", label: "ລໍຖ້າ" }, { id: "completed", label: "ສຳເລັດ" }] as filter}
+                {#each [{ id: null, label: "ທັງໝົດ" }, { id: "pending", label: "ລໍຖ້າ" }, { id: "completed", label: "ສຳເລັດ" }] as filter (filter.id)}
                     <button
                         onclick={() => { statusFilter = filter.id; currentPage = 1; }}
                         class={cn("px-3 py-2 rounded-lg text-sm font-medium transition-all", statusFilter === filter.id ? "bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-400" : "text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700")}
@@ -216,7 +216,7 @@
         <div class="flex items-center justify-center py-20">
             <Loader2 class="w-10 h-10 text-indigo-500 animate-spin" />
         </div>
-    {:else if paginatedSettlements().length === 0}
+    {:else if paginatedSettlements.length === 0}
         <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-16 text-center">
             <Wallet class="w-16 h-16 mx-auto text-gray-300 dark:text-gray-600" />
             <h3 class="text-lg font-semibold text-gray-900 dark:text-white mt-4">ບໍ່ມີການຊຳລະ</h3>
@@ -236,7 +236,7 @@
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-gray-200 dark:divide-gray-700">
-                        {#each paginatedSettlements() as settlement}
+                        {#each paginatedSettlements as settlement (settlement.id)}
                             {@const statusConfig = getStatusConfig(settlement.status)}
                             <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-all">
                                 <td class="px-6 py-4">

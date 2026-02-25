@@ -3,7 +3,8 @@
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
     import { api } from "$api";
-    import { formatCurrency } from "$lib/utils";
+    import { auth } from "$stores";
+    import { formatCurrency, formatDateTime } from "$lib/utils";
     import { toast } from "svelte-sonner";
     import {
         CreditCard,
@@ -146,6 +147,7 @@
                     createdAt: t.createdAt,
                     customer: t.customer?.name || t("pos.walkIn"),
                     staff: t.user?.name || "-",
+                    storeName: t.store?.name || null,
                     items: t.items || [],
                     discount: t.discount || 0,
                     tax: t.tax || 0,
@@ -204,14 +206,7 @@
     }
 
     function formatDate(date: string): string {
-        if (!date) return "-";
-        return new Intl.DateTimeFormat("lo-LA", {
-            year: "numeric",
-            month: "short",
-            day: "numeric",
-            hour: "2-digit",
-            minute: "2-digit",
-        }).format(new Date(date));
+        return formatDateTime(date);
     }
 
     function formatShortDate(date: string): string {
@@ -225,7 +220,7 @@
     }
 
     // Filtered transactions
-    let filteredTransactions = $derived(() => {
+    let filteredTransactions = $derived.by(() => {
         return transactions.filter((t) => {
             const matchSearch =
                 t.transactionNo?.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -235,8 +230,13 @@
         });
     });
 
-    onMount(() => {
+    // Reload transactions when active store changes
+    $effect(() => {
+        const _storeId = auth.activeStoreId;
         loadTransactions();
+    });
+
+    onMount(() => {
         loadPaymentMethods();
     });
 </script>
@@ -385,7 +385,7 @@
                 
                 <!-- Status Filter -->
                 <div class="flex gap-2">
-                    {#each ["all", "completed", "pending", "failed"] as status}
+                    {#each ["all", "completed", "pending", "failed"] as status (status)}
                         {@const config = getStatusConfig(status)}
                         <button
                             onclick={() => (statusFilter = status as any)}
@@ -413,7 +413,7 @@
                     <p class="text-gray-500 dark:text-gray-400">{t("common.loading")}...</p>
                 </div>
             </div>
-        {:else if filteredTransactions().length === 0}
+        {:else if filteredTransactions.length === 0}
             <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-16 text-center shadow-sm">
                 <Receipt class="w-16 h-16 mx-auto text-gray-300 dark:text-gray-600" />
                 <h3 class="text-lg font-semibold text-gray-900 dark:text-white mt-4">{t("payments.noTransactions")}</h3>
@@ -449,7 +449,7 @@
                             </tr>
                         </thead>
                         <tbody class="divide-y divide-gray-200 dark:divide-gray-700">
-                            {#each filteredTransactions() as transaction}
+                            {#each filteredTransactions as transaction (transaction.id)}
                                 {@const statusConfig = getStatusConfig(transaction.status)}
                                 {@const MethodIcon = getMethodIcon(transaction.method)}
                                 
@@ -460,7 +460,12 @@
                                         </span>
                                     </td>
                                     <td class="px-6 py-4">
-                                        <span class="text-sm text-gray-700 dark:text-gray-300">{transaction.customer}</span>
+                                        <div class="flex flex-col gap-0.5">
+                                            <span class="text-sm text-gray-700 dark:text-gray-300">{transaction.customer}</span>
+                                            {#if transaction.storeName}
+                                                <span class="text-xs px-1.5 py-0.5 rounded bg-primary/10 text-primary w-fit">{transaction.storeName}</span>
+                                            {/if}
+                                        </div>
                                     </td>
                                     <td class="px-6 py-4">
                                         <div class="flex items-center gap-2">
@@ -502,7 +507,7 @@
         {/if}
     {:else if activeTab === "methods"}
         <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {#each paymentMethods as method}
+            {#each paymentMethods as method (method.id)}
                 {@const Icon = method.icon || Wallet}
                 
                 <div class={cn(

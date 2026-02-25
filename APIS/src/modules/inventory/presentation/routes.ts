@@ -3,8 +3,10 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, branchFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, branchFilter, applyScopeFilter, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { queryCache } from '@/infrastructure/http/middleware/cache.middleware';
 import { prisma } from '@/config/database.config';
+import { queueActivityLog } from '@/infrastructure/helpers/activity-log.helper';
 
 export const inventoryRoutes = Router();
 
@@ -21,7 +23,7 @@ inventoryRoutes.get('/', authenticate, branchFilter(), async (req, res, next) =>
         } = req.query;
         
         const skip = (Number(page) - 1) * Number(limit);
-        const filter = (req as any).branchFilter;
+        const filter = (req as any).branchFilter as ScopeFilter | undefined;
         
         // Determine branch ID based on filter or query
         let userBranchId = branchId ? String(branchId) : (req.user as any)?.branchId;
@@ -34,7 +36,6 @@ inventoryRoutes.get('/', authenticate, branchFilter(), async (req, res, next) =>
                     error: { code: 'FORBIDDEN', message: 'No access to this branch' }
                 });
             }
-            // If no specific branch requested, use first accessible branch
             if (!userBranchId) {
                 userBranchId = filter.branchIds[0];
             }
@@ -42,6 +43,13 @@ inventoryRoutes.get('/', authenticate, branchFilter(), async (req, res, next) =>
 
         // Build product where clause for search
         const productWhere: Record<string, unknown> = { isActive: true };
+        
+        // Apply scope filter to products (products are branch-scoped)
+        applyScopeFilter(productWhere, filter, 'branchId');
+        if (!filter && userBranchId) {
+            productWhere.branchId = userBranchId;
+        }
+        
         if (search) {
             productWhere.OR = [
                 { name: { contains: String(search), mode: 'insensitive' } },
@@ -116,14 +124,16 @@ inventoryRoutes.get('/', authenticate, branchFilter(), async (req, res, next) =>
 });
 
 // Get inventory stats (for dashboard cards)
-inventoryRoutes.get('/stats', authenticate, branchFilter(), async (req, res, next) => {
+inventoryRoutes.get('/stats', authenticate, branchFilter(), queryCache(30, 'inventory'), async (req, res, next) => {
     try {
-        const filter = (req as any).branchFilter;
+        const filter = (req as any).branchFilter as ScopeFilter | undefined;
         const userBranchId = filter?.branchIds?.[0] || (req.user as any)?.branchId;
         
-        // Get all products with inventory
+        // Get all products with inventory (filtered by branch for non-admin users)
+        const productWhere: Record<string, unknown> = { isActive: true };
+        applyScopeFilter(productWhere, filter, 'branchId');
         const products = await prisma.product.findMany({
-            where: { isActive: true },
+            where: productWhere,
             include: {
                 inventory: userBranchId ? {
                     where: { branchId: userBranchId }
@@ -169,14 +179,12 @@ inventoryRoutes.get('/movements', authenticate, branchFilter(), async (req, res,
     try {
         const { productId, branchId, type, startDate, endDate, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
-        const filter = (req as any).branchFilter;
+        const filter = (req as any).branchFilter as ScopeFilter | undefined;
         
         const where: Record<string, unknown> = {};
         
-        // Apply branch filter for non-admin users
-        if (filter?.branchIds?.length) {
-            where.branchId = { in: filter.branchIds };
-        }
+        // Apply store-level or branch-level scope (StockMovement now has storeId)
+        applyScopeFilter(where, filter, 'storeId');
         if (productId) where.productId = String(productId);
         if (branchId) where.branchId = String(branchId);
         if (type) where.type = String(type);
@@ -268,48 +276,65 @@ inventoryRoutes.put('/adjust', authenticate, authorize('inventory:update'), asyn
             });
         }
 
+        // Invalidate inventory cache after adjustment
+        invalidateQueryCache('inventory*').catch(() => {});
+        invalidateQueryCache('dashboard*').catch(() => {});
+
+        // Log activity async
+        queueActivityLog(userId, 'inventory_adjusted', 'inventory', `ປັບສະຕອກ ${productId} ${quantity > 0 ? '+' : ''}${quantity}`, { productId, branchId, quantity }, req).catch(() => {});
+
         res.status(201).json({ success: true, data: movement });
     } catch (error) {
         next(error);
     }
 });
 
-// Stock transfer between branches (stores within same branch only)
+// Stock transfer between branches
 inventoryRoutes.post('/transfer', authenticate, authorize('inventory:transfer'), async (req, res, next) => {
     try {
         const { productId, fromBranchId, toBranchId, quantity, reason } = req.body;
         const userId = req.user!.userId;
 
+        if (!productId || !fromBranchId || !toBranchId || !quantity || quantity <= 0) {
+            return res.status(400).json({
+                success: false,
+                error: { code: 'VAL_001', message: 'ກະລຸນາປ້ອນຂໍ້ມູນໃຫ້ຄົບ' }
+            });
+        }
+
         // Validate: fromBranch and toBranch must be different
         if (fromBranchId === toBranchId) {
             return res.status(400).json({
                 success: false,
-                error: { code: 'SAME_STORE', message: 'ບໍ່ສາມາດໂອນພາຍໃນຮ້ານດຽວກັນໄດ້' }
+                error: { code: 'SAME_BRANCH', message: 'ບໍ່ສາມາດໂອນພາຍໃນສາຂາດຽວກັນໄດ້' }
             });
         }
 
-        // Get stores to check if they belong to the same parent branch
-        const [fromStore, toStore] = await Promise.all([
-            prisma.store.findUnique({ where: { id: fromBranchId }, select: { id: true, branchId: true, name: true } }),
-            prisma.store.findUnique({ where: { id: toBranchId }, select: { id: true, branchId: true, name: true } })
+        // Validate both branches exist
+        const [fromBranch, toBranch] = await Promise.all([
+            prisma.branch.findUnique({ where: { id: fromBranchId }, select: { id: true, name: true } }),
+            prisma.branch.findUnique({ where: { id: toBranchId }, select: { id: true, name: true } })
         ]);
 
-        // If stores exist, validate they are in the same branch
-        if (fromStore && toStore) {
-            if (fromStore.branchId !== toStore.branchId) {
-                return res.status(400).json({
-                    success: false,
-                    error: { code: 'DIFFERENT_BRANCH', message: 'ການໂອນສິນຄ້າຕ້ອງຢູ່ໃນສາຂາດຽວກັນເທົ່ານັ້ນ' }
-                });
-            }
+        if (!fromBranch) {
+            return res.status(404).json({
+                success: false,
+                error: { code: 'NOT_FOUND', message: 'ບໍ່ພົບສາຂາຕົ້ນທາງ' }
+            });
+        }
+        if (!toBranch) {
+            return res.status(404).json({
+                success: false,
+                error: { code: 'NOT_FOUND', message: 'ບໍ່ພົບສາຂາປາຍທາງ' }
+            });
         }
 
-        // Get current inventories
+        // Get current inventory at source branch
         const fromInventory = await prisma.inventory.findFirst({
             where: { productId, branchId: fromBranchId },
         });
 
-        // Validate stock availability
+        // Validate stock availability at source
         if (!fromInventory || fromInventory.quantity < quantity) {
             return res.status(400).json({
                 success: false,
@@ -324,59 +349,96 @@ inventoryRoutes.post('/transfer', authenticate, authorize('inventory:transfer'),
             where: { productId, branchId: toBranchId },
         });
 
-        const fromPreviousQty = fromInventory?.quantity || 0;
+        const fromPreviousQty = fromInventory.quantity;
         const toPreviousQty = toInventory?.quantity || 0;
+        const fromNewQty = fromPreviousQty - quantity;
+        const toNewQty = toPreviousQty + quantity;
+        const transferReason = reason || `ໂອນຈາກ ${fromBranch.name} ໄປ ${toBranch.name}`;
 
-        // Create outbound movement
-        await prisma.stockMovement.create({
-            data: {
-                productId,
-                branchId: fromBranchId,
-                quantity: -quantity,
-                previousQty: fromPreviousQty,
-                newQty: fromPreviousQty - quantity,
-                type: 'TRANSFER_OUT',
-                reason,
-                reference: toBranchId,
-                userId,
-            },
-        });
+        // Execute all operations in a transaction for data consistency
+        const result = await prisma.$transaction(async (tx) => {
+            // 1. Create outbound movement (source branch)
+            const outMovement = await tx.stockMovement.create({
+                data: {
+                    productId,
+                    branchId: fromBranchId,
+                    quantity: quantity,
+                    previousQty: fromPreviousQty,
+                    newQty: fromNewQty,
+                    type: 'TRANSFER_OUT',
+                    reason: transferReason,
+                    reference: toBranchId,
+                    referenceType: 'TRANSFER',
+                    userId,
+                },
+            });
 
-        // Create inbound movement
-        await prisma.stockMovement.create({
-            data: {
-                productId,
-                branchId: toBranchId,
-                quantity,
-                previousQty: toPreviousQty,
-                newQty: toPreviousQty + quantity,
-                type: 'TRANSFER_IN',
-                reason,
-                reference: fromBranchId,
-                userId,
-            },
-        });
+            // 2. Create inbound movement (destination branch)
+            await tx.stockMovement.create({
+                data: {
+                    productId,
+                    branchId: toBranchId,
+                    quantity,
+                    previousQty: toPreviousQty,
+                    newQty: toNewQty,
+                    type: 'TRANSFER_IN',
+                    reason: transferReason,
+                    reference: fromBranchId,
+                    referenceType: 'TRANSFER',
+                    userId,
+                },
+            });
 
-        // Update inventories
-        if (fromInventory) {
-            await prisma.inventory.update({
+            // 3. Deduct from source branch inventory
+            await tx.inventory.update({
                 where: { id: fromInventory.id },
-                data: { quantity: { decrement: quantity } },
+                data: { 
+                    quantity: fromNewQty,
+                    available: Math.max(0, fromNewQty - fromInventory.reserved),
+                },
             });
-        }
 
-        if (toInventory) {
-            await prisma.inventory.update({
-                where: { id: toInventory.id },
-                data: { quantity: { increment: quantity } },
-            });
-        } else {
-            await prisma.inventory.create({
-                data: { productId, branchId: toBranchId, quantity },
-            });
-        }
+            // 4. Add to destination branch inventory
+            if (toInventory) {
+                await tx.inventory.update({
+                    where: { id: toInventory.id },
+                    data: { 
+                        quantity: toNewQty,
+                        available: Math.max(0, toNewQty - toInventory.reserved),
+                    },
+                });
+            } else {
+                await tx.inventory.create({
+                    data: { 
+                        productId, 
+                        branchId: toBranchId, 
+                        quantity: toNewQty,
+                        available: toNewQty,
+                        reserved: 0,
+                    },
+                });
+            }
 
-        res.status(201).json({ success: true, data: { message: 'Transfer completed' } });
+            return outMovement;
+        });
+
+        // Invalidate caches after transfer
+        invalidateQueryCache('inventory*').catch(() => {});
+        invalidateQueryCache('dashboard*').catch(() => {});
+
+        // Log activity async
+        queueActivityLog(userId, 'inventory_transferred', 'inventory', `ໂອນ ${quantity} ຈາກ ${fromBranch.name} → ${toBranch.name}`, { productId, fromBranchId, toBranchId, quantity }, req).catch(() => {});
+
+        res.status(201).json({ 
+            success: true, 
+            data: { 
+                message: 'ໂອນສິນຄ້າສຳເລັດ',
+                transferId: result.id,
+                from: { branchId: fromBranchId, branchName: fromBranch.name, previousQty: fromPreviousQty, newQty: fromNewQty },
+                to: { branchId: toBranchId, branchName: toBranch.name, previousQty: toPreviousQty, newQty: toNewQty },
+                quantity,
+            } 
+        });
     } catch (error) {
         next(error);
     }
@@ -482,12 +544,11 @@ inventoryRoutes.get('/alerts', authenticate, branchFilter(), async (req, res, ne
     }
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
 // VENDORS
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all vendors with pagination
-inventoryRoutes.get('/vendors', authenticate, async (req, res, next) => {
+inventoryRoutes.get('/vendors', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { search, isActive, page = 1, limit = 20 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
@@ -679,10 +740,8 @@ inventoryRoutes.get('/purchase-orders', authenticate, branchFilter(), async (req
         
         const where: Record<string, unknown> = {};
         
-        // Apply branch filter for non-admin users
-        if (filter?.branchIds?.length) {
-            where.branchId = { in: filter.branchIds };
-        }
+        // Apply scope filter (PurchaseOrder has branchId)
+        applyScopeFilter(where, filter, 'branchId');
         if (branchId) where.branchId = String(branchId);
         if (vendorId) where.vendorId = String(vendorId);
         if (status) where.status = String(status);
@@ -877,12 +936,20 @@ inventoryRoutes.delete('/purchase-orders/:id', authenticate, authorize('inventor
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all stock transfers
-inventoryRoutes.get('/stock-transfers', authenticate, async (req, res, next) => {
+inventoryRoutes.get('/stock-transfers', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { fromBranchId, toBranchId, status, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
+        const filter = (req as any).branchFilter as ScopeFilter | undefined;
         
         const where: Record<string, unknown> = {};
+        // Scope transfers where the active branch is either source or destination
+        if (filter?.branchIds?.length) {
+            where.OR = [
+                { fromBranchId: { in: filter.branchIds } },
+                { toBranchId: { in: filter.branchIds } },
+            ];
+        }
         if (fromBranchId) where.fromBranchId = String(fromBranchId);
         if (toBranchId) where.toBranchId = String(toBranchId);
         if (status) where.status = String(status);
@@ -984,12 +1051,13 @@ inventoryRoutes.post('/stock-transfers', authenticate, authorize('inventory:upda
 });
 
 // Expiry tracking with pagination
-inventoryRoutes.get('/expiring', authenticate, async (req, res, next) => {
+inventoryRoutes.get('/expiring', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { branchId, days = 90, page = 1, limit = 20, search, daysFilter } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
         const futureDate = new Date();
         futureDate.setDate(futureDate.getDate() + Number(days));
+        const scopeFilter = (req as any).branchFilter as ScopeFilter | undefined;
 
         // Build where clause - include expired items (no lower bound on expiryDate)
         const where: Record<string, unknown> = {
@@ -1000,6 +1068,7 @@ inventoryRoutes.get('/expiring', authenticate, async (req, res, next) => {
             quantity: { gt: 0 }
         };
         if (branchId) where.branchId = String(branchId);
+        else if (scopeFilter?.branchIds?.length) where.branchId = { in: scopeFilter.branchIds };
 
         // Get all expiring items first
         let expiringItems = await prisma.inventory.findMany({
@@ -1023,7 +1092,7 @@ inventoryRoutes.get('/expiring', authenticate, async (req, res, next) => {
             branchName: item.branch?.name || '',
             quantity: item.quantity,
             expiryDate: item.expiryDate,
-            batchNo: item.batchNo || '',
+            batchNo: item.batchNumber || '',
         }));
 
         // Apply search filter
@@ -1070,41 +1139,35 @@ inventoryRoutes.get('/expiring', authenticate, async (req, res, next) => {
         next(error);
     }
 });
-// ═══════════════════════════════════════════════════════════════════════════
-// STOCK IN
-// ═══════════════════════════════════════════════════════════════════════════
 
 // Get stock in records
-inventoryRoutes.get('/stock-in', authenticate, async (req, res, next) => {
+inventoryRoutes.get('/stock-in', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { search, page = 1, limit = 10 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
+        const filter = (req as any).branchFilter;
 
-        const where: Record<string, unknown> = {
-            type: 'IN',
-        };
+        const where: Record<string, unknown> = { type: 'IN' };
+        if (filter?.branchIds?.length) {
+            where.branchId = { in: filter.branchIds };
+        }
         if (search) {
             where.OR = [
                 { reference: { contains: String(search), mode: 'insensitive' } },
-                { reason: { contains: String(search), mode: 'insensitive' } },
+                { supplier: { contains: String(search), mode: 'insensitive' } },
+                { batchNumber: { contains: String(search), mode: 'insensitive' } },
             ];
         }
 
         const [movements, total] = await Promise.all([
-            prisma.stockMovement.findMany({
-                where,
-                skip,
-                take: Number(limit),
-                orderBy: { createdAt: 'desc' },
-            }),
+            prisma.stockMovement.findMany({ where, skip, take: Number(limit), orderBy: { createdAt: 'desc' } }),
             prisma.stockMovement.count({ where }),
         ]);
 
-        // Get product info for each movement
         const productIds = [...new Set(movements.map(m => m.productId))];
         const products = await prisma.product.findMany({
             where: { id: { in: productIds } },
-            select: { id: true, name: true, sku: true }
+            select: { id: true, name: true, sku: true },
         });
         const productMap = new Map(products.map(p => [p.id, p]));
 
@@ -1113,6 +1176,90 @@ inventoryRoutes.get('/stock-in', authenticate, async (req, res, next) => {
             data: movements.map(m => ({ ...m, product: productMap.get(m.productId) || null })),
             meta: { page: Number(page), limit: Number(limit), total, totalPages: Math.ceil(total / Number(limit)) },
         });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Get stock out records
+inventoryRoutes.get('/stock-out', authenticate, branchFilter(), async (req, res, next) => {
+    try {
+        const { search, page = 1, limit = 10 } = req.query;
+        const skip = (Number(page) - 1) * Number(limit);
+        const filter = (req as any).branchFilter;
+
+        const where: Record<string, unknown> = { type: 'OUT' };
+        // Filter by branch for non-admin users
+        if (filter?.branchIds?.length) {
+            where.branchId = { in: filter.branchIds };
+        }
+        if (search) {
+            where.OR = [
+                { reference: { contains: String(search), mode: 'insensitive' } },
+                { reason: { contains: String(search), mode: 'insensitive' } },
+            ];
+        }
+
+        const [movements, total] = await Promise.all([
+            prisma.stockMovement.findMany({ where, skip, take: Number(limit), orderBy: { createdAt: 'desc' } }),
+            prisma.stockMovement.count({ where }),
+        ]);
+
+        const productIds = [...new Set(movements.map(m => m.productId))];
+        const products = await prisma.product.findMany({
+            where: { id: { in: productIds } },
+            select: { id: true, name: true, sku: true },
+        });
+        const productMap = new Map(products.map(p => [p.id, p]));
+
+        res.json({
+            success: true,
+            data: movements.map(m => ({ ...m, quantity: Math.abs(m.quantity), product: productMap.get(m.productId) || null })),
+            meta: { page: Number(page), limit: Number(limit), total, totalPages: Math.ceil(total / Number(limit)) },
+        });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Create stock out
+inventoryRoutes.post('/stock-out', authenticate, authorize('inventory:create'), async (req, res, next) => {
+    try {
+        const { productId, quantity, reason, reference, notes, date } = req.body;
+        const userId = req.user!.userId;
+        const branchId = req.user!.branchId || 'default';
+
+        const inventory = await prisma.inventory.findFirst({ where: { productId, branchId } });
+        const previousQty = inventory?.quantity || 0;
+        const outQty = Math.abs(Number(quantity));
+        const newQty = Math.max(0, previousQty - outQty);
+
+        const movement = await prisma.stockMovement.create({
+            data: {
+                productId,
+                branchId,
+                quantity: -outQty,
+                previousQty,
+                newQty,
+                type: 'OUT',
+                reason: reason || 'Stock Out',
+                reference: reference || null,
+                notes: notes || null,
+                userId,
+                createdAt: date ? new Date(date) : new Date(),
+            },
+        });
+
+        if (inventory) {
+            await prisma.inventory.update({ where: { id: inventory.id }, data: { quantity: newQty } });
+        }
+
+        const product = await prisma.product.findUnique({
+            where: { id: productId },
+            select: { id: true, name: true, sku: true },
+        });
+
+        res.status(201).json({ success: true, data: { ...movement, quantity: outQty, product } });
     } catch (error) {
         next(error);
     }
@@ -1182,20 +1329,17 @@ inventoryRoutes.put('/stock-in/:id', authenticate, authorize('inventory:update')
     try {
         const { id } = req.params;
         const { productId, quantity, unitCost, supplier, reference, notes, date, expiryDate, batchNumber } = req.body;
-        const userId = (req as any).user?.id;
-        const branchId = (req as any).user?.branchId || 'default';
+        const userId = req.user!.userId;
+        const branchId = req.user!.branchId || 'default';
 
-        // Get existing movement
         const existing = await prisma.stockMovement.findUnique({ where: { id } });
         if (!existing) {
             res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Record not found' } });
             return;
         }
 
-        // Calculate quantity difference for inventory update
         const quantityDiff = Number(quantity) - existing.quantity;
 
-        // Update movement
         const movement = await prisma.stockMovement.update({
             where: { id },
             data: {
@@ -1208,11 +1352,9 @@ inventoryRoutes.put('/stock-in/:id', authenticate, authorize('inventory:update')
                 notes: notes ?? existing.notes,
                 expiryDate: expiryDate ? new Date(expiryDate) : existing.expiryDate,
                 batchNumber: batchNumber ?? existing.batchNumber,
-                updatedAt: new Date(),
             },
         });
 
-        // Update inventory quantity if changed
         if (quantityDiff !== 0) {
             const inventory = await prisma.inventory.findFirst({
                 where: { productId: existing.productId, branchId },
@@ -1226,123 +1368,6 @@ inventoryRoutes.put('/stock-in/:id', authenticate, authorize('inventory:update')
         }
 
         res.json({ success: true, data: movement });
-    } catch (error) {
-        next(error);
-    }
-});
-
-// Delete stock in
-inventoryRoutes.delete('/stock-in/:id', authenticate, authorize('inventory:delete'), async (req, res, next) => {
-    try {
-        const movement = await prisma.stockMovement.findUnique({ where: { id: req.params.id } });
-        if (!movement) {
-            res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Record not found' } });
-            return;
-        }
-
-        // Reverse the inventory change
-        const inventory = await prisma.inventory.findFirst({
-            where: { productId: movement.productId, branchId: movement.branchId },
-        });
-        if (inventory) {
-            await prisma.inventory.update({
-                where: { id: inventory.id },
-                data: { quantity: { decrement: movement.quantity } },
-            });
-        }
-
-        await prisma.stockMovement.delete({ where: { id: req.params.id } });
-        res.json({ success: true, data: { message: 'Deleted successfully' } });
-    } catch (error) {
-        next(error);
-    }
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
-// STOCK OUT
-// ═══════════════════════════════════════════════════════════════════════════
-
-// Get stock out records
-inventoryRoutes.get('/stock-out', authenticate, async (req, res, next) => {
-    try {
-        const { search, page = 1, limit = 10 } = req.query;
-        const skip = (Number(page) - 1) * Number(limit);
-
-        const where: Record<string, unknown> = {
-            type: 'OUT',
-        };
-        if (search) {
-            where.OR = [
-                { reference: { contains: String(search), mode: 'insensitive' } },
-                { reason: { contains: String(search), mode: 'insensitive' } },
-            ];
-        }
-
-        const [movements, total] = await Promise.all([
-            prisma.stockMovement.findMany({
-                where,
-                skip,
-                take: Number(limit),
-                orderBy: { createdAt: 'desc' },
-            }),
-            prisma.stockMovement.count({ where }),
-        ]);
-
-        // Get product info for each movement
-        const productIds = [...new Set(movements.map(m => m.productId))];
-        const products = await prisma.product.findMany({
-            where: { id: { in: productIds } },
-            select: { id: true, name: true, sku: true }
-        });
-        const productMap = new Map(products.map(p => [p.id, p]));
-
-        res.json({
-            success: true,
-            data: movements.map(m => ({ ...m, product: productMap.get(m.productId) || null })),
-            meta: { page: Number(page), limit: Number(limit), total, totalPages: Math.ceil(total / Number(limit)) },
-        });
-    } catch (error) {
-        next(error);
-    }
-});
-
-// Create stock out
-inventoryRoutes.post('/stock-out', authenticate, authorize('inventory:create'), async (req, res, next) => {
-    try {
-        const { productId, quantity, reason, reference, notes, date } = req.body;
-        const userId = req.user!.userId;
-        const branchId = req.user!.branchId || 'default';
-
-        const inventory = await prisma.inventory.findFirst({
-            where: { productId, branchId },
-        });
-        const previousQty = inventory?.quantity || 0;
-        const newQty = Math.max(0, previousQty - Number(quantity));
-
-        const movement = await prisma.stockMovement.create({
-            data: {
-                productId,
-                branchId,
-                quantity: -Number(quantity),
-                previousQty,
-                newQty,
-                type: 'OUT',
-                reason,
-                reference,
-                notes,
-                userId,
-                createdAt: date ? new Date(date) : new Date(),
-            },
-        });
-
-        if (inventory) {
-            await prisma.inventory.update({
-                where: { id: inventory.id },
-                data: { quantity: newQty },
-            });
-        }
-
-        res.status(201).json({ success: true, data: movement });
     } catch (error) {
         next(error);
     }
@@ -1376,7 +1401,6 @@ inventoryRoutes.put('/stock-out/:id', authenticate, authorize('inventory:update'
                 reason: reason ?? existing.reason,
                 reference: reference ?? existing.reference,
                 notes: notes ?? existing.notes,
-                updatedAt: new Date(),
             },
         });
 
@@ -1426,19 +1450,20 @@ inventoryRoutes.delete('/stock-out/:id', authenticate, authorize('inventory:dele
     }
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
 // ADJUSTMENTS
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get adjustments
-inventoryRoutes.get('/adjustments', authenticate, async (req, res, next) => {
+inventoryRoutes.get('/adjustments', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { search, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
+        const scopeFilter = (req as any).branchFilter as ScopeFilter | undefined;
 
         const where: Record<string, unknown> = {
             type: { in: ['ADJUSTMENT', 'INCREASE', 'DECREASE'] },
         };
+        if (scopeFilter?.branchIds?.length) where.branchId = { in: scopeFilter.branchIds };
         if (search) {
             where.OR = [
                 { reference: { contains: String(search), mode: 'insensitive' } },
@@ -1526,17 +1551,23 @@ inventoryRoutes.put('/adjustments', authenticate, authorize('inventory:update'),
     }
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
 // TRANSFERS (for frontend)
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get transfers
-inventoryRoutes.get('/transfers', authenticate, async (req, res, next) => {
+inventoryRoutes.get('/transfers', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { search, status, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
+        const scopeFilter = (req as any).branchFilter as ScopeFilter | undefined;
 
         const where: Record<string, unknown> = {};
+        if (scopeFilter?.branchIds?.length) {
+            where.OR = [
+                { fromBranchId: { in: scopeFilter.branchIds } },
+                { toBranchId: { in: scopeFilter.branchIds } },
+            ];
+        }
         if (status) where.status = String(status);
 
         const [transfers, total] = await Promise.all([
@@ -1673,12 +1704,17 @@ inventoryRoutes.post('/transfers', authenticate, authorize('inventory:update'), 
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get stock counts
-inventoryRoutes.get('/stock-counts', authenticate, async (req, res, next) => {
+inventoryRoutes.get('/stock-counts', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { status, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
+        const filter = (req as any).branchFilter;
 
         const where: Record<string, unknown> = {};
+        // Filter by branch for non-admin users
+        if (filter?.branchIds?.length) {
+            where.branchId = { in: filter.branchIds };
+        }
         if (status) where.status = String(status);
 
         const [counts, total] = await Promise.all([

@@ -1,5 +1,7 @@
 <script lang="ts">
+    import { onMount } from "svelte";
     import { cn } from "$utils";
+    import { api } from "$api";
     import { t } from "$lib/i18n/index.svelte";
     import { toast } from "svelte-sonner";
     import {
@@ -395,13 +397,67 @@
     }
 
     // Load saved design on mount
-    $effect(() => {
+    onMount(() => {
         loadDesign();
     });
 
     const paperWidth = $derived(
         paperSizes.find((p) => p.id === selectedPaperSize)?.width || 72,
     );
+
+    function printReceipt() {
+        const pw = paperWidth * 3;
+        const cssRules = [
+            `@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+Lao&display=swap')`,
+            `body{margin:0;padding:8px;font-family:'Noto Sans Lao','Courier New',monospace;width:${pw}px}`,
+            `.divider{text-align:center;overflow:hidden}.item-row{display:flex;justify-content:space-between}`,
+            `.center{text-align:center}.right{text-align:right}.left{text-align:left}`,
+            `.bold{font-weight:bold}.italic{font-style:italic}`,
+            `.qr,.barcode,.logo{display:flex;justify-content:center;padding:8px 0}`,
+            `.qr-box{width:80px;height:80px;border:1px solid #ccc;display:flex;align-items:center;justify-content:center;font-size:10px}`,
+            `.barcode-box{width:120px;height:40px;border:1px solid #ccc;display:flex;align-items:center;justify-content:center;font-size:10px}`,
+            `.logo-box{width:64px;height:64px;background:#eee;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:10px}`,
+        ].join(';');
+        let html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>ທົດສອບໃບບິນ</title>` +
+            `<` + `style>${cssRules}<` + `/style></head><body>`;
+
+        for (const el of receiptElements) {
+            const fs = el.fontSize;
+            const cls = [el.align, el.bold ? 'bold' : '', el.italic ? 'italic' : ''].filter(Boolean).join(' ');
+            if (el.type === 'divider') {
+                html += `<div class="divider" style="font-size:${fs}px">${el.content.repeat(50)}</div>`;
+            } else if (el.type === 'items') {
+                for (const item of sampleData.items) {
+                    html += `<div class="item-row" style="font-size:${fs}px"><span>${item.name} x${item.qty}</span><span>${formatCurrency(item.total)}</span></div>`;
+                }
+            } else if (el.type === 'logo') {
+                html += `<div class="logo"><div class="logo-box">LOGO</div></div>`;
+            } else if (el.type === 'qrcode') {
+                html += `<div class="qr"><div class="qr-box">QR Code</div></div>`;
+            } else if (el.type === 'barcode') {
+                html += `<div class="barcode"><div class="barcode-box">Barcode</div></div>`;
+            } else {
+                html += `<div class="${cls}" style="font-size:${fs}px">${renderContent(el)}</div>`;
+            }
+        }
+
+        html += `</body></html>`;
+        const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const w = window.open(url, '_blank', `width=${pw + 40},height=600`);
+        if (w) w.onload = () => { w.print(); };
+    }
+
+    function saveDesignToApi() {
+        const design = {
+            paperSize: selectedPaperSize,
+            elements: receiptElements,
+        };
+        saveDesign();
+        // Also try to save to API for persistence across devices
+        api.post('documents/settings', { json: { type: 'receipt', template: design } }).json().catch(() => {});
+        toast.success('ບັນທຶກສຳເລັດ!');
+    }
 </script>
 
 <div class="min-h-screen bg-gray-100 dark:bg-gray-950">
@@ -424,7 +480,7 @@
                         bind:value={selectedPaperSize}
                         class="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm px-3 py-1.5 text-gray-900 dark:text-white"
                     >
-                        {#each paperSizes as size}
+                        {#each paperSizes as size (size.id)}
                             <option value={size.id}>{size.name}</option>
                         {/each}
                     </select>
@@ -445,6 +501,7 @@
                     ເບິ່ງຕົວຢ່າງ
                 </button>
                 <button
+                    onclick={printReceipt}
                     class="flex items-center gap-2 px-4 py-2 rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 text-sm font-medium transition-colors"
                 >
                     <Printer class="w-4 h-4" />
@@ -472,7 +529,7 @@
                 ອົງປະກອບ
             </h3>
             <div class="grid grid-cols-2 gap-2">
-                {#each availableElements as element}
+                {#each availableElements as element (element.type)}
                     <button
                         onclick={() => addElement(element.type)}
                         class="flex flex-col items-center gap-1 p-3 rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 hover:border-primary-300 dark:hover:border-primary-700 transition-colors"
@@ -498,7 +555,7 @@
                 >
                     <!-- Receipt -->
                     <div class="p-4 font-mono text-sm">
-                        {#each receiptElements as element}
+                        {#each receiptElements as element (element.id)}
                             <!-- svelte-ignore a11y_click_events_have_key_events -->
                             <!-- svelte-ignore a11y_no_static_element_interactions -->
                             <div
@@ -522,7 +579,7 @@
                                     <div
                                         style="font-size: {element.fontSize}px"
                                     >
-                                        {#each sampleData.items as item}
+                                        {#each sampleData.items as item (item.name)}
                                             <div
                                                 class="flex justify-between py-0.5"
                                             >

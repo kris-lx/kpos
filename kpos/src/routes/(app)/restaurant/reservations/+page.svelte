@@ -3,6 +3,7 @@
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
     import { api } from "$api";
+    import { auth } from "$stores";
     import { formatDate } from "$lib/utils";
     import { toast } from "svelte-sonner";
     import {
@@ -165,13 +166,23 @@
 
     async function handleSubmit() {
         try {
+            const payload: Record<string, any> = {
+                customerName: formData.customerName,
+                phone: formData.customerPhone,
+                email: formData.customerEmail || undefined,
+                guestCount: Number(formData.partySize),
+                date: formData.date,
+                time: formData.time,
+                tableId: formData.tableId || undefined,
+                note: formData.notes || undefined,
+                status: (formData.status || 'confirmed').toUpperCase(),
+            };
             if (editingId) {
-                await api.put(`restaurant/reservations/${editingId}`, {
-                    json: formData,
-                }).json();
+                await api.put(`restaurant/reservations/${editingId}`, { json: payload }).json();
                 toast.success(t("restaurant.reservationUpdated"));
             } else {
-                await api.post("restaurant/reservations", { json: formData }).json();
+                payload.branchId = auth.user?.branchId || '';
+                await api.post("restaurant/reservations", { json: payload }).json();
                 toast.success(t("restaurant.reservationCreated"));
             }
             showModal = false;
@@ -239,7 +250,10 @@
         if (page >= 1 && page <= totalPages) currentPage = page;
     }
 
-    onMount(() => loadData());
+    $effect(() => {
+        auth.activeStoreId;
+        loadData();
+    });
 </script>
 
 <svelte:head>
@@ -408,7 +422,7 @@
         </div>
     {:else}
         <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {#each paginatedReservations as r}
+            {#each paginatedReservations as r (r.id)}
                 {@const config = getStatusConfig(r.status)}
                 <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden hover:shadow-md transition-all">
                     <!-- Header -->
@@ -691,7 +705,7 @@
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent"
                     >
                         <option value="">{t("restaurant.autoAssign")}</option>
-                        {#each tables as table}
+                        {#each tables as table (table.id)}
                             <option value={table.id}>
                                 {table.name} ({table.capacity} {t("restaurant.seats")})
                             </option>

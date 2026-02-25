@@ -3,6 +3,7 @@
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
     import { api } from "$api";
+    import { auth } from "$lib/stores/auth.svelte";
     import { formatDate } from "$lib/utils";
     import { toast } from "svelte-sonner";
     import {
@@ -36,6 +37,9 @@
     let transfers = $state<any[]>([]);
     let products = $state<any[]>([]);
     let branches = $state<any[]>([]);
+
+    // Filtered branches: "to" dropdown excludes selected "from" branch
+    let toBranches = $derived(branches.filter(b => b.id !== formData.fromBranchId));
 
     // Form
     let formData = $state({
@@ -89,6 +93,11 @@
             totalItems = transferRes.meta?.total || 0;
             products = prodRes.data || [];
             branches = branchRes.data || [];
+
+            // Auto-set fromBranchId to user's active branch
+            if (!formData.fromBranchId && auth.activeBranchId) {
+                formData.fromBranchId = auth.activeBranchId;
+            }
         } catch (e) {
             console.error("Failed to load:", e);
         } finally {
@@ -155,7 +164,10 @@
         }
     }
 
-    onMount(() => loadData());
+    $effect(() => {
+        auth.activeStoreId;
+        loadData();
+    });
 </script>
 
 <svelte:head>
@@ -240,7 +252,7 @@
                 <input type="text" bind:value={searchQuery} oninput={handleSearch} placeholder="ຄົ້ນຫາສິນຄ້າ..." class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-cyan-500" />
             </div>
             <div class="flex gap-2">
-                {#each [{ id: null, label: "ທັງໝົດ" }, { id: "pending", label: "ລໍຖ້າ" }, { id: "completed", label: "ສຳເລັດ" }] as filter}
+                {#each [{ id: null, label: "ທັງໝົດ" }, { id: "pending", label: "ລໍຖ້າ" }, { id: "completed", label: "ສຳເລັດ" }] as filter (filter.id)}
                     <button
                         onclick={() => { statusFilter = filter.id; handleFilterChange(); }}
                         class={cn("px-3 py-2 rounded-lg text-sm font-medium transition-all", statusFilter === filter.id ? "bg-cyan-100 dark:bg-cyan-900/50 text-cyan-700 dark:text-cyan-400" : "text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700")}
@@ -276,7 +288,7 @@
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-gray-200 dark:divide-gray-700">
-                        {#each transfers as transfer}
+                        {#each transfers as transfer (transfer.id)}
                             {@const statusConfig = getStatusConfig(transfer.status)}
                             <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-all">
                                 <td class="px-6 py-4">
@@ -324,7 +336,7 @@
                     onchange={() => { currentPage = 1; loadData(); }}
                     class="px-2 py-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm"
                 >
-                    {#each [10, 20, 50, 100] as size}
+                    {#each [10, 20, 50, 100] as size (size)}
                         <option value={size}>{size}</option>
                     {/each}
                 </select>
@@ -359,7 +371,7 @@
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ສິນຄ້າ *</label>
                     <select bind:value={formData.productId} required class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white">
                         <option value="">ເລືອກສິນຄ້າ</option>
-                        {#each products as product}
+                        {#each products as product (product.id)}
                             <option value={product.id}>{product.name}</option>
                         {/each}
                     </select>
@@ -370,7 +382,7 @@
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຈາກສາຂາ *</label>
                         <select bind:value={formData.fromBranchId} required class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white">
                             <option value="">ເລືອກສາຂາ</option>
-                            {#each branches as branch}
+                            {#each branches as branch (branch.id)}
                                 <option value={branch.id}>{branch.name}</option>
                             {/each}
                         </select>
@@ -379,7 +391,7 @@
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ໄປສາຂາ *</label>
                         <select bind:value={formData.toBranchId} required class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white">
                             <option value="">ເລືອກສາຂາ</option>
-                            {#each branches as branch}
+                            {#each toBranches as branch (branch.id)}
                                 <option value={branch.id}>{branch.name}</option>
                             {/each}
                         </select>

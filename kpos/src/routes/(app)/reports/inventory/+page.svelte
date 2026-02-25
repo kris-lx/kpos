@@ -3,6 +3,7 @@
     import { cn, formatCurrency } from "$utils";
     import { api } from "$api";
     import { t } from "$lib/i18n/index.svelte";
+    import { auth } from "$stores";
     import { toast } from "svelte-sonner";
     import {
         Warehouse,
@@ -76,10 +77,10 @@
     }
 
     // For export
-    let filteredInventory = $derived(() => inventoryReport);
+    let filteredInventory = $derived.by(() => inventoryReport);
 
     // Server-side pagination - data already paginated
-    let paginatedInventory = $derived(() => inventoryReport);
+    let paginatedInventory = $derived.by(() => inventoryReport);
 
     let totalPages = $derived(Math.ceil(totalItems / itemsPerPage));
 
@@ -112,7 +113,10 @@
         }, 300);
     }
 
-    onMount(() => loadData());
+    $effect(() => {
+        auth.activeStoreId;
+        loadData();
+    });
 
     // Export functions
     function exportToExcel() {
@@ -121,7 +125,7 @@
         try {
             let csv = '\ufeff';
             csv += 'ລຳດັບ,ສິນຄ້າ,SKU,ສະຕ໋ອກ,ສະຕ໋ອກຕໍ່າສຸດ,ລາຄາ,ມູນຄ່າ,ສະຖານະ\n';
-            filteredInventory().forEach((p, i) => {
+            filteredInventory.forEach((p, i) => {
                 const status = getStockStatus(p.currentStock || 0, p.minStock || 10);
                 csv += `${i + 1},"${p.name || ''}","${p.sku || ''}",${p.currentStock || 0},${p.minStock || 0},"${formatCurrency(p.unitCost || 0)}","${formatCurrency((p.currentStock || 0) * (p.unitCost || 0))}","${status.label}"\n`;
             });
@@ -138,10 +142,10 @@
         exporting = true;
         showExportMenu = false;
         const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${t("reports.warehouse")}</title>
-<style>body{font-family:'Phetsarath OT',sans-serif;padding:20px}h1{text-align:center}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ddd;padding:6px;font-size:12px}th{background:#f5f5f5}.text-right{text-align:right}.low{color:#d97706}.out{color:#dc2626}.ok{color:#16a34a}</style></head>
+<style>body{font-family:'Noto Sans Lao','Phetsarath OT',sans-serif;padding:20px}h1{text-align:center}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ddd;padding:6px;font-size:12px}th{background:#f5f5f5}.text-right{text-align:right}.low{color:#d97706}.out{color:#dc2626}.ok{color:#16a34a}</style></head>
 <body><h1>${t("reports.warehouse")}</h1><p style="text-align:center">${new Date().toLocaleDateString('lo-LA')}</p>
 <table><tr><th>ລຳດັບ</th><th>ສິນຄ້າ</th><th>SKU</th><th>ສະຕ໋ອກ</th><th>ຕໍ່າສຸດ</th><th>ລາຄາ</th><th>ມູນຄ່າ</th><th>ສະຖານະ</th></tr>
-${filteredInventory().map((p, i) => { const st = getStockStatus(p.currentStock || 0, p.minStock || 10); const cls = st.label === 'ໝົດສາງ' ? 'out' : st.label === 'ຕໍ່າ' ? 'low' : 'ok'; return `<tr><td>${i + 1}</td><td>${p.name || ''}</td><td>${p.sku || ''}</td><td class="text-right">${p.currentStock || 0}</td><td class="text-right">${p.minStock || 0}</td><td class="text-right">${formatCurrency(p.unitCost || 0)}</td><td class="text-right">${formatCurrency((p.currentStock || 0) * (p.unitCost || 0))}</td><td class="${cls}">${st.label}</td></tr>`; }).join('')}
+${filteredInventory.map((p, i) => { const st = getStockStatus(p.currentStock || 0, p.minStock || 10); const cls = st.label === 'ໝົດສາງ' ? 'out' : st.label === 'ຕໍ່າ' ? 'low' : 'ok'; return `<tr><td>${i + 1}</td><td>${p.name || ''}</td><td>${p.sku || ''}</td><td class="text-right">${p.currentStock || 0}</td><td class="text-right">${p.minStock || 0}</td><td class="text-right">${formatCurrency(p.unitCost || 0)}</td><td class="text-right">${formatCurrency((p.currentStock || 0) * (p.unitCost || 0))}</td><td class="${cls}">${st.label}</td></tr>`; }).join('')}
 </table></body></html>`;
         const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
         const url = URL.createObjectURL(blob);
@@ -157,7 +161,7 @@ ${filteredInventory().map((p, i) => { const st = getStockStatus(p.currentStock |
         const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office"><head><meta charset="utf-8"><style>table{width:100%;border-collapse:collapse}th,td{border:1px solid #000;padding:6px;font-size:11px}th{background:#f0f0f0}</style></head>
 <body><h1 style="text-align:center">${t("reports.warehouse")}</h1><p style="text-align:center">${new Date().toLocaleDateString('lo-LA')}</p>
 <table><tr><th>ລຳດັບ</th><th>ສິນຄ້າ</th><th>SKU</th><th>ສະຕ໋ອກ</th><th>ຕໍ່າສຸດ</th><th>ລາຄາ</th><th>ມູນຄ່າ</th><th>ສະຖານະ</th></tr>
-${filteredInventory().map((p, i) => { const st = getStockStatus(p.currentStock || 0, p.minStock || 10); return `<tr><td>${i + 1}</td><td>${p.name || ''}</td><td>${p.sku || ''}</td><td>${p.currentStock || 0}</td><td>${p.minStock || 0}</td><td>${formatCurrency(p.unitCost || 0)}</td><td>${formatCurrency((p.currentStock || 0) * (p.unitCost || 0))}</td><td>${st.label}</td></tr>`; }).join('')}
+${filteredInventory.map((p, i) => { const st = getStockStatus(p.currentStock || 0, p.minStock || 10); return `<tr><td>${i + 1}</td><td>${p.name || ''}</td><td>${p.sku || ''}</td><td>${p.currentStock || 0}</td><td>${p.minStock || 0}</td><td>${formatCurrency(p.unitCost || 0)}</td><td>${formatCurrency((p.currentStock || 0) * (p.unitCost || 0))}</td><td>${st.label}</td></tr>`; }).join('')}
 </table></body></html>`;
         downloadFile(html, `inventory-report.doc`, 'application/msword');
         toast.success(t("reports.exportSuccess"));
@@ -278,7 +282,7 @@ ${filteredInventory().map((p, i) => { const st = getStockStatus(p.currentStock |
                 <input type="text" bind:value={searchQuery} placeholder="ຄົ້ນຫາສິນຄ້າ..." class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-teal-500" />
             </div>
             <div class="flex gap-2">
-                {#each [{ id: null, label: "ທັງໝົດ" }, { id: "ok", label: "ປົກກະຕິ" }, { id: "low", label: "ສາງຕໍ່າ" }, { id: "out", label: "ໝົດສາງ" }] as filter}
+                {#each [{ id: null, label: "ທັງໝົດ" }, { id: "ok", label: "ປົກກະຕິ" }, { id: "low", label: "ສາງຕໍ່າ" }, { id: "out", label: "ໝົດສາງ" }] as filter (filter.id)}
                     <button
                         onclick={() => { stockFilter = filter.id; currentPage = 1; }}
                         class={cn("px-3 py-2 rounded-lg text-sm font-medium transition-all", stockFilter === filter.id ? "bg-teal-100 dark:bg-teal-900/50 text-teal-700 dark:text-teal-400" : "text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700")}
@@ -295,7 +299,7 @@ ${filteredInventory().map((p, i) => { const st = getStockStatus(p.currentStock |
         <div class="flex items-center justify-center py-20">
             <Loader2 class="w-10 h-10 text-teal-500 animate-spin" />
         </div>
-    {:else if paginatedInventory().length === 0}
+    {:else if paginatedInventory.length === 0}
         <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-16 text-center">
             <BarChart3 class="w-16 h-16 mx-auto text-gray-300 dark:text-gray-600" />
             <h3 class="text-lg font-semibold text-gray-900 dark:text-white mt-4">ບໍ່ມີຂໍ້ມູນ</h3>
@@ -315,7 +319,7 @@ ${filteredInventory().map((p, i) => { const st = getStockStatus(p.currentStock |
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-gray-200 dark:divide-gray-700">
-                        {#each paginatedInventory() as product}
+                        {#each paginatedInventory as product (product.productId || product.id || product.name)}
                             {@const status = getStockStatus(product.currentStock || 0, product.minStock || 10)}
                             <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-all">
                                 <td class="px-6 py-4">
@@ -355,7 +359,7 @@ ${filteredInventory().map((p, i) => { const st = getStockStatus(p.currentStock |
                     onchange={() => changePageSize(itemsPerPage)}
                     class="px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm"
                 >
-                    {#each pageSizeOptions as size}
+                    {#each pageSizeOptions as size (size)}
                         <option value={size}>{size} ລາຍການ</option>
                     {/each}
                 </select>

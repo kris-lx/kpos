@@ -4,7 +4,7 @@
     import { formatNumber, formatDate } from "$lib/utils";
     import { onMount } from "svelte";
     import { toast } from "svelte-sonner";
-    import { Search, Loader2, X, Plus, Minus, User, TrendingUp, TrendingDown, Gift, ArrowUpRight, ArrowDownRight, Sparkles, AlertCircle, RefreshCw } from "lucide-svelte";
+    import { Search, Loader2, X, Plus, Minus, User, TrendingUp, TrendingDown, Gift, ArrowUpRight, ArrowDownRight, Sparkles, AlertCircle, RefreshCw, ChevronLeft, ChevronRight } from "lucide-svelte";
     const t = i18n.t;
 
     let pointsHistory = $state<any[]>([]);
@@ -22,6 +22,13 @@
         reason: "",
     });
 
+    // Pagination
+    let currentPage = $state(1);
+    let pageSize = $state(20);
+    let totalItems = $state(0);
+    const pageSizeOptions = [5, 10, 20, 30, 50, 70, 100];
+    let searchTimeout: ReturnType<typeof setTimeout>;
+
     const pointsConfig = $state({
         earnRate: 1, // 1 point per 1000 LAK
         redeemRate: 100, // 100 points = 1000 LAK
@@ -37,22 +44,51 @@
         loading = true;
         error = null;
         try {
-            const response = await api.get("customers").json<any>();
+            const params = new URLSearchParams({
+                page: currentPage.toString(),
+                limit: pageSize.toString(),
+            });
+            if (searchQuery) params.append('search', searchQuery);
+            const response = await api.get(`customers?${params}`).json<any>();
             if (response.success) {
                 customers = response.data || [];
+                totalItems = response.meta?.total || response.pagination?.total || customers.length;
             } else {
                 error = "ບໍ່ສາມາດໂຫຼດຂໍ້ມູນລູກຄ້າໄດ້";
                 customers = [];
+                totalItems = 0;
                 toast.error("ບໍ່ສາມາດໂຫຼດຂໍ້ມູນລູກຄ້າໄດ້");
             }
         } catch (err) {
             console.error("Failed to load customers:", err);
             error = "ເກີດຂໍ້ຜິດພາດໃນການໂຫຼດຂໍ້ມູນລູກຄ້າ";
             customers = [];
+            totalItems = 0;
             toast.error("ເກີດຂໍ້ຜິດພາດໃນການໂຫຼດຂໍ້ມູນລູກຄ້າ");
         } finally {
             loading = false;
         }
+    }
+
+    function handleSearch() {
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(() => {
+            currentPage = 1;
+            loadCustomers();
+        }, 300);
+    }
+
+    function goToPage(page: number) {
+        if (page >= 1 && page <= totalPages) {
+            currentPage = page;
+            loadCustomers();
+        }
+    }
+
+    function changePageSize(size: number) {
+        pageSize = size;
+        currentPage = 1;
+        loadCustomers();
     }
 
     async function loadPointsHistory(customerId: string) {
@@ -134,13 +170,7 @@
         return colors[type] || "text-gray-600";
     }
 
-    let filteredCustomers = $derived(
-        customers.filter(
-            (c) =>
-                c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                c.phone.includes(searchQuery),
-        ),
-    );
+    let totalPages = $derived(Math.ceil(totalItems / pageSize) || 1);
 </script>
 
 <svelte:head>
@@ -204,6 +234,7 @@
                     <input
                         type="text"
                         bind:value={searchQuery}
+                        oninput={handleSearch}
                         placeholder="ຄົ້ນຫາລູກຄ້າ..."
                         class="w-full pl-10 px-3 py-2 border rounded-lg focus:ring-2 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:placeholder-gray-400"
                     />
@@ -228,7 +259,7 @@
                 </div>
             {:else}
                 <div class="divide-y dark:divide-gray-700 max-h-[500px] overflow-y-auto">
-                    {#each filteredCustomers as customer}
+                    {#each customers as customer (customer.id)}
                         <button
                             onclick={() => selectCustomer(customer)}
                             class="w-full p-4 text-left hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors {selectedCustomer?.id === customer.id
@@ -254,6 +285,25 @@
                         </button>
                     {/each}
                 </div>
+                <!-- Pagination -->
+                {#if totalItems > pageSize}
+                    <div class="p-3 border-t dark:border-gray-700 flex items-center justify-between">
+                        <select value={pageSize} onchange={(e) => changePageSize(Number(e.currentTarget.value))} class="px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white">
+                            {#each pageSizeOptions as size (size)}
+                                <option value={size}>{size}</option>
+                            {/each}
+                        </select>
+                        <div class="flex items-center gap-1">
+                            <button onclick={() => goToPage(currentPage - 1)} disabled={currentPage === 1} class="p-1 rounded disabled:opacity-50">
+                                <ChevronLeft class="w-4 h-4" />
+                            </button>
+                            <span class="text-xs text-gray-500 dark:text-gray-400">{currentPage}/{totalPages}</span>
+                            <button onclick={() => goToPage(currentPage + 1)} disabled={currentPage >= totalPages} class="p-1 rounded disabled:opacity-50">
+                                <ChevronRight class="w-4 h-4" />
+                            </button>
+                        </div>
+                    </div>
+                {/if}
             {/if}
         </div>
 
@@ -305,7 +355,7 @@
                     <div class="p-4">
                         <h4 class="font-medium mb-3 text-gray-900 dark:text-white">ປະຫວັດຄະແນນ</h4>
                         <div class="space-y-2 max-h-[300px] overflow-y-auto">
-                            {#each pointsHistory as history}
+                            {#each pointsHistory as history (history.id)}
                                 <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
                                     <div class="flex items-center gap-3">
                                         <span class="w-8 h-8 flex items-center justify-center rounded-full {history.points > 0 ? 'bg-green-100 dark:bg-green-900/50' : 'bg-red-100 dark:bg-red-900/50'}">
@@ -320,7 +370,7 @@
                                                 {history.reason}
                                             </p>
                                             <p class="text-xs text-gray-500 dark:text-gray-400">
-                                                {formatDate(history.date)}
+                                                {formatDate(history.createdAt || history.date)}
                                                 {#if history.orderId}
                                                     · {history.orderId}
                                                 {/if}

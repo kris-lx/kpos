@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { onMount } from "svelte";
     import { i18n } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
     import { formatCurrency, formatDateTime } from "$lib/utils";
@@ -29,7 +30,7 @@
     let resumingOrderId = $state<string | null>(null);
     let deletingOrderId = $state<string | null>(null);
 
-    $effect(() => {
+    onMount(() => {
         loadHeldOrders();
     });
 
@@ -157,7 +158,7 @@
         </div>
     {:else}
         <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {#each heldOrders as order}
+            {#each heldOrders as order (order.id)}
                 <div
                     class="bg-white dark:bg-gray-800 rounded-lg shadow-sm hover:shadow-md dark:hover:shadow-gray-900/50 transition-shadow"
                 >
@@ -185,7 +186,7 @@
 
                     <div class="p-4">
                         <div class="space-y-2 mb-3">
-                            {#each (order.items || []).slice(0, 3) as item}
+                            {#each (order.items || []).slice(0, 3) as item (item.productName || item.name)}
                                 <div class="flex justify-between text-sm">
                                     <span class="text-gray-600 dark:text-gray-300"
                                         >{item.productName || item.name} x{item.quantity}</span
@@ -289,7 +290,7 @@
             </div>
 
             <div class="space-y-2 mb-4">
-                {#each (selectedOrder.items || []) as item}
+                {#each (selectedOrder.items || []) as item (item.productName || item.name)}
                     <div class="flex justify-between py-2 border-b border-gray-200 dark:border-gray-700">
                         <div>
                             <p class="font-medium text-gray-900 dark:text-white">{item.productName || item.name}</p>

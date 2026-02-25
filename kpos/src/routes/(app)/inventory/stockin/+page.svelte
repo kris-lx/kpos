@@ -4,6 +4,7 @@
     import { api } from "$lib/api";
     import { formatCurrency, formatDate, formatDateTime } from "$lib/utils";
     import { toast } from "svelte-sonner";
+    import { auth } from "$stores";
     import { Plus, Search, Package, X, ChevronLeft, ChevronRight, Loader2, Trash2, AlertCircle, ChevronsLeft, ChevronsRight, Pencil } from "lucide-svelte";
     import MoneyInput from "$lib/components/MoneyInput.svelte";
 
@@ -194,7 +195,8 @@
         };
     }
 
-    onMount(() => {
+    $effect(() => {
+        auth.activeStoreId;
         loadData();
     });
 </script>
@@ -327,7 +329,7 @@
                     onchange={handlePageSizeChange}
                     class="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm py-1 px-2 text-gray-900 dark:text-white"
                 >
-                    {#each pageSizeOptions as size}
+                    {#each pageSizeOptions as size (size)}
                         <option value={size}>{size}</option>
                     {/each}
                 </select>
@@ -365,7 +367,7 @@
                     
                     <!-- Page numbers -->
                     <div class="flex items-center gap-1">
-                        {#each visiblePages as page}
+                        {#each visiblePages as page, idx (idx)}
                             {#if page < 0}
                                 <span class="px-2 text-gray-400 dark:text-gray-500">...</span>
                             {:else}

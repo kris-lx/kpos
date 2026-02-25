@@ -6,6 +6,8 @@ import 'dotenv/config';
 import { appServer } from './infrastructure/http/server';
 import { connectDatabase, disconnectDatabase } from './config/database.config';
 import { connectRedis, disconnectRedis } from './config/redis.config';
+import { connectRabbitMQ, disconnectRabbitMQ } from './config/rabbitmq.config';
+import { startWorkers } from './infrastructure/workers';
 
 async function main(): Promise<void> {
     try {
@@ -15,6 +17,12 @@ async function main(): Promise<void> {
         console.log('🔌 Connecting to Redis...');
         await connectRedis();
 
+        console.log('🔌 Connecting to RabbitMQ...');
+        await connectRabbitMQ();
+
+        // Start queue workers (stock-movement, activity-log, cache-invalidation)
+        startWorkers();
+
         console.log('🚀 Starting server...');
         await appServer.start();
 
@@ -23,6 +31,7 @@ async function main(): Promise<void> {
             console.log(`\n📤 ${signal} received. Shutting down gracefully...`);
 
             await appServer.stop();
+            await disconnectRabbitMQ();
             await disconnectDatabase();
             await disconnectRedis();
 
@@ -40,3 +49,16 @@ async function main(): Promise<void> {
 }
 
 main();
+
+// ── Process-level safety net ────────────────────────────────────────────────
+process.on('unhandledRejection', (reason: unknown) => {
+    console.error('❌ Unhandled Promise Rejection:', reason);
+    // Don't crash in production — log and continue
+    if (process.env.NODE_ENV === 'production') return;
+    process.exit(1);
+});
+
+process.on('uncaughtException', (err: Error) => {
+    console.error('❌ Uncaught Exception:', err);
+    process.exit(1);
+});

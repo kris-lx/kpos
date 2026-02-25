@@ -33,6 +33,8 @@ export interface LoginResponse {
         name: string;
         role: string;
         branchId: string;
+        isSuperAdmin?: boolean;
+        permissions?: string[];
     };
 }
 

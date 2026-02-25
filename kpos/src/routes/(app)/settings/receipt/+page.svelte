@@ -3,6 +3,7 @@
     import { t } from "$lib/i18n/index.svelte";
     import { api } from "$api";
     import { toast } from "svelte-sonner";
+    import { auth } from "$stores";
     import {
         Receipt,
         Save,
@@ -71,7 +72,10 @@
         }
     }
 
-    onMount(() => loadData());
+    $effect(() => {
+        auth.activeStoreId;
+        loadData();
+    });
 </script>
 
 <svelte:head>

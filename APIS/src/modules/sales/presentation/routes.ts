@@ -3,8 +3,10 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, branchFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, branchFilter, applyScopeFilter, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { publish, QUEUES } from '@/config/rabbitmq.config';
 import { prisma } from '@/config/database.config';
+import { queueActivityLog } from '@/infrastructure/helpers/activity-log.helper';
 
 export const salesRoutes = Router();
 
@@ -28,6 +30,7 @@ salesRoutes.post('/', authenticate, async (req, res, next) => {
 
         const branchId = req.user!.branchId;
         const userId = req.user!.userId;
+        const storeId = req.authUser?.activeStoreId || undefined;
 
         // Calculate totals
         let subtotal = 0;
@@ -113,6 +116,7 @@ salesRoutes.post('/', authenticate, async (req, res, next) => {
                 type: 'SALE',
                 status: 'COMPLETED',
                 branchId,
+                storeId,
                 userId,
                 customerId,
                 memberId,
@@ -142,42 +146,49 @@ salesRoutes.post('/', authenticate, async (req, res, next) => {
             },
         });
 
-        // Update inventory (stock deduction)
+        // Publish stock deduction to RabbitMQ (async) or fall back to sync
         for (const item of items) {
-            // Find inventory record
-            const inventory = await prisma.inventory.findFirst({
-                where: { productId: item.productId, branchId }
+            const published = publish(QUEUES.STOCK_MOVEMENT, {
+                productId: item.productId,
+                branchId,
+                storeId,
+                type: 'OUT',
+                quantity: item.quantity,
+                reason: 'Sale',
+                reference: transaction.id,
+                referenceType: 'SALE',
+                userId,
             });
 
-            if (inventory) {
-                const previousQty = inventory.quantity;
-                const newQty = previousQty - item.quantity;
-
-                await prisma.inventory.update({
-                    where: { id: inventory.id },
-                    data: {
-                        quantity: newQty,
-                        available: newQty - inventory.reserved
-                    },
+            // Sync fallback if RabbitMQ unavailable
+            if (!published) {
+                const inventory = await prisma.inventory.findFirst({
+                    where: { productId: item.productId, branchId }
                 });
-
-                // Create stock movement record
-                await prisma.stockMovement.create({
-                    data: {
-                        productId: item.productId,
-                        branchId,
-                        type: 'OUT',
-                        quantity: item.quantity,
-                        previousQty,
-                        newQty,
-                        reason: 'Sale',
-                        reference: transaction.id,
-                        referenceType: 'SALE',
-                        userId,
-                    },
-                });
+                if (inventory) {
+                    const previousQty = inventory.quantity;
+                    const newQty = previousQty - item.quantity;
+                    await prisma.inventory.update({
+                        where: { id: inventory.id },
+                        data: { quantity: newQty, available: newQty - inventory.reserved },
+                    });
+                    await prisma.stockMovement.create({
+                        data: {
+                            productId: item.productId, branchId, storeId, type: 'OUT',
+                            quantity: item.quantity, previousQty, newQty,
+                            reason: 'Sale', reference: transaction.id, referenceType: 'SALE', userId,
+                        },
+                    });
+                }
             }
         }
+
+        // Invalidate dashboard & inventory caches after sale
+        invalidateQueryCache('dashboard*').catch(() => {});
+        invalidateQueryCache('inventory*').catch(() => {});
+
+        // Log activity async
+        queueActivityLog(userId, 'sale_created', 'sales', `ສ້າງການຂາຍ ${transaction.transactionNo} ມູນຄ່າ ${transaction.total}`, { transactionId: transaction.id }, req).catch(() => {});
 
         res.status(201).json({ success: true, data: transaction });
     } catch (error) {
@@ -188,11 +199,12 @@ salesRoutes.post('/', authenticate, async (req, res, next) => {
 // ═══════════════════════════════════════════════════════════════════════════
 // GET ALL SALES (Transactions)
 // ═══════════════════════════════════════════════════════════════════════════
-salesRoutes.get('/', authenticate, async (req, res, next) => {
+salesRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { page = 1, limit = 50, startDate, endDate, status, type, branchId } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
         const userPermissions = req.authUser?.permissions || [];
+        const filter = (req as any).branchFilter as ScopeFilter | undefined;
 
         const where: Record<string, unknown> = {
             type: 'SALE' // Only get sale transactions
@@ -207,8 +219,12 @@ salesRoutes.get('/', authenticate, async (req, res, next) => {
             where.userId = req.user!.userId;
         }
 
+        // Apply store-level or branch-level scope (Transaction now has storeId)
+        applyScopeFilter(where, filter, 'storeId');
+
+        // Override with explicit query param
         if (branchId) where.branchId = String(branchId);
-        else where.branchId = req.user!.branchId;
+        else if (!filter) where.branchId = req.user!.branchId;
 
         if (status) where.status = String(status);
         if (type) where.type = String(type);
@@ -344,6 +360,13 @@ salesRoutes.post('/:id([a-fA-F0-9]{24})/void', authenticate, authorize('sales:de
                 });
             }
         }
+
+        // Invalidate caches after void
+        invalidateQueryCache('dashboard*').catch(() => {});
+        invalidateQueryCache('inventory*').catch(() => {});
+
+        // Log activity async
+        queueActivityLog(req.user!.userId, 'sale_voided', 'sales', `ຍົກເລີກການຂາຍ ${req.params.id}`, { transactionId: req.params.id }, req).catch(() => {});
 
         res.json({ success: true, message: 'Transaction voided successfully' });
     } catch (error) {
@@ -542,12 +565,19 @@ salesRoutes.get('/shifts', authenticate, branchFilter(), async (req, res, next) 
         const { branchId, userId, status, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
         const filter = (req as any).branchFilter;
+        const authUser = (req as any).authUser;
+        const isSuperAdmin = authUser?.isSuperAdmin;
 
         const where: Record<string, unknown> = {};
-        
-        // Apply branch filter for non-admin users
-        if (filter?.branchIds?.length) {
-            where.branchId = { in: filter.branchIds };
+
+        if (!isSuperAdmin) {
+            // Scope by storeId for store-level isolation
+            const activeStoreId = authUser?.activeStoreId;
+            if (activeStoreId) {
+                where.storeId = activeStoreId;
+            } else if (filter?.branchIds?.length) {
+                where.branchId = { in: filter.branchIds };
+            }
         }
         if (branchId) where.branchId = String(branchId);
         if (userId) where.userId = String(userId);
@@ -647,6 +677,7 @@ salesRoutes.post('/shifts/open', authenticate, async (req, res, next) => {
                 registerId,
                 openingBalance: openingBalance || 0,
                 notes,
+                storeId: req.authUser?.activeStoreId || undefined,
             },
             include: { user: { select: { name: true } }, register: true },
         });
@@ -733,12 +764,20 @@ salesRoutes.post('/shifts/:id/cash-movement', authenticate, async (req, res, nex
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all cash registers
-salesRoutes.get('/registers', authenticate, async (req, res, next) => {
+salesRoutes.get('/registers', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { branchId, isActive } = req.query;
+        const filter = (req as any).branchFilter;
 
         const where: Record<string, unknown> = {};
-        if (branchId) where.branchId = String(branchId);
+        // Scope to accessible branches for non-admin users
+        if (filter?.branchIds?.length) {
+            where.branchId = branchId && filter.branchIds.includes(String(branchId))
+                ? String(branchId)
+                : { in: filter.branchIds };
+        } else if (branchId) {
+            where.branchId = String(branchId);
+        }
         if (isActive !== undefined) where.isActive = isActive === 'true';
 
         const registers = await prisma.cashRegister.findMany({
@@ -778,8 +817,12 @@ salesRoutes.get('/registers/:id', authenticate, async (req, res, next) => {
 // Create cash register
 salesRoutes.post('/registers', authenticate, authorize('settings:update'), async (req, res, next) => {
     try {
+        const { name, branchId, isActive } = req.body;
+        if (!name || !branchId) {
+            return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'name and branchId are required' } });
+        }
         const register = await prisma.cashRegister.create({
-            data: req.body,
+            data: { name, branchId, isActive: isActive !== undefined ? isActive : true },
         });
 
         res.status(201).json({ success: true, data: register });
@@ -791,9 +834,11 @@ salesRoutes.post('/registers', authenticate, authorize('settings:update'), async
 // Update cash register
 salesRoutes.put('/registers/:id', authenticate, authorize('settings:update'), async (req, res, next) => {
     try {
+        const { id, _id, createdAt, updatedAt, branch, shifts, ...updateData } = req.body;
+        if (updateData.branchId === '' || updateData.branchId === null) delete updateData.branchId;
         const register = await prisma.cashRegister.update({
             where: { id: req.params.id },
-            data: req.body,
+            data: updateData,
         });
 
         res.json({ success: true, data: register });
@@ -821,12 +866,17 @@ salesRoutes.delete('/registers/:id', authenticate, authorize('settings:update'),
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all held sales
-salesRoutes.get('/held', authenticate, async (req, res, next) => {
+salesRoutes.get('/held', authenticate, branchFilter(), async (req, res, next) => {
     try {
-        const branchId = req.user!.branchId;
+        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const where: Record<string, unknown> = {};
+        applyScopeFilter(where, filter, 'storeId');
+        if (!filter) {
+            where.branchId = req.user!.branchId;
+        }
 
         const heldSales = await prisma.heldSale.findMany({
-            where: { branchId },
+            where,
             orderBy: { createdAt: 'desc' },
         });
 
@@ -865,6 +915,7 @@ salesRoutes.post('/held', authenticate, async (req, res, next) => {
                 ...req.body,
                 userId,
                 branchId,
+                storeId: req.authUser?.activeStoreId || undefined,
             },
         });
 
@@ -968,6 +1019,7 @@ salesRoutes.post('/credit', authenticate, async (req, res, next) => {
 
         const branchId = req.user!.branchId;
         const userId = req.user!.userId;
+        const creditStoreId = req.authUser?.activeStoreId || undefined;
 
         if (!customerId) {
             return res.status(400).json({
@@ -1052,6 +1104,7 @@ salesRoutes.post('/credit', authenticate, async (req, res, next) => {
                 type: 'SALE',
                 status: 'COMPLETED',
                 branchId,
+                storeId: creditStoreId,
                 userId,
                 customerId,
                 memberId,

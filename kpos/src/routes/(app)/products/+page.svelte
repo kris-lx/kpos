@@ -40,8 +40,12 @@
         Sparkles,
     } from "lucide-svelte";
 
-    // Check if user can edit (not cashier/staff)
-    const canEdit = $derived(!auth.isCashierOnly());
+    // Rule-based CRUD checks — also requires write access to active store
+    const hasWriteAccess = $derived(auth.hasStoreAccess('write') || !auth.activeStoreId);
+    const canCreateProduct = $derived(auth.canCreate('products') && hasWriteAccess);
+    const canUpdateProduct = $derived(auth.canUpdate('products') && hasWriteAccess);
+    const canDeleteProduct = $derived(auth.canDelete('products') && hasWriteAccess);
+    const canEdit = $derived(canCreateProduct || canUpdateProduct);
     
     // State
     let viewMode = $state<"grid" | "list">("grid");
@@ -152,7 +156,7 @@
     }
 
     // Filtered SKU/Barcode lists for dropdown
-    let filteredSkuList = $derived(() => {
+    let filteredSkuList = $derived.by(() => {
         const search = skuSearch.toLowerCase();
         // Get existing SKUs from products
         const productSkus = products
@@ -172,7 +176,7 @@
         }).slice(0, 20);
     });
 
-    let filteredBarcodeList = $derived(() => {
+    let filteredBarcodeList = $derived.by(() => {
         const search = barcodeSearch.toLowerCase();
         // Get existing barcodes from products
         const productBarcodes = products
@@ -368,7 +372,7 @@
     }
 
     // Filtered and paginated
-    let filteredProducts = $derived(() => {
+    let filteredProducts = $derived.by(() => {
         return products.filter((product) => {
             const matchSearch =
                 product.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -384,14 +388,18 @@
         });
     });
 
-    let paginatedProducts = $derived(() => {
+    let paginatedProducts = $derived.by(() => {
         const start = (currentPage - 1) * itemsPerPage;
-        return filteredProducts().slice(start, start + itemsPerPage);
+        return filteredProducts.slice(start, start + itemsPerPage);
     });
 
-    let totalPages = $derived(Math.ceil(filteredProducts().length / itemsPerPage));
+    let totalPages = $derived(Math.ceil(filteredProducts.length / itemsPerPage));
 
-    onMount(() => loadData());
+    // Reload when active store switches
+    $effect(() => {
+        auth.activeStoreId; // track dependency
+        loadData();
+    });
 </script>
 
 <svelte:head>
@@ -418,7 +426,7 @@
         </div>
 
         <div class="flex items-center gap-3">
-            <StoreBranchSelector on:change={() => loadData()} />
+            <StoreBranchSelector onchange={() => loadData()} />
             <button
                 class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-700 transition-all"
             >
@@ -509,7 +517,7 @@
                 class="px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             >
                 <option value={null}>ທຸກໝວດໝູ່</option>
-                {#each categories as category}
+                {#each categories as category (category.id)}
                     <option value={category.id}>{category.name}</option>
                 {/each}
             </select>
@@ -572,7 +580,7 @@
                 <p class="text-gray-500 dark:text-gray-400">{t("common.loading")}...</p>
             </div>
         </div>
-    {:else if paginatedProducts().length === 0}
+    {:else if paginatedProducts.length === 0}
         <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-16 text-center shadow-sm">
             <Package class="w-16 h-16 mx-auto text-gray-300 dark:text-gray-600" />
             <h3 class="text-lg font-semibold text-gray-900 dark:text-white mt-4">ບໍ່ມີສິນຄ້າ</h3>
@@ -580,7 +588,7 @@
         </div>
     {:else if viewMode === "grid"}
         <div class="grid gap-4 grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
-            {#each paginatedProducts() as product}
+            {#each paginatedProducts as product (product.id)}
                 {@const stockStatus = getStockStatus(product)}
                 {@const stockConfig = getStockConfig(stockStatus)}
 
@@ -691,7 +699,7 @@
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-gray-200 dark:divide-gray-700">
-                        {#each paginatedProducts() as product}
+                        {#each paginatedProducts as product (product.id)}
                             {@const stockStatus = getStockStatus(product)}
                             {@const stockConfig = getStockConfig(stockStatus)}
 
@@ -870,9 +878,9 @@
                                     placeholder="ພິມເພື່ອຄົ້ນຫາ ຫຼື ສ້າງໃໝ່"
                                     class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white font-mono focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                                 />
-                                {#if showSkuDropdown && filteredSkuList().length > 0}
+                                {#if showSkuDropdown && filteredSkuList.length > 0}
                                     <div class="absolute z-50 w-full mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-lg max-h-48 overflow-y-auto">
-                                        {#each filteredSkuList() as item}
+                                        {#each filteredSkuList as item (item.sku)}
                                             <button
                                                 type="button"
                                                 class="w-full px-4 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-900 dark:text-white flex items-center justify-between"
@@ -915,9 +923,9 @@
                                     placeholder="ພິມເພື່ອຄົ້ນຫາ ຫຼື ສ້າງໃໝ່"
                                     class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white font-mono focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                                 />
-                                {#if showBarcodeDropdown && filteredBarcodeList().length > 0}
+                                {#if showBarcodeDropdown && filteredBarcodeList.length > 0}
                                     <div class="absolute z-50 w-full mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-lg max-h-48 overflow-y-auto">
-                                        {#each filteredBarcodeList() as item}
+                                        {#each filteredBarcodeList as item (item.barcode)}
                                             <button
                                                 type="button"
                                                 class="w-full px-4 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-900 dark:text-white flex items-center justify-between"
@@ -980,7 +988,7 @@
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                     >
                         <option value="">ເລືອກໝວດໝູ່</option>
-                        {#each categories as category}
+                        {#each categories as category (category.id)}
                             <option value={category.id}>{category.name}</option>
                         {/each}
                     </select>

@@ -9,6 +9,7 @@
     import { toast } from "svelte-sonner";
     import { t } from "$lib/i18n/index.svelte";
     import StoreBranchSelector from "$lib/components/StoreBranchSelector.svelte";
+    import { auth } from "$stores";
     import {
         Plus,
         Search,
@@ -27,6 +28,10 @@
     } from "lucide-svelte";
 
     const queryClient = useQueryClient();
+
+    // Rule-based CRUD — also requires write access to active store
+    const hasWriteAccess = $derived(auth.hasStoreAccess('write') || !auth.activeStoreId);
+    const canAdjustInventory = $derived(auth.canUpdate('inventory') && hasWriteAccess);
 
     // Pagination State
     let currentPage = $state(1);
@@ -105,14 +110,13 @@
         },
     });
 
-    // Refetch when dependencies change
+    // Refetch when dependencies change (including active store switch)
     $effect(() => {
-        // Track dependencies explicitly
         void debouncedSearch;
         void filterType;
         void currentPage;
         void pageSize;
-        // Trigger refetch
+        void auth.activeStoreId;
         $inventoryQuery.refetch();
     });
 
@@ -239,7 +243,7 @@
             <p class="text-gray-500">{t("inventory.subtitle")}</p>
         </div>
         <div class="flex items-center gap-3">
-            <StoreBranchSelector on:change={() => $inventoryQuery.refetch()} />
+            <StoreBranchSelector onchange={() => $inventoryQuery.refetch()} />
         </div>
     </div>
 
@@ -402,7 +406,7 @@
                 </thead>
                 <tbody class="divide-y divide-gray-200 dark:divide-gray-800">
                     {#if $inventoryQuery.isLoading}
-                        {#each Array(5) as _}
+                        {#each Array(5) as _, i (i)}
                             <tr>
                                 <td colspan="7" class="px-6 py-4">
                                     <div
@@ -436,7 +440,7 @@
                             </td>
                         </tr>
                     {:else}
-                        {#each $inventoryQuery.data?.data || [] as product}
+                        {#each $inventoryQuery.data?.data || [] as product (product.id)}
                             <tr
                                 class="hover:bg-gray-50 dark:hover:bg-gray-800/50"
                             >
@@ -506,6 +510,7 @@
                                     <div
                                         class="flex items-center justify-end gap-2"
                                     >
+                                        {#if canAdjustInventory}
                                         <button
                                             onclick={() =>
                                                 openAdjustModal(product)}
@@ -513,6 +518,7 @@
                                         >
                                             {t("inventory.adjust")}
                                         </button>
+                                        {/if}
                                     </div>
                                 </td>
                             </tr>
@@ -535,7 +541,7 @@
                             onchange={(e) => handlePageSizeChange(Number(e.currentTarget.value))}
                             class="px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 dark:bg-gray-800 dark:text-white text-sm focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                         >
-                            {#each pageSizeOptions as size}
+                            {#each pageSizeOptions as size (size)}
                                 <option value={size}>{size}</option>
                             {/each}
                         </select>
@@ -569,7 +575,7 @@
                     </button>
 
                     <!-- Page Numbers -->
-                    {#each pageNumbers as page}
+                    {#each pageNumbers as page, idx (idx)}
                         {#if page === "..."}
                             <span class="px-2 py-1 text-gray-400 dark:text-gray-500">...</span>
                         {:else}

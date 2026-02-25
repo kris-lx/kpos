@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
     import { cn, formatCurrency, formatDateTime } from "$utils";
@@ -53,7 +54,7 @@
         { id: "credit", label: t("documents.credit"), icon: CreditCard },
     ]);
 
-    $effect(() => {
+    onMount(() => {
         loadDocuments();
     });
 
@@ -229,7 +230,7 @@
 
     <!-- Document Type Tabs -->
     <div class="flex flex-wrap gap-2 mb-6">
-        {#each documentTypes as docType}
+        {#each documentTypes as docType (docType.id)}
             <button
                 onclick={() => { activeDocType = docType.id as any; currentPage = 1; }}
                 class={cn(
@@ -304,7 +305,7 @@
                             </tr>
                         </thead>
                         <tbody class="divide-y divide-gray-100 dark:divide-gray-700">
-                            {#each filteredDocuments as doc}
+                            {#each filteredDocuments as doc (doc.id)}
                                 <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
                                     <td class="px-4 py-3">
                                         <div class="flex items-center gap-2">
@@ -430,7 +431,7 @@
                     {t("documents.paperSize")}
                 </h3>
                 <div class="space-y-2">
-                    {#each paperSizes as size}
+                    {#each paperSizes as size (size.id)}
                         <button
                             onclick={() => selectedPaperSize = size}
                             class={cn(
@@ -519,7 +520,7 @@
 
                         <!-- Items -->
                         <div class="space-y-2">
-                            {#each previewDoc.items || [] as item}
+                            {#each previewDoc.items || [] as item (item.productName)}
                                 <div class="flex justify-between text-sm">
                                     <div>
                                         <p class="print-text font-medium text-gray-900 dark:text-white">{item.productName}</p>

@@ -23,7 +23,7 @@
         error = null;
         try {
             const response = await api
-                .get(`management/shifts?date=${dateFilter}`)
+                .get(`sales/shifts?date=${dateFilter}`)
                 .json<any>();
             if (response.success) {
                 shifts = response.data || [];
@@ -182,7 +182,7 @@
                     </tr>
                 </thead>
                 <tbody class="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
-                    {#each shifts as shift}
+                    {#each shifts as shift (shift.id)}
                         <tr class="hover:bg-gray-50 dark:hover:bg-gray-700">
                             <td class="px-6 py-4 whitespace-nowrap">
                                 <div class="flex items-center gap-3">

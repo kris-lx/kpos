@@ -16,10 +16,10 @@ export function cn(...inputs: ClassValue[]): string {
  * Format number as Lao Kip currency (₭)
  */
 export function formatCurrency(amount: number): string {
-    // Lao Kip formatting - no decimal places as Kip is whole numbers
-    const formatted = new Intl.NumberFormat('lo-LA', {
-        minimumFractionDigits: 0,
-        maximumFractionDigits: 0,
+    if (amount == null || isNaN(amount)) return '₭0.00';
+    const formatted = new Intl.NumberFormat('en-US', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
     }).format(amount);
     return `₭${formatted}`;
 }
@@ -45,12 +45,36 @@ export function formatNumber(num: number, decimals = 0): string {
     }).format(num);
 }
 
+// Map app locale codes to BCP47 tags
+const LOCALE_BCP47: Record<string, string> = {
+    lo: 'lo-LA',
+    th: 'th-TH',
+    zh: 'zh-CN',
+    ja: 'ja-JP',
+    en: 'en-US',
+};
+
 /**
- * Format date in Lao locale
+ * Get BCP47 locale string from app locale code
  */
-export function formatDate(date: Date | string, options?: Intl.DateTimeFormatOptions): string {
+export function getDateLocale(locale?: string): string {
+    if (!locale) {
+        if (typeof localStorage !== 'undefined') {
+            const stored = localStorage.getItem('kpos_locale');
+            if (stored && LOCALE_BCP47[stored]) return LOCALE_BCP47[stored];
+        }
+        return 'lo-LA';
+    }
+    return LOCALE_BCP47[locale] || 'lo-LA';
+}
+
+/**
+ * Format date respecting current app locale (lo/th/zh/ja/en)
+ */
+export function formatDate(date: Date | string, options?: Intl.DateTimeFormatOptions, locale?: string): string {
     const d = typeof date === 'string' ? new Date(date) : date;
-    return new Intl.DateTimeFormat('lo-LA', {
+    if (isNaN(d.getTime())) return '-';
+    return new Intl.DateTimeFormat(getDateLocale(locale), {
         year: 'numeric',
         month: 'short',
         day: 'numeric',
@@ -59,21 +83,22 @@ export function formatDate(date: Date | string, options?: Intl.DateTimeFormatOpt
 }
 
 /**
- * Format date with time
+ * Format date with time respecting current app locale
  */
-export function formatDateTime(date: Date | string): string {
+export function formatDateTime(date: Date | string, locale?: string): string {
     return formatDate(date, {
         hour: '2-digit',
         minute: '2-digit',
-    });
+    }, locale);
 }
 
 /**
  * Format time only
  */
-export function formatTime(date: Date | string): string {
+export function formatTime(date: Date | string, locale?: string): string {
     const d = typeof date === 'string' ? new Date(date) : date;
-    return new Intl.DateTimeFormat('lo-LA', {
+    if (isNaN(d.getTime())) return '-';
+    return new Intl.DateTimeFormat(getDateLocale(locale), {
         hour: '2-digit',
         minute: '2-digit',
         second: '2-digit',
@@ -141,6 +166,14 @@ export function parseBarcode(code: string): { type: string; value: string } {
 }
 
 /**
+ * Validate phone number (Lao format: 20xxxxxxxx, 10 digits total)
+ */
+export function isValidLaoPhone(phone: string): boolean {
+    const cleaned = phone.replace(/\D/g, '');
+    return /^20\d{8}$/.test(cleaned);
+}
+
+/**
  * Validate phone number (Thai format)
  */
 export function isValidThaiPhone(phone: string): boolean {
@@ -149,14 +182,40 @@ export function isValidThaiPhone(phone: string): boolean {
 }
 
 /**
- * Format phone number
+ * Format phone number (Lao: 20xx xxx xxxx)
  */
 export function formatPhone(phone: string): string {
     const cleaned = phone.replace(/\D/g, '');
+    if (cleaned.length === 10 && cleaned.startsWith('20')) {
+        return `${cleaned.slice(0, 4)} ${cleaned.slice(4, 7)} ${cleaned.slice(7)}`;
+    }
     if (cleaned.length === 10) {
         return `${cleaned.slice(0, 3)}-${cleaned.slice(3, 6)}-${cleaned.slice(6)}`;
     }
     return phone;
+}
+
+/**
+ * Format money input: xxx,xxx,xxx.xx
+ */
+export function formatMoneyInput(value: string | number): string {
+    const num = typeof value === 'string' ? parseFloat(value.replace(/,/g, '')) : value;
+    if (isNaN(num)) return '';
+    return num.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+}
+
+/**
+ * Parse money input back to number
+ */
+export function parseMoneyInput(value: string): number {
+    return parseFloat(value.replace(/,/g, '')) || 0;
+}
+
+/**
+ * Enforce phone input: only digits, max 10, must start with 20
+ */
+export function enforcePhoneInput(value: string): string {
+    return value.replace(/\D/g, '').slice(0, 10);
 }
 
 /**

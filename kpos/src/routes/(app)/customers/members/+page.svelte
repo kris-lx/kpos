@@ -49,27 +49,32 @@
     // Data
     let members = $state<any[]>([]);
 
-    // Form
+    // Form (matches Prisma Customer schema)
     let formData = $state({
-        memberNo: "",
         name: "",
         phone: "",
         email: "",
         birthDate: "",
         address: "",
-        tier: "bronze",
         points: 0,
         totalSpent: 0,
         isActive: true,
     });
 
+    function computeTier(totalSpent: number): string {
+        if (totalSpent > 5000000) return "platinum";
+        if (totalSpent > 1000000) return "gold";
+        if (totalSpent > 500000) return "silver";
+        return "bronze";
+    }
+
     // Stats
     let stats = $derived({
         total: members.length,
-        platinum: members.filter((m) => m.tier === "platinum").length,
-        gold: members.filter((m) => m.tier === "gold").length,
-        silver: members.filter((m) => m.tier === "silver").length,
-        bronze: members.filter((m) => m.tier === "bronze").length,
+        platinum: members.filter((m) => computeTier(m.totalSpent || 0) === "platinum").length,
+        gold: members.filter((m) => computeTier(m.totalSpent || 0) === "gold").length,
+        silver: members.filter((m) => computeTier(m.totalSpent || 0) === "silver").length,
+        bronze: members.filter((m) => computeTier(m.totalSpent || 0) === "bronze").length,
         totalPoints: members.reduce((sum, m) => sum + (m.points || 0), 0),
     });
 
@@ -130,10 +135,6 @@
                 await api.put(`customers/${editingMember.id}`, { json: data }).json();
                 toast.success("ອັບເດດສະມາຊິກສຳເລັດ");
             } else {
-                // Auto generate member number
-                if (!data.memberNo) {
-                    data.memberNo = "M" + Date.now().toString().slice(-8);
-                }
                 await api.post("customers", { json: data }).json();
                 toast.success("ເພີ່ມສະມາຊິກສຳເລັດ");
             }
@@ -161,13 +162,11 @@
     function openEdit(member: any) {
         editingMember = member;
         formData = {
-            memberNo: member.memberNo || "",
             name: member.name || "",
             phone: member.phone || "",
             email: member.email || "",
             birthDate: member.birthDate?.split("T")[0] || "",
             address: member.address || "",
-            tier: member.tier || "bronze",
             points: member.points || 0,
             totalSpent: member.totalSpent || 0,
             isActive: member.isActive ?? true,
@@ -183,13 +182,11 @@
     function resetForm() {
         editingMember = null;
         formData = {
-            memberNo: "",
             name: "",
             phone: "",
             email: "",
             birthDate: "",
             address: "",
-            tier: "bronze",
             points: 0,
             totalSpent: 0,
             isActive: true,
@@ -197,26 +194,26 @@
     }
 
     // Filtered
-    let filteredMembers = $derived(() => {
+    let filteredMembers = $derived.by(() => {
         return members.filter((member) => {
             const matchSearch =
                 member.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
                 member.phone?.includes(searchQuery) ||
                 member.email?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                member.memberNo?.includes(searchQuery);
+                member.memberCode?.includes(searchQuery);
 
-            const matchTier = !tierFilter || member.tier === tierFilter;
+            const matchTier = !tierFilter || computeTier(member.totalSpent || 0) === tierFilter;
 
             return matchSearch && matchTier;
         });
     });
 
-    let paginatedMembers = $derived(() => {
+    let paginatedMembers = $derived.by(() => {
         const start = (currentPage - 1) * itemsPerPage;
-        return filteredMembers().slice(start, start + itemsPerPage);
+        return filteredMembers.slice(start, start + itemsPerPage);
     });
 
-    let totalItems = $derived(filteredMembers().length);
+    let totalItems = $derived(filteredMembers.length);
     let totalPages = $derived(Math.ceil(totalItems / itemsPerPage));
 
     function goToPage(page: number) {
@@ -377,7 +374,7 @@
                 <p class="text-gray-500 dark:text-gray-400">{t("common.loading")}...</p>
             </div>
         </div>
-    {:else if paginatedMembers().length === 0}
+    {:else if paginatedMembers.length === 0}
         <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-16 text-center shadow-sm">
             <Users class="w-16 h-16 mx-auto text-gray-300 dark:text-gray-600" />
             <h3 class="text-lg font-semibold text-gray-900 dark:text-white mt-4">ບໍ່ມີສະມາຊິກ</h3>
@@ -385,8 +382,8 @@
         </div>
     {:else}
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {#each paginatedMembers() as member}
-                {@const tierConfig = getTierConfig(member.tier || "bronze")}
+            {#each paginatedMembers as member (member.id)}
+                {@const tierConfig = getTierConfig(computeTier(member.totalSpent || 0))}
                 {@const TierIcon = tierConfig.icon}
 
                 <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden hover:shadow-md transition-all">
@@ -400,7 +397,7 @@
                                 </span>
                             </div>
                             <span class={cn("text-xs font-mono", tierConfig.text)}>
-                                #{member.memberNo || "-"}
+                                #{member.memberCode || "-"}
                             </span>
                         </div>
                     </div>
@@ -481,7 +478,7 @@
                     onchange={() => { currentPage = 1; }}
                     class="px-2 py-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-emerald-500"
                 >
-                    {#each itemsPerPageOptions as size}
+                    {#each itemsPerPageOptions as size (size)}
                         <option value={size}>{size}</option>
                     {/each}
                 </select>
@@ -527,30 +524,6 @@
                 onsubmit={(e) => { e.preventDefault(); handleSubmit(); }}
                 class="p-6 space-y-4 max-h-[70vh] overflow-y-auto"
             >
-                <div class="grid grid-cols-2 gap-4">
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ເລກສະມາຊິກ</label>
-                        <input
-                            type="text"
-                            bind:value={formData.memberNo}
-                            placeholder="ສ້າງອັດຕະໂນມັດ"
-                            class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
-                        />
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ລະດັບ</label>
-                        <select
-                            bind:value={formData.tier}
-                            class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
-                        >
-                            <option value="bronze">Bronze</option>
-                            <option value="silver">Silver</option>
-                            <option value="gold">Gold</option>
-                            <option value="platinum">Platinum</option>
-                        </select>
-                    </div>
-                </div>
-
                 <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຊື່ *</label>
                     <input
@@ -649,7 +622,7 @@
 
 <!-- View Modal -->
 {#if showViewModal && viewingMember}
-    {@const tierConfig = getTierConfig(viewingMember.tier || "bronze")}
+    {@const tierConfig = getTierConfig(computeTier(viewingMember.totalSpent || 0))}
     {@const TierIcon = tierConfig.icon}
 
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
@@ -666,7 +639,7 @@
                     </button>
                 </div>
                 <h2 class={cn("text-2xl font-bold", tierConfig.text)}>{viewingMember.name}</h2>
-                <p class={cn("text-sm opacity-80", tierConfig.text)}>#{viewingMember.memberNo || "-"}</p>
+                <p class={cn("text-sm opacity-80", tierConfig.text)}>#{viewingMember.memberCode || "-"}</p>
             </div>
 
             <!-- Content -->

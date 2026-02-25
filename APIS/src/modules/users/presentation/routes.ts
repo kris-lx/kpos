@@ -508,88 +508,141 @@ userRoutes.get('/permissions/all', authenticate, authorize('users:read'), async 
                 { value: 'dashboard:view', label: 'ເບິ່ງແຜງຄວບຄຸມ' }
             ]},
             { module: 'pos', label: 'ຂາຍໜ້າຮ້ານ', permissions: [
-                { value: 'pos:view', label: 'ເບິ່ງໜ້າຂາຍ' },
-                { value: 'pos:sell', label: 'ຂາຍສິນຄ້າ' }
+                { value: 'pos:access', label: 'ເຂົ້າໃຊ້ POS' },
+                { value: 'pos:sell', label: 'ຂາຍສິນຄ້າ' },
+                { value: 'pos:discount', label: 'ໃຫ້ສ່ວນຫຼຸດ' },
+                { value: 'pos:refund', label: 'ຄືນເງິນ POS' },
+                { value: 'pos:void', label: 'ຍົກເລີກ POS' },
+                { value: 'pos:credit', label: 'ຂາຍເຊື່ອ' }
             ]},
             { module: 'sales', label: 'ການຂາຍ', permissions: [
+                { value: 'sales:read', label: 'ອ່ານຂໍ້ມູນການຂາຍ' },
                 { value: 'sales:view', label: 'ເບິ່ງການຂາຍ' },
                 { value: 'sales:create', label: 'ສ້າງການຂາຍ' },
                 { value: 'sales:update', label: 'ແກ້ໄຂການຂາຍ' },
                 { value: 'sales:delete', label: 'ລຶບການຂາຍ' },
-                { value: 'sales:view-own', label: 'ເບິ່ງການຂາຍຂອງຕົນ' },
+                { value: 'sales:export', label: 'ສົ່ງອອກການຂາຍ' },
                 { value: 'sales:void', label: 'ຍົກເລີກການຂາຍ' },
-                { value: 'sales:refund', label: 'ຄືນເງິນ' }
+                { value: 'sales:refund', label: 'ຄືນເງິນ' },
+                { value: 'sales:view-own', label: 'ເບິ່ງການຂາຍຂອງຕົນ' }
             ]},
             { module: 'products', label: 'ສິນຄ້າ', permissions: [
+                { value: 'products:read', label: 'ອ່ານຂໍ້ມູນສິນຄ້າ' },
                 { value: 'products:view', label: 'ເບິ່ງສິນຄ້າ' },
                 { value: 'products:create', label: 'ສ້າງສິນຄ້າ' },
                 { value: 'products:update', label: 'ແກ້ໄຂສິນຄ້າ' },
                 { value: 'products:delete', label: 'ລຶບສິນຄ້າ' }
             ]},
             { module: 'categories', label: 'ໝວດໝູ່', permissions: [
+                { value: 'categories:read', label: 'ອ່ານຂໍ້ມູນໝວດໝູ່' },
                 { value: 'categories:view', label: 'ເບິ່ງໝວດໝູ່' },
                 { value: 'categories:create', label: 'ສ້າງໝວດໝູ່' },
                 { value: 'categories:update', label: 'ແກ້ໄຂໝວດໝູ່' },
                 { value: 'categories:delete', label: 'ລຶບໝວດໝູ່' }
             ]},
             { module: 'inventory', label: 'ສາງ', permissions: [
+                { value: 'inventory:read', label: 'ອ່ານຂໍ້ມູນສາງ' },
                 { value: 'inventory:view', label: 'ເບິ່ງສາງ' },
+                { value: 'inventory:create', label: 'ສ້າງລາຍການສາງ' },
                 { value: 'inventory:update', label: 'ອັບເດດສາງ' },
-                { value: 'inventory:adjust', label: 'ປັບສາງ' }
+                { value: 'inventory:delete', label: 'ລຶບລາຍການສາງ' },
+                { value: 'inventory:adjust', label: 'ປັບສາງ' },
+                { value: 'inventory:transfer', label: 'ໂອນສາງ' },
+                { value: 'inventory:stockin', label: 'ນຳເຂົ້າສາງ' },
+                { value: 'inventory:stockout', label: 'ນຳອອກສາງ' }
             ]},
             { module: 'restaurant', label: 'ຮ້ານອາຫານ', permissions: [
+                { value: 'restaurant:access', label: 'ເຂົ້າໃຊ້ຮ້ານອາຫານ' },
                 { value: 'restaurant:view', label: 'ເບິ່ງຮ້ານອາຫານ' },
-                { value: 'restaurant:update', label: 'ແກ້ໄຂຮ້ານອາຫານ' },
-                { value: 'restaurant:manage-tables', label: 'ຈັດການໂຕະ' },
-                { value: 'restaurant:manage-orders', label: 'ຈັດການອໍເດີ' }
+                { value: 'restaurant:manage', label: 'ຈັດການຮ້ານອາຫານ' },
+                { value: 'restaurant:tables', label: 'ຈັດການໂຕະ' },
+                { value: 'restaurant:kitchen', label: 'ຈັດການຄົວ' },
+                { value: 'restaurant:reservations', label: 'ຈັດການການຈອງ' }
+            ]},
+            { module: 'tables', label: 'ໂຕະ (CRUD)', permissions: [
+                { value: 'tables:create', label: 'ສ້າງໂຕະ' },
+                { value: 'tables:update', label: 'ແກ້ໄຂໂຕະ' },
+                { value: 'tables:delete', label: 'ລຶບໂຕະ' }
             ]},
             { module: 'promotions', label: 'ໂປຣໂມຊັ່ນ', permissions: [
+                { value: 'promotions:read', label: 'ອ່ານຂໍ້ມູນໂປຣໂມຊັ່ນ' },
                 { value: 'promotions:view', label: 'ເບິ່ງໂປຣໂມຊັ່ນ' },
                 { value: 'promotions:create', label: 'ສ້າງໂປຣໂມຊັ່ນ' },
                 { value: 'promotions:update', label: 'ແກ້ໄຂໂປຣໂມຊັ່ນ' },
                 { value: 'promotions:delete', label: 'ລຶບໂປຣໂມຊັ່ນ' }
             ]},
             { module: 'customers', label: 'ລູກຄ້າ', permissions: [
+                { value: 'customers:read', label: 'ອ່ານຂໍ້ມູນລູກຄ້າ' },
                 { value: 'customers:view', label: 'ເບິ່ງລູກຄ້າ' },
                 { value: 'customers:create', label: 'ສ້າງລູກຄ້າ' },
                 { value: 'customers:update', label: 'ແກ້ໄຂລູກຄ້າ' },
                 { value: 'customers:delete', label: 'ລຶບລູກຄ້າ' }
             ]},
             { module: 'payments', label: 'ການຊຳລະ', permissions: [
+                { value: 'payments:read', label: 'ອ່ານຂໍ້ມູນການຊຳລະ' },
                 { value: 'payments:view', label: 'ເບິ່ງການຊຳລະ' },
-                { value: 'payments:manage', label: 'ຈັດການການຊຳລະ' }
+                { value: 'payments:refund', label: 'ຄືນເງິນ' },
+                { value: 'payments:settings', label: 'ຕັ້ງຄ່າການຊຳລະ' },
+                { value: 'payments:manage', label: 'ຈັດການການຊຳລະ' },
+                { value: 'payments:void', label: 'ຍົກເລີກການຊຳລະ' },
+                { value: 'payments:settle', label: 'ປິດບັນຊີ' }
             ]},
             { module: 'reports', label: 'ລາຍງານ', permissions: [
                 { value: 'reports:view', label: 'ເບິ່ງລາຍງານ' },
-                { value: 'reports:export', label: 'ສົ່ງອອກລາຍງານ' }
+                { value: 'reports:export', label: 'ສົ່ງອອກລາຍງານ' },
+                { value: 'reports:sales', label: 'ລາຍງານການຂາຍ' },
+                { value: 'reports:inventory', label: 'ລາຍງານສາງ' },
+                { value: 'reports:financial', label: 'ລາຍງານການເງິນ' },
+                { value: 'reports:staff', label: 'ລາຍງານພະນັກງານ' }
             ]},
             { module: 'staff', label: 'ພະນັກງານ', permissions: [
+                { value: 'staff:read', label: 'ອ່ານຂໍ້ມູນພະນັກງານ' },
                 { value: 'staff:view', label: 'ເບິ່ງພະນັກງານ' },
                 { value: 'staff:create', label: 'ສ້າງພະນັກງານ' },
                 { value: 'staff:update', label: 'ແກ້ໄຂພະນັກງານ' },
                 { value: 'staff:delete', label: 'ລຶບພະນັກງານ' }
             ]},
             { module: 'users', label: 'ຜູ້ໃຊ້', permissions: [
+                { value: 'users:read', label: 'ອ່ານຂໍ້ມູນຜູ້ໃຊ້' },
                 { value: 'users:view', label: 'ເບິ່ງຜູ້ໃຊ້' },
                 { value: 'users:create', label: 'ສ້າງຜູ້ໃຊ້' },
                 { value: 'users:update', label: 'ແກ້ໄຂຜູ້ໃຊ້' },
                 { value: 'users:delete', label: 'ລຶບຜູ້ໃຊ້' }
             ]},
             { module: 'roles', label: 'ບົດບາດ', permissions: [
+                { value: 'roles:read', label: 'ອ່ານຂໍ້ມູນບົດບາດ' },
                 { value: 'roles:view', label: 'ເບິ່ງບົດບາດ' },
                 { value: 'roles:create', label: 'ສ້າງບົດບາດ' },
                 { value: 'roles:update', label: 'ແກ້ໄຂບົດບາດ' },
                 { value: 'roles:delete', label: 'ລຶບບົດບາດ' }
             ]},
             { module: 'branches', label: 'ສາຂາ', permissions: [
+                { value: 'branches:read', label: 'ອ່ານຂໍ້ມູນສາຂາ' },
                 { value: 'branches:view', label: 'ເບິ່ງສາຂາ' },
                 { value: 'branches:create', label: 'ສ້າງສາຂາ' },
                 { value: 'branches:update', label: 'ແກ້ໄຂສາຂາ' },
                 { value: 'branches:delete', label: 'ລຶບສາຂາ' }
             ]},
+            { module: 'stores', label: 'ຮ້ານ', permissions: [
+                { value: 'stores:read', label: 'ອ່ານຂໍ້ມູນຮ້ານ' },
+                { value: 'stores:view', label: 'ເບິ່ງຮ້ານ' },
+                { value: 'stores:create', label: 'ສ້າງຮ້ານ' },
+                { value: 'stores:update', label: 'ແກ້ໄຂຮ້ານ' },
+                { value: 'stores:delete', label: 'ລຶບຮ້ານ' },
+                { value: 'stores:assign', label: 'ກຳນົດຜູ້ໃຊ້ຮ້ານ' },
+                { value: 'stores:products', label: 'ຈັດການສິນຄ້າຮ້ານ' }
+            ]},
             { module: 'settings', label: 'ຕັ້ງຄ່າ', permissions: [
+                { value: 'settings:read', label: 'ອ່ານຂໍ້ມູນຕັ້ງຄ່າ' },
                 { value: 'settings:view', label: 'ເບິ່ງຕັ້ງຄ່າ' },
                 { value: 'settings:update', label: 'ແກ້ໄຂຕັ້ງຄ່າ' }
+            ]},
+            { module: 'documents', label: 'ເອກະສານ', permissions: [
+                { value: 'documents:read', label: 'ອ່ານຂໍ້ມູນເອກະສານ' },
+                { value: 'documents:view', label: 'ເບິ່ງເອກະສານ' },
+                { value: 'documents:create', label: 'ສ້າງເອກະສານ' },
+                { value: 'documents:update', label: 'ແກ້ໄຂເອກະສານ' },
+                { value: 'documents:delete', label: 'ລຶບເອກະສານ' }
             ]}
         ];
 
@@ -600,6 +653,134 @@ userRoutes.get('/permissions/all', authenticate, authorize('users:read'), async 
             success: false,
             error: { code: 'SERVER_ERROR', message: 'Failed to get permissions' }
         });
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GET CURRENT USER'S MENU (filtered by permissions)
+// ═══════════════════════════════════════════════════════════════════════════
+userRoutes.get('/me/menu', authenticate, async (req, res) => {
+    try {
+        const authUser = (req as any).user;
+        const userPermissions: string[] = authUser.permissions || [];
+        const isSuperAdmin = authUser.isSuperAdmin === true;
+
+        // Helper: check if user has a permission (with :view/:read equivalence)
+        function hasPermission(perm: string): boolean {
+            if (isSuperAdmin) return true;
+            if (userPermissions.includes('*')) return true;
+            if (userPermissions.includes(perm)) return true;
+            // :view/:read equivalence
+            if (perm.endsWith(':view')) {
+                return userPermissions.includes(perm.replace(':view', ':read'));
+            }
+            if (perm.endsWith(':read')) {
+                return userPermissions.includes(perm.replace(':read', ':view'));
+            }
+            return false;
+        }
+
+        // Try to load from DB
+        let menus = await prisma.menuPermission.findMany({
+            where: { isActive: true, parentId: null },
+            orderBy: { order: 'asc' },
+            include: {
+                children: {
+                    where: { isActive: true },
+                    orderBy: { order: 'asc' }
+                }
+            }
+        });
+
+        if (menus.length === 0) {
+            // No DB data — return empty (admin must seed first)
+            return res.json({ success: true, data: [] });
+        }
+
+        // Filter menus by user permissions
+        const filteredMenus = menus
+            .filter(menu => !menu.requiredPermission || hasPermission(menu.requiredPermission))
+            .map(menu => ({
+                ...menu,
+                children: (menu.children || []).filter(
+                    child => !child.requiredPermission || hasPermission(child.requiredPermission)
+                )
+            }))
+            .filter(menu => menu.children.length > 0 || menu.path); // Remove empty parents
+
+        res.json({ success: true, data: filteredMenus });
+    } catch (error) {
+        console.error('Get user menu error:', error);
+        res.json({ success: true, data: [] });
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GET CURRENT USER'S RULES (Rule-Based RBAC)
+// Returns: { rules: [{ name, module, routes[], crud: {read,create,update,delete} }] }
+// ═══════════════════════════════════════════════════════════════════════════
+userRoutes.get('/me/rules', authenticate, async (req, res) => {
+    try {
+        const authUser = req.authUser!;
+
+        // Super Admin gets all rules with full CRUD
+        if (authUser.isSuperAdmin) {
+            const allRules = await prisma.rule.findMany({
+                where: { isActive: true },
+                orderBy: { order: 'asc' },
+            });
+            const data = allRules.map(rule => ({
+                name: rule.name,
+                displayName: rule.displayName,
+                module: rule.module,
+                icon: rule.icon,
+                routes: rule.routes,
+                permissions: rule.permissions,
+                crud: { read: true, create: true, update: true, delete: true },
+            }));
+            return res.json({ success: true, data });
+        }
+
+        // Load user's role
+        const user = await prisma.user.findUnique({
+            where: { id: authUser.userId },
+            select: { roleId: true },
+        });
+
+        if (!user?.roleId) {
+            return res.json({ success: true, data: [] });
+        }
+
+        // Load role's rules with CRUD flags
+        const roleRules = await prisma.roleRule.findMany({
+            where: { roleId: user.roleId },
+            include: {
+                rule: { select: { name: true, displayName: true, module: true, icon: true, routes: true, permissions: true, order: true, isActive: true } },
+            },
+        });
+
+        const data = roleRules
+            .filter(rr => rr.rule.isActive)
+            .sort((a, b) => (a.rule.order ?? 0) - (b.rule.order ?? 0))
+            .map(rr => ({
+                name: rr.rule.name,
+                displayName: rr.rule.displayName,
+                module: rr.rule.module,
+                icon: rr.rule.icon,
+                routes: rr.rule.routes,
+                permissions: rr.rule.permissions,
+                crud: {
+                    read: rr.canRead,
+                    create: rr.canCreate,
+                    update: rr.canUpdate,
+                    delete: rr.canDelete,
+                },
+            }));
+
+        res.json({ success: true, data });
+    } catch (error) {
+        console.error('Get user rules error:', error);
+        res.json({ success: true, data: [] });
     }
 });
 
@@ -648,6 +829,133 @@ userRoutes.get('/me/profile', authenticate, async (req, res) => {
         res.status(500).json({
             success: false,
             error: { code: 'SERVER_ERROR', message: 'Failed to get profile' }
+        });
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// UPDATE CURRENT USER PROFILE
+// ═══════════════════════════════════════════════════════════════════════════
+userRoutes.put('/me/profile', authenticate, async (req, res) => {
+    try {
+        const currentUser = (req as any).user;
+        const { name, phone, avatar } = req.body;
+
+        const updateData: Record<string, unknown> = {};
+        if (name !== undefined) updateData.name = name;
+        if (phone !== undefined) updateData.phone = phone;
+        if (avatar !== undefined) updateData.avatar = avatar;
+
+        const user = await prisma.user.update({
+            where: { id: currentUser.userId },
+            data: updateData,
+            select: {
+                id: true,
+                email: true,
+                name: true,
+                phone: true,
+                avatar: true,
+                role: true,
+                updatedAt: true,
+            }
+        });
+
+        res.json({ success: true, data: user });
+    } catch (error) {
+        console.error('Update profile error:', error);
+        res.status(500).json({
+            success: false,
+            error: { code: 'SERVER_ERROR', message: 'Failed to update profile' }
+        });
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CHANGE PASSWORD
+// ═══════════════════════════════════════════════════════════════════════════
+userRoutes.put('/me/password', authenticate, async (req, res) => {
+    try {
+        const currentUser = (req as any).user;
+        const { currentPassword, newPassword } = req.body;
+
+        if (!currentPassword || !newPassword) {
+            return res.status(400).json({
+                success: false,
+                error: { code: 'VALIDATION_ERROR', message: 'Current password and new password are required' }
+            });
+        }
+
+        if (newPassword.length < 6) {
+            return res.status(400).json({
+                success: false,
+                error: { code: 'VALIDATION_ERROR', message: 'New password must be at least 6 characters' }
+            });
+        }
+
+        const user = await prisma.user.findUnique({
+            where: { id: currentUser.userId },
+            select: { id: true, password: true }
+        });
+
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                error: { code: 'NOT_FOUND', message: 'User not found' }
+            });
+        }
+
+        const isValid = await argon2.verify(user.password, currentPassword);
+        if (!isValid) {
+            return res.status(400).json({
+                success: false,
+                error: { code: 'INVALID_PASSWORD', message: 'Current password is incorrect' }
+            });
+        }
+
+        const hashedPassword = await argon2.hash(newPassword);
+        await prisma.user.update({
+            where: { id: currentUser.userId },
+            data: { password: hashedPassword }
+        });
+
+        res.json({ success: true, data: { message: 'Password changed successfully' } });
+    } catch (error) {
+        console.error('Change password error:', error);
+        res.status(500).json({
+            success: false,
+            error: { code: 'SERVER_ERROR', message: 'Failed to change password' }
+        });
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// UPDATE AVATAR
+// ═══════════════════════════════════════════════════════════════════════════
+userRoutes.post('/me/avatar', authenticate, async (req, res) => {
+    try {
+        const currentUser = (req as any).user;
+        // For now, accept avatar as a base64 string or URL
+        const { avatar } = req.body;
+
+        if (!avatar) {
+            return res.status(400).json({
+                success: false,
+                error: { code: 'VALIDATION_ERROR', message: 'Avatar data is required' }
+            });
+        }
+
+        const user = await prisma.user.update({
+            where: { id: currentUser.userId },
+            data: { avatar },
+            select: { id: true, avatar: true }
+        });
+
+        res.json({ success: true, data: user });
+    } catch (error) {
+        console.error('Update avatar error:', error);
+        res.status(500).json({
+            success: false,
+            error: { code: 'SERVER_ERROR', message: 'Failed to update avatar' }
         });
     }
 });

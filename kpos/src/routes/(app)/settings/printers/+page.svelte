@@ -3,6 +3,7 @@
     import { api } from "$lib/api";
     import { onMount } from "svelte";
     import { toast } from "svelte-sonner";
+    import { auth } from "$stores";
     import { Loader2, Save, Printer, Plus, Trash2, Edit, AlertCircle, RefreshCw } from "lucide-svelte";
     const t = i18n.t;
 
@@ -43,7 +44,8 @@
         { value: "serial", label: "Serial Port" },
     ];
 
-    onMount(() => {
+    $effect(() => {
+        auth.activeStoreId;
         loadPrinters();
     });
 
@@ -196,7 +198,7 @@
         </div>
     {:else}
         <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {#each printers as printer}
+            {#each printers as printer (printer.id)}
                 <div
                     class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 hover:shadow-md transition-shadow"
                 >
@@ -328,7 +330,7 @@
                             bind:value={formData.type}
                             class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-primary-500"
                         >
-                            {#each printerTypes as type}
+                            {#each printerTypes as type (type.value)}
                                 <option value={type.value}>{type.label}</option>
                             {/each}
                         </select>
@@ -342,7 +344,7 @@
                             bind:value={formData.connectionType}
                             class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-primary-500"
                         >
-                            {#each connectionTypes as conn}
+                            {#each connectionTypes as conn (conn.value)}
                                 <option value={conn.value}>{conn.label}</option>
                             {/each}
                         </select>

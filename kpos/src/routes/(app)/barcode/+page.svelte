@@ -38,7 +38,7 @@
     // Pagination
     let currentPage = $state(1);
     let pageSize = $state(10);
-    let pageSizeOptions = [10, 20, 50, 100];
+    let pageSizeOptions = [5, 10, 20, 50, 70, 100];
 
     // SKU Form
     let skuForm = $state({
@@ -54,6 +54,18 @@
     let availableSkus = $state<string[]>([]);
     let availableProducts = $state<any[]>([]);
 
+    // Barcode font standards
+    const barcodeFontStandards = [
+        { value: "CODE128", label: "Code 128 (ມາດຕະຖານ)", description: "ຮອງຮັບທຸກຕົວອັກສອນ ASCII" },
+        { value: "EAN13", label: "EAN-13", description: "ສິນຄ້າທົ່ວໄປ 13 ຕົວເລກ" },
+        { value: "EAN8", label: "EAN-8", description: "ສິນຄ້າຂະໜາດນ້ອຍ 8 ຕົວເລກ" },
+        { value: "CODE39", label: "Code 39", description: "ຕົວອັກສອນ A-Z, 0-9" },
+        { value: "UPC", label: "UPC-A", description: "ສິນຄ້າ USA 12 ຕົວເລກ" },
+        { value: "ITF14", label: "ITF-14", description: "ສຳລັບກ່ອງ/ຫີບ" },
+        { value: "MSI", label: "MSI", description: "ສຳລັບສາງ/ຄັງ" },
+        { value: "pharmacode", label: "Pharmacode", description: "ຢາ ແລະ ເວດຊະພັນ" },
+    ];
+
     // Barcode settings
     let barcodeSettings = $state({
         format: "CODE128",
@@ -65,6 +77,7 @@
         showPrice: true,
         showProductName: true,
         fontFamily: "monospace",
+        columns: 3,
     });
 
     // QR Code settings
@@ -676,7 +689,7 @@
                     <tbody
                         class="divide-y divide-gray-100 dark:divide-gray-700"
                     >
-                        {#each paginatedProducts as product}
+                        {#each paginatedProducts as product (product.id)}
                             <tr
                                 class={cn(
                                     "hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer transition-colors",
@@ -743,7 +756,7 @@
                         onchange={() => currentPage = 1}
                         class="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm py-1 px-2 text-gray-900 dark:text-white"
                     >
-                        {#each pageSizeOptions as size}
+                        {#each pageSizeOptions as size (size)}
                             <option value={size}>{size}</option>
                         {/each}
                     </select>
@@ -784,7 +797,7 @@
                     {t("barcode.labelSize")}
                 </h3>
                 <div class="grid grid-cols-2 gap-2">
-                    {#each labelSizes as size}
+                    {#each labelSizes as size (size.name)}
                         <button
                             onclick={() => (selectedLabelSize = size)}
                             class={cn(
@@ -820,19 +833,22 @@
                                     for="barcode-format"
                                     class="block text-xs text-gray-600 dark:text-gray-400 mb-1"
                                 >
-                                    {t("barcode.format")}
+                                    {t("barcode.format")} ({t("common.standard")})
                                 </label>
                                 <select
                                     id="barcode-format"
                                     bind:value={barcodeSettings.format}
                                     class="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm py-2 px-3 text-gray-900 dark:text-white"
                                 >
-                                    <option value="CODE128">Code 128 (ແນະນຳ)</option>
-                                    <option value="EAN13">EAN-13</option>
-                                    <option value="EAN8">EAN-8</option>
-                                    <option value="CODE39">Code 39</option>
-                                    <option value="UPC">UPC-A</option>
+                                    {#each barcodeFontStandards as std (std.value)}
+                                        <option value={std.value}>{std.label}</option>
+                                    {/each}
                                 </select>
+                                {#if barcodeSettings.format}
+                                    <p class="text-xs text-gray-400 mt-1">
+                                        {barcodeFontStandards.find(s => s.value === barcodeSettings.format)?.description || ''}
+                                    </p>
+                                {/if}
                             </div>
                             <div>
                                 <label
@@ -904,7 +920,7 @@
                                     for="barcode-font"
                                     class="block text-xs text-gray-600 dark:text-gray-400 mb-1"
                                 >
-                                    ຟອນ
+                                    {t("barcode.fontStandard")}
                                 </label>
                                 <select
                                     id="barcode-font"
@@ -918,6 +934,12 @@
                                     <option value="Consolas, monospace">Consolas</option>
                                     <option value="'Courier New', monospace">Courier New</option>
                                 </select>
+                            </div>
+                            <div>
+                                <label for="barcode-columns" class="block text-xs text-gray-600 dark:text-gray-400 mb-1">
+                                    {t("barcode.columns")} ({barcodeSettings.columns})
+                                </label>
+                                <input id="barcode-columns" type="range" bind:value={barcodeSettings.columns} min="1" max="6" step="1" class="w-full" />
                             </div>
                             <div class="flex items-center gap-2">
                                 <input
@@ -975,7 +997,7 @@
                                     bind:value={selectedLabelSize}
                                     class="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm py-2 px-3 text-gray-900 dark:text-white"
                                 >
-                                    {#each labelSizes as size}
+                                    {#each labelSizes as size (size.name)}
                                         <option value={size}>{size.name}</option>
                                     {/each}
                                 </select>
@@ -1142,7 +1164,7 @@
 <!-- Print-only area: shows only barcodes with prices -->
 <div class="print-area hidden print:block">
     <div class="grid grid-cols-3 gap-4 p-4">
-        {#each getSelectedProductsData() as product}
+        {#each getSelectedProductsData() as product (product.id)}
             <div class="border border-gray-300 p-4 rounded text-center bg-white print-barcode-item">
                 {#if activeTab === "barcode"}
                     <!-- Real Barcode -->
@@ -1227,7 +1249,7 @@
                         class="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 py-2.5 px-3 text-gray-900 dark:text-white"
                     >
                         <option value="">{t("barcode.selectProduct")}</option>
-                        {#each availableProducts as product}
+                        {#each availableProducts as product (product.id)}
                             <option value={product.id}>{product.name}</option>
                         {/each}
                     </select>
@@ -1245,7 +1267,7 @@
                             class="flex-1 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 py-2.5 px-3 text-gray-900 dark:text-white"
                         >
                             <option value="">ເລືອກ SKU ຫຼື ພິມໃໝ່</option>
-                            {#each skuList as sku}
+                            {#each skuList as sku (sku.sku)}
                                 <option value={sku.sku}>{sku.sku} - {sku.productName}</option>
                             {/each}
                         </select>
@@ -1277,7 +1299,7 @@
                             class="flex-1 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 py-2.5 px-3 text-gray-900 dark:text-white"
                         >
                             <option value="">ເລືອກ Barcode ຫຼື ພິມໃໝ່</option>
-                            {#each skuList as sku}
+                            {#each skuList as sku (sku.sku)}
                                 {#if sku.barcode}
                                     <option value={sku.barcode}>{sku.barcode} - {sku.productName}</option>
                                 {/if}

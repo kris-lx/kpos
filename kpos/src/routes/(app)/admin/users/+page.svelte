@@ -4,7 +4,7 @@
     import { goto } from "$app/navigation";
     import { onMount } from "svelte";
     import { toast } from "svelte-sonner";
-    import { cn } from "$lib/utils";
+    import { cn, formatDate } from "$lib/utils";
     import {
         Users,
         Search,
@@ -61,7 +61,7 @@
             userStoreId = (user as any).storeId || null;
             
             // Super Admin, Admin ຈັດການທຸກຜູ້ໃຊ້; Shop Admin, Manager ຈັດການຜູ້ໃຊ້ໃນຮ້ານ/ສາຂາຕົນເອງ
-            if (user.isSuperAdmin || ['admin', 'shop_admin', 'manager'].includes(user.role)) {
+            if (user.isSuperAdmin || ['admin', 'store_owner', 'branch_admin', 'store_manager'].includes(user.role)) {
                 canAccess = true;
             } else {
                 toast.error("ທ່ານບໍ່ມີສິດເຂົ້າເຖິງໜ້ານີ້");
@@ -336,13 +336,6 @@
         $toggleSuperAdminMutation.mutate({ id: user.id, isSuperAdmin: !user.isSuperAdmin });
     }
 
-    function formatDate(dateString: string) {
-        return new Date(dateString).toLocaleDateString("lo-LA", {
-            year: "numeric",
-            month: "short",
-            day: "numeric"
-        });
-    }
 
     function getInitials(name: string) {
         return name?.split(" ").map(n => n[0]).join("").toUpperCase().slice(0, 2) || "??";
@@ -425,7 +418,7 @@
                                 class="appearance-none px-4 py-3 pr-10 bg-gray-50 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-600 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all text-gray-900 dark:text-white min-w-[140px]"
                             >
                                 <option value="">ທຸກບົດບາດ</option>
-                                {#each $rolesQuery.data || [] as role}
+                                {#each $rolesQuery.data || [] as role (role.id)}
                                     <option value={role.id}>{role.name}</option>
                                 {/each}
                             </select>
@@ -477,7 +470,7 @@
                                 </tr>
                             </thead>
                             <tbody class="divide-y divide-gray-100 dark:divide-gray-700">
-                                {#each $usersQuery.data.data as user}
+                                {#each $usersQuery.data.data as user (user.id)}
                                     <tr class="hover:bg-gray-50/50 dark:hover:bg-gray-700/30 transition-colors">
                                         <td class="px-6 py-4">
                                             <div class="flex items-center gap-3">
@@ -592,7 +585,7 @@
 
                     <!-- Cards for mobile -->
                     <div class="lg:hidden divide-y divide-gray-100 dark:divide-gray-700">
-                        {#each $usersQuery.data.data as user}
+                        {#each $usersQuery.data.data as user (user.id)}
                             <div class="p-4">
                                 <div class="flex items-start gap-4">
                                     <div class={cn("w-14 h-14 rounded-xl flex items-center justify-center bg-gradient-to-br text-white font-bold text-lg shadow-lg shrink-0", getAvatarColor(user.name))}>
@@ -669,7 +662,7 @@
                                 onchange={() => changePageSize(pageSize)}
                                 class="px-3 py-1.5 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-white"
                             >
-                                {#each pageSizeOptions as size}
+                                {#each pageSizeOptions as size (size)}
                                     <option value={size}>{size} ລາຍການ</option>
                                 {/each}
                             </select>
@@ -857,7 +850,7 @@
                             class="w-full px-4 py-3 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-transparent text-gray-900 dark:text-white"
                         >
                             <option value="">ເລືອກບົດບາດ</option>
-                            {#each $rolesQuery.data || [] as role}
+                            {#each $rolesQuery.data || [] as role (role.id)}
                                 <option value={role.id}>{role.name}</option>
                             {/each}
                         </select>
@@ -870,7 +863,7 @@
                             class="w-full px-4 py-3 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-transparent text-gray-900 dark:text-white"
                         >
                             <option value="">ເລືອກສາຂາ</option>
-                            {#each $branchesQuery.data || [] as branch}
+                            {#each $branchesQuery.data || [] as branch (branch.id)}
                                 <option value={branch.id}>{branch.name}</option>
                             {/each}
                         </select>
@@ -893,7 +886,7 @@
                             ກຳນົດສິດ
                         </h4>
                         <div class="space-y-2">
-                            {#each permissionGroups as group}
+                            {#each permissionGroups as group (group.key)}
                                 {@const GroupIcon = typeof group.icon === 'string' ? getIcon(group.icon) : group.icon}
                                 {@const isOpen = openPermissionGroups[group.key]}
                                 {@const checkedCount = group.permissions.filter((p: any) => formData.permissions[p.key]).length}
@@ -928,7 +921,7 @@
                                                 {group.permissions.every(p => formData.permissions[p.key]) ? "ຍົກເລີກທັງໝົດ" : "ເລືອກທັງໝົດ"}
                                             </button>
                                             <div class="grid grid-cols-2 gap-2">
-                                                {#each group.permissions as permission}
+                                                {#each group.permissions as permission (permission.key)}
                                                     <label class="flex items-center gap-2 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer transition-colors">
                                                         <input
                                                             type="checkbox"

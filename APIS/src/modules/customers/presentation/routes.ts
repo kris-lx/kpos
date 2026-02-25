@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, branchFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, branchFilter, applyScopeFilter, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { prisma } from '@/config/database.config';
 
 export const customerRoutes = Router();
@@ -11,15 +11,18 @@ export const customerRoutes = Router();
 // Get all customers
 customerRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
     try {
-        const { page = 1, limit = 50, search, branchId } = req.query;
+        const { page = 1, limit = 50, search, branchId, storeId } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
-        const filter = (req as any).branchFilter;
+        const filter = (req as any).branchFilter as ScopeFilter | undefined;
 
         const where: Record<string, unknown> = { isActive: true };
         
-        // Apply branch filter for non-admin users
-        if (filter?.branchIds?.length) {
-            where.branchId = { in: filter.branchIds };
+        // Apply store-level or branch-level scope
+        applyScopeFilter(where, filter, 'storeId');
+
+        // Override with explicit query params
+        if (storeId) {
+            where.storeId = String(storeId);
         }
         if (branchId) {
             if (filter && !filter.branchIds.includes(String(branchId))) {
@@ -216,6 +219,31 @@ customerRoutes.delete('/loyalty/tiers/:id', authenticate, authorize('customers:d
     }
 });
 
+// Get loyalty settings
+customerRoutes.get('/loyalty/settings', authenticate, async (req, res, next) => {
+    try {
+        const setting = await prisma.settings.findFirst({
+            where: { category: 'loyalty', key: 'program_settings' },
+        });
+
+        const defaults = {
+            enabled: true,
+            pointsPerAmount: 1,
+            amountPerPoint: 10000,
+            pointValue: 100,
+            minPointsRedeem: 100,
+            maxPointsRedeem: 0,
+            pointExpiryDays: 365,
+            noExpiry: false,
+        };
+
+        const data = setting ? (typeof setting.value === 'string' ? JSON.parse(setting.value) : setting.value) : defaults;
+        res.json({ success: true, data });
+    } catch (error) {
+        next(error);
+    }
+});
+
 // Save loyalty settings
 customerRoutes.put('/loyalty/settings', authenticate, authorize('settings:update'), async (req, res, next) => {
     try {
@@ -243,8 +271,30 @@ customerRoutes.put('/loyalty/settings', authenticate, authorize('settings:update
     }
 });
 
+// Lookup customer by phone/member code
+// MUST be before /:id to prevent Express matching 'lookup' as :id
+customerRoutes.get('/lookup/:code', authenticate, async (req, res, next) => {
+    try {
+        const customer = await prisma.customer.findFirst({
+            where: {
+                OR: [{ phone: req.params.code }, { memberCode: req.params.code }],
+                isActive: true,
+            },
+        });
+
+        if (!customer) {
+            res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Customer not found' } });
+            return;
+        }
+
+        res.json({ success: true, data: customer });
+    } catch (error) {
+        next(error);
+    }
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
-// CUSTOMER DETAIL ROUTES
+// CUSTOMER DETAIL ROUTES (/:id must be after all named routes like /lookup, /loyalty)
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get customer by ID
@@ -272,6 +322,15 @@ customerRoutes.get('/:id', authenticate, async (req, res, next) => {
 customerRoutes.post('/', authenticate, authorize('customers:create'), async (req, res, next) => {
     try {
         const branchId = req.user!.branchId;
+        const authUser = (req as any).user;
+        const { name, email, phone, address, taxId, birthDate, gender, notes, points, storeId } = req.body;
+
+        if (!name || !name.trim()) {
+            return res.status(400).json({
+                success: false,
+                error: { code: 'VAL_001', message: 'ກະລຸນາປ້ອນຊື່ລູກຄ້າ' }
+            });
+        }
 
         // Generate member code
         const count = await prisma.customer.count({ where: { branchId } });
@@ -279,12 +338,22 @@ customerRoutes.post('/', authenticate, authorize('customers:create'), async (req
 
         const customer = await prisma.customer.create({
             data: {
-                ...req.body,
+                name: name.trim(),
+                email: email?.trim() || null,
+                phone: phone?.trim() || null,
+                address: address?.trim() || null,
+                taxId: taxId?.trim() || null,
+                birthDate: birthDate ? new Date(birthDate) : null,
+                gender: gender || null,
+                notes: notes?.trim() || null,
+                points: points || 0,
                 branchId,
+                storeId: storeId || authUser?.activeStoreId || null,
                 memberCode,
             },
         });
 
+        await invalidateQueryCache('customers*');
         res.status(201).json({ success: true, data: customer });
     } catch (error) {
         next(error);
@@ -294,10 +363,36 @@ customerRoutes.post('/', authenticate, authorize('customers:create'), async (req
 // Update customer
 customerRoutes.put('/:id', authenticate, authorize('customers:update'), async (req, res, next) => {
     try {
+        const authUser = (req as any).user;
+        const { name, email, phone, address, taxId, birthDate, gender, notes, points, totalSpent, isActive, storeId } = req.body;
+
+        // Verify ownership: customer must belong to user's store (unless super admin)
+        if (!authUser?.isSuperAdmin && authUser?.activeStoreId) {
+            const existing = await prisma.customer.findUnique({ where: { id: req.params.id }, select: { storeId: true } });
+            if (existing?.storeId && existing.storeId !== authUser.activeStoreId) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot modify customer from another store' } });
+            }
+        }
+
+        const updateData: Record<string, unknown> = {};
+        if (storeId !== undefined) updateData.storeId = storeId || null;
+        if (name !== undefined) updateData.name = name.trim();
+        if (email !== undefined) updateData.email = email?.trim() || null;
+        if (phone !== undefined) updateData.phone = phone?.trim() || null;
+        if (address !== undefined) updateData.address = address?.trim() || null;
+        if (taxId !== undefined) updateData.taxId = taxId?.trim() || null;
+        if (birthDate !== undefined) updateData.birthDate = birthDate ? new Date(birthDate) : null;
+        if (gender !== undefined) updateData.gender = gender || null;
+        if (notes !== undefined) updateData.notes = notes?.trim() || null;
+        if (points !== undefined) updateData.points = Number(points) || 0;
+        if (totalSpent !== undefined) updateData.totalSpent = Number(totalSpent) || 0;
+        if (isActive !== undefined) updateData.isActive = Boolean(isActive);
+
         const customer = await prisma.customer.update({
             where: { id: req.params.id },
-            data: req.body,
+            data: updateData,
         });
+        await invalidateQueryCache('customers*');
 
         res.json({ success: true, data: customer });
     } catch (error) {
@@ -308,33 +403,23 @@ customerRoutes.put('/:id', authenticate, authorize('customers:update'), async (r
 // Delete customer (soft delete)
 customerRoutes.delete('/:id', authenticate, authorize('customers:delete'), async (req, res, next) => {
     try {
+        const authUser = (req as any).user;
+
+        // Verify ownership
+        if (!authUser?.isSuperAdmin && authUser?.activeStoreId) {
+            const existing = await prisma.customer.findUnique({ where: { id: req.params.id }, select: { storeId: true } });
+            if (existing?.storeId && existing.storeId !== authUser.activeStoreId) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot delete customer from another store' } });
+            }
+        }
+
         await prisma.customer.update({
             where: { id: req.params.id },
             data: { isActive: false },
         });
+        await invalidateQueryCache('customers*');
 
         res.json({ success: true, data: { message: 'Customer deleted' } });
-    } catch (error) {
-        next(error);
-    }
-});
-
-// Lookup customer by phone/member code
-customerRoutes.get('/lookup/:code', authenticate, async (req, res, next) => {
-    try {
-        const customer = await prisma.customer.findFirst({
-            where: {
-                OR: [{ phone: req.params.code }, { memberCode: req.params.code }],
-                isActive: true,
-            },
-        });
-
-        if (!customer) {
-            res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Customer not found' } });
-            return;
-        }
-
-        res.json({ success: true, data: customer });
     } catch (error) {
         next(error);
     }

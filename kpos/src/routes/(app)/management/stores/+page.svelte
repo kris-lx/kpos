@@ -4,6 +4,7 @@
 <script lang="ts">
     import { createQuery, createMutation, useQueryClient } from "@tanstack/svelte-query";
     import { api } from "$api";
+    import { auth } from "$stores";
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
     import { toast } from "svelte-sonner";
@@ -21,9 +22,16 @@
         RefreshCw,
         X,
         Loader2,
+        ChevronLeft,
+        ChevronRight,
     } from "lucide-svelte";
 
     const queryClient = useQueryClient();
+
+    // CRUD permission gating
+    const canCreate = $derived(auth.canCreate('management.stores'));
+    const canUpdate = $derived(auth.canUpdate('management.stores'));
+    const canDelete = $derived(auth.canDelete('management.stores'));
 
     let searchQuery = $state("");
     let debouncedSearch = $state("");
@@ -31,6 +39,11 @@
     let showModal = $state(false);
     let editingStore = $state<any>(null);
     let searchTimeout: ReturnType<typeof setTimeout>;
+
+    // Pagination
+    let currentPage = $state(1);
+    let pageSize = $state(6);
+    const pageSizeOptions = [6, 10, 20, 50];
 
     // Debounce search
     $effect(() => {
@@ -53,18 +66,18 @@
         isDefault: false,
     });
 
-    // Fetch branches for filter
+    // Fetch branches for filter (scoped to user's accessible branches)
     const branchesQuery = createQuery({
-        queryKey: ["branches"],
+        queryKey: ["branches-list"],
         queryFn: async () => {
-            const response = await api.get("branches").json<any>();
+            const response = await api.get("staff/branches/list").json<any>();
             return response.data || [];
         },
     });
 
     // Fetch stores - use getter for reactive query key
     const storesQuery = createQuery({
-        queryKey: () => ["stores", debouncedSearch, selectedBranchId],
+        queryKey: ["stores", debouncedSearch, selectedBranchId],
         queryFn: async () => {
             const params = new URLSearchParams();
             if (debouncedSearch) params.append("search", debouncedSearch);
@@ -74,15 +87,21 @@
         },
     });
 
+    // Invalidate all stores queries (handles dynamic key)
+    function invalidateStores() {
+        queryClient.invalidateQueries({ predicate: (q) => q.queryKey[0] === 'stores' });
+    }
+
     // Create store mutation
     const createStoreMutation = createMutation({
         mutationFn: async (data: typeof formData) => {
             const response = await api.post("stores", { json: data }).json<any>();
+            if (!response.success) throw new Error(response.error?.message || t("stores.createFailed"));
             return response.data;
         },
         onSuccess: () => {
             toast.success(t("stores.createSuccess"));
-            queryClient.invalidateQueries({ queryKey: ["stores"] });
+            invalidateStores();
             closeModal();
         },
         onError: (error: any) => {
@@ -94,11 +113,12 @@
     const updateStoreMutation = createMutation({
         mutationFn: async ({ id, data }: { id: string; data: Partial<typeof formData> }) => {
             const response = await api.put(`stores/${id}`, { json: data }).json<any>();
+            if (!response.success) throw new Error(response.error?.message || t("stores.updateFailed"));
             return response.data;
         },
         onSuccess: () => {
             toast.success(t("stores.updateSuccess"));
-            queryClient.invalidateQueries({ queryKey: ["stores"] });
+            invalidateStores();
             closeModal();
         },
         onError: (error: any) => {
@@ -110,11 +130,12 @@
     const deleteStoreMutation = createMutation({
         mutationFn: async (id: string) => {
             const response = await api.delete(`stores/${id}`).json<any>();
+            if (!response.success) throw new Error(response.error?.message || t("stores.deleteFailed"));
             return response.data;
         },
         onSuccess: () => {
             toast.success(t("stores.deleteSuccess"));
-            queryClient.invalidateQueries({ queryKey: ["stores"] });
+            invalidateStores();
         },
         onError: (error: any) => {
             toast.error(error.message || t("stores.deleteFailed"));
@@ -200,6 +221,7 @@
             </div>
         </div>
 
+        {#if canCreate}
         <button
             onclick={() => openModal()}
             class="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-xl text-sm font-semibold shadow-lg hover:shadow-xl transition-all"
@@ -207,6 +229,7 @@
             <Plus class="w-5 h-5" />
             {t("stores.addStore")}
         </button>
+        {/if}
     </div>
 
     <!-- Stats Cards -->
@@ -268,7 +291,7 @@
             >
                 <option value={null}>{t("stores.allBranches")}</option>
                 {#if $branchesQuery.data}
-                    {#each $branchesQuery.data as branch}
+                    {#each $branchesQuery.data as branch (branch.id)}
                         <option value={branch.id}>{branch.name}</option>
                     {/each}
                 {/if}
@@ -301,8 +324,11 @@
             </button>
         </div>
     {:else}
-        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {#each $storesQuery.data as store}
+        {@const allStores = $storesQuery.data || []}
+        {@const totalPages = Math.ceil(allStores.length / pageSize)}
+        {@const paginatedStores = allStores.slice((currentPage - 1) * pageSize, currentPage * pageSize)}
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {#each paginatedStores as store (store.id)}
                 <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden hover:shadow-md transition-all">
                     <!-- Card Header -->
                     <div class="p-4 bg-gradient-to-r from-indigo-500 to-purple-600 flex items-center justify-between">
@@ -359,6 +385,7 @@
 
                     <!-- Card Footer -->
                     <div class="px-4 py-3 border-t border-gray-200 dark:border-gray-700 flex justify-end gap-2">
+                        {#if canUpdate}
                         <button
                             onclick={() => openModal(store)}
                             class="p-2 text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded-lg"
@@ -366,6 +393,8 @@
                         >
                             <Pencil class="w-4 h-4" />
                         </button>
+                        {/if}
+                        {#if canDelete}
                         <button
                             onclick={() => handleDelete(store)}
                             class="p-2 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg"
@@ -374,10 +403,35 @@
                         >
                             <Trash2 class="w-4 h-4" />
                         </button>
+                        {/if}
                     </div>
                 </div>
             {/each}
         </div>
+
+        <!-- Pagination -->
+        {#if allStores.length > pageSize}
+            <div class="mt-6 flex flex-col sm:flex-row items-center justify-between gap-4 bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700">
+                <div class="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
+                    <span>ສະແດງ</span>
+                    <select bind:value={pageSize} onchange={() => (currentPage = 1)} class="px-2 py-1 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white">
+                        {#each pageSizeOptions as size (size)}
+                            <option value={size}>{size}</option>
+                        {/each}
+                    </select>
+                    <span>ຈາກ {allStores.length}</span>
+                </div>
+                <div class="flex items-center gap-2">
+                    <button onclick={() => currentPage = Math.max(1, currentPage - 1)} disabled={currentPage === 1} class="p-2 rounded-lg border border-gray-300 dark:border-gray-600 disabled:opacity-50">
+                        <ChevronLeft class="w-4 h-4" />
+                    </button>
+                    <span class="text-sm text-gray-600 dark:text-gray-400">ໜ້າ {currentPage} / {totalPages}</span>
+                    <button onclick={() => currentPage = Math.min(totalPages, currentPage + 1)} disabled={currentPage >= totalPages} class="p-2 rounded-lg border border-gray-300 dark:border-gray-600 disabled:opacity-50">
+                        <ChevronRight class="w-4 h-4" />
+                    </button>
+                </div>
+            </div>
+        {/if}
     {/if}
 </div>
 
@@ -427,7 +481,7 @@
                     >
                         <option value="">{t("stores.selectBranch")}</option>
                         {#if $branchesQuery.data}
-                            {#each $branchesQuery.data as branch}
+                            {#each $branchesQuery.data as branch (branch.id)}
                                 <option value={branch.id}>{branch.name}</option>
                             {/each}
                         {/if}

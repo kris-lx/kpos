@@ -3,6 +3,7 @@
     import { api } from "$lib/api";
     import { onMount } from "svelte";
     import { toast } from "svelte-sonner";
+    import { auth } from "$stores";
     import { Loader2, Save, Bell, Mail, MessageSquare, Volume2 } from "lucide-svelte";
     const t = i18n.t;
 
@@ -47,7 +48,8 @@
         { value: "beep", label: "ບີບ" },
     ];
 
-    onMount(() => {
+    $effect(() => {
+        auth.activeStoreId;
         loadSettings();
     });
 
@@ -295,7 +297,7 @@
                                         }
                                         class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg"
                                     >
-                                        {#each soundOptions as sound}
+                                        {#each soundOptions as sound (sound.value)}
                                             <option value={sound.value}
                                                 >{sound.label}</option
                                             >
@@ -321,7 +323,7 @@
                                         bind:value={settings.sound.alertSound}
                                         class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg"
                                     >
-                                        {#each soundOptions as sound}
+                                        {#each soundOptions as sound (sound.value)}
                                             <option value={sound.value}
                                                 >{sound.label}</option
                                             >

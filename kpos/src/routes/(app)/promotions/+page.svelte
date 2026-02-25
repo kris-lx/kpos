@@ -3,7 +3,8 @@
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
     import { api } from "$api";
-    import { formatCurrency } from "$lib/utils";
+    import { auth } from "$stores";
+    import { formatCurrency, formatDate } from "$lib/utils";
     import { toast } from "svelte-sonner";
     import {
         Gift,
@@ -28,10 +29,19 @@
         Sparkles,
         Target,
         Zap,
+        Star,
+        Settings,
+        Save,
     } from "lucide-svelte";
 
+    // Rule-based CRUD — also requires write access to active store
+    const hasWriteAccess = $derived(auth.hasStoreAccess('write') || !auth.activeStoreId);
+    const canCreatePromo = $derived(auth.canCreate('promotions') && hasWriteAccess);
+    const canUpdatePromo = $derived(auth.canUpdate('promotions') && hasWriteAccess);
+    const canDeletePromo = $derived(auth.canDelete('promotions') && hasWriteAccess);
+
     // State
-    let activeTab = $state<"promotions" | "coupons" | "discounts">("promotions");
+    let activeTab = $state<"promotions" | "coupons" | "discounts" | "loyalty">("promotions");
     let searchQuery = $state("");
     let statusFilter = $state("all");
     let isLoading = $state(true);
@@ -42,6 +52,20 @@
     let promotions = $state<any[]>([]);
     let coupons = $state<any[]>([]);
     let discounts = $state<any[]>([]);
+
+    // Loyalty points settings
+    let loyaltySettings = $state({
+        enabled: true,
+        pointsPerAmount: 1,
+        amountPerPoint: 10000,
+        pointValue: 100,
+        minPointsRedeem: 100,
+        maxPointsRedeem: 0,
+        pointExpiryDays: 365,
+        noExpiry: false,
+    });
+    let loyaltyLoading = $state(false);
+    let loyaltySaving = $state(false);
 
     // Form
     let formData = $state({
@@ -144,8 +168,36 @@
             discounts = discountRes.data || [];
         } catch (e) {
             console.error("Failed to load:", e);
+            toast.error(t("common.loadError"));
         } finally {
             isLoading = false;
+        }
+    }
+
+    async function loadLoyaltySettings() {
+        loyaltyLoading = true;
+        try {
+            const res = await api.get("customers/loyalty/settings").json<any>();
+            if (res.success && res.data) {
+                loyaltySettings = { ...loyaltySettings, ...res.data };
+            }
+        } catch (e) {
+            console.error("Failed to load loyalty settings:", e);
+        } finally {
+            loyaltyLoading = false;
+        }
+    }
+
+    async function saveLoyaltySettings() {
+        loyaltySaving = true;
+        try {
+            await api.put("customers/loyalty/settings", { json: loyaltySettings }).json();
+            toast.success(t("promotions.saveSuccess"));
+        } catch (e) {
+            console.error("Failed to save loyalty settings:", e);
+            toast.error(t("promotions.saveFailed"));
+        } finally {
+            loyaltySaving = false;
         }
     }
 
@@ -201,7 +253,19 @@
 
     function openEdit(item: any) {
         editingItem = item;
-        formData = { ...item };
+        formData = {
+            name: item.name || "",
+            description: item.description || "",
+            type: item.type || item.discountType?.toUpperCase() || "PERCENTAGE",
+            value: item.value ?? item.discountValue ?? 0,
+            minPurchase: item.minPurchase || 0,
+            maxDiscount: item.maxDiscount || 0,
+            startDate: item.startDate ? new Date(item.startDate).toISOString().split("T")[0] : "",
+            endDate: item.endDate ? new Date(item.endDate).toISOString().split("T")[0] : "",
+            isActive: item.isActive !== undefined ? item.isActive : true,
+            usageLimit: item.usageLimit || 0,
+            code: item.code || "",
+        };
         showModal = true;
     }
 
@@ -227,17 +291,9 @@
         toast.success("ຄັດລອກລະຫັດແລ້ວ");
     }
 
-    function formatDate(date: string): string {
-        if (!date) return "-";
-        return new Intl.DateTimeFormat("lo-LA", {
-            year: "numeric",
-            month: "short",
-            day: "numeric",
-        }).format(new Date(date));
-    }
 
     // Filtered data
-    let filteredItems = $derived(() => {
+    let filteredItems = $derived.by(() => {
         const items = activeTab === "promotions" ? promotions : 
                       activeTab === "coupons" ? coupons : discounts;
         
@@ -251,7 +307,14 @@
         });
     });
 
-    onMount(() => loadData());
+    $effect(() => {
+        auth.activeStoreId; // reload on store switch
+        loadData();
+    });
+
+    onMount(() => {
+        loadLoyaltySettings();
+    });
 </script>
 
 <svelte:head>
@@ -277,6 +340,7 @@
             </div>
         </div>
         
+        {#if canCreatePromo}
         <button
             onclick={() => {
                 resetForm();
@@ -287,6 +351,7 @@
             <Plus class="w-5 h-5" />
             {t("common.add")}
         </button>
+        {/if}
     </div>
 
     <!-- Stats Cards -->
@@ -341,6 +406,7 @@
                     { id: "promotions", icon: Gift, label: t("promotions.promotions") },
                     { id: "coupons", icon: Ticket, label: t("promotions.coupons") },
                     { id: "discounts", icon: BadgePercent, label: t("promotions.discounts") },
+                    { id: "loyalty", icon: Star, label: t("promotions.loyalty") },
                 ] as tab}
                     <button
                         onclick={() => (activeTab = tab.id as any)}
@@ -372,7 +438,7 @@
             
             <!-- Status Filter -->
             <div class="flex gap-2">
-                {#each ["all", "active", "scheduled", "expired", "paused"] as status}
+                {#each ["all", "active", "scheduled", "expired", "paused"] as status (status)}
                     <button
                         onclick={() => (statusFilter = status)}
                         class={cn(
@@ -389,6 +455,131 @@
         </div>
     </div>
 
+    <!-- Loyalty Points Panel -->
+    {#if activeTab === "loyalty"}
+        {#if loyaltyLoading}
+            <div class="flex items-center justify-center py-20">
+                <Loader2 class="w-10 h-10 text-pink-500 animate-spin" />
+            </div>
+        {:else}
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <!-- Settings Card -->
+                <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm p-6">
+                    <div class="flex items-center gap-3 mb-5">
+                        <div class="p-2 bg-yellow-100 dark:bg-yellow-900/50 rounded-lg">
+                            <Star class="w-5 h-5 text-yellow-600 dark:text-yellow-400" />
+                        </div>
+                        <div>
+                            <h3 class="font-semibold text-gray-900 dark:text-white">{t("promotions.loyaltyTitle")}</h3>
+                            <p class="text-xs text-gray-500 dark:text-gray-400">{t("promotions.loyaltySubtitle")}</p>
+                        </div>
+                        <div class="ml-auto">
+                            <label class="relative inline-flex items-center cursor-pointer">
+                                <input type="checkbox" bind:checked={loyaltySettings.enabled} class="sr-only peer" />
+                                <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-yellow-500"></div>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="space-y-4">
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label for="pts-per-amt" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                                    {t("promotions.pointsPerAmount")}
+                                </label>
+                                <div class="flex items-center gap-2">
+                                    <input id="pts-per-amt" type="number" bind:value={loyaltySettings.pointsPerAmount} min="1" class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm" />
+                                    <span class="text-xs text-gray-500 whitespace-nowrap">{t("common.points")}</span>
+                                </div>
+                            </div>
+                            <div>
+                                <label for="amt-per-pt" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                                    {t("promotions.amountPerPoint")}
+                                </label>
+                                <div class="flex items-center gap-2">
+                                    <input id="amt-per-pt" type="number" bind:value={loyaltySettings.amountPerPoint} min="1" class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm" />
+                                    <span class="text-xs text-gray-500">₭</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label for="pt-value" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                                    {t("promotions.pointValue")} (₭/ແຕ້ມ)
+                                </label>
+                                <input id="pt-value" type="number" bind:value={loyaltySettings.pointValue} min="1" class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm" />
+                            </div>
+                            <div>
+                                <label for="min-redeem" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                                    {t("promotions.minPointsRedeem")}
+                                </label>
+                                <input id="min-redeem" type="number" bind:value={loyaltySettings.minPointsRedeem} min="0" class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm" />
+                            </div>
+                        </div>
+
+                        <div>
+                            <div class="flex items-center justify-between mb-1">
+                                <label for="pt-expiry" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                                    {t("promotions.pointExpiry")}
+                                </label>
+                                <label class="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400 cursor-pointer">
+                                    <input type="checkbox" bind:checked={loyaltySettings.noExpiry} class="rounded border-gray-300 dark:border-gray-600" />
+                                    {t("promotions.noExpiry")}
+                                </label>
+                            </div>
+                            <input id="pt-expiry" type="number" bind:value={loyaltySettings.pointExpiryDays} min="1" disabled={loyaltySettings.noExpiry} class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm disabled:opacity-50" />
+                        </div>
+
+                        <button
+                            onclick={saveLoyaltySettings}
+                            disabled={loyaltySaving}
+                            class="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-yellow-500 to-amber-500 text-white rounded-xl font-semibold hover:from-yellow-600 hover:to-amber-600 transition-all disabled:opacity-50"
+                        >
+                            {#if loyaltySaving}
+                                <Loader2 class="w-4 h-4 animate-spin" />
+                            {:else}
+                                <Save class="w-4 h-4" />
+                            {/if}
+                            {t("common.save")}
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Calculation Preview -->
+                <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm p-6">
+                    <div class="flex items-center gap-3 mb-5">
+                        <div class="p-2 bg-blue-100 dark:bg-blue-900/50 rounded-lg">
+                            <TrendingUp class="w-5 h-5 text-blue-600 dark:text-blue-400" />
+                        </div>
+                        <h3 class="font-semibold text-gray-900 dark:text-white">ຕົວຢ່າງການຄຳນວນ</h3>
+                    </div>
+                    <div class="space-y-3">
+                        {#each [10000, 50000, 100000, 500000] as amount}
+                            {@const pts = Math.floor(amount / loyaltySettings.amountPerPoint) * loyaltySettings.pointsPerAmount}
+                            {@const value = pts * loyaltySettings.pointValue}
+                            <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
+                                <div>
+                                    <p class="text-sm font-medium text-gray-900 dark:text-white">ຊື້ {amount.toLocaleString()} ₭</p>
+                                    <p class="text-xs text-gray-500 dark:text-gray-400">ໄດ້ {pts} ແຕ້ມ</p>
+                                </div>
+                                <div class="text-right">
+                                    <p class="text-sm font-bold text-yellow-600 dark:text-yellow-400">{pts} pts</p>
+                                    <p class="text-xs text-gray-500">≈ {value.toLocaleString()} ₭</p>
+                                </div>
+                            </div>
+                        {/each}
+                    </div>
+                    <div class="mt-4 p-3 bg-yellow-50 dark:bg-yellow-900/20 rounded-xl border border-yellow-200 dark:border-yellow-800">
+                        <p class="text-xs text-yellow-700 dark:text-yellow-400">
+                            <strong>ສູດ:</strong> ທຸກ {loyaltySettings.amountPerPoint.toLocaleString()} ₭ = {loyaltySettings.pointsPerAmount} ແຕ້ມ | 1 ແຕ້ມ = {loyaltySettings.pointValue.toLocaleString()} ₭
+                        </p>
+                    </div>
+                </div>
+            </div>
+        {/if}
+    {:else}
+
     <!-- Content -->
     {#if isLoading}
         <div class="flex items-center justify-center py-20">
@@ -397,7 +588,7 @@
                 <p class="text-gray-500 dark:text-gray-400">{t("common.loading")}...</p>
             </div>
         </div>
-    {:else if filteredItems().length === 0}
+    {:else if filteredItems.length === 0}
         <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-16 text-center shadow-sm">
             <Sparkles class="w-16 h-16 mx-auto text-gray-300 dark:text-gray-600" />
             <h3 class="text-lg font-semibold text-gray-900 dark:text-white mt-4">{t("promotions.noPromotions")}</h3>
@@ -405,7 +596,7 @@
         </div>
     {:else}
         <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {#each filteredItems() as item}
+            {#each filteredItems as item (item.id)}
                 {@const status = getStatus(item)}
                 {@const statusConfig = getStatusConfig(status)}
                 {@const typeConfig = getTypeConfig(item.type || item.discountType)}
@@ -518,23 +709,28 @@
                             {/if}
                         </button>
                         <div class="flex gap-1">
+                            {#if canUpdatePromo}
                             <button
                                 onclick={() => openEdit(item)}
                                 class="p-2 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg transition-all"
                             >
                                 <Edit class="w-4 h-4" />
                             </button>
+                            {/if}
+                            {#if canDeletePromo}
                             <button
                                 onclick={() => handleDelete(item)}
                                 class="p-2 text-red-500 hover:bg-red-100 dark:hover:bg-red-900/30 rounded-lg transition-all"
                             >
                                 <Trash2 class="w-4 h-4" />
                             </button>
+                            {/if}
                         </div>
                     </div>
                 </div>
             {/each}
         </div>
+    {/if}
     {/if}
 </div>
 

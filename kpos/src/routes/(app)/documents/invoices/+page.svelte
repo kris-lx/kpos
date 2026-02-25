@@ -1,9 +1,10 @@
 <script lang="ts">
     import { t } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
-    import { formatCurrency, formatDateTime, formatDate } from "$lib/utils";
+    import { formatCurrency, formatDateTime, formatDate, enforcePhoneInput } from "$lib/utils";
     import { toast } from "svelte-sonner";
     import { onMount } from "svelte";
+    import { auth } from "$stores";
     import MoneyInput from "$lib/components/MoneyInput.svelte";
     import {
         FileText,
@@ -64,8 +65,12 @@
         total: 0,
     });
 
-    onMount(() => {
+    $effect(() => {
+        auth.activeStoreId; // reload on store switch
         loadData();
+    });
+
+    onMount(() => {
         loadSettings();
     });
 
@@ -458,7 +463,7 @@
                 onchange={() => { currentPage = 1; loadData(); }}
                 class="px-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500"
             >
-                {#each pageSizeOptions as size}
+                {#each pageSizeOptions as size (size)}
                     <option value={size}>{size} {t("common.perPage")}</option>
                 {/each}
             </select>
@@ -648,7 +653,9 @@
                             <input
                                 type="tel"
                                 bind:value={formData.customerPhone}
-                                placeholder="020 XXXX XXXX"
+                                oninput={(e) => { formData.customerPhone = enforcePhoneInput(e.currentTarget.value); }}
+                                placeholder="20xxxxxxxx"
+                                maxlength="10"
                                 class="w-full px-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500"
                             />
                         </div>
@@ -873,7 +880,7 @@
                                 </tr>
                             </thead>
                             <tbody class="divide-y dark:divide-gray-700">
-                                {#each viewingInvoice.items as item}
+                                {#each viewingInvoice.items as item (item.description)}
                                     <tr>
                                         <td class="px-4 py-3 text-sm text-gray-900 dark:text-white">{item.description}</td>
                                         <td class="px-4 py-3 text-sm text-center text-gray-500 dark:text-gray-400">{item.quantity}</td>

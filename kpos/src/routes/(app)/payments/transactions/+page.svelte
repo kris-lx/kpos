@@ -33,13 +33,16 @@
     let selectedTransaction = $state<any>(null);
     let currentPage = $state(1);
     let itemsPerPage = $state(20);
+    let pageSizeOptions = [5, 10, 20, 30, 50, 70, 100];
+    let totalItems = $state(0);
+    let searchTimeout: ReturnType<typeof setTimeout>;
 
     // Data
     let transactions = $state<any[]>([]);
 
     // Stats
     let stats = $derived({
-        total: transactions.length,
+        total: totalItems,
         completed: transactions.filter((t) => t.status === "completed").length,
         pending: transactions.filter((t) => t.status === "pending").length,
         failed: transactions.filter((t) => t.status === "failed").length,
@@ -75,12 +78,53 @@
     async function loadData() {
         isLoading = true;
         try {
-            const res = await api.get("payments/transactions").json<any>();
-            transactions = res.data || [];
+            const params: Record<string, string | number> = {
+                page: currentPage,
+                limit: itemsPerPage,
+            };
+            if (searchQuery) params.search = searchQuery;
+            if (statusFilter) params.status = statusFilter.toUpperCase();
+
+            const res = await api.get("payments/transactions", { searchParams: params }).json<any>();
+            const raw = res.data || [];
+            transactions = raw.map((tx: any) => ({
+                id: tx.id,
+                reference: tx.transactionNo || tx.id?.slice(-8),
+                createdAt: tx.createdAt,
+                customerName: tx.customer?.name || '-',
+                paymentMethod: tx.payments?.[0]?.methodName?.toLowerCase() || tx.payments?.[0]?.paymentMethod?.code?.toLowerCase() || 'cash',
+                amount: tx.total || 0,
+                status: (tx.status || '').toLowerCase(),
+                type: tx.type,
+                items: tx.items,
+                raw: tx,
+            }));
+            totalItems = res.meta?.total || transactions.length;
         } catch (e) {
             console.error("Failed to load:", e);
         } finally {
             isLoading = false;
+        }
+    }
+
+    function handleSearch() {
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(() => {
+            currentPage = 1;
+            loadData();
+        }, 300);
+    }
+
+    function changePageSize(size: number) {
+        itemsPerPage = size;
+        currentPage = 1;
+        loadData();
+    }
+
+    function goToPage(page: number) {
+        if (page >= 1 && page <= totalPages) {
+            currentPage = page;
+            loadData();
         }
     }
 
@@ -89,21 +133,64 @@
         showViewModal = true;
     }
 
-    let filteredTransactions = $derived(() => {
+    function downloadFile(content: string, filename: string, type: string) {
+        const blob = new Blob([content], { type });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
+    function exportToExcel() {
+        let csv = '\ufeff';
+        csv += 'ວັນທີ,ລະຫັດ,ລູກຄ້າ,ວິທີຊຳລະ,ຍອດເງິນ,ສະຖານະ\n';
+        for (const tx of filteredTransactions) {
+            csv += `"${formatDate(tx.createdAt)}","${tx.reference}","${tx.customerName}","${getMethodConfig(tx.paymentMethod).label}","${formatCurrency(tx.amount)}","${getStatusConfig(tx.status).label}"\n`;
+        }
+        downloadFile(csv, `transactions-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
+        toast.success('ສົ່ງອອກ CSV ສຳເລັດ');
+    }
+
+    function exportToPdf() {
+        const rows = filteredTransactions.map(tx =>
+            `<tr><td>${formatDate(tx.createdAt)}</td><td>${tx.reference}</td><td>${tx.customerName}</td><td>${getMethodConfig(tx.paymentMethod).label}</td><td class="text-right">${formatCurrency(tx.amount)}</td><td>${getStatusConfig(tx.status).label}</td></tr>`
+        ).join('');
+        const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>ລາຍການຊຳລະ</title>
+<style>body{font-family:'Noto Sans Lao',sans-serif;padding:20px}h1{text-align:center}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ddd;padding:8px;font-size:12px}th{background:#f5f5f5}.text-right{text-align:right}</style></head>
+<body><h1>ລາຍການຊຳລະ</h1><p style="text-align:center">${new Date().toLocaleDateString('lo-LA')}</p>
+<table><tr><th>ວັນທີ</th><th>ລະຫັດ</th><th>ລູກຄ້າ</th><th>ວິທີຊຳລະ</th><th>ຍອດເງິນ</th><th>ສະຖານະ</th></tr>${rows}</table></body></html>`;
+        const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const w = window.open(url, '_blank');
+        if (w) w.onload = () => w.print();
+        toast.success('ສົ່ງອອກ PDF ສຳເລັດ');
+    }
+
+    function exportToWord() {
+        const rows = filteredTransactions.map(tx =>
+            `<tr><td>${formatDate(tx.createdAt)}</td><td>${tx.reference}</td><td>${tx.customerName}</td><td>${getMethodConfig(tx.paymentMethod).label}</td><td>${formatCurrency(tx.amount)}</td><td>${getStatusConfig(tx.status).label}</td></tr>`
+        ).join('');
+        const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office"><head><meta charset="utf-8"><style>table{width:100%;border-collapse:collapse}th,td{border:1px solid #000;padding:8px}th{background:#f0f0f0}</style></head>
+<body><h1 style="text-align:center">ລາຍການຊຳລະ</h1><p style="text-align:center">${new Date().toLocaleDateString('lo-LA')}</p>
+<table><tr><th>ວັນທີ</th><th>ລະຫັດ</th><th>ລູກຄ້າ</th><th>ວິທີຊຳລະ</th><th>ຍອດເງິນ</th><th>ສະຖານະ</th></tr>${rows}</table></body></html>`;
+        downloadFile(html, `transactions-${new Date().toISOString().split('T')[0]}.doc`, 'application/msword');
+        toast.success('ສົ່ງອອກ Word ສຳເລັດ');
+    }
+
+    let showExportMenu = $state(false);
+
+    let filteredTransactions = $derived.by(() => {
         return transactions.filter((tx) => {
-            const matchSearch = tx.reference?.toLowerCase().includes(searchQuery.toLowerCase()) || tx.customerName?.toLowerCase().includes(searchQuery.toLowerCase());
-            const matchStatus = !statusFilter || tx.status === statusFilter;
             const matchMethod = !methodFilter || tx.paymentMethod === methodFilter;
-            return matchSearch && matchStatus && matchMethod;
+            return matchMethod;
         });
     });
 
-    let paginatedTransactions = $derived(() => {
-        const start = (currentPage - 1) * itemsPerPage;
-        return filteredTransactions().slice(start, start + itemsPerPage);
-    });
-
-    let totalPages = $derived(Math.ceil(filteredTransactions().length / itemsPerPage));
+    let totalPages = $derived(Math.ceil(totalItems / itemsPerPage) || 1);
 
     onMount(() => loadData());
 </script>
@@ -127,10 +214,25 @@
             </div>
         </div>
 
-        <button class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium">
-            <Download class="w-4 h-4" />
-            ສົ່ງອອກ
-        </button>
+        <div class="relative">
+            <button onclick={() => showExportMenu = !showExportMenu} class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium">
+                <Download class="w-4 h-4" />
+                ສົ່ງອອກ
+            </button>
+            {#if showExportMenu}
+                <div class="absolute right-0 mt-2 w-48 bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 z-50 overflow-hidden">
+                    <button onclick={() => { exportToExcel(); showExportMenu = false; }} class="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 text-sm">
+                        Excel (CSV)
+                    </button>
+                    <button onclick={() => { exportToPdf(); showExportMenu = false; }} class="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 text-sm">
+                        PDF
+                    </button>
+                    <button onclick={() => { exportToWord(); showExportMenu = false; }} class="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 text-sm">
+                        Word
+                    </button>
+                </div>
+            {/if}
+        </div>
     </div>
 
     <!-- Stats -->
@@ -187,13 +289,13 @@
         <div class="flex flex-col lg:flex-row lg:items-center gap-4">
             <div class="relative flex-1">
                 <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                <input type="text" bind:value={searchQuery} placeholder="ຄົ້ນຫາລະຫັດ, ລູກຄ້າ..." class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-emerald-500" />
+                <input type="text" bind:value={searchQuery} oninput={() => handleSearch()} placeholder="ຄົ້ນຫາລະຫັດ, ລູກຄ້າ..." class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-emerald-500" />
             </div>
             <div class="flex gap-2 flex-wrap">
                 <span class="text-sm text-gray-500 py-2">ສະຖານະ:</span>
-                {#each [{ id: null, label: "ທັງໝົດ" }, { id: "completed", label: "ສຳເລັດ" }, { id: "pending", label: "ລໍຖ້າ" }, { id: "failed", label: "ລົ້ມເຫລວ" }] as filter}
+                {#each [{ id: null, label: "ທັງໝົດ" }, { id: "completed", label: "ສຳເລັດ" }, { id: "pending", label: "ລໍຖ້າ" }, { id: "failed", label: "ລົ້ມເຫລວ" }] as filter (filter.id)}
                     <button
-                        onclick={() => { statusFilter = filter.id; currentPage = 1; }}
+                        onclick={() => { statusFilter = filter.id; currentPage = 1; loadData(); }}
                         class={cn("px-3 py-2 rounded-lg text-sm font-medium transition-all", statusFilter === filter.id ? "bg-emerald-100 dark:bg-emerald-900/50 text-emerald-700 dark:text-emerald-400" : "text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700")}
                     >
                         {filter.label}
@@ -202,7 +304,7 @@
             </div>
             <div class="flex gap-2 flex-wrap">
                 <span class="text-sm text-gray-500 py-2">ວິທີ:</span>
-                {#each [{ id: null, label: "ທັງໝົດ" }, { id: "cash", label: "ເງິນສົດ" }, { id: "card", label: "ບັດ" }, { id: "mobile", label: "ມືຖື" }] as filter}
+                {#each [{ id: null, label: "ທັງໝົດ" }, { id: "cash", label: "ເງິນສົດ" }, { id: "card", label: "ບັດ" }, { id: "mobile", label: "ມືຖື" }] as filter (filter.id)}
                     <button
                         onclick={() => { methodFilter = filter.id; currentPage = 1; }}
                         class={cn("px-3 py-2 rounded-lg text-sm font-medium transition-all", methodFilter === filter.id ? "bg-emerald-100 dark:bg-emerald-900/50 text-emerald-700 dark:text-emerald-400" : "text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700")}
@@ -219,7 +321,7 @@
         <div class="flex items-center justify-center py-20">
             <Loader2 class="w-10 h-10 text-emerald-500 animate-spin" />
         </div>
-    {:else if paginatedTransactions().length === 0}
+    {:else if filteredTransactions.length === 0}
         <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-16 text-center">
             <Receipt class="w-16 h-16 mx-auto text-gray-300 dark:text-gray-600" />
             <h3 class="text-lg font-semibold text-gray-900 dark:text-white mt-4">ບໍ່ມີລາຍການ</h3>
@@ -240,7 +342,7 @@
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-gray-200 dark:divide-gray-700">
-                        {#each paginatedTransactions() as tx}
+                        {#each filteredTransactions as tx (tx.id)}
                             {@const statusConfig = getStatusConfig(tx.status)}
                             {@const methodConfig = getMethodConfig(tx.paymentMethod)}
                             <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-all">
@@ -283,17 +385,30 @@
     {/if}
 
     <!-- Pagination -->
-    {#if totalPages > 1}
-        <div class="flex items-center justify-center gap-2 mt-6">
-            <button onclick={() => (currentPage = Math.max(1, currentPage - 1))} disabled={currentPage === 1} class="p-2 rounded-lg border border-gray-200 dark:border-gray-700 disabled:opacity-50">
+    <div class="flex flex-col sm:flex-row items-center justify-between gap-3 mt-4 bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700">
+        <div class="flex items-center gap-2">
+            <span class="text-sm text-gray-500 dark:text-gray-400">ສະແດງ:</span>
+            <select
+                bind:value={itemsPerPage}
+                onchange={() => changePageSize(itemsPerPage)}
+                class="px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm"
+            >
+                {#each pageSizeOptions as size (size)}
+                    <option value={size}>{size} ລາຍການ</option>
+                {/each}
+            </select>
+            <span class="text-sm text-gray-500 dark:text-gray-400">({totalItems} ລາຍການ)</span>
+        </div>
+        <div class="flex items-center gap-2">
+            <button onclick={() => goToPage(currentPage - 1)} disabled={currentPage === 1} class="p-2 rounded-lg border border-gray-200 dark:border-gray-700 disabled:opacity-50 hover:bg-gray-100 dark:hover:bg-gray-700">
                 <ChevronLeft class="w-5 h-5" />
             </button>
             <span class="px-4 py-2 text-sm text-gray-600 dark:text-gray-400">{currentPage} / {totalPages}</span>
-            <button onclick={() => (currentPage = Math.min(totalPages, currentPage + 1))} disabled={currentPage === totalPages} class="p-2 rounded-lg border border-gray-200 dark:border-gray-700 disabled:opacity-50">
+            <button onclick={() => goToPage(currentPage + 1)} disabled={currentPage === totalPages} class="p-2 rounded-lg border border-gray-200 dark:border-gray-700 disabled:opacity-50 hover:bg-gray-100 dark:hover:bg-gray-700">
                 <ChevronRight class="w-5 h-5" />
             </button>
         </div>
-    {/if}
+    </div>
 </div>
 
 <!-- View Modal -->

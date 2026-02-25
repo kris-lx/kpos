@@ -1,9 +1,8 @@
 <script lang="ts">
-    import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
     import { api } from "$api";
-    import { formatCurrency } from "$lib/utils";
+    import { formatCurrency, formatDate } from "$lib/utils";
     import { toast } from "svelte-sonner";
     import {
         Ticket,
@@ -260,31 +259,20 @@
         toast.success("ຄັດລອກລະຫັດແລ້ວ");
     }
 
-    function formatDate(date: string): string {
-        if (!date) return "-";
-        return new Intl.DateTimeFormat("lo-LA", {
-            year: "numeric",
-            month: "short",
-            day: "numeric",
-        }).format(new Date(date));
-    }
 
     // Filtered and paginated - now using server-side data directly
-    let filteredCoupons = $derived(() => {
+    let filteredCoupons = $derived.by(() => {
         // Server already filters, so just return coupons
         return coupons;
     });
 
-    let paginatedCoupons = $derived(() => {
+    let paginatedCoupons = $derived.by(() => {
         // Server already paginates, so just return coupons
         return coupons;
     });
 
     let totalPages = $derived(Math.ceil(totalItems / itemsPerPage));
 
-    onMount(() => {
-        // Initial load handled by effect
-    });
 </script>
 
 <svelte:head>
@@ -387,7 +375,7 @@
 
             <!-- Status Filter -->
             <div class="flex gap-2 flex-wrap">
-                {#each ["all", "active", "scheduled", "paused", "expired", "exhausted"] as status}
+                {#each ["all", "active", "scheduled", "paused", "expired", "exhausted"] as status (status)}
                     {@const config = getStatusConfig(status)}
                     <button
                         onclick={() => { statusFilter = status; }}
@@ -413,7 +401,7 @@
                 <p class="text-gray-500 dark:text-gray-400">{t("common.loading")}...</p>
             </div>
         </div>
-    {:else if paginatedCoupons().length === 0}
+    {:else if paginatedCoupons.length === 0}
         <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-16 text-center shadow-sm">
             <Ticket class="w-16 h-16 mx-auto text-gray-300 dark:text-gray-600" />
             <h3 class="text-lg font-semibold text-gray-900 dark:text-white mt-4">ບໍ່ມີຄູປອງ</h3>
@@ -421,7 +409,7 @@
         </div>
     {:else}
         <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {#each paginatedCoupons() as coupon}
+            {#each paginatedCoupons as coupon (coupon.id)}
                 {@const status = getStatus(coupon)}
                 {@const statusConfig = getStatusConfig(status)}
 

@@ -11,12 +11,12 @@ const envSchema = z.object({
 
     // Database
     DATABASE_URL: z.string().url(),
-    REDIS_URL: z.string().url(),
+    REDIS_URL: z.string().url().optional().default('redis://localhost:6379'),
     RABBITMQ_URL: z.string().optional(),
 
     // JWT
     JWT_SECRET: z.string().min(32),
-    JWT_EXPIRES_IN: z.string().default('15m'),
+    JWT_EXPIRES_IN: z.string().default('12h'),
     JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
 
     // External Services

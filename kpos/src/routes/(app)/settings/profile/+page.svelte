@@ -54,7 +54,7 @@
         isLoading = true;
         error = null;
         try {
-            const response = await api.get("auth/me").json<any>();
+            const response = await api.get("users/me/profile").json<any>();
             if (response.success && response.data) {
                 profileData = {
                     name: response.data.name || "",
@@ -85,7 +85,7 @@
     async function saveProfile() {
         isSaving = true;
         try {
-            await api.put("auth/profile", {
+            await api.put("users/me/profile", {
                 json: {
                     name: profileData.name,
                     phone: profileData.phone,
@@ -113,7 +113,7 @@
 
         isSaving = true;
         try {
-            await api.put("auth/password", {
+            await api.put("users/me/password", {
                 json: {
                     currentPassword: passwordData.currentPassword,
                     newPassword: passwordData.newPassword,
@@ -142,7 +142,7 @@
         formData.append("avatar", file);
 
         try {
-            const response = await api.post("auth/avatar", {
+            const response = await api.post("users/me/avatar", {
                 body: formData,
             }).json<any>();
             

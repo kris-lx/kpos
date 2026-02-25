@@ -1,8 +1,8 @@
 <script lang="ts">
-    import { onMount } from "svelte";
     import { cn, formatCurrency } from "$utils";
     import { api } from "$api";
     import { t } from "$lib/i18n/index.svelte";
+    import { auth } from "$stores";
     import { toast } from "svelte-sonner";
     import {
         Users,
@@ -68,6 +68,11 @@
         }
     }
 
+    $effect(() => {
+        auth.activeStoreId;
+        loadData();
+    });
+
     function goToPage(page: number) {
         if (page >= 1 && page <= totalPages) {
             currentPage = page;
@@ -98,8 +103,6 @@
 
     let totalPages = $derived(Math.ceil(totalItems / itemsPerPage) || 1);
 
-    onMount(() => loadData());
-
     $effect(() => {
         periodFilter;
         currentPage = 1;
@@ -129,7 +132,7 @@
         exporting = true;
         showExportMenu = false;
         const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${t("reports.staff")}</title>
-<style>body{font-family:'Phetsarath OT',sans-serif;padding:20px}h1{text-align:center}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ddd;padding:8px}th{background:#f5f5f5}.text-right{text-align:right}</style></head>
+<style>body{font-family:'Noto Sans Lao','Phetsarath OT',sans-serif;padding:20px}h1{text-align:center}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ddd;padding:8px}th{background:#f5f5f5}.text-right{text-align:right}</style></head>
 <body><h1>${t("reports.staff")}</h1><p style="text-align:center">${new Date().toLocaleDateString('lo-LA')}</p>
 <table><tr><th>ອັນດັບ</th><th>ຊື່</th><th>ຈຳນວນຂາຍ</th><th>ລາຍຮັບ</th><th>ຄ່າສະເລ່ຍ</th></tr>
 ${staffReports.map((s: any, i: number) => `<tr><td>${i + 1}</td><td>${s.name || ''}</td><td class="text-right">${s.totalSales || 0}</td><td class="text-right">${formatCurrency(s.revenue || 0)}</td><td class="text-right">${formatCurrency(s.avgOrderValue || 0)}</td></tr>`).join('')}
@@ -357,7 +360,7 @@ ${staffReports.map((s: any, i: number) => `<tr><td>${i + 1}</td><td>${s.name || 
                     onchange={() => changePageSize(itemsPerPage)}
                     class="px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm"
                 >
-                    {#each pageSizeOptions as size}
+                    {#each pageSizeOptions as size (size)}
                         <option value={size}>{size} ລາຍການ</option>
                     {/each}
                 </select>

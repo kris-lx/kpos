@@ -4,7 +4,7 @@
     import { goto } from "$app/navigation";
     import { onMount } from "svelte";
     import { toast } from "svelte-sonner";
-    import { cn } from "$lib/utils";
+    import { cn, formatDateTime } from "$lib/utils";
     import {
         FileCheck,
         Clock,
@@ -156,13 +156,7 @@
     }
 
     function formatDate(dateString: string) {
-        return new Date(dateString).toLocaleDateString("lo-LA", {
-            year: "numeric",
-            month: "short",
-            day: "numeric",
-            hour: "2-digit",
-            minute: "2-digit"
-        });
+        return formatDateTime(dateString);
     }
 
     function goToPage(page: number) {
@@ -281,7 +275,7 @@
                                 </tr>
                             </thead>
                             <tbody class="divide-y divide-gray-100 dark:divide-gray-700">
-                                {#each $requestsQuery.data.data as request}
+                                {#each $requestsQuery.data.data as request (request.id)}
                                     {@const typeInfo = getTypeInfo(request.type)}
                                     {@const statusBadge = getStatusBadge(request.status)}
                                     {@const TypeIcon = typeInfo.icon}
@@ -347,7 +341,7 @@
 
                     <!-- Cards for mobile -->
                     <div class="lg:hidden divide-y divide-gray-100 dark:divide-gray-700">
-                        {#each $requestsQuery.data.data as request}
+                        {#each $requestsQuery.data.data as request (request.id)}
                             {@const typeInfo = getTypeInfo(request.type)}
                             {@const statusBadge = getStatusBadge(request.status)}
                             {@const TypeIcon = typeInfo.icon}
@@ -395,7 +389,7 @@
                                 onchange={() => changePageSize(pageSize)}
                                 class="px-3 py-1.5 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-white"
                             >
-                                {#each pageSizeOptions as size}
+                                {#each pageSizeOptions as size (size)}
                                     <option value={size}>{size} ລາຍການ</option>
                                 {/each}
                             </select>

@@ -1,0 +1,48 @@
+// ═══════════════════════════════════════════════════════════════════════════
+// KPOS - Activity Log Helper
+// Publishes to RabbitMQ queue if available, falls back to direct DB write
+// ═══════════════════════════════════════════════════════════════════════════
+
+import { prisma } from '@/config/database.config';
+import { publish, QUEUES, isRabbitMQConnected } from '@/config/rabbitmq.config';
+
+export async function queueActivityLog(
+    userId: string,
+    action: string,
+    resource: string,
+    details: string,
+    metadata?: Record<string, unknown>,
+    req?: { ip?: string; headers?: Record<string, string | string[] | undefined> }
+): Promise<void> {
+    try {
+        const ip = req?.ip || (req?.headers?.['x-forwarded-for'] as string) || null;
+        const userAgent = (req?.headers?.['user-agent'] as string) || null;
+
+        const payload: Record<string, unknown> = {
+            userId,
+            action,
+            resource,
+            details,
+            metadata: metadata || {},
+            ip,
+            userAgent,
+        };
+
+        // Publish to queue (async, non-blocking) — fall back to direct DB write
+        const queued = isRabbitMQConnected() && publish(QUEUES.ACTIVITY_LOG, payload);
+        if (!queued) {
+            await prisma.activityLog.create({
+                data: {
+                    userId,
+                    action,
+                    description: details,
+                    metadata: metadata || {},
+                    ip,
+                    userAgent,
+                },
+            });
+        }
+    } catch {
+        // Never block the API response due to logging failures
+    }
+}

@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, branchFilter, applyScopeFilter, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { prisma } from '@/config/database.config';
 
 export const documentRoutes = Router();
@@ -13,16 +13,18 @@ export const documentRoutes = Router();
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all invoices
-documentRoutes.get('/invoices', authenticate, async (req, res, next) => {
+documentRoutes.get('/invoices', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { status, page = '1', limit = '20', search, from, to } = req.query;
         const pageNum = Math.max(1, parseInt(String(page), 10) || 1);
         const limitNum = Math.min(100, Math.max(1, parseInt(String(limit), 10) || 20));
         const skip = (pageNum - 1) * limitNum;
+        const filter = (req as any).branchFilter as ScopeFilter | undefined;
 
         const where: Record<string, unknown> = {
             type: 'INVOICE',
         };
+        applyScopeFilter(where, filter, 'storeId');
 
         if (status && status !== 'all') {
             where.status = String(status).toUpperCase();
@@ -153,6 +155,8 @@ documentRoutes.post('/invoices', authenticate, authorize('documents:create'), as
                 referenceId: req.user!.userId,
                 referenceType: 'USER',
                 status: 'PENDING',
+                branchId: (req as any).authUser?.activeBranchId || null,
+                storeId: (req as any).authUser?.activeStoreId || null,
                 data: {
                     customerId,
                     customer: {
@@ -301,16 +305,18 @@ documentRoutes.post('/invoices/:id/send', authenticate, authorize('documents:upd
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all tax invoices
-documentRoutes.get('/tax-invoices', authenticate, async (req, res, next) => {
+documentRoutes.get('/tax-invoices', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { status, page = '1', limit = '20', search, from, to } = req.query;
         const pageNum = Math.max(1, parseInt(String(page), 10) || 1);
         const limitNum = Math.min(100, Math.max(1, parseInt(String(limit), 10) || 20));
         const skip = (pageNum - 1) * limitNum;
+        const filter = (req as any).branchFilter as ScopeFilter | undefined;
 
         const where: Record<string, unknown> = {
             type: 'TAX_INVOICE',
         };
+        applyScopeFilter(where, filter, 'storeId');
 
         if (status && status !== 'all') {
             where.status = String(status).toUpperCase();
@@ -426,6 +432,8 @@ documentRoutes.post('/tax-invoices', authenticate, authorize('documents:create')
                 referenceId: req.user!.userId,
                 referenceType: 'USER',
                 status: 'PENDING',
+                branchId: (req as any).authUser?.activeBranchId || null,
+                storeId: (req as any).authUser?.activeStoreId || null,
                 data: {
                     customerName,
                     taxId,

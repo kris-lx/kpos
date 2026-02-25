@@ -435,7 +435,7 @@
                 </div>
             {:else}
                 <div class="grid gap-4 md:grid-cols-2">
-                    {#each tiers.sort((a, b) => (a.minPoints || 0) - (b.minPoints || 0)) as tier}
+                    {#each tiers.sort((a, b) => (a.minPoints || 0) - (b.minPoints || 0)) as tier (tier.id)}
                         <div
                             class="bg-white dark:bg-gray-800 rounded-2xl border-2 border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden hover:shadow-lg transition-all"
                             style="border-left: 6px solid {tier.color}"
@@ -491,7 +491,7 @@
                             {#if tier.benefits && tier.benefits.length > 0}
                                 <div class="px-4 pb-4">
                                     <div class="flex flex-wrap gap-1">
-                                        {#each tier.benefits.slice(0, 3) as benefit}
+                                        {#each tier.benefits.slice(0, 3) as benefit (benefit)}
                                             <span class="px-2 py-1 text-xs bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 rounded-full">
                                                 {benefit}
                                             </span>
@@ -585,7 +585,7 @@
                     <div>
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ໄອຄອນ</label>
                         <div class="flex gap-1">
-                            {#each tierIcons as icon}
+                            {#each tierIcons as icon (icon)}
                                 <button
                                     type="button"
                                     onclick={() => (formData.icon = icon)}
@@ -601,7 +601,7 @@
                 <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ສີ</label>
                     <div class="flex gap-2">
-                        {#each tierColors as color}
+                        {#each tierColors as color (color)}
                             <button
                                 type="button"
                                 onclick={() => (formData.color = color)}

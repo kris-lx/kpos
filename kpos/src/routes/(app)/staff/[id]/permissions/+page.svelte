@@ -39,7 +39,7 @@
     let useCustomPermissions = $state(false);
 
     // Computed: Effective permissions (role + user)
-    let effectivePermissions = $derived(() => {
+    let effectivePermissions = $derived.by(() => {
         if (userData?.isSuperAdmin) return ['*'];
         const combined = [...new Set([...rolePermissions, ...userPermissions])];
         return combined;
@@ -49,15 +49,16 @@
     async function loadPermissions() {
         isLoading = true;
         try {
-            const response = await api.get(`users/${userId}/permissions`).json<any>();
+            const response = await api.get(`staff/${userId}/permissions`).json<any>();
             if (response.success && response.data) {
                 userData = response.data.user;
                 rolePermissions = response.data.rolePermissions || [];
                 userPermissions = response.data.userPermissions || [];
                 useCustomPermissions = userPermissions.length > 0;
                 
-                // Expand all modules by default
+                // Set allPermissions and expand all modules by default
                 if (response.data.allPermissions) {
+                    allPermissions = response.data.allPermissions;
                     expandedModules = new Set(response.data.allPermissions.map((m: any) => m.module));
                 }
             }
@@ -69,12 +70,15 @@
         }
     }
 
-    // Load all available permissions
+    // Load all available permissions (extracted from loadPermissions response - no extra API call needed)
     async function loadAllPermissions() {
+        // allPermissions is already populated by loadPermissions from the same endpoint
+        // This function exists as a fallback only if allPermissions wasn't set
+        if (allPermissions.length > 0) return;
         try {
-            const response = await api.get("users/permissions/all").json<any>();
-            if (response.success && response.data) {
-                allPermissions = response.data;
+            const response = await api.get(`staff/${userId}/permissions`).json<any>();
+            if (response.success && response.data?.allPermissions) {
+                allPermissions = response.data.allPermissions;
             }
         } catch (error) {
             console.error("Failed to load all permissions:", error);
@@ -146,7 +150,7 @@
     async function savePermissions() {
         isSaving = true;
         try {
-            const response = await api.put(`users/${userId}/permissions`, {
+            const response = await api.put(`staff/${userId}/permissions`, {
                 json: { permissions: userPermissions }
             }).json<any>();
 
@@ -334,7 +338,7 @@
                     <!-- Module Permissions -->
                     {#if expandedModules.has(module.module)}
                         <div class="px-6 pb-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                            {#each module.permissions as perm}
+                            {#each module.permissions as perm (perm.value)}
                                 {@const isGranted = hasPermission(perm.value)}
                                 {@const isFromRole = isRolePermission(perm.value)}
                                 {@const isCustom = isUserPermission(perm.value)}
@@ -391,7 +395,7 @@
                 {t("staff.permissions.summary")}
             </h3>
             <div class="flex flex-wrap gap-2">
-                {#each effectivePermissions() as perm}
+                {#each effectivePermissions as perm (perm)}
                     <span class={cn(
                         "px-2 py-1 text-xs font-medium rounded-full",
                         isUserPermission(perm)

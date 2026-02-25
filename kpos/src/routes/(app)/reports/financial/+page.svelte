@@ -3,6 +3,7 @@
     import { cn, formatCurrency } from "$utils";
     import { api } from "$api";
     import { t } from "$lib/i18n/index.svelte";
+    import { auth } from "$stores";
     import { toast } from "svelte-sonner";
     import {
         DollarSign,
@@ -38,6 +39,8 @@
         profitMargin: 0,
         previousRevenue: 0,
         previousExpenses: 0,
+        taxCollected: 0,
+        discountsGiven: 0,
         paymentMethods: [],
         dailyData: [],
     });
@@ -76,11 +79,18 @@
         }
     }
 
-    onMount(() => loadData());
+    let prevPeriod = $state(periodFilter);
 
     $effect(() => {
-        periodFilter;
+        auth.activeStoreId;
         loadData();
+    });
+
+    $effect(() => {
+        if (periodFilter !== prevPeriod) {
+            prevPeriod = periodFilter;
+            loadData();
+        }
     });
 
     // Export functions
@@ -111,7 +121,7 @@
         exporting = true;
         showExportMenu = false;
         const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${t("reports.financial")}</title>
-<style>body{font-family:'Phetsarath OT',sans-serif;padding:20px}h1,h2{text-align:center}table{width:100%;border-collapse:collapse;margin:20px 0}th,td{border:1px solid #ddd;padding:8px}th{background:#f5f5f5}.text-right{text-align:right}</style></head>
+<style>body{font-family:'Noto Sans Lao','Phetsarath OT',sans-serif;padding:20px}h1,h2{text-align:center}table{width:100%;border-collapse:collapse;margin:20px 0}th,td{border:1px solid #ddd;padding:8px}th{background:#f5f5f5}.text-right{text-align:right}</style></head>
 <body><h1>${t("reports.financial")}</h1><p style="text-align:center">${new Date().toLocaleDateString('lo-LA')}</p>
 <table><tr><th>ລາຍການ</th><th>ຈຳນວນ</th></tr>
 <tr><td>ລາຍຮັບ</td><td class="text-right">${formatCurrency(financialData.revenue || 0)}</td></tr>
@@ -287,12 +297,34 @@ ${(financialData.paymentMethods || []).map((p: any) => `<tr><td>${p.methodName |
             </div>
         </div>
 
+        <!-- Tax & Discount row -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+            <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm p-5 flex items-center gap-4">
+                <div class="p-3 bg-amber-100 dark:bg-amber-900/30 rounded-xl">
+                    <Receipt class="w-6 h-6 text-amber-600 dark:text-amber-400" />
+                </div>
+                <div>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">ພາສີລວມ</p>
+                    <p class="text-xl font-bold text-gray-900 dark:text-white">{formatCurrency(financialData.taxCollected || 0)}</p>
+                </div>
+            </div>
+            <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm p-5 flex items-center gap-4">
+                <div class="p-3 bg-rose-100 dark:bg-rose-900/30 rounded-xl">
+                    <TrendingDown class="w-6 h-6 text-rose-600 dark:text-rose-400" />
+                </div>
+                <div>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">ສ່ວນຫຼຸດລວມ</p>
+                    <p class="text-xl font-bold text-gray-900 dark:text-white">{formatCurrency(financialData.discountsGiven || 0)}</p>
+                </div>
+            </div>
+        </div>
+
         <div class="grid md:grid-cols-2 gap-6">
             <!-- Payment Methods -->
             <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm p-6">
                 <h3 class="text-lg font-bold text-gray-900 dark:text-white mb-4">ວິທີຊຳລະ</h3>
                 <div class="space-y-4">
-                    {#each financialData.paymentMethods || [] as method}
+                    {#each financialData.paymentMethods || [] as method (method.type)}
                         {@const Icon = getPaymentIcon(method.type)}
                         {@const colorClass = getPaymentColor(method.type)}
                         <div class="flex items-center justify-between">
@@ -324,7 +356,7 @@ ${(financialData.paymentMethods || []).map((p: any) => `<tr><td>${p.methodName |
             <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm p-6">
                 <h3 class="text-lg font-bold text-gray-900 dark:text-white mb-4">ສະຫຼຸບລາຍວັນ</h3>
                 <div class="space-y-3 max-h-80 overflow-y-auto">
-                    {#each financialData.dailyData || [] as day}
+                    {#each financialData.dailyData || [] as day (day.date)}
                         <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
                             <div>
                                 <p class="font-medium text-gray-900 dark:text-white">{day.date}</p>

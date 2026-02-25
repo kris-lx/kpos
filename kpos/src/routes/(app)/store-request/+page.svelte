@@ -4,6 +4,7 @@
     import { toast } from "svelte-sonner";
     import { auth } from "$lib/stores/auth.svelte";
     import { t } from "$lib/i18n/index.svelte";
+    import { enforcePhoneInput, formatDateTime } from "$lib/utils";
     import { 
         Store, Plus, Clock, CheckCircle, XCircle, Eye, 
         Building2, MapPin, Phone, Mail, FileText, Send,
@@ -27,13 +28,13 @@
             return api.post("admin/requests", { json: data }).json();
         },
         onSuccess: () => {
-            toast.success("ສົ່ງຄຳຂໍສຳເລັດ");
+            toast.success(t('storeRequest.submitSuccess'));
             queryClient.invalidateQueries({ queryKey: ["my-store-requests"] });
             showFormModal = false;
             resetForm();
         },
         onError: (error: any) => {
-            toast.error(error?.message || "ເກີດຂໍ້ຜິດພາດ");
+            toast.error(error?.message || t('storeRequest.submitError'));
         }
     });
 
@@ -88,10 +89,32 @@
 
     function handleSubmit() {
         if (!formData.storeName || !formData.address || !formData.phone) {
-            toast.error("ກະລຸນາປ້ອນຂໍ້ມູນໃຫ້ຄົບ");
+            toast.error(t('storeRequest.validationError'));
             return;
         }
-        $createRequestMutation.mutate(formData);
+        if (formData.phone.length < 8) {
+            toast.error('ເບີໂທຕ້ອງມີຢ່າງໜ້ອຍ 8 ຕົວເລກ');
+            return;
+        }
+        const isStore = formData.type === 'store';
+        const payload: Record<string, any> = {
+            type: isStore ? 'new_store' : 'new_branch',
+            reason: formData.description,
+        };
+        if (isStore) {
+            payload.storeName = formData.storeName;
+            payload.storeCode = formData.storeCode;
+            payload.storeAddress = formData.address;
+            payload.storePhone = formData.phone;
+            payload.storeEmail = formData.email;
+        } else {
+            payload.branchName = formData.storeName;
+            payload.branchCode = formData.storeCode;
+            payload.branchAddress = formData.address;
+            payload.branchPhone = formData.phone;
+            payload.branchEmail = formData.email;
+        }
+        $createRequestMutation.mutate(payload);
     }
 
     function getStatusColor(status: string) {
@@ -114,22 +137,14 @@
 
     function getStatusText(status: string) {
         switch (status) {
-            case "pending": return "ລໍຖ້າອະນຸມັດ";
-            case "approved": return "ອະນຸມັດແລ້ວ";
-            case "rejected": return "ຖືກປະຕິເສດ";
+            case "pending": return t('status.pending');
+            case "approved": return t('status.approved');
+            case "rejected": return t('status.rejected');
             default: return status;
         }
     }
 
-    function formatDate(date: string) {
-        return new Date(date).toLocaleDateString("lo-LA", {
-            year: "numeric",
-            month: "short",
-            day: "numeric",
-            hour: "2-digit",
-            minute: "2-digit"
-        });
-    }
+    function formatDate(date: string) { return formatDateTime(date); }
 
     const businessTypes = [
         { value: "retail", label: "ຮ້ານຂາຍຍ່ອຍ" },
@@ -244,7 +259,7 @@
                 </div>
             {:else}
                 <div class="divide-y divide-gray-200 dark:divide-gray-700">
-                    {#each $myRequestsQuery.data as request}
+                    {#each $myRequestsQuery.data as request (request.id)}
                         <div class="p-4 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
                             <div class="flex items-center justify-between">
                                 <div class="flex items-center gap-4">
@@ -340,7 +355,7 @@
                             class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                         >
                             <option value="">ເລືອກປະເພດ</option>
-                            {#each businessTypes as type}
+                            {#each businessTypes as type (type.value)}
                                 <option value={type.value}>{type.label}</option>
                             {/each}
                         </select>
@@ -371,8 +386,11 @@
                             </label>
                             <input
                                 type="tel"
+                                inputmode="numeric"
                                 bind:value={formData.phone}
-                                placeholder="020 XXXX XXXX"
+                                oninput={(e) => { formData.phone = enforcePhoneInput(e.currentTarget.value); }}
+                                placeholder="20xxxxxxxx"
+                                maxlength="10"
                                 class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                             />
                         </div>

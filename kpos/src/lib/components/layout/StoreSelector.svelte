@@ -19,7 +19,7 @@
     let searchQuery = $state('');
 
     // Filtered stores based on search
-    const filteredStores = $derived(() => {
+    const filteredStores = $derived.by(() => {
         if (!searchQuery) return auth.accessibleStores;
         const query = searchQuery.toLowerCase();
         return auth.accessibleStores.filter(
@@ -30,9 +30,9 @@
     });
 
     // Group stores by branch
-    const groupedStores = $derived(() => {
+    const groupedStores = $derived.by(() => {
         const grouped: Record<string, { branchName: string; stores: StoreAccess[] }> = {};
-        for (const store of filteredStores()) {
+        for (const store of filteredStores) {
             if (!grouped[store.branchId]) {
                 grouped[store.branchId] = {
                     branchName: store.branchName,
@@ -66,7 +66,7 @@
     }
 </script>
 
-<svelte:window on:click={handleClickOutside} />
+<svelte:window onclick={handleClickOutside} />
 
 <div class="store-selector relative">
     <!-- Trigger Button -->
@@ -120,7 +120,7 @@
                         <p class="text-sm">ບໍ່ມີຮ້ານທີ່ເຂົ້າເຖິງໄດ້</p>
                     </div>
                 {:else}
-                    {#each Object.entries(groupedStores()) as [branchId, group]}
+                    {#each Object.entries(groupedStores) as [branchId, group]}
                         <div class="mb-3">
                             <!-- Branch Header -->
                             <div class="flex items-center gap-2 px-2 py-1.5 text-xs font-semibold text-base-content/70 uppercase">

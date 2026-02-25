@@ -3,6 +3,7 @@
     import { api } from "$lib/api";
     import { onMount } from "svelte";
     import { toast } from "svelte-sonner";
+    import { auth } from "$stores";
     import { Plus, Loader2, X, CreditCard, Wallet, Edit, AlertCircle, RefreshCw } from "lucide-svelte";
     const t = i18n.t;
 
@@ -36,7 +37,8 @@
         { value: "credit", label: "ສິນເຊື່ອ" },
     ];
 
-    onMount(() => {
+    $effect(() => {
+        auth.activeStoreId;
         loadPaymentMethods();
     });
 
@@ -45,7 +47,7 @@
         error = null;
         try {
             const response = await api
-                .get("settings/payment-methods")
+                .get("payments/methods")
                 .json<any>();
             if (response.success) {
                 paymentMethods = response.data || [];
@@ -90,12 +92,12 @@
     async function saveMethod() {
         try {
             if (editingMethod) {
-                await api.put(`settings/payment-methods/${editingMethod.id}`, {
+                await api.put(`payments/methods/${editingMethod.id}`, {
                     json: formData,
                 }).json();
                 toast.success("ແກ້ໄຂວິທີການຊຳລະສຳເລັດ");
             } else {
-                await api.post("settings/payment-methods", { json: formData }).json();
+                await api.post("payments/methods", { json: formData }).json();
                 toast.success("ເພີ່ມວິທີການຊຳລະສຳເລັດ");
             }
             showModal = false;
@@ -108,7 +110,7 @@
 
     async function toggleActive(method: any) {
         try {
-            await api.put(`settings/payment-methods/${method.id}`, {
+            await api.put(`payments/methods/${method.id}`, {
                 json: { ...method, isActive: !method.isActive },
             }).json();
             toast.success(method.isActive ? "ປິດໃຊ້ງານແລ້ວ" : "ເປີດໃຊ້ງານແລ້ວ");
@@ -121,7 +123,7 @@
 
     async function setDefault(method: any) {
         try {
-            await api.put(`settings/payment-methods/${method.id}/default`).json();
+            await api.put(`payments/methods/${method.id}/default`).json();
             toast.success("ຕັ້ງເປັນຄ່າເລີ່ມຕົ້ນແລ້ວ");
             loadPaymentMethods();
         } catch (error) {
@@ -183,7 +185,7 @@
         </div>
     {:else}
         <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {#each paymentMethods as method}
+            {#each paymentMethods as method (method.id)}
                 <div
                     class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 hover:shadow-md transition-shadow"
                 >
@@ -299,7 +301,7 @@
                         bind:value={formData.type}
                         class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-primary-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
                     >
-                        {#each paymentTypes as type}
+                        {#each paymentTypes as type (type.value)}
                             <option value={type.value}>{type.label}</option>
                         {/each}
                     </select>

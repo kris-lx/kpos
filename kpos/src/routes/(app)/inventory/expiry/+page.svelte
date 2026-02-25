@@ -3,6 +3,7 @@
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
     import { api } from "$api";
+    import { auth } from "$stores";
     import { formatDate } from "$lib/utils";
     import {
         Clock,
@@ -98,7 +99,10 @@
         }
     }
 
-    onMount(() => loadData());
+    $effect(() => {
+        auth.activeStoreId;
+        loadData();
+    });
 </script>
 
 <svelte:head>
@@ -183,7 +187,7 @@
                 <input type="text" bind:value={searchQuery} oninput={handleSearch} placeholder="ຄົ້ນຫາສິນຄ້າ..." class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-red-500" />
             </div>
             <div class="flex gap-2 flex-wrap">
-                {#each [{ id: null, label: "ທັງໝົດ" }, { id: 0, label: "ໝົດອາຍຸ" }, { id: 7, label: "≤ 7 ມື້" }, { id: 30, label: "8-30 ມື້" }, { id: 31, label: "> 30 ມື້" }] as filter}
+                {#each [{ id: null, label: "ທັງໝົດ" }, { id: 0, label: "ໝົດອາຍຸ" }, { id: 7, label: "≤ 7 ມື້" }, { id: 30, label: "8-30 ມື້" }, { id: 31, label: "> 30 ມື້" }] as filter (filter.id)}
                     <button
                         onclick={() => { daysFilter = filter.id; handleFilterChange(); }}
                         class={cn("px-3 py-2 rounded-lg text-sm font-medium transition-all", daysFilter === filter.id ? "bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-400" : "text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700")}
@@ -219,7 +223,7 @@
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-gray-200 dark:divide-gray-700">
-                        {#each expiringProducts as product}
+                        {#each expiringProducts as product (product.id)}
                             {@const days = getDaysUntilExpiry(product.expiryDate)}
                             {@const config = getExpiryConfig(days)}
                             <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-all">
@@ -265,7 +269,7 @@
                     onchange={() => { currentPage = 1; loadData(); }}
                     class="px-2 py-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm"
                 >
-                    {#each [10, 20, 50, 100] as size}
+                    {#each [10, 20, 50, 100] as size (size)}
                         <option value={size}>{size}</option>
                     {/each}
                 </select>
