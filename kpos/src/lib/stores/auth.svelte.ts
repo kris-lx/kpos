@@ -71,24 +71,29 @@ function createAuthStore() {
     if (browser) {
         accessToken = localStorage.getItem(ACCESS_TOKEN_KEY);
         refreshToken = localStorage.getItem(REFRESH_TOKEN_KEY);
+        
+        let parsedUser: User | null = null;
         const storedUser = localStorage.getItem(USER_KEY);
         if (storedUser) {
             try {
-                user = JSON.parse(storedUser);
+                parsedUser = JSON.parse(storedUser);
             } catch {
-                user = null;
+                parsedUser = null;
             }
         }
+        user = parsedUser;
         
         // Load store context
+        let parsedStores: StoreAccess[] = [];
         const storedStores = localStorage.getItem(ACCESSIBLE_STORES_KEY);
         if (storedStores) {
             try {
-                accessibleStores = JSON.parse(storedStores);
+                parsedStores = JSON.parse(storedStores);
             } catch {
-                accessibleStores = [];
+                parsedStores = [];
             }
         }
+        accessibleStores = parsedStores;
         activeStoreId = localStorage.getItem(ACTIVE_STORE_KEY);
 
         // Load cached rules
@@ -102,8 +107,8 @@ function createAuthStore() {
         }
         
         // Set active branch from active store or user's default
-        const activeStore = accessibleStores.find(s => s.storeId === activeStoreId);
-        activeBranchId = activeStore?.branchId || user?.branchId || null;
+        const initStore = parsedStores.find(s => s.storeId === activeStoreId);
+        activeBranchId = initStore?.branchId || parsedUser?.branchId || null;
         
         isLoading = false;
     }
