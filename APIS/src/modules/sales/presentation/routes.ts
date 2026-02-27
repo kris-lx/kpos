@@ -36,7 +36,7 @@ salesRoutes.post('/', authenticate, async (req, res, next) => {
 
         // Calculate totals
         let subtotal = 0;
-        const transactionItems = [];
+        const txItems = [];
 
         for (const item of items) {
             const product = await db.query.products.findFirst({
@@ -57,7 +57,7 @@ salesRoutes.post('/', authenticate, async (req, res, next) => {
             const itemTotal = (unitPrice * quantity) - itemDiscount;
             subtotal += itemTotal;
 
-            transactionItems.push({
+            txItems.push({
                 productId: item.productId,
                 productName: product.name,
                 sku: product.sku,
@@ -111,8 +111,8 @@ salesRoutes.post('/', authenticate, async (req, res, next) => {
         }).returning();
 
         // Create items
-        if (transactionItems.length > 0) {
-            await db.insert(transactionItems).values(transactionItems.map(ti => ({ ...ti, transactionId: transaction.id })));
+        if (txItems.length > 0) {
+            await db.insert(transactionItems).values(txItems.map(ti => ({ ...ti, transactionId: transaction.id })));
         }
 
         // Create payment
@@ -815,7 +815,7 @@ salesRoutes.post('/credit', authenticate, async (req, res, next) => {
 
         // Calculate totals
         let subtotal = 0;
-        const transactionItems = [];
+        const txItems2 = [];
 
         for (const item of items) {
             const product = await db.query.products.findFirst({
@@ -836,7 +836,7 @@ salesRoutes.post('/credit', authenticate, async (req, res, next) => {
             const itemTotal = (unitPrice * quantity) - itemDiscount;
             subtotal += itemTotal;
 
-            transactionItems.push({
+            txItems2.push({
                 productId: item.productId,
                 productName: product.name,
                 sku: product.sku,
@@ -883,8 +883,8 @@ salesRoutes.post('/credit', authenticate, async (req, res, next) => {
             isCredit: true, creditStatus, dueDate: dueDate ? new Date(dueDate) : null, paidAmount: initialPayment,
         }).returning();
 
-        if (transactionItems.length > 0) {
-            await db.insert(transactionItems).values(transactionItems.map(ti => ({ ...ti, transactionId: txn.id })));
+        if (txItems2.length > 0) {
+            await db.insert(transactionItems).values(txItems2.map(ti => ({ ...ti, transactionId: txn.id })));
         }
 
         for (const item of items) {
