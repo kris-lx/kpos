@@ -553,8 +553,8 @@
                     class="bg-white shadow-lg rounded-lg overflow-hidden"
                     style="width: {paperWidth * 3}px"
                 >
-                    <!-- Receipt -->
-                    <div class="p-4 font-mono text-sm">
+                    <!-- Receipt (always white bg + dark text for print preview) -->
+                    <div class="p-4 font-mono text-sm text-gray-900 bg-white">
                         {#each receiptElements as element (element.id)}
                             <!-- svelte-ignore a11y_click_events_have_key_events -->
                             <!-- svelte-ignore a11y_no_static_element_interactions -->

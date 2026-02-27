@@ -3,8 +3,10 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, branchFilter, applyScopeFilter, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
-import { prisma } from '@/config/database.config';
+import { authenticate, authorize, branchFilter, applyScopeFilter, ensureScopeAccess, buildScopeCondition, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { db } from '@/config/database.config';
+import { products, categories, priceLevels, productPriceLevels, skuVariants, inventory } from '@/db/schema/tables';
+import { eq, and, or, ne, ilike, inArray, isNotNull, isNull, desc, asc, count, sql } from 'drizzle-orm';
 
 export const productRoutes = Router();
 
@@ -15,28 +17,12 @@ export const productRoutes = Router();
 // Get all price levels
 productRoutes.get('/price-levels', authenticate, async (req, res, next) => {
     try {
-        const priceLevels = await prisma.priceLevel.findMany({
-            include: {
-                products: {
-                    include: {
-                        product: {
-                            select: {
-                                id: true,
-                                name: true,
-                                sku: true,
-                                price: true,
-                            }
-                        }
-                    }
-                }
-            },
-            orderBy: [
-                { isDefault: 'desc' },
-                { createdAt: 'asc' }
-            ],
+        const priceLevelRows = await db.query.priceLevels.findMany({
+            with: { products: { with: { product: { columns: { id: true, name: true, sku: true, price: true } } } } },
+            orderBy: [desc(priceLevels.isDefault), asc(priceLevels.createdAt)],
         });
 
-        res.json({ success: true, data: priceLevels });
+        res.json({ success: true, data: priceLevelRows });
     } catch (error) {
         next(error);
     }
@@ -45,22 +31,9 @@ productRoutes.get('/price-levels', authenticate, async (req, res, next) => {
 // Get price level by ID
 productRoutes.get('/price-levels/:id', authenticate, async (req, res, next) => {
     try {
-        const priceLevel = await prisma.priceLevel.findUnique({
-            where: { id: req.params.id },
-            include: {
-                products: {
-                    include: {
-                        product: {
-                            select: {
-                                id: true,
-                                name: true,
-                                sku: true,
-                                price: true,
-                            }
-                        }
-                    }
-                }
-            },
+        const priceLevel = await db.query.priceLevels.findFirst({
+            where: eq(priceLevels.id, req.params.id),
+            with: { products: { with: { product: { columns: { id: true, name: true, sku: true, price: true } } } } },
         });
 
         if (!priceLevel) {
@@ -81,19 +54,14 @@ productRoutes.post('/price-levels', authenticate, authorize('products:create'), 
 
         // If setting as default, unset current default first
         if (isDefault) {
-            await prisma.priceLevel.updateMany({
-                where: { isDefault: true },
-                data: { isDefault: false },
-            });
+            await db.update(priceLevels).set({ isDefault: false }).where(eq(priceLevels.isDefault, true));
         }
 
-        const priceLevel = await prisma.priceLevel.create({
-            data: {
-                name,
-                description: description || null,
-                isDefault: isDefault || false,
-            },
-        });
+        const [priceLevel] = await db.insert(priceLevels).values({
+            name,
+            description: description || null,
+            isDefault: isDefault || false,
+        }).returning();
 
         res.status(201).json({ success: true, data: priceLevel });
     } catch (error) {
@@ -108,23 +76,14 @@ productRoutes.put('/price-levels/:id', authenticate, authorize('products:update'
 
         // If setting as default, unset current default first
         if (isDefault) {
-            await prisma.priceLevel.updateMany({
-                where: { 
-                    isDefault: true,
-                    NOT: { id: req.params.id }
-                },
-                data: { isDefault: false },
-            });
+            await db.update(priceLevels).set({ isDefault: false }).where(and(eq(priceLevels.isDefault, true), ne(priceLevels.id, req.params.id)));
         }
 
-        const priceLevel = await prisma.priceLevel.update({
-            where: { id: req.params.id },
-            data: {
-                name,
-                description: description || null,
-                isDefault: isDefault || false,
-            },
-        });
+        const [priceLevel] = await db.update(priceLevels).set({
+            name,
+            description: description || null,
+            isDefault: isDefault || false,
+        }).where(eq(priceLevels.id, req.params.id)).returning();
 
         res.json({ success: true, data: priceLevel });
     } catch (error) {
@@ -135,17 +94,9 @@ productRoutes.put('/price-levels/:id', authenticate, authorize('products:update'
 // Set price level as default
 productRoutes.put('/price-levels/:id/set-default', authenticate, authorize('products:update'), async (req, res, next) => {
     try {
-        // Unset all defaults
-        await prisma.priceLevel.updateMany({
-            where: { isDefault: true },
-            data: { isDefault: false },
-        });
+        await db.update(priceLevels).set({ isDefault: false }).where(eq(priceLevels.isDefault, true));
 
-        // Set this one as default
-        const priceLevel = await prisma.priceLevel.update({
-            where: { id: req.params.id },
-            data: { isDefault: true },
-        });
+        const [priceLevel] = await db.update(priceLevels).set({ isDefault: true }).where(eq(priceLevels.id, req.params.id)).returning();
 
         res.json({ success: true, data: priceLevel });
     } catch (error) {
@@ -157,26 +108,15 @@ productRoutes.put('/price-levels/:id/set-default', authenticate, authorize('prod
 productRoutes.delete('/price-levels/:id', authenticate, authorize('products:delete'), async (req, res, next) => {
     try {
         // Check if it's the default
-        const priceLevel = await prisma.priceLevel.findUnique({
-            where: { id: req.params.id },
-        });
+        const priceLevel = await db.query.priceLevels.findFirst({ where: eq(priceLevels.id, req.params.id) });
 
         if (priceLevel?.isDefault) {
-            res.status(400).json({ 
-                success: false, 
-                error: { code: 'BUSINESS_001', message: 'Cannot delete default price level' } 
-            });
+            res.status(400).json({ success: false, error: { code: 'BUSINESS_001', message: 'Cannot delete default price level' } });
             return;
         }
 
-        // Delete associated product prices first
-        await prisma.productPriceLevel.deleteMany({
-            where: { priceLevelId: req.params.id },
-        });
-
-        await prisma.priceLevel.delete({
-            where: { id: req.params.id },
-        });
+        await db.delete(productPriceLevels).where(eq(productPriceLevels.priceLevelId, req.params.id));
+        await db.delete(priceLevels).where(eq(priceLevels.id, req.params.id));
 
         res.json({ success: true, data: { message: 'Price level deleted' } });
     } catch (error) {
@@ -190,29 +130,19 @@ productRoutes.post('/price-levels/prices', authenticate, authorize('products:cre
         const { productId, priceLevelId, price } = req.body;
 
         // Check if already exists
-        const existing = await prisma.productPriceLevel.findFirst({
-            where: { productId, priceLevelId },
+        const existing = await db.query.productPriceLevels.findFirst({
+            where: and(eq(productPriceLevels.productId, productId), eq(productPriceLevels.priceLevelId, priceLevelId)),
         });
 
         if (existing) {
-            // Update existing
-            const updated = await prisma.productPriceLevel.update({
-                where: { id: existing.id },
-                data: { price },
-            });
+            const [updated] = await db.update(productPriceLevels).set({ price }).where(eq(productPriceLevels.id, existing.id)).returning();
             res.json({ success: true, data: updated });
             return;
         }
 
-        const productPriceLevel = await prisma.productPriceLevel.create({
-            data: {
-                productId,
-                priceLevelId,
-                price,
-            },
-        });
+        const [ppl] = await db.insert(productPriceLevels).values({ productId, priceLevelId, price }).returning();
 
-        res.status(201).json({ success: true, data: productPriceLevel });
+        res.status(201).json({ success: true, data: ppl });
     } catch (error) {
         next(error);
     }
@@ -223,12 +153,9 @@ productRoutes.put('/price-levels/prices/:id', authenticate, authorize('products:
     try {
         const { price } = req.body;
 
-        const productPriceLevel = await prisma.productPriceLevel.update({
-            where: { id: req.params.id },
-            data: { price },
-        });
+        const [ppl] = await db.update(productPriceLevels).set({ price }).where(eq(productPriceLevels.id, req.params.id)).returning();
 
-        res.json({ success: true, data: productPriceLevel });
+        res.json({ success: true, data: ppl });
     } catch (error) {
         next(error);
     }
@@ -237,9 +164,7 @@ productRoutes.put('/price-levels/prices/:id', authenticate, authorize('products:
 // Delete product price from a level
 productRoutes.delete('/price-levels/prices/:id', authenticate, authorize('products:delete'), async (req, res, next) => {
     try {
-        await prisma.productPriceLevel.delete({
-            where: { id: req.params.id },
-        });
+        await db.delete(productPriceLevels).where(eq(productPriceLevels.id, req.params.id));
 
         res.json({ success: true, data: { message: 'Product price deleted' } });
     } catch (error) {
@@ -259,44 +184,30 @@ productRoutes.get('/skus', authenticate, async (req, res, next) => {
         const limitNum = Math.min(100, Math.max(1, parseInt(String(limit), 10) || 20));
         const skip = (pageNum - 1) * limitNum;
         
-        const where: Record<string, unknown> = {};
-        if (productId) where.productId = String(productId);
-        if (status === 'active') where.isActive = true;
-        if (status === 'inactive') where.isActive = false;
+        const skuConds: any[] = [];
+        if (productId) skuConds.push(eq(skuVariants.productId, String(productId)));
+        if (status === 'active') skuConds.push(eq(skuVariants.isActive, true));
+        if (status === 'inactive') skuConds.push(eq(skuVariants.isActive, false));
         if (search) {
-            where.OR = [
-                { sku: { contains: String(search), mode: 'insensitive' } },
-                { barcode: { contains: String(search) } },
-                { name: { contains: String(search), mode: 'insensitive' } },
-            ];
+            const s = String(search);
+            skuConds.push(or(ilike(skuVariants.sku, `%${s}%`), ilike(skuVariants.barcode, `%${s}%`), ilike(skuVariants.name, `%${s}%`)));
         }
+        const skuWhere = skuConds.length > 0 ? and(...skuConds) : undefined;
 
-        // Get total count, stats, and paginated data in parallel
-        const [total, activeCount, skuVariants] = await Promise.all([
-            prisma.sKUVariant.count({ where }),
-            prisma.sKUVariant.count({ where: { isActive: true } }),
-            prisma.sKUVariant.findMany({
-                where,
-                include: { 
-                    product: {
-                        select: {
-                            id: true,
-                            name: true,
-                            sku: true,
-                            price: true,
-                            cost: true,
-                        }
-                    },
-                    inventory: true 
-                },
-                orderBy: { createdAt: 'desc' },
-                skip,
-                take: limitNum,
-            })
+        const [[{ value: total }], [{ value: activeCount }], skuRows] = await Promise.all([
+            db.select({ value: count() }).from(skuVariants).where(skuWhere),
+            db.select({ value: count() }).from(skuVariants).where(eq(skuVariants.isActive, true)),
+            db.query.skuVariants.findMany({
+                where: skuWhere,
+                with: { product: { columns: { id: true, name: true, sku: true, price: true, cost: true } }, inventory: true },
+                orderBy: desc(skuVariants.createdAt),
+                offset: skip,
+                limit: limitNum,
+            }),
         ]);
 
         // Transform to include productName and stock
-        const transformed = skuVariants.map(sv => {
+        const transformed = skuRows.map(sv => {
             const totalStock = sv.inventory?.reduce((sum, inv) => sum + inv.quantity, 0) || 0;
             return {
                 id: sv.id,
@@ -340,9 +251,9 @@ productRoutes.get('/skus', authenticate, async (req, res, next) => {
 // Get SKU variant by ID
 productRoutes.get('/skus/:id', authenticate, async (req, res, next) => {
     try {
-        const skuVariant = await prisma.sKUVariant.findUnique({
-            where: { id: req.params.id },
-            include: { product: true },
+        const skuVariant = await db.query.skuVariants.findFirst({
+            where: eq(skuVariants.id, req.params.id),
+            with: { product: true },
         });
 
         if (!skuVariant) {
@@ -390,24 +301,15 @@ productRoutes.post('/skus', authenticate, authorize('products:create'), async (r
             skuData.barcode = barcode.trim();
         }
 
-        const skuVariant = await prisma.sKUVariant.create({
-            data: skuData,
-        });
+        const [skuVariant] = await db.insert(skuVariants).values(skuData).returning();
 
         res.status(201).json({ success: true, data: skuVariant });
     } catch (error: any) {
-        console.error('SKU variant create error:', error);
-        // Handle Prisma unique constraint violation
-        if (error.code === 'P2002') {
-            const field = error.meta?.target?.[0] || 'field';
-            res.status(400).json({
-                success: false,
-                error: {
-                    code: 'DUPLICATE_001',
-                    message: `${field} already exists. Please use a different value.`,
-                    field: field
-                }
-            });
+        // Handle unique constraint violation
+        if (error.code === '23505') {
+            const detail = error.detail || '';
+            const field = detail.match(/\((.+?)\)/)?.[1] || 'field';
+            res.status(400).json({ success: false, error: { code: 'DUPLICATE_001', message: `${field} already exists. Please use a different value.`, field } });
             return;
         }
         next(error);
@@ -419,18 +321,15 @@ productRoutes.put('/skus/:id', authenticate, authorize('products:update'), async
     try {
         const { productName, variant, sku, barcode, unitCost, sellingPrice, isActive, attributes } = req.body;
 
-        const skuVariant = await prisma.sKUVariant.update({
-            where: { id: req.params.id },
-            data: {
-                name: variant || productName,
-                sku,
-                barcode: barcode || null,
-                cost: unitCost,
-                price: sellingPrice,
-                isActive,
-                attributes,
-            },
-        });
+        const [skuVariant] = await db.update(skuVariants).set({
+            name: variant || productName,
+            sku,
+            barcode: barcode || null,
+            cost: unitCost,
+            price: sellingPrice,
+            isActive,
+            attributes,
+        }).where(eq(skuVariants.id, req.params.id)).returning();
 
         res.json({ success: true, data: skuVariant });
     } catch (error) {
@@ -441,10 +340,7 @@ productRoutes.put('/skus/:id', authenticate, authorize('products:update'), async
 // Delete SKU variant
 productRoutes.delete('/skus/:id', authenticate, authorize('products:delete'), async (req, res, next) => {
     try {
-        await prisma.sKUVariant.update({
-            where: { id: req.params.id },
-            data: { isActive: false },
-        });
+        await db.update(skuVariants).set({ isActive: false }).where(eq(skuVariants.id, req.params.id));
 
         res.json({ success: true, data: { message: 'SKU variant deleted' } });
     } catch (error) {
@@ -464,30 +360,26 @@ productRoutes.get('/generate/sku', authenticate, async (req, res, next) => {
         // Get category prefix if categoryId provided
         let categoryPrefix = 'PRD';
         if (categoryId) {
-            const category = await prisma.category.findUnique({
-                where: { id: String(categoryId) },
-                select: { name: true }
+            const category = await db.query.categories.findFirst({
+                where: eq(categories.id, String(categoryId)),
+                columns: { name: true },
             });
-            if (category) {
-                // Use first 3 letters of category name
-                categoryPrefix = category.name.substring(0, 3).toUpperCase();
-            }
+            if (category) categoryPrefix = category.name.substring(0, 3).toUpperCase();
         }
         
         const usePrefix = prefix ? String(prefix).toUpperCase() : categoryPrefix;
         
-        // Find the last SKU with this prefix (check both products and SKU variants)
         const [lastProduct, lastSKU] = await Promise.all([
-            prisma.product.findFirst({
-                where: { sku: { startsWith: usePrefix } },
-                orderBy: { sku: 'desc' },
-                select: { sku: true }
+            db.query.products.findFirst({
+                where: ilike(products.sku, `${usePrefix}%`),
+                orderBy: desc(products.sku),
+                columns: { sku: true },
             }),
-            prisma.sKUVariant.findFirst({
-                where: { sku: { startsWith: usePrefix } },
-                orderBy: { sku: 'desc' },
-                select: { sku: true }
-            })
+            db.query.skuVariants.findFirst({
+                where: ilike(skuVariants.sku, `${usePrefix}%`),
+                orderBy: desc(skuVariants.sku),
+                columns: { sku: true },
+            }),
         ]);
         
         let nextNumber = 1;
@@ -519,25 +411,10 @@ productRoutes.get('/generate/barcode', authenticate, async (req, res, next) => {
         
         // Find the last barcode from both products and SKU variants
         const [lastProduct, lastSKU, allProductBarcodes, allSkuBarcodes] = await Promise.all([
-            prisma.product.findFirst({
-                where: { barcode: { startsWith: prefix } },
-                orderBy: { barcode: 'desc' },
-                select: { barcode: true }
-            }),
-            prisma.sKUVariant.findFirst({
-                where: { barcode: { startsWith: prefix } },
-                orderBy: { barcode: 'desc' },
-                select: { barcode: true }
-            }),
-            // Also get all barcodes to ensure uniqueness
-            prisma.product.findMany({
-                where: { barcode: { not: null } },
-                select: { barcode: true }
-            }),
-            prisma.sKUVariant.findMany({
-                where: { barcode: { not: null } },
-                select: { barcode: true }
-            })
+            db.query.products.findFirst({ where: ilike(products.barcode, `${prefix}%`), orderBy: desc(products.barcode), columns: { barcode: true } }),
+            db.query.skuVariants.findFirst({ where: ilike(skuVariants.barcode, `${prefix}%`), orderBy: desc(skuVariants.barcode), columns: { barcode: true } }),
+            db.query.products.findMany({ where: isNotNull(products.barcode), columns: { barcode: true } }),
+            db.query.skuVariants.findMany({ where: isNotNull(skuVariants.barcode), columns: { barcode: true } }),
         ]);
         
         // Create set of existing barcodes for quick lookup
@@ -589,16 +466,8 @@ productRoutes.get('/generate/barcode', authenticate, async (req, res, next) => {
 productRoutes.get('/barcodes', authenticate, async (req, res, next) => {
     try {
         const [productBarcodes, skuBarcodes] = await Promise.all([
-            prisma.product.findMany({
-                where: { barcode: { not: null } },
-                select: { barcode: true },
-                orderBy: { barcode: 'asc' }
-            }),
-            prisma.sKUVariant.findMany({
-                where: { barcode: { not: null } },
-                select: { barcode: true },
-                orderBy: { barcode: 'asc' }
-            })
+            db.query.products.findMany({ where: isNotNull(products.barcode), columns: { barcode: true }, orderBy: asc(products.barcode) }),
+            db.query.skuVariants.findMany({ where: isNotNull(skuVariants.barcode), columns: { barcode: true }, orderBy: asc(skuVariants.barcode) }),
         ]);
         
         // Combine and deduplicate barcodes
@@ -616,18 +485,18 @@ productRoutes.get('/barcodes', authenticate, async (req, res, next) => {
 // LOOKUP ROUTE (Must be before /:id to avoid conflicts)
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Get product by barcode/SKU
+// Get product by barcode/SKU (scope-filtered)
 productRoutes.get('/lookup/:code', authenticate, async (req, res, next) => {
     try {
-        const product = await prisma.product.findFirst({
-            where: {
-                OR: [
-                    { barcode: req.params.code },
-                    { sku: req.params.code },
-                ],
-                isActive: true,
-            },
-            include: { category: true, inventory: true },
+        const lookupConds: any[] = [or(eq(products.barcode, req.params.code), eq(products.sku, req.params.code)), eq(products.isActive, true)];
+        const branchIds = req.authUser?.accessibleBranchIds || [];
+        if (branchIds.length > 0 && !req.authUser?.isSuperAdmin && req.authUser?.role !== 'admin') {
+            lookupConds.push(inArray(products.branchId, branchIds));
+        }
+
+        const product = await db.query.products.findFirst({
+            where: and(...lookupConds),
+            with: { category: true, inventory: true },
         });
 
         if (!product) {
@@ -652,61 +521,39 @@ productRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
         const skip = (Number(page) - 1) * Number(limit);
         const filter = (req as any).branchFilter as ScopeFilter | undefined;
 
-        const where: Record<string, unknown> = { isActive: true };
-        
-        // Apply branch-level scope (products are branch-scoped)
-        applyScopeFilter(where, filter, 'branchId');
+        const prodConds: any[] = [eq(products.isActive, true)];
+        const prodScope = buildScopeCondition(filter, { branchId: products.branchId }, 'branchId');
+        if (prodScope) prodConds.push(prodScope);
 
-        // Override with explicit branch query param
         if (branchId) {
             if (filter && !filter.branchIds.includes(String(branchId))) {
-                return res.status(403).json({
-                    success: false,
-                    error: { code: 'FORBIDDEN', message: 'No access to this branch' }
-                });
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
             }
-            where.branchId = String(branchId);
+            prodConds.push(eq(products.branchId, String(branchId)));
         }
         
         if (search) {
-            where.OR = [
-                { name: { contains: String(search), mode: 'insensitive' } },
-                { sku: { contains: String(search), mode: 'insensitive' } },
-                { barcode: { contains: String(search) } },
-            ];
+            const s = String(search);
+            prodConds.push(or(ilike(products.name, `%${s}%`), ilike(products.sku, `%${s}%`), ilike(products.barcode, `%${s}%`)));
         }
-        if (categoryId) where.categoryId = String(categoryId);
+        if (categoryId) prodConds.push(eq(products.categoryId, String(categoryId)));
 
-        // Build include clause with optional store filtering
-        const includeInventory: Record<string, unknown> = {};
-        if (filter?.branchIds?.length) {
-            includeInventory.where = { branchId: { in: filter.branchIds } };
-        }
+        const prodWhere = and(...prodConds);
 
-        const [products, total] = await Promise.all([
-            prisma.product.findMany({
-                where,
-                skip,
-                take: Number(limit),
-                include: { 
-                    category: true,
-                    branch: { select: { id: true, name: true, code: true } },
-                    inventory: Object.keys(includeInventory).length ? includeInventory : true,
-                    stores: storeId ? { where: { storeId: String(storeId), isActive: true } } : false
-                },
-                orderBy: { createdAt: 'desc' },
+        const [productRows, [{ value: total }]] = await Promise.all([
+            db.query.products.findMany({
+                where: prodWhere,
+                offset: skip,
+                limit: Number(limit),
+                with: { category: true, branch: { columns: { id: true, name: true, code: true } }, inventory: true },
+                orderBy: desc(products.createdAt),
             }),
-            prisma.product.count({ where }),
+            db.select({ value: count() }).from(products).where(prodWhere),
         ]);
 
-        // Transform to include stock from inventory
-        const productsWithStock = products.map(product => {
+        const productsWithStock = productRows.map(product => {
             const totalStock = product.inventory?.reduce((sum, inv) => sum + inv.quantity, 0) || 0;
-            return {
-                ...product,
-                stock: totalStock,
-                minStock: product.lowStockThreshold,
-            };
+            return { ...product, stock: totalStock, minStock: product.lowStockThreshold };
         });
 
         res.json({
@@ -729,26 +576,22 @@ productRoutes.post('/', authenticate, authorize('products:create'), async (req, 
     try {
         const { stock, minStock, ...productData } = req.body;
         
-        // Get user's branchId if not provided
+        // Get user's branchId from auth context (NOT from any random branch)
         if (!productData.branchId) {
-            productData.branchId = (req as any).user?.branchId || req.user?.branchId;
+            productData.branchId = req.authUser?.activeBranchId || req.user?.branchId;
         }
         
-        // If still no branchId, get default branch or first branch
         if (!productData.branchId) {
-            const defaultBranch = await prisma.branch.findFirst({
-                where: { isActive: true },
-                orderBy: { createdAt: 'asc' }
+            res.status(400).json({ 
+                success: false, 
+                error: { code: 'VALIDATION_001', message: 'Branch ID is required. Please select an active store/branch.' } 
             });
-            if (defaultBranch) {
-                productData.branchId = defaultBranch.id;
-            } else {
-                res.status(400).json({ 
-                    success: false, 
-                    error: { code: 'VALIDATION_001', message: 'Branch ID is required. No active branch found.' } 
-                });
-                return;
-            }
+            return;
+        }
+
+        // Verify user has access to the target branch
+        if (!ensureScopeAccess({ branchId: productData.branchId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
         }
         
         // Handle empty categoryId
@@ -769,39 +612,32 @@ productRoutes.post('/', authenticate, authorize('products:create'), async (req, 
             productData.lowStockThreshold = minStock;
         }
 
-        const product = await prisma.product.create({
-            data: productData,
-        });
+        const [product] = await db.insert(products).values(productData).returning();
 
         // Create initial inventory if stock provided
         if (stock !== undefined && stock > 0 && productData.branchId) {
-            await prisma.inventory.create({
-                data: {
-                    productId: product.id,
-                    branchId: productData.branchId,
-                    quantity: stock,
-                    available: stock,
-                }
+            await db.insert(inventory).values({
+                productId: product.id,
+                branchId: productData.branchId,
+                quantity: stock,
+                available: stock,
             });
         }
 
         // Auto-create SKUVariant if product has SKU
         if (product.sku) {
             try {
-                await prisma.sKUVariant.create({
-                    data: {
-                        productId: product.id,
-                        sku: product.sku,
-                        barcode: product.barcode || undefined,
-                        name: product.name,
-                        attributes: {},
-                        price: product.price || 0,
-                        cost: product.cost || 0,
-                    },
+                await db.insert(skuVariants).values({
+                    productId: product.id,
+                    sku: product.sku,
+                    barcode: product.barcode || undefined,
+                    name: product.name,
+                    attributes: {},
+                    price: product.price || 0,
+                    cost: product.cost || 0,
                 });
             } catch (skuErr: any) {
-                // Ignore duplicate SKU errors (P2002)
-                if (skuErr.code !== 'P2002') console.error('Auto SKU create error:', skuErr);
+                if (skuErr.code !== '23505') console.error('Auto SKU create error:', skuErr);
             }
         }
 
@@ -809,18 +645,10 @@ productRoutes.post('/', authenticate, authorize('products:create'), async (req, 
         await invalidateQueryCache('inventory*');
         res.status(201).json({ success: true, data: product });
     } catch (error: any) {
-        console.error('Product create error:', error);
-        // Handle Prisma unique constraint violation
-        if (error.code === 'P2002') {
-            const field = error.meta?.target?.[0] || 'field';
-            res.status(400).json({
-                success: false,
-                error: {
-                    code: 'DUPLICATE_001',
-                    message: `${field} already exists. Please use a different value.`,
-                    field: field
-                }
-            });
+        if (error.code === '23505') {
+            const detail = error.detail || '';
+            const field = detail.match(/\((.+?)\)/)?.[1] || 'field';
+            res.status(400).json({ success: false, error: { code: 'DUPLICATE_001', message: `${field} already exists. Please use a different value.`, field } });
             return;
         }
         next(error);
@@ -830,14 +658,18 @@ productRoutes.post('/', authenticate, authorize('products:create'), async (req, 
 // Get product by ID (MUST BE AFTER ALL SPECIFIC ROUTES)
 productRoutes.get('/:id', authenticate, async (req, res, next) => {
     try {
-        const product = await prisma.product.findUnique({
-            where: { id: req.params.id },
-            include: { category: true, inventory: true },
+        const product = await db.query.products.findFirst({
+            where: eq(products.id, req.params.id),
+            with: { category: true, inventory: true },
         });
 
         if (!product) {
             res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Product not found' } });
             return;
+        }
+
+        if (!ensureScopeAccess(product, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this product' } });
         }
 
         res.json({ success: true, data: product });
@@ -846,38 +678,78 @@ productRoutes.get('/:id', authenticate, async (req, res, next) => {
     }
 });
 
-// Update product
+// ═══════════════════════════════════════════════════════════════════════════
+// BARCODE HELPERS (Must be before /:id)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Get all products with barcodes (for barcode page listing)
+productRoutes.get('/barcodes', authenticate, branchFilter(), async (req, res, next) => {
+    try {
+        const filter = (req as any).branchFilter;
+        const conds: any[] = [isNotNull(products.barcode)];
+        if (filter?.branchIds?.length) conds.push(inArray(products.branchId, filter.branchIds));
+
+        const rows = await db.query.products.findMany({
+            where: and(...conds),
+            columns: { id: true, name: true, sku: true, barcode: true, price: true },
+            orderBy: asc(products.name),
+        });
+        res.json({ success: true, data: rows });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Generate a unique barcode
+productRoutes.get('/generate/barcode', authenticate, async (req, res, next) => {
+    try {
+        const timestamp = Date.now().toString();
+        const random = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
+        const barcode = `${timestamp.slice(-9)}${random}`;
+        res.json({ success: true, data: { barcode } });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Generate a unique SKU
+productRoutes.get('/generate/sku', authenticate, async (req, res, next) => {
+    try {
+        const { productId } = req.query;
+        let prefix = 'SKU';
+        if (productId) {
+            const product = await db.query.products.findFirst({
+                where: eq(products.id, String(productId)),
+                columns: { name: true },
+            });
+            if (product?.name) {
+                prefix = product.name.slice(0, 3).toUpperCase().replace(/[^A-Z0-9]/g, 'X');
+            }
+        }
+        const [{ value: total }] = await db.select({ value: count() }).from(skuVariants);
+        const sku = `${prefix}-${String(total + 1).padStart(5, '0')}`;
+        res.json({ success: true, data: { sku } });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Update product (scope-checked)
 productRoutes.put('/:id', authenticate, authorize('products:update'), async (req, res, next) => {
     try {
+        const existing = await db.query.products.findFirst({ where: eq(products.id, req.params.id), columns: { branchId: true } });
+        if (!existing) return res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Product not found' } });
+        if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
+
         const { stock, minStock, ...productData } = req.body;
         
-        // Handle empty categoryId
-        if (productData.categoryId === '' || productData.categoryId === null) {
-            delete productData.categoryId;
-        }
-        
-        // Handle empty sku and barcode - set to null for unique constraint
-        if (productData.sku === '') {
-            productData.sku = null;
-        }
-        if (productData.barcode === '') {
-            productData.barcode = null;
-        }
-        
-        // Map minStock to lowStockThreshold
-        if (minStock !== undefined) {
-            productData.lowStockThreshold = minStock;
-        }
-        
-        // Don't update branchId if not provided
-        if (!productData.branchId) {
-            delete productData.branchId;
-        }
+        if (productData.categoryId === '' || productData.categoryId === null) delete productData.categoryId;
+        if (productData.sku === '') productData.sku = null;
+        if (productData.barcode === '') productData.barcode = null;
+        if (minStock !== undefined) productData.lowStockThreshold = minStock;
+        if (!productData.branchId) delete productData.branchId;
 
-        const product = await prisma.product.update({
-            where: { id: req.params.id },
-            data: productData,
-        });
+        const [product] = await db.update(products).set({ ...productData, updatedAt: new Date() }).where(eq(products.id, req.params.id)).returning();
 
         await invalidateQueryCache('products*');
         res.json({ success: true, data: product });
@@ -886,13 +758,14 @@ productRoutes.put('/:id', authenticate, authorize('products:update'), async (req
     }
 });
 
-// Delete product (soft delete)
+// Delete product (soft delete, scope-checked)
 productRoutes.delete('/:id', authenticate, authorize('products:delete'), async (req, res, next) => {
     try {
-        await prisma.product.update({
-            where: { id: req.params.id },
-            data: { isActive: false },
-        });
+        const existing = await db.query.products.findFirst({ where: eq(products.id, req.params.id), columns: { branchId: true } });
+        if (!existing) return res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Product not found' } });
+        if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
+
+        await db.update(products).set({ isActive: false, updatedAt: new Date() }).where(eq(products.id, req.params.id));
 
         await invalidateQueryCache('products*');
         await invalidateQueryCache('inventory*');

@@ -69,6 +69,15 @@
         points: 0,
     });
 
+    let genderOptions = $state<{value: string; label: string; labelLao?: string}[]>([]);
+
+    async function loadEnums() {
+        try {
+            const res = await api.get("settings/enums?type=gender").json<any>();
+            if (res.data?.gender) genderOptions = res.data.gender;
+        } catch { /* keep defaults */ }
+    }
+
     // Stats
     let stats = $derived({
         totalCustomers: customers.length,
@@ -242,6 +251,7 @@
     // Reload when active store switches
     $effect(() => {
         auth.activeStoreId; // track dependency
+        loadEnums();
         loadData();
     });
 </script>
@@ -614,9 +624,15 @@
                             class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-cyan-500 focus:border-transparent"
                         >
                             <option value="">-- ເລືອກ --</option>
-                            <option value="male">ຊາຍ</option>
-                            <option value="female">ຍິງ</option>
-                            <option value="other">ອື່ນໆ</option>
+                            {#if genderOptions.length > 0}
+                                {#each genderOptions as g (g.value)}
+                                    <option value={g.value}>{g.labelLao || g.label}</option>
+                                {/each}
+                            {:else}
+                                <option value="male">ຊາຍ</option>
+                                <option value="female">ຍິງ</option>
+                                <option value="other">ອື່ນໆ</option>
+                            {/if}
                         </select>
                     </div>
                 </div>

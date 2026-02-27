@@ -1,148 +1,154 @@
 <script lang="ts">
-    import { auth, themeStore } from "$stores";
-    import { i18n, t } from "$lib/i18n/index.svelte";
+    import { themeStore } from "$stores";
     import { goto } from "$app/navigation";
-    import { cn } from "$utils";
     import { api } from "$lib/api";
-    import { 
-        Store, Sun, Moon, Globe, Building2, 
+    import { onMount } from "svelte";
+    import {
+        Store, Sun, Moon, Building2,
         MapPin, Phone, Mail, FileText, Upload,
-        Check, ArrowLeft, ArrowRight, Loader2
+        Check, ArrowLeft, ArrowRight, Loader2,
+        User, Lock, Eye, EyeOff, CreditCard,
+        ShieldCheck, CheckCircle2, X
     } from "lucide-svelte";
     import { toast } from "svelte-sonner";
+    import { cn } from "$utils";
 
-    // Form steps
+    // Steps: 1=Account, 2=Business, 3=KYC, 4=Review
     let currentStep = $state(1);
-    const totalSteps = 3;
-    
+    const totalSteps = 4;
+    const stepLabels = ["ບັນຊີ", "ທຸລະກິດ", "KYC", "ສະຫຼຸບ"];
+
+    let showPassword = $state(false);
+    let showConfirmPassword = $state(false);
+    let isLoading = $state(false);
+    let isSubmitted = $state(false);
+    let error = $state("");
+    let submittedUserId = $state("");
+
     // Form data
-    let formData = $state({
-        // Step 1 - Store/Branch Type
-        type: "new_branch" as "new_store" | "new_branch",
-        
-        // Step 2 - Business Info
-        businessName: "",
-        businessCode: "",
-        address: "",
-        phone: "",
+    let form = $state({
+        // Step 1 — Account
+        name: "",
         email: "",
-        taxId: "",
-        description: "",
-        
-        // Step 3 - Additional Info
+        password: "",
+        confirmPassword: "",
+        phone: "",
+
+        // Step 2 — Business
+        storeName: "",
+        storeCode: "",
+        businessType: "retail" as string,
+        storeAddress: "",
+        storePhone: "",
+        storeEmail: "",
+
+        // Step 3 — KYC
+        ownerIdType: "national_id" as string,
+        ownerIdNumber: "",
+        ownerName: "",
+        ownerNationality: "LAO",
+        businessLicenseNo: "",
+        taxCertificateNo: "",
         reason: "",
         documents: [] as File[],
     });
-    
-    let isLoading = $state(false);
-    let error = $state("");
-    let showLangMenu = $state(false);
-    let uploadedFiles = $state<string[]>([]);
 
-    // Check if user is logged in
-    $effect(() => {
-        if (!auth.isAuthenticated && !auth.isLoading) {
-            goto("/login");
-        }
+    let businessTypes = $state<{value:string;label:string;labelLao?:string}[]>([
+        { value: "retail", label: "ຂາຍຍ່ອຍ / Retail" },
+        { value: "restaurant", label: "ຮ້ານອາຫານ / Restaurant" },
+        { value: "wholesale", label: "ຂາຍສົ່ງ / Wholesale" },
+        { value: "service", label: "ບໍລິການ / Service" },
+        { value: "other", label: "ອື່ນໆ / Other" },
+    ]);
+
+    let idTypes = $state<{value:string;label:string;labelLao?:string}[]>([
+        { value: "national_id", label: "ບັດປະຈຳຕົວ" },
+        { value: "passport", label: "ໜັງສືຜ່ານແດນ" },
+        { value: "family_book", label: "ສຳມະໂນຄົວ" },
+    ]);
+
+    onMount(async () => {
+        try {
+            const res = await api.get('settings/enums/public?type=business_type,id_type').json<any>();
+            if (res.success) {
+                if (res.data?.business_type?.length) {
+                    businessTypes = res.data.business_type.map((e: any) => ({ value: e.value, label: e.labelLao || e.label }));
+                }
+                if (res.data?.id_type?.length) {
+                    idTypes = res.data.id_type.map((e: any) => ({ value: e.value, label: e.labelLao || e.label }));
+                }
+            }
+        } catch {}
     });
 
-    function nextStep() {
-        if (validateCurrentStep()) {
-            if (currentStep < totalSteps) {
-                currentStep++;
-            }
-        }
-    }
-
-    function prevStep() {
-        if (currentStep > 1) {
-            currentStep--;
-        }
-    }
-
-    function validateCurrentStep(): boolean {
+    function validateStep(): boolean {
         error = "";
-        
         if (currentStep === 1) {
-            return true; // Type selection is always valid
+            if (!form.name.trim()) { error = "ກະລຸນາໃສ່ຊື່-ນາມສະກຸນ"; return false; }
+            if (!form.email.trim() || !form.email.includes("@")) { error = "ກະລຸນາໃສ່ອີເມວທີ່ຖືກຕ້ອງ"; return false; }
+            if (form.password.length < 8) { error = "ລະຫັດຜ່ານຕ້ອງມີຢ່າງໜ້ອຍ 8 ຕົວ"; return false; }
+            if (form.password !== form.confirmPassword) { error = "ລະຫັດຜ່ານບໍ່ຕົງກັນ"; return false; }
+            if (!form.phone.trim()) { error = "ກະລຸນາໃສ່ເບີໂທ"; return false; }
         }
-        
         if (currentStep === 2) {
-            if (!formData.businessName.trim()) {
-                error = t("register.errors.businessNameRequired");
-                return false;
-            }
-            if (!formData.businessCode.trim()) {
-                error = t("register.errors.businessCodeRequired");
-                return false;
-            }
-            if (!formData.address.trim()) {
-                error = t("register.errors.addressRequired");
-                return false;
-            }
-            if (!formData.phone.trim()) {
-                error = t("register.errors.phoneRequired");
-                return false;
-            }
+            if (!form.storeName.trim()) { error = "ກະລຸນາໃສ່ຊື່ຮ້ານ"; return false; }
+            if (!form.storeCode.trim()) { error = "ກະລຸນາໃສ່ລະຫັດຮ້ານ"; return false; }
+            if (!form.storeAddress.trim()) { error = "ກະລຸນາໃສ່ທີ່ຢູ່"; return false; }
+            if (!form.storePhone.trim()) { error = "ກະລຸນາໃສ່ເບີໂທຮ້ານ"; return false; }
         }
-        
+        if (currentStep === 3) {
+            if (!form.ownerIdNumber.trim()) { error = "ກະລຸນາໃສ່ເລກທີ່ບັດ/ໜັງສືຜ່ານແດນ"; return false; }
+        }
         return true;
     }
 
-    async function handleFileUpload(e: Event) {
-        const target = e.target as HTMLInputElement;
-        if (target.files) {
-            formData.documents = [...formData.documents, ...Array.from(target.files)];
-        }
-    }
+    function next() { if (validateStep() && currentStep < totalSteps) currentStep++; }
+    function prev() { if (currentStep > 1) currentStep--; }
 
-    function removeFile(index: number) {
-        formData.documents = formData.documents.filter((_, i) => i !== index);
+    function handleFileUpload(e: Event) {
+        const t = e.target as HTMLInputElement;
+        if (t.files) form.documents = [...form.documents, ...Array.from(t.files)];
     }
+    function removeFile(i: number) { form.documents = form.documents.filter((_, idx) => idx !== i); }
 
     async function handleSubmit() {
-        if (!validateCurrentStep()) return;
-        
+        if (!validateStep()) return;
         isLoading = true;
         error = "";
-
         try {
-            // Prepare request data
-            const requestData: Record<string, any> = {
-                type: formData.type,
-                reason: formData.reason || undefined,
-            };
-
-            if (formData.type === "new_branch") {
-                requestData.branchName = formData.businessName;
-                requestData.branchCode = formData.businessCode;
-                requestData.branchAddress = formData.address;
-                requestData.branchPhone = formData.phone;
-                requestData.branchEmail = formData.email || undefined;
-            } else {
-                requestData.storeName = formData.businessName;
-                requestData.storeCode = formData.businessCode;
-                requestData.storeAddress = formData.address;
-                requestData.storePhone = formData.phone;
-                requestData.storeEmail = formData.email || undefined;
-            }
-
-            // TODO: Handle file uploads separately if needed
-            // For now, we just submit the form data
-
-            const response = await api.post("stores/requests", {
-                json: requestData
+            const res = await api.post("admin/register-and-apply", {
+                json: {
+                    name: form.name,
+                    email: form.email,
+                    password: form.password,
+                    phone: form.phone,
+                    storeName: form.storeName,
+                    storeCode: form.storeCode,
+                    businessType: form.businessType,
+                    storeAddress: form.storeAddress,
+                    storePhone: form.storePhone,
+                    storeEmail: form.storeEmail || undefined,
+                    ownerIdType: form.ownerIdType,
+                    ownerIdNumber: form.ownerIdNumber,
+                    ownerName: form.ownerName || form.name,
+                    ownerNationality: form.ownerNationality,
+                    businessLicenseNo: form.businessLicenseNo,
+                    taxCertificateNo: form.taxCertificateNo,
+                    reason: form.reason,
+                    documents: [],
+                }
             }).json<any>();
 
-            if (response.success) {
-                toast.success(t("register.successMessage"));
-                goto("/pos");
+            if (res.success) {
+                submittedUserId = res.data?.userId || "";
+                isSubmitted = true;
+                toast.success("ສົ່ງຄຳຮ້ອງສຳເລັດ! ລໍຖ້າການອະນຸມັດ");
             } else {
-                error = response.message || t("register.errors.submitFailed");
+                error = res.error?.message || "ສົ່ງຄຳຮ້ອງບໍ່ສຳເລັດ";
             }
         } catch (err: any) {
-            console.error("Submit error:", err);
-            error = err.message || t("register.errors.submitFailed");
+            error = err?.response?.json?.().then((j: any) => j?.error?.message).catch(() => null) 
+                || err?.message || "ເກີດຂໍ້ຜິດພາດ ກະລຸນາລອງໃໝ່";
         } finally {
             isLoading = false;
         }
@@ -150,67 +156,21 @@
 </script>
 
 <svelte:head>
-    <title>{t("register.storeTitle")} - {t("app.name")}</title>
+    <title>ສະໝັກເປີດຮ້ານ - KPOS</title>
 </svelte:head>
 
-<div
-    class="min-h-screen bg-linear-to-br from-primary-500 to-primary-700 dark:from-gray-900 dark:to-gray-800 p-4"
->
-    <!-- Theme and Language Controls -->
-    <div class="absolute top-4 right-4 flex items-center gap-2">
-        <!-- Language Selector -->
-        <div class="relative">
-            <button
-                type="button"
-                onclick={() => (showLangMenu = !showLangMenu)}
-                class="p-2 rounded-lg bg-white/20 hover:bg-white/30 text-white transition-colors"
-            >
-                <Globe class="w-5 h-5" />
-            </button>
-            {#if showLangMenu}
-                <div class="absolute right-0 mt-2 w-40 bg-white dark:bg-gray-800 rounded-xl shadow-lg py-1 z-50">
-                    {#each i18n.locales as locale}
-                        <button
-                            type="button"
-                            onclick={() => { i18n.setLocale(locale.code); showLangMenu = false; }}
-                            class={cn(
-                                "w-full px-4 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors",
-                                i18n.locale === locale.code ? "text-primary-600 font-medium" : "text-gray-700 dark:text-gray-300"
-                            )}
-                        >
-                            {locale.nativeName}
-                        </button>
-                    {/each}
-                </div>
-            {/if}
-        </div>
-
-        <!-- Theme Toggle -->
-        <button
-            type="button"
-            onclick={() => themeStore.toggle()}
-            class="p-2 rounded-lg bg-white/20 hover:bg-white/30 text-white transition-colors"
-        >
-            {#if themeStore.isDark}
-                <Sun class="w-5 h-5" />
-            {:else}
-                <Moon class="w-5 h-5" />
-            {/if}
+<div class="min-h-screen bg-linear-to-br from-primary-600 to-primary-800 dark:from-gray-900 dark:to-gray-800 p-4">
+    <!-- Top bar -->
+    <div class="absolute top-4 left-4 right-4 flex justify-between items-center">
+        <a href="/login" class="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/20 hover:bg-white/30 text-white text-sm transition-colors">
+            <ArrowLeft class="w-4 h-4" /> ກັບໄປໜ້າເຂົ້າສູ່ລະບົບ
+        </a>
+        <button type="button" onclick={() => themeStore.toggle()} class="p-2 rounded-lg bg-white/20 hover:bg-white/30 text-white transition-colors">
+            {#if themeStore.isDark}<Sun class="w-5 h-5" />{:else}<Moon class="w-5 h-5" />{/if}
         </button>
     </div>
 
-    <!-- Back to Login -->
-    <div class="absolute top-4 left-4">
-        <a
-            href="/pos"
-            class="flex items-center gap-2 p-2 rounded-lg bg-white/20 hover:bg-white/30 text-white transition-colors"
-        >
-            <ArrowLeft class="w-5 h-5" />
-            <span class="text-sm">{t("common.back")}</span>
-        </a>
-    </div>
-
-    <div class="max-w-2xl mx-auto pt-16">
+    <div class="max-w-2xl mx-auto pt-20 pb-10">
         <!-- Logo & Title -->
         <div class="text-center mb-8">
             <div
@@ -218,36 +178,50 @@
             >
                 <Building2 class="w-8 h-8 text-primary-600" />
             </div>
-            <h1 class="text-3xl font-bold text-white">{t("register.storeTitle")}</h1>
-            <p class="text-primary-100 mt-1">{t("register.storeSubtitle")}</p>
+            <h1 class="text-3xl font-bold text-white">ສະໝັກເປີດຮ້ານ</h1>
+            <p class="text-primary-100 mt-1">ສ້າງບັນຊີ ແລະ ຍື່ນຄຳຮ້ອງເປີດຮ້ານ</p>
         </div>
 
-        <!-- Progress Steps -->
-        <div class="flex justify-center mb-8">
-            <div class="flex items-center gap-3">
-                {#each [1, 2, 3] as step}
+        {#if isSubmitted}
+            <!-- Success State -->
+            <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-xl p-8 text-center">
+                <div class="inline-flex items-center justify-center w-20 h-20 rounded-full bg-green-100 dark:bg-green-900/30 mb-6">
+                    <CheckCircle2 class="w-10 h-10 text-green-500" />
+                </div>
+                <h2 class="text-2xl font-bold text-gray-900 dark:text-white mb-3">ສົ່ງຄຳຮ້ອງສຳເລັດ!</h2>
+                <p class="text-gray-600 dark:text-gray-400 mb-2">ຄຳຮ້ອງຂອງທ່ານຖືກສົ່ງເຂົ້າລະບົບແລ້ວ</p>
+                <p class="text-gray-500 dark:text-gray-500 text-sm mb-8">ທີມງານຈະທົບທວນ ແລະ ຕິດຕໍ່ກັບໄປຫາທ່ານພາຍໃນ 1-3 ວັນທຳການ</p>
+                <div class="p-4 bg-blue-50 dark:bg-blue-900/20 rounded-xl text-left mb-6">
+                    <p class="text-sm text-blue-700 dark:text-blue-300 font-medium mb-1">ຂັ້ນຕອນຕໍ່ໄປ:</p>
+                    <ul class="text-sm text-blue-600 dark:text-blue-400 space-y-1 list-disc list-inside">
+                        <li>ລໍຖ້າການທົບທວນຈາກທີມງານ</li>
+                        <li>ທ່ານຈະໄດ້ຮັບອີເມວແຈ້ງເຕືອນ</li>
+                        <li>ເມື່ອໄດ້ຮັບການອະນຸມັດ, ສາມາດເຂົ້າສູ່ລະບົບໄດ້ທັນທີ</li>
+                    </ul>
+                </div>
+                <a href="/login" class="inline-flex items-center gap-2 px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white rounded-xl font-medium transition-colors">
+                    ໄປໜ້າເຂົ້າສູ່ລະບົບ
+                </a>
+            </div>
+        {:else}
+            <!-- Progress Steps -->
+            <div class="flex justify-center mb-8">
+            <div class="flex items-center">
+                {#each [1, 2, 3, 4] as step}
                     <div class="flex items-center">
-                        <div
-                            class={cn(
-                                "w-10 h-10 rounded-full flex items-center justify-center font-medium transition-colors",
-                                currentStep >= step
-                                    ? "bg-white text-primary-600"
-                                    : "bg-white/30 text-white"
-                            )}
-                        >
-                            {#if currentStep > step}
-                                <Check class="w-5 h-5" />
-                            {:else}
-                                {step}
-                            {/if}
+                        <div class="flex flex-col items-center">
+                            <div class={cn(
+                                "w-10 h-10 rounded-full flex items-center justify-center font-medium transition-all",
+                                currentStep > step ? "bg-white text-primary-600" :
+                                currentStep === step ? "bg-white text-primary-600 ring-4 ring-white/30" :
+                                "bg-white/30 text-white"
+                            )}>
+                                {#if currentStep > step}<Check class="w-5 h-5" />{:else}{step}{/if}
+                            </div>
+                            <span class="text-xs text-white/80 mt-1 hidden sm:block">{stepLabels[step - 1]}</span>
                         </div>
-                        {#if step < 3}
-                            <div
-                                class={cn(
-                                    "w-16 h-1 mx-2 rounded transition-colors",
-                                    currentStep > step ? "bg-white" : "bg-white/30"
-                                )}
-                            ></div>
+                        {#if step < 4}
+                            <div class={cn("w-10 h-1 mx-1 rounded transition-colors", currentStep > step ? "bg-white" : "bg-white/30")}></div>
                         {/if}
                     </div>
                 {/each}
@@ -257,337 +231,217 @@
         <!-- Form Card -->
         <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-xl p-8">
             {#if error}
-                <div
-                    class="mb-6 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl text-red-600 dark:text-red-400 text-sm"
-                >
+                <div class="mb-6 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl text-red-600 dark:text-red-400 text-sm">
                     {error}
                 </div>
             {/if}
 
-            <!-- Step 1: Type Selection -->
+            <!-- Step 1: Account -->
             {#if currentStep === 1}
-                <div class="space-y-6">
-                    <h2 class="text-xl font-semibold text-gray-900 dark:text-white mb-4">
-                        {t("register.step1Title")}
-                    </h2>
-                    <p class="text-gray-600 dark:text-gray-400 mb-6">
-                        {t("register.step1Desc")}
-                    </p>
-
-                    <div class="grid gap-4">
-                        <button
-                            type="button"
-                            onclick={() => formData.type = "new_branch"}
-                            class={cn(
-                                "p-6 rounded-xl border-2 transition-all text-left",
-                                formData.type === "new_branch"
-                                    ? "border-primary-500 bg-primary-50 dark:bg-primary-900/20"
-                                    : "border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600"
-                            )}
-                        >
-                            <div class="flex items-start gap-4">
-                                <div class={cn(
-                                    "w-12 h-12 rounded-xl flex items-center justify-center",
-                                    formData.type === "new_branch"
-                                        ? "bg-primary-500 text-white"
-                                        : "bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400"
-                                )}>
-                                    <Building2 class="w-6 h-6" />
-                                </div>
-                                <div>
-                                    <h3 class="text-lg font-medium text-gray-900 dark:text-white">
-                                        {t("register.newBranch")}
-                                    </h3>
-                                    <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                                        {t("register.newBranchDesc")}
-                                    </p>
-                                </div>
-                            </div>
-                        </button>
-
-                        <button
-                            type="button"
-                            onclick={() => formData.type = "new_store"}
-                            class={cn(
-                                "p-6 rounded-xl border-2 transition-all text-left",
-                                formData.type === "new_store"
-                                    ? "border-primary-500 bg-primary-50 dark:bg-primary-900/20"
-                                    : "border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600"
-                            )}
-                        >
-                            <div class="flex items-start gap-4">
-                                <div class={cn(
-                                    "w-12 h-12 rounded-xl flex items-center justify-center",
-                                    formData.type === "new_store"
-                                        ? "bg-primary-500 text-white"
-                                        : "bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400"
-                                )}>
-                                    <Store class="w-6 h-6" />
-                                </div>
-                                <div>
-                                    <h3 class="text-lg font-medium text-gray-900 dark:text-white">
-                                        {t("register.newStore")}
-                                    </h3>
-                                    <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                                        {t("register.newStoreDesc")}
-                                    </p>
-                                </div>
-                            </div>
-                        </button>
+                <div class="space-y-5">
+                    <h2 class="text-xl font-semibold text-gray-900 dark:text-white">ສ້າງບັນຊີຜູ້ໃຊ້</h2>
+                    <p class="text-gray-500 dark:text-gray-400 text-sm">ຂໍ້ມູນນີ້ຈະໃຊ້ສຳລັບເຂົ້າສູ່ລະບົບ</p>
+                    <div>
+                        <label for="s1-name" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ຊື່-ນາມສະກຸນ *</label>
+                        <div class="relative">
+                            <User class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                            <input id="s1-name" type="text" bind:value={form.name} placeholder="ຊື່ ນາມສະກຸນ" class="w-full pl-10 pr-4 py-3 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors" />
+                        </div>
+                    </div>
+                    <div>
+                        <label for="s1-email" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ອີເມວ *</label>
+                        <div class="relative">
+                            <Mail class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                            <input id="s1-email" type="email" bind:value={form.email} placeholder="email@example.com" class="w-full pl-10 pr-4 py-3 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors" />
+                        </div>
+                    </div>
+                    <div>
+                        <label for="s1-phone" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ເບີໂທ *</label>
+                        <div class="relative">
+                            <Phone class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                            <input id="s1-phone" type="tel" bind:value={form.phone} placeholder="020 xxxxxxxx" class="w-full pl-10 pr-4 py-3 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors" />
+                        </div>
+                    </div>
+                    <div>
+                        <label for="s1-pw" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ລະຫັດຜ່ານ * (ຢ່າງໜ້ອຍ 8 ຕົວ)</label>
+                        <div class="relative">
+                            <Lock class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                            <input id="s1-pw" type={showPassword ? "text" : "password"} bind:value={form.password} placeholder="••••••••" class="w-full pl-10 pr-10 py-3 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors" />
+                            <button type="button" onclick={() => showPassword = !showPassword} class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
+                                {#if showPassword}<EyeOff class="w-5 h-5" />{:else}<Eye class="w-5 h-5" />{/if}
+                            </button>
+                        </div>
+                    </div>
+                    <div>
+                        <label for="s1-cpw" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ຢືນຢັນລະຫັດຜ່ານ *</label>
+                        <div class="relative">
+                            <Lock class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                            <input id="s1-cpw" type={showConfirmPassword ? "text" : "password"} bind:value={form.confirmPassword} placeholder="••••••••" class="w-full pl-10 pr-10 py-3 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors" />
+                            <button type="button" onclick={() => showConfirmPassword = !showConfirmPassword} class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
+                                {#if showConfirmPassword}<EyeOff class="w-5 h-5" />{:else}<Eye class="w-5 h-5" />{/if}
+                            </button>
+                        </div>
                     </div>
                 </div>
             {/if}
 
             <!-- Step 2: Business Info -->
             {#if currentStep === 2}
-                <div class="space-y-6">
-                    <h2 class="text-xl font-semibold text-gray-900 dark:text-white mb-4">
-                        {t("register.step2Title")}
-                    </h2>
-
-                    <div class="grid gap-4">
-                        <!-- Business Name -->
+                <div class="space-y-5">
+                    <h2 class="text-xl font-semibold text-gray-900 dark:text-white">ຂໍ້ມູນທຸລະກິດ</h2>
+                    <p class="text-gray-500 dark:text-gray-400 text-sm">ຂໍ້ມູນກ່ຽວກັບຮ້ານຂອງທ່ານ</p>
+                    <div>
+                        <label for="s2-sname" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ຊື່ຮ້ານ *</label>
+                        <div class="relative">
+                            <Store class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                            <input id="s2-sname" type="text" bind:value={form.storeName} placeholder="ຊື່ຮ້ານ" class="w-full pl-10 pr-4 py-3 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors" />
+                        </div>
+                    </div>
+                    <div>
+                        <label for="s2-scode" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ລະຫັດຮ້ານ *</label>
+                        <input id="s2-scode" type="text" bind:value={form.storeCode} placeholder="ຕົວຢ່າງ: SHOP001" class="w-full px-4 py-3 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors" />
+                    </div>
+                    <div>
+                        <label for="s2-btype" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ປະເພດທຸລະກິດ</label>
+                        <select id="s2-btype" bind:value={form.businessType} class="w-full px-4 py-3 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
+                            {#each businessTypes as bt}<option value={bt.value}>{bt.label}</option>{/each}
+                        </select>
+                    </div>
+                    <div>
+                        <label for="s2-addr" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ທີ່ຢູ່ *</label>
+                        <div class="relative">
+                            <MapPin class="absolute left-3 top-3 w-5 h-5 text-gray-400" />
+                            <textarea id="s2-addr" bind:value={form.storeAddress} rows="2" placeholder="ທີ່ຢູ່ຮ້ານ" class="w-full pl-10 pr-4 py-3 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors resize-none"></textarea>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-4">
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                {formData.type === "new_branch" ? t("register.branchName") : t("register.storeName")} *
-                            </label>
+                            <label for="s2-sphone" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ເບີໂທຮ້ານ *</label>
                             <div class="relative">
-                                <Building2 class="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                                <input
-                                    type="text"
-                                    bind:value={formData.businessName}
-                                    class={cn(
-                                        "w-full pl-12 pr-4 py-3 rounded-xl border transition-colors",
-                                        "bg-white dark:bg-gray-700 text-gray-900 dark:text-white",
-                                        "border-gray-300 dark:border-gray-600",
-                                        "focus:ring-2 focus:ring-primary-500 focus:border-primary-500",
-                                    )}
-                                    placeholder={t("register.businessNamePlaceholder")}
-                                />
+                                <Phone class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                                <input id="s2-sphone" type="tel" bind:value={form.storePhone} placeholder="020 xxxxxxxx" class="w-full pl-10 pr-4 py-3 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors" />
                             </div>
                         </div>
-
-                        <!-- Business Code -->
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                {t("register.businessCode")} *
-                            </label>
-                            <input
-                                type="text"
-                                bind:value={formData.businessCode}
-                                class={cn(
-                                    "w-full px-4 py-3 rounded-xl border transition-colors",
-                                    "bg-white dark:bg-gray-700 text-gray-900 dark:text-white",
-                                    "border-gray-300 dark:border-gray-600",
-                                    "focus:ring-2 focus:ring-primary-500 focus:border-primary-500",
-                                )}
-                                placeholder={t("register.businessCodePlaceholder")}
-                            />
-                        </div>
-
-                        <!-- Address -->
-                        <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                {t("register.address")} *
-                            </label>
+                            <label for="s2-semail" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ອີເມວຮ້ານ</label>
                             <div class="relative">
-                                <MapPin class="absolute left-4 top-3 w-5 h-5 text-gray-400" />
-                                <textarea
-                                    bind:value={formData.address}
-                                    rows="2"
-                                    class={cn(
-                                        "w-full pl-12 pr-4 py-3 rounded-xl border transition-colors resize-none",
-                                        "bg-white dark:bg-gray-700 text-gray-900 dark:text-white",
-                                        "border-gray-300 dark:border-gray-600",
-                                        "focus:ring-2 focus:ring-primary-500 focus:border-primary-500",
-                                    )}
-                                    placeholder={t("register.addressPlaceholder")}
-                                ></textarea>
+                                <Mail class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                                <input id="s2-semail" type="email" bind:value={form.storeEmail} placeholder="shop@example.com" class="w-full pl-10 pr-4 py-3 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors" />
                             </div>
-                        </div>
-
-                        <div class="grid grid-cols-2 gap-4">
-                            <!-- Phone -->
-                            <div>
-                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                    {t("register.phone")} *
-                                </label>
-                                <div class="relative">
-                                    <Phone class="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                                    <input
-                                        type="tel"
-                                        bind:value={formData.phone}
-                                        class={cn(
-                                            "w-full pl-12 pr-4 py-3 rounded-xl border transition-colors",
-                                            "bg-white dark:bg-gray-700 text-gray-900 dark:text-white",
-                                            "border-gray-300 dark:border-gray-600",
-                                            "focus:ring-2 focus:ring-primary-500 focus:border-primary-500",
-                                        )}
-                                        placeholder="020 xxxxxxxx"
-                                    />
-                                </div>
-                            </div>
-
-                            <!-- Email -->
-                            <div>
-                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                    {t("register.email")}
-                                </label>
-                                <div class="relative">
-                                    <Mail class="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                                    <input
-                                        type="email"
-                                        bind:value={formData.email}
-                                        class={cn(
-                                            "w-full pl-12 pr-4 py-3 rounded-xl border transition-colors",
-                                            "bg-white dark:bg-gray-700 text-gray-900 dark:text-white",
-                                            "border-gray-300 dark:border-gray-600",
-                                            "focus:ring-2 focus:ring-primary-500 focus:border-primary-500",
-                                        )}
-                                        placeholder="email@example.com"
-                                    />
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- Tax ID -->
-                        <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                ເລກປະຈຳຕົວຜູ້ເສຍອາກອນ
-                            </label>
-                            <input
-                                type="text"
-                                bind:value={formData.taxId}
-                                class={cn(
-                                    "w-full px-4 py-3 rounded-xl border transition-colors",
-                                    "bg-white dark:bg-gray-700 text-gray-900 dark:text-white",
-                                    "border-gray-300 dark:border-gray-600",
-                                    "focus:ring-2 focus:ring-primary-500 focus:border-primary-500",
-                                )}
-                                placeholder="ເລກປະຈຳຕົວຜູ້ເສຍອາກອນ (ຖ້າມີ)"
-                            />
-                        </div>
-
-                        <!-- Description -->
-                        <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                ລາຍລະອຽດຮ້ານ
-                            </label>
-                            <textarea
-                                bind:value={formData.description}
-                                rows="2"
-                                class={cn(
-                                    "w-full px-4 py-3 rounded-xl border transition-colors resize-none",
-                                    "bg-white dark:bg-gray-700 text-gray-900 dark:text-white",
-                                    "border-gray-300 dark:border-gray-600",
-                                    "focus:ring-2 focus:ring-primary-500 focus:border-primary-500",
-                                )}
-                                placeholder="ອະທິບາຍກ່ຽວກັບຮ້ານ/ສາຂາ"
-                            ></textarea>
                         </div>
                     </div>
                 </div>
             {/if}
 
-            <!-- Step 3: Additional Info -->
+            <!-- Step 3: KYC -->
             {#if currentStep === 3}
-                <div class="space-y-6">
-                    <h2 class="text-xl font-semibold text-gray-900 dark:text-white mb-4">
-                        {t("register.step3Title")}
-                    </h2>
-
-                    <!-- Reason -->
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                            {t("register.reason")}
-                        </label>
-                        <div class="relative">
-                            <FileText class="absolute left-4 top-3 w-5 h-5 text-gray-400" />
-                            <textarea
-                                bind:value={formData.reason}
-                                rows="4"
-                                class={cn(
-                                    "w-full pl-12 pr-4 py-3 rounded-xl border transition-colors resize-none",
-                                    "bg-white dark:bg-gray-700 text-gray-900 dark:text-white",
-                                    "border-gray-300 dark:border-gray-600",
-                                    "focus:ring-2 focus:ring-primary-500 focus:border-primary-500",
-                                )}
-                                placeholder={t("register.reasonPlaceholder")}
-                            ></textarea>
+                <div class="space-y-5">
+                    <h2 class="text-xl font-semibold text-gray-900 dark:text-white">ເອກະສານ KYC</h2>
+                    <p class="text-gray-500 dark:text-gray-400 text-sm">ຂໍ້ມູນຢືນຢັນຕົວຕົນເຈົ້າຂອງຮ້ານ</p>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label for="s3-idtype" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ປະເພດໄອດີ</label>
+                            <select id="s3-idtype" bind:value={form.ownerIdType} class="w-full px-4 py-3 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
+                                {#each idTypes as idType}<option value={idType.value}>{idType.label}</option>{/each}
+                            </select>
+                        </div>
+                        <div>
+                            <label for="s3-idno" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ເລກທີ *</label>
+                            <div class="relative">
+                                <CreditCard class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                                <input id="s3-idno" type="text" bind:value={form.ownerIdNumber} placeholder="ເລກທີໄອດີ" class="w-full pl-10 pr-4 py-3 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors" />
+                            </div>
                         </div>
                     </div>
-
-                    <!-- File Upload -->
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                            {t("register.documents")}
-                        </label>
-                        <div class="border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-xl p-6 text-center">
-                            <Upload class="w-10 h-10 mx-auto text-gray-400 mb-2" />
-                            <p class="text-sm text-gray-600 dark:text-gray-400 mb-2">
-                                {t("register.uploadDesc")}
-                            </p>
-                            <input
-                                type="file"
-                                id="file-upload"
-                                multiple
-                                accept=".pdf,.jpg,.jpeg,.png"
-                                onchange={handleFileUpload}
-                                class="hidden"
-                            />
-                            <label
-                                for="file-upload"
-                                class="inline-block px-4 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg text-sm font-medium text-gray-700 dark:text-gray-300 cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
-                            >
-                                {t("register.chooseFiles")}
-                            </label>
+                        <label for="s3-oname" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ຊື່ເຈົ້າຂອງ (ຕາມໄອດີ)</label>
+                        <div class="relative">
+                            <User class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                            <input id="s3-oname" type="text" bind:value={form.ownerName} placeholder="ຊື່ ນາມສະກຸນ ຕາມໄອດີ" class="w-full pl-10 pr-4 py-3 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors" />
                         </div>
-
-                        {#if formData.documents.length > 0}
-                            <div class="mt-4 space-y-2">
-                                {#each formData.documents as file, index}
-                                    <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
-                                        <span class="text-sm text-gray-700 dark:text-gray-300 truncate">
-                                            {file.name}
-                                        </span>
-                                        <button
-                                            type="button"
-                                            onclick={() => removeFile(index)}
-                                            class="text-red-500 hover:text-red-600 text-sm"
-                                        >
-                                            {t("common.delete")}
-                                        </button>
+                    </div>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label for="s3-bizlic" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ໃບທະບຽນວິສາຫະກິດ</label>
+                            <input id="s3-bizlic" type="text" bind:value={form.businessLicenseNo} placeholder="ເລກໃບທະບຽນ (ຖ້າມີ)" class="w-full px-4 py-3 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors" />
+                        </div>
+                        <div>
+                            <label for="s3-taxno" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ເລກປະຈຳຕົວຜູ້ເສຍອາກອນ</label>
+                            <input id="s3-taxno" type="text" bind:value={form.taxCertificateNo} placeholder="ເລກອາກອນ (ຖ້າມີ)" class="w-full px-4 py-3 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors" />
+                        </div>
+                    </div>
+                    <div>
+                        <label for="s3-reason" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ເຫດຜົນການຍື່ນຄຳຮ້ອງ</label>
+                        <div class="relative">
+                            <FileText class="absolute left-3 top-3 w-5 h-5 text-gray-400" />
+                            <textarea id="s3-reason" bind:value={form.reason} rows="3" placeholder="ອະທິບາຍສັ້ນໆກ່ຽວກັບທຸລະກິດຂອງທ່ານ" class="w-full pl-10 pr-4 py-3 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors resize-none"></textarea>
+                        </div>
+                    </div>
+                    <div>
+                        <label for="doc-upload" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ເອກະສານປະກອບ (PDF, JPG, PNG)</label>
+                        <div class="border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-xl p-5 text-center">
+                            <Upload class="w-8 h-8 mx-auto text-gray-400 mb-2" />
+                            <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">ອັບໂຫລດໄອດີ, ໃບທະບຽນ, ໃບອະນຸຍາດ</p>
+                            <input type="file" id="doc-upload" multiple accept=".pdf,.jpg,.jpeg,.png" onchange={handleFileUpload} class="hidden" />
+                            <label for="doc-upload" class="inline-block px-4 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg text-sm font-medium text-gray-700 dark:text-gray-300 cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">ເລືອກໄຟລ໌</label>
+                        </div>
+                        {#if form.documents.length > 0}
+                            <div class="mt-3 space-y-2">
+                                {#each form.documents as file, i}
+                                    <div class="flex items-center justify-between p-2 bg-gray-50 dark:bg-gray-700 rounded-lg">
+                                        <span class="text-sm text-gray-700 dark:text-gray-300 truncate">{file.name}</span>
+                                        <button type="button" onclick={() => removeFile(i)} class="ml-2 text-red-500 hover:text-red-600"><X class="w-4 h-4" /></button>
                                     </div>
                                 {/each}
                             </div>
                         {/if}
                     </div>
+                </div>
+            {/if}
 
-                    <!-- Summary -->
-                    <div class="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
-                        <h3 class="font-medium text-gray-900 dark:text-white mb-3">
-                            {t("register.summary")}
-                        </h3>
-                        <div class="space-y-2 text-sm">
-                            <div class="flex justify-between">
-                                <span class="text-gray-600 dark:text-gray-400">{t("register.type")}:</span>
-                                <span class="text-gray-900 dark:text-white font-medium">
-                                    {formData.type === "new_branch" ? t("register.newBranch") : t("register.newStore")}
-                                </span>
+            <!-- Step 4: Review -->
+            {#if currentStep === 4}
+                <div class="space-y-5">
+                    <h2 class="text-xl font-semibold text-gray-900 dark:text-white">ກວດສອບຂໍ້ມູນ</h2>
+                    <p class="text-gray-500 dark:text-gray-400 text-sm">ກວດສອບຂໍ້ມູນກ່ອນສົ່ງຄຳຮ້ອງ</p>
+                    <div class="space-y-4">
+                        <div class="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
+                            <div class="flex items-center gap-2 mb-3">
+                                <User class="w-4 h-4 text-primary-500" />
+                                <h3 class="font-medium text-gray-900 dark:text-white text-sm">ຂໍ້ມູນບັນຊີ</h3>
                             </div>
-                            <div class="flex justify-between">
-                                <span class="text-gray-600 dark:text-gray-400">{t("register.name")}:</span>
-                                <span class="text-gray-900 dark:text-white font-medium">{formData.businessName}</span>
-                            </div>
-                            <div class="flex justify-between">
-                                <span class="text-gray-600 dark:text-gray-400">{t("register.code")}:</span>
-                                <span class="text-gray-900 dark:text-white font-medium">{formData.businessCode}</span>
-                            </div>
-                            <div class="flex justify-between">
-                                <span class="text-gray-600 dark:text-gray-400">{t("register.phone")}:</span>
-                                <span class="text-gray-900 dark:text-white font-medium">{formData.phone}</span>
+                            <div class="grid grid-cols-2 gap-2 text-sm">
+                                <span class="text-gray-500 dark:text-gray-400">ຊື່:</span><span class="text-gray-900 dark:text-white font-medium">{form.name}</span>
+                                <span class="text-gray-500 dark:text-gray-400">ອີເມວ:</span><span class="text-gray-900 dark:text-white font-medium">{form.email}</span>
+                                <span class="text-gray-500 dark:text-gray-400">ເບີໂທ:</span><span class="text-gray-900 dark:text-white font-medium">{form.phone}</span>
                             </div>
                         </div>
+                        <div class="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
+                            <div class="flex items-center gap-2 mb-3">
+                                <Store class="w-4 h-4 text-primary-500" />
+                                <h3 class="font-medium text-gray-900 dark:text-white text-sm">ຂໍ້ມູນຮ້ານ</h3>
+                            </div>
+                            <div class="grid grid-cols-2 gap-2 text-sm">
+                                <span class="text-gray-500 dark:text-gray-400">ຊື່ຮ້ານ:</span><span class="text-gray-900 dark:text-white font-medium">{form.storeName}</span>
+                                <span class="text-gray-500 dark:text-gray-400">ລະຫັດ:</span><span class="text-gray-900 dark:text-white font-medium">{form.storeCode}</span>
+                                <span class="text-gray-500 dark:text-gray-400">ປະເພດ:</span><span class="text-gray-900 dark:text-white font-medium">{form.businessType}</span>
+                                <span class="text-gray-500 dark:text-gray-400">ເບີໂທ:</span><span class="text-gray-900 dark:text-white font-medium">{form.storePhone}</span>
+                            </div>
+                        </div>
+                        <div class="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
+                            <div class="flex items-center gap-2 mb-3">
+                                <ShieldCheck class="w-4 h-4 text-primary-500" />
+                                <h3 class="font-medium text-gray-900 dark:text-white text-sm">KYC</h3>
+                            </div>
+                            <div class="grid grid-cols-2 gap-2 text-sm">
+                                <span class="text-gray-500 dark:text-gray-400">ປະເພດໄອດີ:</span><span class="text-gray-900 dark:text-white font-medium">{form.ownerIdType}</span>
+                                <span class="text-gray-500 dark:text-gray-400">ເລກທີ:</span><span class="text-gray-900 dark:text-white font-medium">{form.ownerIdNumber}</span>
+                                <span class="text-gray-500 dark:text-gray-400">ເອກະສານ:</span><span class="text-gray-900 dark:text-white font-medium">{form.documents.length} ໄຟລ໌</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl text-sm text-amber-700 dark:text-amber-300">
+                        ຫຼັງຈາກສົ່ງຄຳຮ້ອງ, ທີມງານຈະທົບທວນ ແລະ ຕິດຕໍ່ກັບໄປພາຍໃນ 1-3 ວັນທຳການ
                     </div>
                 </div>
             {/if}
@@ -595,56 +449,29 @@
             <!-- Navigation Buttons -->
             <div class="flex justify-between mt-8 pt-6 border-t border-gray-100 dark:border-gray-700">
                 {#if currentStep > 1}
-                    <button
-                        type="button"
-                        onclick={prevStep}
-                        class={cn(
-                            "flex items-center gap-2 px-6 py-3 rounded-xl font-medium transition-colors",
-                            "text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700",
-                            "hover:bg-gray-200 dark:hover:bg-gray-600"
-                        )}
-                    >
-                        <ArrowLeft class="w-5 h-5" />
-                        {t("common.back")}
+                    <button type="button" onclick={prev} class="flex items-center gap-2 px-6 py-3 rounded-xl font-medium transition-colors text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600">
+                        <ArrowLeft class="w-5 h-5" /> ກັບຄືນ
                     </button>
                 {:else}
                     <div></div>
                 {/if}
 
                 {#if currentStep < totalSteps}
-                    <button
-                        type="button"
-                        onclick={nextStep}
-                        class={cn(
-                            "flex items-center gap-2 px-6 py-3 rounded-xl font-medium text-white transition-colors",
-                            "bg-primary-600 hover:bg-primary-700"
-                        )}
-                    >
-                        {t("common.next")}
-                        <ArrowRight class="w-5 h-5" />
+                    <button type="button" onclick={next} class="flex items-center gap-2 px-6 py-3 rounded-xl font-medium text-white transition-colors bg-primary-600 hover:bg-primary-700">
+                        ຕໍ່ໄປ <ArrowRight class="w-5 h-5" />
                     </button>
                 {:else}
-                    <button
-                        type="button"
-                        onclick={handleSubmit}
-                        disabled={isLoading}
-                        class={cn(
-                            "flex items-center gap-2 px-6 py-3 rounded-xl font-medium text-white transition-colors",
-                            "bg-primary-600 hover:bg-primary-700",
-                            "disabled:opacity-50 disabled:cursor-not-allowed"
-                        )}
-                    >
+                    <button type="button" onclick={handleSubmit} disabled={isLoading} class="flex items-center gap-2 px-6 py-3 rounded-xl font-medium text-white transition-colors bg-primary-600 hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed">
                         {#if isLoading}
-                            <Loader2 class="w-5 h-5 animate-spin" />
-                            {t("common.submitting")}
+                            <Loader2 class="w-5 h-5 animate-spin" /> ກຳລັງສົ່ງ...
                         {:else}
-                            <Check class="w-5 h-5" />
-                            {t("register.submit")}
+                            <Check class="w-5 h-5" /> ສົ່ງຄຳຮ້ອງ
                         {/if}
                     </button>
                 {/if}
             </div>
         </div>
+        {/if}
 
         <!-- Footer -->
         <p class="text-center text-primary-100 text-sm mt-6">

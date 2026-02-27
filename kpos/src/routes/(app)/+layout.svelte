@@ -40,6 +40,7 @@
     // Notifications (loaded from API)
     let notifications = $state<Array<{id: string; title: string; message: string; time: string; read: boolean; type: string}>>([]);
     let unreadCount = $state(0);
+    let pendingRequestsCount = $state(0);
 
     // Shift enforcement
     const SHIFT_REQUIRED_ROLES = ['cashier', 'store_manager', 'branch_admin', 'inventory_staff', 'waiter', 'kitchen_staff'];
@@ -96,6 +97,19 @@
         }
     }
 
+    async function loadPendingRequests() {
+        const user = auth.user;
+        if (!user) return;
+        const isAdminUser = user.isSuperAdmin || user.role === 'admin' || user.role === 'super_admin';
+        if (!isAdminUser) return;
+        try {
+            const res = await api.get('admin/requests/count').json<any>();
+            if (res.success) pendingRequestsCount = res.data?.pending || 0;
+        } catch (e) {
+            // Silently fail
+        }
+    }
+
     const languages = [
         { code: "th", name: "ภาษาไทย", flag: "🇹🇭" },
         { code: "en", name: "English", flag: "🇺🇸" },
@@ -120,8 +134,9 @@
 
         // Load notifications from API
         loadNotifications();
+        loadPendingRequests();
         // Auto-refresh notifications every 60 seconds
-        const notifInterval = setInterval(loadNotifications, 60 * 1000);
+        const notifInterval = setInterval(() => { loadNotifications(); loadPendingRequests(); }, 60 * 1000);
 
         // Check if user needs to clock in
         checkActiveShift();
@@ -381,6 +396,12 @@
                             </span>
                         {/if}
                     </button>
+                    {#if pendingRequestsCount > 0}
+                        <a href="/admin/requests"
+                            class="absolute -top-1 -left-1 min-w-4.5 h-4.5 px-1 bg-amber-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center shadow-sm pointer-events-auto"
+                            title="{pendingRequestsCount} ຄຳຂໍລໍຖ້າອະນຸມັດ"
+                        >{pendingRequestsCount}</a>
+                    {/if}
 
                     {#if isNotificationOpen}
                         <div
@@ -404,6 +425,17 @@
                                 {/if}
                             </div>
                             <div class="max-h-80 overflow-y-auto">
+                                {#if pendingRequestsCount > 0}
+                                    <a href="/admin/requests" onclick={() => isNotificationOpen = false}
+                                        class="flex items-center gap-3 px-4 py-3 bg-amber-50 dark:bg-amber-900/20 hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors border-b border-amber-100 dark:border-amber-800/50">
+                                        <span class="text-lg shrink-0">📋</span>
+                                        <div class="flex-1 min-w-0">
+                                            <p class="text-sm font-semibold text-amber-900 dark:text-amber-200">ຄຳຂໍລໍຖ້າອະນຸມັດ</p>
+                                            <p class="text-xs text-amber-700 dark:text-amber-400">{pendingRequestsCount} ຄຳຂໍໃໝ່ ລໍຖ້າການຕອບຮັບ</p>
+                                        </div>
+                                        <span class="px-2 py-0.5 bg-amber-500 text-white text-xs font-bold rounded-full">{pendingRequestsCount}</span>
+                                    </a>
+                                {/if}
                                 {#each notifications as notif (notif.id)}
                                     <button
                                         onclick={() =>

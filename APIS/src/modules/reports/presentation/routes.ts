@@ -3,8 +3,10 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, branchFilter, applyScopeFilter, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
-import { prisma } from '@/config/database.config';
+import { authenticate, authorize, branchFilter, applyScopeFilter, buildScopeCondition, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { db } from '@/config/database.config';
+import { transactions, transactionItems, transactionPayments, products, customers, inventory, users } from '@/db/schema/tables';
+import { eq, and, or, not, ilike, inArray, isNotNull, gte, lte, lt, desc, asc, count, sum, sql } from 'drizzle-orm';
 
 export const reportRoutes = Router();
 
@@ -20,48 +22,50 @@ reportRoutes.get('/summary', authenticate, branchFilter(), async (req, res, next
         const tomorrow = new Date(today);
         tomorrow.setDate(tomorrow.getDate() + 1);
 
-        // Today's sales — build where with store-level scope
-        const txWhere: Record<string, unknown> = {
-            status: 'COMPLETED',
-            type: 'SALE',
-            createdAt: { gte: today, lt: tomorrow },
-        };
-        applyScopeFilter(txWhere, filter, 'storeId');
-        if (!filter) txWhere.branchId = branchId;
+        // Build scope conditions
+        const txConds: any[] = [eq(transactions.status, 'COMPLETED'), eq(transactions.type, 'SALE'), gte(transactions.createdAt, today), lt(transactions.createdAt, tomorrow)];
+        const scopeCond = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
+        if (scopeCond) txConds.push(scopeCond);
+        if (!filter) txConds.push(eq(transactions.branchId, branchId));
 
-        const todaySales = await prisma.transaction.aggregate({
-            where: txWhere as any,
-            _sum: { total: true },
-            _count: { id: true },
-        });
+        const [todaySales] = await db.select({ total: sum(transactions.total), cnt: count() }).from(transactions).where(and(...txConds));
 
         // Total products
-        const totalProducts = await prisma.product.count({ where: { isActive: true } });
+        const prodConds: any[] = [eq(products.isActive, true)];
+        const prodScope = buildScopeCondition(filter, { branchId: products.branchId }, 'branchId');
+        if (prodScope) prodConds.push(prodScope);
+        if (!filter) prodConds.push(eq(products.branchId, branchId));
+        const [{ value: totalProducts }] = await db.select({ value: count() }).from(products).where(and(...prodConds));
 
         // Total customers
-        const totalCustomers = await prisma.customer.count({ where: { isActive: true } });
+        const custConds: any[] = [eq(customers.isActive, true)];
+        const custScope = buildScopeCondition(filter, { storeId: customers.storeId }, 'storeId');
+        if (custScope) custConds.push(custScope);
+        const [{ value: totalCustomers }] = await db.select({ value: count() }).from(customers).where(and(...custConds));
 
-        // Low stock count
-        const lowStock = await prisma.inventory.count({
-            where: {
-                branchId,
-                quantity: { lte: 10 },
-            },
-        });
+        // Low stock
+        const invConds: any[] = [lte(inventory.quantity, 10)];
+        const invScope = buildScopeCondition(filter, { branchId: inventory.branchId }, 'branchId');
+        if (invScope) invConds.push(invScope);
+        if (!filter) invConds.push(eq(inventory.branchId, branchId));
+        const [{ value: lowStock }] = await db.select({ value: count() }).from(inventory).where(and(...invConds));
 
         // Recent sales
-        const recentSales = await prisma.transaction.findMany({
-            where: { branchId, status: 'COMPLETED', type: 'SALE' },
-            take: 5,
-            orderBy: { createdAt: 'desc' },
-            include: { customer: { select: { name: true } } },
+        const recentConds: any[] = [eq(transactions.status, 'COMPLETED'), eq(transactions.type, 'SALE')];
+        if (scopeCond) recentConds.push(scopeCond);
+        if (!filter) recentConds.push(eq(transactions.branchId, branchId));
+        const recentSales = await db.query.transactions.findMany({
+            where: and(...recentConds),
+            limit: 5,
+            orderBy: desc(transactions.createdAt),
+            with: { customer: true },
         });
 
         res.json({
             success: true,
             data: {
-                todaySales: todaySales._sum.total || 0,
-                todayOrders: todaySales._count.id || 0,
+                todaySales: Number(todaySales.total) || 0,
+                todayOrders: todaySales.cnt || 0,
                 totalProducts,
                 totalCustomers,
                 lowStockCount: lowStock,
@@ -92,25 +96,15 @@ reportRoutes.get('/sales', authenticate, branchFilter(), async (req, res, next) 
         const end = endDate ? new Date(String(endDate)) : new Date();
         end.setHours(23, 59, 59, 999);
 
-        const txWhere: Record<string, unknown> = {
-            type: 'SALE',
-            status: 'COMPLETED',
-            createdAt: { gte: start, lte: end },
-        };
-        applyScopeFilter(txWhere, filter, 'storeId');
-        if (!filter) txWhere.branchId = branchId;
+        const salesConds: any[] = [eq(transactions.type, 'SALE'), eq(transactions.status, 'COMPLETED'), gte(transactions.createdAt, start), lte(transactions.createdAt, end)];
+        const salesScope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
+        if (salesScope) salesConds.push(salesScope);
+        if (!filter) salesConds.push(eq(transactions.branchId, branchId));
 
-        const sales = await prisma.transaction.findMany({
-            where: txWhere as any,
-            select: {
-                id: true,
-                total: true,
-                subtotal: true,
-                taxAmount: true,
-                discountAmount: true,
-                createdAt: true,
-            },
-            orderBy: { createdAt: 'asc' },
+        const sales = await db.query.transactions.findMany({
+            where: and(...salesConds),
+            columns: { id: true, total: true, subtotal: true, taxAmount: true, discountAmount: true, createdAt: true },
+            orderBy: asc(transactions.createdAt),
         });
 
         // Group by day/week/month
@@ -169,32 +163,29 @@ reportRoutes.get('/top-products', authenticate, branchFilter(), async (req, res,
         const end = endDate ? new Date(String(endDate)) : new Date();
         end.setHours(23, 59, 59, 999);
 
-        // Get all completed transactions in date range
-        const txWhere: Record<string, unknown> = {
-            type: 'SALE',
-            status: 'COMPLETED',
-            createdAt: { gte: start, lte: end },
-        };
-        applyScopeFilter(txWhere, filter, 'storeId');
-        if (!filter) txWhere.branchId = branchId;
+        const tpConds: any[] = [eq(transactions.type, 'SALE'), eq(transactions.status, 'COMPLETED'), gte(transactions.createdAt, start), lte(transactions.createdAt, end)];
+        const tpScope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
+        if (tpScope) tpConds.push(tpScope);
+        if (!filter) tpConds.push(eq(transactions.branchId, branchId));
 
-        const transactions = await prisma.transaction.findMany({
-            where: txWhere as any,
-            select: { id: true },
+        const txIds = await db.query.transactions.findMany({
+            where: and(...tpConds),
+            columns: { id: true },
         });
+        const transactionIds = txIds.map(t => t.id);
 
-        const transactionIds = transactions.map(t => t.id);
-
-        // Aggregate by product
-        const items = await prisma.transactionItem.groupBy({
-            by: ['productId', 'productName'],
-            where: {
-                transactionId: { in: transactionIds },
-            },
-            _sum: { quantity: true, total: true },
-            orderBy: { _sum: { total: 'desc' } },
-            take: Number(limit),
-        });
+        const items = transactionIds.length > 0
+            ? await db.select({
+                productId: transactionItems.productId,
+                productName: transactionItems.productName,
+                quantitySold: sum(transactionItems.quantity),
+                revenue: sum(transactionItems.total),
+            }).from(transactionItems)
+                .where(inArray(transactionItems.transactionId, transactionIds))
+                .groupBy(transactionItems.productId, transactionItems.productName)
+                .orderBy(desc(sum(transactionItems.total)))
+                .limit(Number(limit))
+            : [];
 
         res.json({
             success: true,
@@ -202,8 +193,8 @@ reportRoutes.get('/top-products', authenticate, branchFilter(), async (req, res,
                 rank: index + 1,
                 productId: item.productId,
                 productName: item.productName,
-                quantitySold: item._sum.quantity || 0,
-                revenue: item._sum.total || 0,
+                quantitySold: Number(item.quantitySold) || 0,
+                revenue: Number(item.revenue) || 0,
             })),
         });
     } catch (error) {
@@ -223,43 +214,40 @@ reportRoutes.get('/inventory', authenticate, branchFilter(), async (req, res, ne
         const limitNum = Math.min(100, Math.max(1, parseInt(String(limit), 10) || 20));
         const skip = (pageNum - 1) * limitNum;
 
-        const where: Record<string, unknown> = {};
-        applyScopeFilter(where, filter, 'storeId');
-        if (!filter) where.branchId = branchId;
+        const invConds2: any[] = [];
+        const invScope2 = buildScopeCondition(filter, { branchId: inventory.branchId }, 'branchId');
+        if (invScope2) invConds2.push(invScope2);
+        if (!filter) invConds2.push(eq(inventory.branchId, branchId));
         if (lowStockOnly === 'true' || stockFilter === 'low') {
-            where.quantity = { lte: 10, gt: 0 };
+            invConds2.push(lte(inventory.quantity, 10), sql`${inventory.quantity} > 0`);
         } else if (stockFilter === 'out') {
-            where.quantity = { lte: 0 };
+            invConds2.push(lte(inventory.quantity, 0));
         } else if (stockFilter === 'ok') {
-            where.quantity = { gt: 10 };
+            invConds2.push(sql`${inventory.quantity} > 10`);
         }
 
-        // Get total count for pagination
-        const total = await prisma.inventory.count({ where });
+        const invWhere2 = invConds2.length > 0 ? and(...invConds2) : undefined;
+        const [{ value: total }] = await db.select({ value: count() }).from(inventory).where(invWhere2);
 
-        const inventory = await prisma.inventory.findMany({
-            where,
-            include: {
-                product: {
-                    select: { id: true, name: true, sku: true, price: true, cost: true }
-                }
-            },
-            orderBy: { quantity: 'asc' },
-            skip,
-            take: limitNum,
+        const invRows = await db.query.inventory.findMany({
+            where: invWhere2,
+            with: { product: true },
+            orderBy: asc(inventory.quantity),
+            offset: skip,
+            limit: limitNum,
         });
 
         // Filter by search if provided
-        let data = inventory.map(inv => ({
+        let data = invRows.map(inv => ({
             productId: inv.productId,
-            name: inv.product.name,
-            sku: inv.product.sku,
+            name: inv.product?.name || '',
+            sku: inv.product?.sku || '',
             currentStock: inv.quantity,
-            minStock: 10, // Default min stock
-            unitCost: inv.product.cost,
-            price: inv.product.price,
-            stockValue: inv.quantity * inv.product.cost,
-            retailValue: inv.quantity * inv.product.price,
+            minStock: 10,
+            unitCost: inv.product?.cost || 0,
+            price: inv.product?.price || 0,
+            stockValue: inv.quantity * (inv.product?.cost || 0),
+            retailValue: inv.quantity * (inv.product?.price || 0),
             isLowStock: inv.quantity <= 10,
         }));
 
@@ -272,13 +260,12 @@ reportRoutes.get('/inventory', authenticate, branchFilter(), async (req, res, ne
             );
         }
 
-        // Get summary stats (unfiltered by pagination)
-        const summaryWhere: Record<string, unknown> = {};
-        applyScopeFilter(summaryWhere, filter, 'storeId');
-        if (!filter) summaryWhere.branchId = branchId;
-        const allInventory = await prisma.inventory.findMany({
-            where: summaryWhere,
-            include: { product: { select: { cost: true, price: true } } },
+        const sumConds: any[] = [];
+        if (invScope2) sumConds.push(invScope2);
+        if (!filter) sumConds.push(eq(inventory.branchId, branchId));
+        const allInventory = await db.query.inventory.findMany({
+            where: sumConds.length > 0 ? and(...sumConds) : undefined,
+            with: { product: { columns: { cost: true, price: true } } },
         });
 
         res.json({
@@ -316,38 +303,30 @@ reportRoutes.get('/payments', authenticate, branchFilter(), async (req, res, nex
         const end = endDate ? new Date(String(endDate)) : new Date();
         end.setHours(23, 59, 59, 999);
 
-        // Get transactions in date range
-        const txWhere: Record<string, unknown> = {
-            type: 'SALE',
-            status: 'COMPLETED',
-            createdAt: { gte: start, lte: end },
-        };
-        applyScopeFilter(txWhere, filter, 'storeId');
-        if (!filter) txWhere.branchId = branchId;
+        const pmConds: any[] = [eq(transactions.type, 'SALE'), eq(transactions.status, 'COMPLETED'), gte(transactions.createdAt, start), lte(transactions.createdAt, end)];
+        const pmScope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
+        if (pmScope) pmConds.push(pmScope);
+        if (!filter) pmConds.push(eq(transactions.branchId, branchId));
 
-        const transactions = await prisma.transaction.findMany({
-            where: txWhere as any,
-            select: { id: true },
-        });
+        const pmTxIds = await db.query.transactions.findMany({ where: and(...pmConds), columns: { id: true } });
+        const pmTransactionIds = pmTxIds.map(t => t.id);
 
-        const transactionIds = transactions.map(t => t.id);
-
-        // Aggregate payments by method
-        const payments = await prisma.transactionPayment.groupBy({
-            by: ['methodName'],
-            where: {
-                transactionId: { in: transactionIds },
-            },
-            _sum: { amount: true },
-            _count: { id: true },
-        });
+        const payments = pmTransactionIds.length > 0
+            ? await db.select({
+                methodName: transactionPayments.methodName,
+                total: sum(transactionPayments.amount),
+                cnt: count(),
+            }).from(transactionPayments)
+                .where(inArray(transactionPayments.transactionId, pmTransactionIds))
+                .groupBy(transactionPayments.methodName)
+            : [];
 
         res.json({
             success: true,
             data: payments.map(p => ({
                 method: p.methodName,
-                total: p._sum.amount || 0,
-                count: p._count.id || 0,
+                total: Number(p.total) || 0,
+                count: p.cnt || 0,
             })),
         });
     } catch (error) {
@@ -377,111 +356,52 @@ reportRoutes.get('/customers', authenticate, branchFilter(), async (req, res, ne
         const prevStartDate = new Date(startDate.getTime() - periodMs);
         const prevEndDate = new Date(startDate.getTime() - 1);
 
-        // Run all queries in parallel for better performance
+        // Build scope conditions
+        const custBaseConds: any[] = [eq(customers.isActive, true)];
+        const crScope = buildScopeCondition(filter, { storeId: customers.storeId }, 'storeId');
+        if (crScope) custBaseConds.push(crScope);
+
+        const txBaseConds: any[] = [eq(transactions.status, 'COMPLETED'), eq(transactions.type, 'SALE')];
+        const trScope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
+        if (trScope) txBaseConds.push(trScope);
+        if (!filter) txBaseConds.push(eq(transactions.branchId, branchId));
+
+        const custSearchConds = [...custBaseConds];
+        if (search) {
+            const s = String(search);
+            custSearchConds.push(or(ilike(customers.name, `%${s}%`), ilike(customers.phone, `%${s}%`)));
+        }
+
         const [
-            totalCustomers,
-            newCustomers,
-            prevNewCustomers,
+            [{ value: totalCustomers }],
+            [{ value: newCustomers }],
+            [{ value: prevNewCustomers }],
             activeCustomersData,
-            revenueData,
+            [revenueData],
             topCustomers,
-            topCustomersTotal,
-            customersByTier,
+            [{ value: topCustomersTotal }],
         ] = await Promise.all([
-            // Total customers
-            prisma.customer.count({ where: { isActive: true } }),
-            
-            // New customers in period
-            prisma.customer.count({
-                where: {
-                    isActive: true,
-                    createdAt: { gte: startDate, lte: endDate },
-                },
+            db.select({ value: count() }).from(customers).where(and(...custBaseConds)),
+            db.select({ value: count() }).from(customers).where(and(...custBaseConds, gte(customers.createdAt, startDate), lte(customers.createdAt, endDate))),
+            db.select({ value: count() }).from(customers).where(and(...custBaseConds, gte(customers.createdAt, prevStartDate), lte(customers.createdAt, prevEndDate))),
+            db.select({ customerId: transactions.customerId }).from(transactions)
+                .where(and(...txBaseConds, gte(transactions.createdAt, startDate), lte(transactions.createdAt, endDate), isNotNull(transactions.customerId)))
+                .groupBy(transactions.customerId),
+            db.select({ total: sum(transactions.total), cnt: count() }).from(transactions)
+                .where(and(...txBaseConds, gte(transactions.createdAt, startDate), lte(transactions.createdAt, endDate))),
+            db.query.customers.findMany({
+                where: and(...custSearchConds),
+                columns: { id: true, name: true, phone: true, email: true, totalSpent: true, visitCount: true, lastVisitAt: true, memberCode: true },
+                orderBy: desc(customers.totalSpent),
+                offset: skip,
+                limit: limitNum,
             }),
-            
-            // New customers in previous period (for growth comparison)
-            prisma.customer.count({
-                where: {
-                    isActive: true,
-                    createdAt: { gte: prevStartDate, lte: prevEndDate },
-                },
-            }),
-            
-            // Active customers (who made purchases in period)
-            prisma.transaction.groupBy({
-                by: ['customerId'],
-                where: {
-                    ...(filter ? {} : { branchId }),
-                    ...(filter?.scopeByStore && filter.storeIds.length > 0 ? { storeId: { in: filter.storeIds } } : {}),
-                    ...(filter && !filter.scopeByStore && filter.branchIds.length > 0 ? { branchId: { in: filter.branchIds } } : {}),
-                    status: 'COMPLETED',
-                    type: 'SALE',
-                    createdAt: { gte: startDate, lte: endDate },
-                    customerId: { not: null },
-                },
-            }),
-            
-            // Revenue from customers in period
-            prisma.transaction.aggregate({
-                where: {
-                    ...(filter ? {} : { branchId }),
-                    ...(filter?.scopeByStore && filter.storeIds.length > 0 ? { storeId: { in: filter.storeIds } } : {}),
-                    ...(filter && !filter.scopeByStore && filter.branchIds.length > 0 ? { branchId: { in: filter.branchIds } } : {}),
-                    status: 'COMPLETED',
-                    type: 'SALE',
-                    createdAt: { gte: startDate, lte: endDate },
-                },
-                _sum: { total: true },
-                _count: true,
-            }),
-            
-            // Top customers by spending (optimized - no nested transactions)
-            prisma.customer.findMany({
-                where: search ? {
-                    isActive: true,
-                    OR: [
-                        { name: { contains: String(search), mode: 'insensitive' } },
-                        { phone: { contains: String(search), mode: 'insensitive' } },
-                    ],
-                } : { isActive: true },
-                select: {
-                    id: true,
-                    name: true,
-                    phone: true,
-                    email: true,
-                    totalSpent: true,
-                    visitCount: true,
-                    lastVisitAt: true,
-                    memberCode: true,
-                },
-                orderBy: { totalSpent: 'desc' },
-                skip,
-                take: limitNum,
-            }),
-            
-            // Get total customer count for pagination
-            prisma.customer.count({
-                where: search ? {
-                    isActive: true,
-                    OR: [
-                        { name: { contains: String(search), mode: 'insensitive' } },
-                        { phone: { contains: String(search), mode: 'insensitive' } },
-                    ],
-                } : { isActive: true },
-            }),
-            
-            // Customers by tier/segment
-            prisma.customer.groupBy({
-                by: ['memberCode'],
-                where: { isActive: true },
-                _count: true,
-            }),
+            db.select({ value: count() }).from(customers).where(and(...custSearchConds)),
         ]);
 
-        // Calculate metrics
         const activeCustomers = activeCustomersData.length;
-        const totalRevenue = revenueData._sum.total || 0;
-        const totalOrders = revenueData._count || 0;
+        const totalRevenue = Number(revenueData.total) || 0;
+        const totalOrders = revenueData.cnt || 0;
         const avgOrderValue = totalOrders > 0 ? totalRevenue / totalOrders : 0;
         const avgOrdersPerCustomer = activeCustomers > 0 ? totalOrders / activeCustomers : 0;
 
@@ -581,49 +501,41 @@ reportRoutes.get('/products', authenticate, branchFilter(), async (req, res, nex
                 start.setMonth(start.getMonth() - 1);
         }
 
-        // Get all completed transactions in date range
-        const txWhere: Record<string, unknown> = {
-            type: 'SALE',
-            status: 'COMPLETED',
-            createdAt: { gte: start },
-        };
-        applyScopeFilter(txWhere, filter, 'storeId');
-        if (!filter) txWhere.branchId = branchId;
+        const prConds: any[] = [eq(transactions.type, 'SALE'), eq(transactions.status, 'COMPLETED'), gte(transactions.createdAt, start)];
+        const prScope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
+        if (prScope) prConds.push(prScope);
+        if (!filter) prConds.push(eq(transactions.branchId, branchId));
 
-        const transactions = await prisma.transaction.findMany({
-            where: txWhere as any,
-            select: { id: true },
-        });
+        const prTxIds = await db.query.transactions.findMany({ where: and(...prConds), columns: { id: true } });
+        const prTransactionIds = prTxIds.map(t => t.id);
 
-        const transactionIds = transactions.map(t => t.id);
-
-        // Build where clause for search
-        const itemWhere: Record<string, unknown> = {
-            transactionId: { in: transactionIds },
-        };
-        if (search) {
-            itemWhere.OR = [
-                { productName: { contains: String(search), mode: 'insensitive' } },
-                { sku: { contains: String(search), mode: 'insensitive' } },
-            ];
+        if (prTransactionIds.length === 0) {
+            return res.json({ success: true, data: [], pagination: { page: pageNum, limit: limitNum, total: 0, totalPages: 0 } });
         }
 
-        // Get total count for pagination
-        const allItems = await prisma.transactionItem.groupBy({
-            by: ['productId'],
-            where: itemWhere,
-        });
-        const total = allItems.length;
+        const itemConds: any[] = [inArray(transactionItems.transactionId, prTransactionIds)];
+        if (search) {
+            const s = String(search);
+            itemConds.push(or(ilike(transactionItems.productName, `%${s}%`), ilike(transactionItems.sku, `%${s}%`)));
+        }
+        const itemWhere = and(...itemConds);
 
-        // Aggregate by product with pagination
-        const items = await prisma.transactionItem.groupBy({
-            by: ['productId', 'productName', 'sku'],
-            where: itemWhere,
-            _sum: { quantity: true, total: true },
-            orderBy: { _sum: { total: 'desc' } },
-            skip,
-            take: limitNum,
-        });
+        // Count unique products
+        const allProds = await db.select({ productId: transactionItems.productId }).from(transactionItems).where(itemWhere).groupBy(transactionItems.productId);
+        const total = allProds.length;
+
+        const items = await db.select({
+            productId: transactionItems.productId,
+            productName: transactionItems.productName,
+            sku: transactionItems.sku,
+            totalSales: sum(transactionItems.quantity),
+            revenue: sum(transactionItems.total),
+        }).from(transactionItems)
+            .where(itemWhere)
+            .groupBy(transactionItems.productId, transactionItems.productName, transactionItems.sku)
+            .orderBy(desc(sum(transactionItems.total)))
+            .offset(skip)
+            .limit(limitNum);
 
         res.json({
             success: true,
@@ -631,8 +543,8 @@ reportRoutes.get('/products', authenticate, branchFilter(), async (req, res, nex
                 productId: item.productId,
                 name: item.productName,
                 sku: item.sku,
-                totalSales: item._sum.quantity || 0,
-                revenue: item._sum.total || 0,
+                totalSales: Number(item.totalSales) || 0,
+                revenue: Number(item.revenue) || 0,
             })),
             pagination: {
                 page: pageNum,
@@ -691,87 +603,72 @@ reportRoutes.get('/financial', authenticate, branchFilter(), async (req, res, ne
                 previousEnd = new Date(start);
         }
 
-        // Build scoped where clause
-        const txWhere: Record<string, unknown> = {
-            type: 'SALE',
-            status: 'COMPLETED',
-            createdAt: { gte: start },
-        };
-        applyScopeFilter(txWhere, filter, 'storeId');
-        if (!filter) txWhere.branchId = branchId;
+        const finConds: any[] = [eq(transactions.type, 'SALE'), eq(transactions.status, 'COMPLETED'), gte(transactions.createdAt, start)];
+        const finScope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
+        if (finScope) finConds.push(finScope);
+        if (!filter) finConds.push(eq(transactions.branchId, branchId));
 
-        const prevTxWhere: Record<string, unknown> = {
-            type: 'SALE',
-            status: 'COMPLETED',
-            createdAt: { gte: previousStart, lt: previousEnd },
-        };
-        applyScopeFilter(prevTxWhere, filter, 'storeId');
-        if (!filter) prevTxWhere.branchId = branchId;
+        const prevConds: any[] = [eq(transactions.type, 'SALE'), eq(transactions.status, 'COMPLETED'), gte(transactions.createdAt, previousStart), lt(transactions.createdAt, previousEnd)];
+        if (finScope) prevConds.push(finScope);
+        if (!filter) prevConds.push(eq(transactions.branchId, branchId));
 
-        // Current period revenue
-        const currentSales = await prisma.transaction.aggregate({
-            where: txWhere as any,
-            _sum: { total: true, taxAmount: true, discountAmount: true },
-        });
+        const [[currentSales], [previousSales]] = await Promise.all([
+            db.select({ total: sum(transactions.total), tax: sum(transactions.taxAmount), discount: sum(transactions.discountAmount) }).from(transactions).where(and(...finConds)),
+            db.select({ total: sum(transactions.total) }).from(transactions).where(and(...prevConds)),
+        ]);
 
-        // Previous period revenue
-        const previousSales = await prisma.transaction.aggregate({
-            where: prevTxWhere as any,
-            _sum: { total: true },
-        });
+        const finTxIds = await db.query.transactions.findMany({ where: and(...finConds), columns: { id: true } });
+        const transactionIds = finTxIds.map(t => t.id);
 
-        // Get transactions for payment method breakdown
-        const currentTransactions = await prisma.transaction.findMany({
-            where: txWhere as any,
-            select: { id: true },
-        });
+        let cogs = 0;
+        let payments: { methodName: string | null; total: string | null; cnt: number }[] = [];
+        if (transactionIds.length > 0) {
+            const [cogsRow] = await db.select({ cost: sum(transactionItems.cost) }).from(transactionItems).where(inArray(transactionItems.transactionId, transactionIds));
+            cogs = Number(cogsRow.cost) || 0;
 
-        const transactionIds = currentTransactions.map(t => t.id);
+            payments = await db.select({
+                methodName: transactionPayments.methodName,
+                total: sum(transactionPayments.amount),
+                cnt: count(),
+            }).from(transactionPayments)
+                .where(inArray(transactionPayments.transactionId, transactionIds))
+                .groupBy(transactionPayments.methodName);
+        }
 
-        // Payment methods breakdown
-        const payments = await prisma.transactionPayment.groupBy({
-            by: ['methodName'],
-            where: {
-                transactionId: { in: transactionIds },
-            },
-            _sum: { amount: true },
-            _count: { id: true },
-        });
-
-        const revenue = currentSales._sum.total || 0;
-        const expenses = 0; // Would need expense tracking
+        const revenue = Number(currentSales.total) || 0;
+        const expenses = cogs;
         const profit = revenue - expenses;
 
-        // Calculate payment method percentages
-        const totalPaymentAmount = payments.reduce((s, p) => s + (p._sum.amount || 0), 0) || 1;
+        const totalPaymentAmount = payments.reduce((s, p) => s + (Number(p.total) || 0), 0) || 1;
         const paymentMethods = payments.map(p => ({
             type: p.methodName?.toLowerCase() || 'cash',
             method: p.methodName?.toLowerCase() || 'cash',
             methodName: p.methodName || 'Cash',
             label: p.methodName || 'Cash',
-            total: p._sum.amount || 0,
-            count: p._count.id || 0,
-            percentage: Math.round(((p._sum.amount || 0) / totalPaymentAmount) * 100 * 10) / 10,
+            total: Number(p.total) || 0,
+            count: p.cnt || 0,
+            percentage: Math.round(((Number(p.total) || 0) / totalPaymentAmount) * 100 * 10) / 10,
         }));
 
-        // Build daily data from transactions
-        const dailyTransactions = await prisma.transaction.findMany({
-            where: txWhere as any,
-            select: { total: true, createdAt: true },
-            orderBy: { createdAt: 'asc' },
+        const dailyTransactions = await db.query.transactions.findMany({
+            where: and(...finConds),
+            columns: { id: true, total: true, createdAt: true },
+            with: { items: { columns: { cost: true, quantity: true } } },
+            orderBy: asc(transactions.createdAt),
         });
 
-        const dailyMap: Record<string, { revenue: number; transactions: number }> = {};
+        const dailyMap: Record<string, { revenue: number; expenses: number; transactions: number }> = {};
         for (const t of dailyTransactions) {
             const date = t.createdAt.toISOString().split('T')[0];
-            if (!dailyMap[date]) dailyMap[date] = { revenue: 0, transactions: 0 };
+            if (!dailyMap[date]) dailyMap[date] = { revenue: 0, expenses: 0, transactions: 0 };
             dailyMap[date].revenue += t.total;
+            dailyMap[date].expenses += (t.items || []).reduce((sum: number, item: any) => sum + ((item.cost || 0) * (item.quantity || 1)), 0);
             dailyMap[date].transactions += 1;
         }
         const dailyData = Object.entries(dailyMap).map(([date, d]) => ({
             date,
             revenue: d.revenue,
-            expenses: 0,
+            expenses: d.expenses,
             transactions: d.transactions,
         }));
 
@@ -782,10 +679,11 @@ reportRoutes.get('/financial', authenticate, branchFilter(), async (req, res, ne
                 expenses,
                 profit,
                 profitMargin: revenue > 0 ? Math.round((profit / revenue) * 100 * 10) / 10 : 0,
-                previousRevenue: previousSales._sum.total || 0,
+                previousRevenue: Number(previousSales.total) || 0,
                 previousExpenses: 0,
-                taxCollected: currentSales._sum.taxAmount || 0,
-                discountsGiven: currentSales._sum.discountAmount || 0,
+                cogs,
+                taxCollected: Number(currentSales.tax) || 0,
+                discountsGiven: Number(currentSales.discount) || 0,
                 paymentMethods,
                 dailyData,
             },
@@ -827,52 +725,52 @@ reportRoutes.get('/staff', authenticate, branchFilter(), async (req, res, next) 
                 start.setMonth(start.getMonth() - 1);
         }
 
-        // Build scoped where
-        const txWhere: Record<string, unknown> = {
-            type: 'SALE',
-            status: 'COMPLETED',
-            createdAt: { gte: start },
-        };
-        applyScopeFilter(txWhere, filter, 'storeId');
-        if (!filter) txWhere.branchId = branchId;
+        const stConds: any[] = [eq(transactions.type, 'SALE'), eq(transactions.status, 'COMPLETED'), gte(transactions.createdAt, start)];
+        const stScope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
+        if (stScope) stConds.push(stScope);
+        if (!filter) stConds.push(eq(transactions.branchId, branchId));
+        const stWhere = and(...stConds);
 
         // Get total unique users with sales
-        const allSalesByUser = await prisma.transaction.groupBy({
-            by: ['userId'],
-            where: txWhere as any,
-        });
+        const allSalesByUser = await db.select({ userId: transactions.userId }).from(transactions).where(stWhere).groupBy(transactions.userId);
         const total = allSalesByUser.length;
 
         // Get sales grouped by user with pagination
-        const salesByUser = await prisma.transaction.groupBy({
-            by: ['userId'],
-            where: txWhere as any,
-            _sum: { total: true },
-            _count: { id: true },
-            orderBy: { _sum: { total: 'desc' } },
-            skip,
-            take: limitNum,
-        });
+        const salesByUser = await db.select({
+            userId: transactions.userId,
+            totalSales: count(),
+            revenue: sum(transactions.total),
+        }).from(transactions)
+            .where(stWhere)
+            .groupBy(transactions.userId)
+            .orderBy(desc(sum(transactions.total)))
+            .offset(skip)
+            .limit(limitNum);
 
         // Get user details
         const userIds = salesByUser.map(s => s.userId);
-        const users = await prisma.user.findMany({
-            where: { id: { in: userIds } },
-            select: { id: true, name: true, email: true },
-        });
+        const authUser = (req as any).authUser;
+        const isSuper = authUser?.isSuperAdmin;
+        const userRows = userIds.length > 0
+            ? await db.query.users.findMany({
+                where: inArray(users.id, userIds),
+                columns: { id: true, name: true, email: true },
+            }) : [];
 
-        const userMap = new Map(users.map(u => [u.id, u]));
+        const userMap = new Map(userRows.map(u => [u.id, u]));
 
         let data = salesByUser.map((s, index) => {
             const user = userMap.get(s.userId);
+            const rev = Number(s.revenue) || 0;
+            const cnt = s.totalSales || 0;
             return {
                 rank: skip + index + 1,
                 userId: s.userId,
                 name: user?.name || 'Unknown',
                 email: user?.email || '',
-                totalSales: s._count.id || 0,
-                revenue: s._sum.total || 0,
-                avgOrderValue: s._count.id > 0 ? (s._sum.total || 0) / s._count.id : 0,
+                totalSales: cnt,
+                revenue: rev,
+                avgOrderValue: cnt > 0 ? rev / cnt : 0,
             };
         });
 

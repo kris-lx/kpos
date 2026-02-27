@@ -4,7 +4,9 @@
 
 import { Router } from 'express';
 import { authenticate, authorize } from '@/infrastructure/http/middleware/auth.middleware';
-import { prisma } from '@/config/database.config';
+import { db } from '@/config/database.config';
+import { roles, users } from '@/db/schema/tables';
+import { eq, and, or, ilike, notInArray, desc, count } from 'drizzle-orm';
 
 export const roleRoutes = Router();
 
@@ -192,40 +194,49 @@ roleRoutes.get('/', authenticate, authorize('roles:read'), async (req, res) => {
     try {
         const { page = '1', limit = '50', search } = req.query;
         const skip = (parseInt(page as string) - 1) * parseInt(limit as string);
-        const user = req.user!;
-        const isAdmin = user.isSuperAdmin || user.role === 'admin';
+        const authUser = req.authUser!;
+        const isSuperAdmin = authUser.isSuperAdmin;
+        const isAdmin = isSuperAdmin || authUser.role === 'admin';
+        const isStoreOwner = authUser.role === 'store_owner';
 
-        const where: Record<string, unknown> = {};
-        // Non-admin users only see non-system roles (cannot manage super_admin/admin/store_owner)
-        if (!isAdmin) {
-            where.name = { notIn: ['super_admin', 'admin', 'store_owner'] };
-            where.isSystem = false;
+        const conditions = [];
+        if (isSuperAdmin || isAdmin) {
+            // See all roles
+        } else if (isStoreOwner) {
+            // Store owner sees all non-privileged roles (including system roles like cashier, manager)
+            conditions.push(notInArray(roles.name, ['super_admin', 'admin', 'store_owner']));
+        } else {
+            // Other roles: only non-system, non-privileged
+            conditions.push(notInArray(roles.name, ['super_admin', 'admin', 'store_owner']));
+            conditions.push(eq(roles.isSystem, false));
         }
         if (search) {
-            where.OR = [
-                { name: { contains: search as string, mode: 'insensitive' } },
-                { displayName: { contains: search as string, mode: 'insensitive' } },
-            ];
+            conditions.push(or(ilike(roles.name, `%${search}%`), ilike(roles.displayName, `%${search}%`)));
         }
 
-        const [roles, total] = await Promise.all([
-            prisma.role.findMany({
-                where,
-                skip,
-                take: parseInt(limit as string),
-                orderBy: { createdAt: 'desc' },
-                include: {
-                    _count: {
-                        select: { users: true }
-                    }
-                }
+        const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+        const [roleRows, [{ value: total }]] = await Promise.all([
+            db.query.roles.findMany({
+                where: whereClause,
+                offset: skip,
+                limit: parseInt(limit as string),
+                orderBy: desc(roles.createdAt),
+                with: { users: true },
             }),
-            prisma.role.count({ where })
+            db.select({ value: count() }).from(roles).where(whereClause),
         ]);
+
+        // Map to include _count for backward compatibility
+        const rolesWithCount = roleRows.map(r => ({
+            ...r,
+            users: undefined,
+            _count: { users: (r as any).users?.length || 0 },
+        }));
 
         res.json({
             success: true,
-            data: roles,
+            data: rolesWithCount,
             meta: {
                 total,
                 page: parseInt(page as string),
@@ -247,13 +258,9 @@ roleRoutes.get('/', authenticate, authorize('roles:read'), async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 roleRoutes.get('/:id', authenticate, authorize('roles:read'), async (req, res) => {
     try {
-        const role = await prisma.role.findUnique({
-            where: { id: req.params.id },
-            include: {
-                users: {
-                    select: { id: true, name: true, email: true }
-                }
-            }
+        const role = await db.query.roles.findFirst({
+            where: eq(roles.id, req.params.id),
+            with: { users: true },
         });
 
         if (!role) {
@@ -289,13 +296,8 @@ roleRoutes.post('/', authenticate, authorize('roles:create'), async (req, res) =
         }
 
         // Check if role name already exists
-        const existing = await prisma.role.findFirst({
-            where: { 
-                OR: [
-                    { name: name },
-                    { displayName: displayName || name }
-                ]
-            } 
+        const existing = await db.query.roles.findFirst({
+            where: or(eq(roles.name, name), eq(roles.displayName, displayName || name)),
         });
         if (existing) {
             return res.status(400).json({
@@ -316,15 +318,13 @@ roleRoutes.post('/', authenticate, authorize('roles:create'), async (req, res) =
             });
         }
 
-        const role = await prisma.role.create({
-            data: {
-                name,
-                displayName: displayName || name, // Use name as displayName if not provided
-                description,
-                permissions,
-                isSystem: false
-            }
-        });
+        const [role] = await db.insert(roles).values({
+            name,
+            displayName: displayName || name,
+            description,
+            permissions,
+            isSystem: false,
+        }).returning();
 
         res.status(201).json({ success: true, data: role });
     } catch (error) {
@@ -345,7 +345,7 @@ roleRoutes.put('/:id', authenticate, authorize('roles:update'), async (req, res)
         const { name, displayName, description, permissions } = req.body;
 
         // Check if role exists
-        const existing = await prisma.role.findUnique({ where: { id } });
+        const existing = await db.query.roles.findFirst({ where: eq(roles.id, id) });
         if (!existing) {
             return res.status(404).json({
                 success: false,
@@ -363,7 +363,7 @@ roleRoutes.put('/:id', authenticate, authorize('roles:update'), async (req, res)
 
         // Check if new name conflicts with another role
         if (name && name !== existing.name) {
-            const nameExists = await prisma.role.findUnique({ where: { name } });
+            const nameExists = await db.query.roles.findFirst({ where: eq(roles.name, name) });
             if (nameExists) {
                 return res.status(400).json({
                     success: false,
@@ -386,15 +386,16 @@ roleRoutes.put('/:id', authenticate, authorize('roles:update'), async (req, res)
             }
         }
 
-        const role = await prisma.role.update({
-            where: { id },
-            data: {
+        const [role] = await db.update(roles)
+            .set({
                 ...(name && { name }),
                 ...(displayName && { displayName }),
                 ...(description !== undefined && { description }),
-                ...(permissions && { permissions })
-            }
-        });
+                ...(permissions && { permissions }),
+                updatedAt: new Date(),
+            })
+            .where(eq(roles.id, id))
+            .returning();
 
         res.json({ success: true, data: role });
     } catch (error) {
@@ -414,12 +415,7 @@ roleRoutes.delete('/:id', authenticate, authorize('roles:delete'), async (req, r
         const { id } = req.params;
 
         // Check if role exists
-        const existing = await prisma.role.findUnique({
-            where: { id },
-            include: {
-                _count: { select: { users: true } }
-            }
-        });
+        const existing = await db.query.roles.findFirst({ where: eq(roles.id, id) });
 
         if (!existing) {
             return res.status(404).json({
@@ -437,17 +433,18 @@ roleRoutes.delete('/:id', authenticate, authorize('roles:delete'), async (req, r
         }
 
         // Prevent deleting roles with assigned users
-        if (existing._count.users > 0) {
+        const [{ value: userCount }] = await db.select({ value: count() }).from(users).where(eq(users.roleId, id));
+        if (userCount > 0) {
             return res.status(400).json({
                 success: false,
                 error: {
                     code: 'HAS_USERS',
-                    message: `Cannot delete role with ${existing._count.users} assigned users`
+                    message: `Cannot delete role with ${userCount} assigned users`
                 }
             });
         }
 
-        await prisma.role.delete({ where: { id } });
+        await db.delete(roles).where(eq(roles.id, id));
 
         res.json({ success: true, message: 'Role deleted successfully' });
     } catch (error) {
@@ -475,7 +472,7 @@ roleRoutes.post('/:id/assign', authenticate, authorize('roles:update'), async (r
         }
 
         // Check if role exists
-        const role = await prisma.role.findUnique({ where: { id } });
+        const role = await db.query.roles.findFirst({ where: eq(roles.id, id) });
         if (!role) {
             return res.status(404).json({
                 success: false,
@@ -484,7 +481,7 @@ roleRoutes.post('/:id/assign', authenticate, authorize('roles:update'), async (r
         }
 
         // Check if user exists
-        const user = await prisma.user.findUnique({ where: { id: userId } });
+        const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
         if (!user) {
             return res.status(404).json({
                 success: false,
@@ -493,22 +490,10 @@ roleRoutes.post('/:id/assign', authenticate, authorize('roles:update'), async (r
         }
 
         // Update user's role
-        const updatedUser = await prisma.user.update({
-            where: { id: userId },
-            data: {
-                roleId: id,
-                role: role.name
-            },
-            select: {
-                id: true,
-                name: true,
-                email: true,
-                role: true,
-                roleRelation: {
-                    select: { name: true, displayName: true }
-                }
-            }
-        });
+        const [updatedUser] = await db.update(users)
+            .set({ roleId: id, role: role.name, updatedAt: new Date() })
+            .where(eq(users.id, userId))
+            .returning();
 
         res.json({ success: true, data: updatedUser });
     } catch (error) {

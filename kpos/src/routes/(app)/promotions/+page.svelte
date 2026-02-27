@@ -82,6 +82,25 @@
         code: "",
     });
 
+    // API-fetched enum types
+    let promotionTypes = $state<{value: string; label: string; labelLao?: string}[]>([]);
+    let couponTypes = $state<{value: string; label: string; labelLao?: string}[]>([]);
+    let discountTypes = $state<{value: string; label: string; labelLao?: string}[]>([]);
+
+    async function loadEnums() {
+        try {
+            const res = await api.get("settings/enums?type=promotion_type,coupon_type,discount_type").json<any>();
+            if (res.data?.promotion_type) promotionTypes = res.data.promotion_type;
+            if (res.data?.coupon_type) couponTypes = res.data.coupon_type;
+            if (res.data?.discount_type) discountTypes = res.data.discount_type;
+        } catch { /* keep empty, will fall back to hardcoded in template */ }
+    }
+
+    let activeTypes = $derived(
+        activeTab === 'promotions' ? promotionTypes :
+        activeTab === 'coupons' ? couponTypes : discountTypes
+    );
+
     // Stats
     let stats = $derived({
         activePromotions: promotions.filter((p) => getStatus(p) === "active").length,
@@ -313,6 +332,7 @@
     });
 
     onMount(() => {
+        loadEnums();
         loadLoyaltySettings();
     });
 </script>
@@ -806,11 +826,17 @@
                             bind:value={formData.type}
                             class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500 focus:border-transparent"
                         >
-                            <option value="PERCENTAGE">ເປີເຊັນ (%)</option>
-                            <option value="FIXED">ຈຳນວນເງິນ</option>
-                            {#if activeTab === "promotions"}
-                                <option value="BUY_X_GET_Y">ຊື້ X ແຖມ Y</option>
-                                <option value="BUNDLE">ຊຸດໂປຣໂມຊັ່ນ</option>
+                            {#if activeTypes.length > 0}
+                                {#each activeTypes as pt (pt.value)}
+                                    <option value={pt.value}>{pt.labelLao || pt.label}</option>
+                                {/each}
+                            {:else}
+                                <option value="PERCENTAGE">ເປີເຊັນ (%)</option>
+                                <option value="FIXED">ຈຳນວນເງິນ</option>
+                                {#if activeTab === "promotions"}
+                                    <option value="BUY_X_GET_Y">ຊື້ X ແຖມ Y</option>
+                                    <option value="BUNDLE">ຊຸດໂປຣໂມຊັ່ນ</option>
+                                {/if}
                             {/if}
                         </select>
                     </div>

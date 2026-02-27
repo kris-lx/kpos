@@ -1,41 +1,48 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// Categories Module - Routes
+// Categories Module - Routes (Drizzle ORM + PostgreSQL)
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, invalidateQueryCache } from '@/infrastructure/http/middleware/auth.middleware';
-import { prisma } from '@/config/database.config';
+import { authenticate, authorize, branchFilter, buildScopeCondition, ensureScopeAccess, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { db } from '@/config/database.config';
+import { categories } from '@/db/schema/tables';
+import { eq, and, asc } from 'drizzle-orm';
 
 export const categoryRoutes = Router();
 
-// Get all categories
-categoryRoutes.get('/', authenticate, async (req, res, next) => {
+// Get all categories (store-scoped)
+categoryRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
     try {
-        const where: Record<string, unknown> = { isActive: true };
+        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const scopeWhere = buildScopeCondition(filter, { storeId: categories.storeId, branchId: categories.storeId }, 'storeId');
 
-        const categories = await prisma.category.findMany({
-            where,
-            include: { parent: true },
-            orderBy: { sortOrder: 'asc' },
+        const rows = await db.query.categories.findMany({
+            where: scopeWhere ? and(eq(categories.isActive, true), scopeWhere) : eq(categories.isActive, true),
+            with: { parent: true },
+            orderBy: asc(categories.sortOrder),
         });
 
-        res.json({ success: true, data: categories });
+        res.json({ success: true, data: rows });
     } catch (error) {
         next(error);
     }
 });
 
-// Get category by ID
+// Get category by ID (scope-checked)
 categoryRoutes.get('/:id', authenticate, async (req, res, next) => {
     try {
-        const category = await prisma.category.findUnique({
-            where: { id: req.params.id },
-            include: { parent: true, children: true, products: { take: 10 } },
+        const category = await db.query.categories.findFirst({
+            where: eq(categories.id, req.params.id),
+            with: { parent: true, children: true, products: { limit: 10 } },
         });
 
         if (!category) {
             res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Category not found' } });
             return;
+        }
+
+        if (!ensureScopeAccess(category, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this category' } });
         }
 
         res.json({ success: true, data: category });
@@ -44,7 +51,7 @@ categoryRoutes.get('/:id', authenticate, async (req, res, next) => {
     }
 });
 
-// Create category
+// Create category (auto-set storeId)
 categoryRoutes.post('/', authenticate, authorize('categories:create'), async (req, res, next) => {
     try {
         const { name, description, image, parentId, sortOrder } = req.body;
@@ -66,7 +73,12 @@ categoryRoutes.post('/', authenticate, authorize('categories:create'), async (re
         if (parentId) data.parentId = parentId;
         if (sortOrder !== undefined) data.sortOrder = sortOrder;
 
-        const category = await prisma.category.create({ data });
+        // Auto-set storeId from user context
+        if (req.authUser?.activeStoreId) {
+            data.storeId = req.authUser.activeStoreId;
+        }
+
+        const [category] = await db.insert(categories).values(data).returning();
         await invalidateQueryCache('categories*');
         await invalidateQueryCache('products*');
         res.status(201).json({ success: true, data: category });
@@ -75,13 +87,18 @@ categoryRoutes.post('/', authenticate, authorize('categories:create'), async (re
     }
 });
 
-// Update category
+// Update category (scope-checked)
 categoryRoutes.put('/:id', authenticate, authorize('categories:update'), async (req, res, next) => {
     try {
-        const category = await prisma.category.update({
-            where: { id: req.params.id },
-            data: req.body,
-        });
+        const existing = await db.query.categories.findFirst({ where: eq(categories.id, req.params.id) });
+        if (!existing) return res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Category not found' } });
+        if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
+
+        const { storeId: _s, id: _id, ...safeData } = req.body;
+        const [category] = await db.update(categories)
+            .set({ ...safeData, updatedAt: new Date() })
+            .where(eq(categories.id, req.params.id))
+            .returning();
         await invalidateQueryCache('categories*');
         res.json({ success: true, data: category });
     } catch (error) {
@@ -89,13 +106,16 @@ categoryRoutes.put('/:id', authenticate, authorize('categories:update'), async (
     }
 });
 
-// Delete category
+// Delete category (scope-checked)
 categoryRoutes.delete('/:id', authenticate, authorize('categories:delete'), async (req, res, next) => {
     try {
-        await prisma.category.update({
-            where: { id: req.params.id },
-            data: { isActive: false },
-        });
+        const existing = await db.query.categories.findFirst({ where: eq(categories.id, req.params.id) });
+        if (!existing) return res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Category not found' } });
+        if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
+
+        await db.update(categories)
+            .set({ isActive: false, updatedAt: new Date() })
+            .where(eq(categories.id, req.params.id));
         await invalidateQueryCache('categories*');
         await invalidateQueryCache('products*');
         res.json({ success: true, data: { message: 'Category deleted' } });

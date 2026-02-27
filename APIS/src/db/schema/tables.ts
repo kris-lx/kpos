@@ -1,0 +1,1066 @@
+// ═══════════════════════════════════════════════════════════════════════════
+// KPOS - Drizzle Schema Tables (PostgreSQL)
+// ═══════════════════════════════════════════════════════════════════════════
+
+import {
+    pgTable, uuid, text, boolean, timestamp, integer, doublePrecision,
+    jsonb, index, uniqueIndex,
+} from 'drizzle-orm/pg-core';
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TENANT / ORGANIZATION
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const tenants = pgTable('tenants', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    name: text('name').notNull(),
+    code: text('code').notNull().unique(),
+    logo: text('logo'),
+    businessType: text('business_type'),
+    taxId: text('tax_id'),
+    phone: text('phone'),
+    email: text('email'),
+    address: text('address'),
+    plan: text('plan').notNull().default('free'),
+    isActive: boolean('is_active').notNull().default(true),
+    settings: jsonb('settings'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BRANCH MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const branches = pgTable('branches', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    name: text('name').notNull(),
+    code: text('code').notNull().unique(),
+    address: text('address'),
+    phone: text('phone'),
+    email: text('email'),
+    taxId: text('tax_id'),
+    logo: text('logo'),
+    receiptSettings: jsonb('receipt_settings'),
+    isActive: boolean('is_active').notNull().default(true),
+    isMain: boolean('is_main').notNull().default(false),
+    settings: jsonb('settings'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (t) => [
+    index('branches_tenant_idx').on(t.tenantId),
+]);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AUTHENTICATION & USERS
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const users = pgTable('users', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    email: text('email').notNull().unique(),
+    password: text('password').notNull(),
+    name: text('name').notNull(),
+    phone: text('phone'),
+    avatar: text('avatar'),
+    role: text('role').notNull().default('staff'),
+    roleId: uuid('role_id'),
+    branchId: uuid('branch_id'),
+    permissions: text('permissions').array().notNull().default([]),
+    isActive: boolean('is_active').notNull().default(true),
+    isSuperAdmin: boolean('is_super_admin').notNull().default(false),
+    emailVerified: boolean('email_verified').notNull().default(false),
+    twoFAEnabled: boolean('two_fa_enabled').notNull().default(false),
+    twoFASecret: text('two_fa_secret'),
+    lastLoginAt: timestamp('last_login_at'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+export const sessions = pgTable('sessions', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id').notNull(),
+    token: text('token').notNull().unique(),
+    refreshToken: text('refresh_token').notNull().unique(),
+    device: text('device'),
+    ip: text('ip'),
+    userAgent: text('user_agent'),
+    expiresAt: timestamp('expires_at').notNull(),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+export const roles = pgTable('roles', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    name: text('name').notNull().unique(),
+    displayName: text('display_name').notNull(),
+    description: text('description'),
+    permissions: text('permissions').array().notNull().default([]),
+    isSystem: boolean('is_system').notNull().default(false),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RULE-BASED ACCESS CONTROL
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const rules = pgTable('rules', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    name: text('name').notNull().unique(),
+    displayName: text('display_name').notNull(),
+    description: text('description'),
+    module: text('module').notNull(),
+    icon: text('icon'),
+    routes: text('routes').array().notNull().default([]),
+    permissions: text('permissions').array().notNull().default([]),
+    order: integer('order').notNull().default(0),
+    isActive: boolean('is_active').notNull().default(true),
+    isSystem: boolean('is_system').notNull().default(false),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+export const roleRules = pgTable('role_rules', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    roleId: uuid('role_id').notNull(),
+    ruleId: uuid('rule_id').notNull(),
+    canRead: boolean('can_read').notNull().default(true),
+    canCreate: boolean('can_create').notNull().default(false),
+    canUpdate: boolean('can_update').notNull().default(false),
+    canDelete: boolean('can_delete').notNull().default(false),
+}, (t) => [
+    uniqueIndex('role_rules_role_rule_idx').on(t.roleId, t.ruleId),
+]);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PERMISSION MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const permissionGroups = pgTable('permission_groups', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    key: text('key').notNull().unique(),
+    label: text('label').notNull(),
+    icon: text('icon'),
+    color: text('color'),
+    order: integer('order').notNull().default(0),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+export const permissions = pgTable('permissions', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    key: text('key').notNull().unique(),
+    label: text('label').notNull(),
+    groupId: uuid('group_id').notNull(),
+    order: integer('order').notNull().default(0),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MENU PERMISSIONS
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const menuPermissions = pgTable('menu_permissions', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    key: text('key').notNull().unique(),
+    label: text('label').notNull(),
+    labelLao: text('label_lao'),
+    icon: text('icon'),
+    path: text('path'),
+    parentId: uuid('parent_id'),
+    requiredPermission: text('required_permission'),
+    order: integer('order').notNull().default(0),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (t) => [
+    index('menu_permissions_parent_idx').on(t.parentId),
+]);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STORE MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const stores = pgTable('stores', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    name: text('name').notNull(),
+    code: text('code').notNull().unique(),
+    branchId: uuid('branch_id').notNull(),
+    address: text('address'),
+    phone: text('phone'),
+    email: text('email'),
+    description: text('description'),
+    isActive: boolean('is_active').notNull().default(true),
+    isDefault: boolean('is_default').notNull().default(false),
+    settings: jsonb('settings'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+export const userStores = pgTable('user_stores', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    userId: uuid('user_id').notNull(),
+    storeId: uuid('store_id').notNull(),
+    branchId: uuid('branch_id').notNull(),
+    isDefault: boolean('is_default').notNull().default(false),
+    canRead: boolean('can_read').notNull().default(true),
+    canWrite: boolean('can_write').notNull().default(true),
+    canDelete: boolean('can_delete').notNull().default(false),
+    canManage: boolean('can_manage').notNull().default(false),
+    assignedBy: uuid('assigned_by'),
+    assignedAt: timestamp('assigned_at').notNull().defaultNow(),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (t) => [
+    uniqueIndex('user_stores_user_store_idx').on(t.userId, t.storeId),
+]);
+
+export const productStores = pgTable('product_stores', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    productId: uuid('product_id').notNull(),
+    storeId: uuid('store_id').notNull(),
+    isActive: boolean('is_active').notNull().default(true),
+    price: doublePrecision('price'),
+    stock: doublePrecision('stock').notNull().default(0),
+    minStock: integer('min_stock').notNull().default(10),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (t) => [
+    uniqueIndex('product_stores_product_store_idx').on(t.productId, t.storeId),
+]);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STORE REQUESTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const storeRequests = pgTable('store_requests', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    requesterId: uuid('requester_id').notNull(),
+    branchId: uuid('branch_id'),
+    type: text('type').notNull(),
+    storeName: text('store_name'),
+    storeCode: text('store_code'),
+    storeAddress: text('store_address'),
+    storePhone: text('store_phone'),
+    storeEmail: text('store_email'),
+    branchName: text('branch_name'),
+    branchCode: text('branch_code'),
+    branchAddress: text('branch_address'),
+    branchPhone: text('branch_phone'),
+    branchEmail: text('branch_email'),
+    reason: text('reason'),
+    documents: text('documents').array().notNull().default([]),
+    metadata: jsonb('metadata'),
+    status: text('status').notNull().default('pending'),
+    priority: text('priority').notNull().default('normal'),
+    reviewerId: uuid('reviewer_id'),
+    reviewNote: text('review_note'),
+    reviewedAt: timestamp('reviewed_at'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+    expiresAt: timestamp('expires_at'),
+}, (t) => [
+    index('store_requests_status_created_idx').on(t.status, t.createdAt),
+    index('store_requests_requester_idx').on(t.requesterId),
+]);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PRODUCTS & CATEGORIES
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const categories = pgTable('categories', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    name: text('name').notNull(),
+    slug: text('slug').notNull().unique(),
+    description: text('description'),
+    image: text('image'),
+    parentId: uuid('parent_id'),
+    storeId: uuid('store_id'),
+    sortOrder: integer('sort_order').notNull().default(0),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (t) => [
+    index('categories_store_idx').on(t.storeId),
+]);
+
+export const products = pgTable('products', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    name: text('name').notNull(),
+    description: text('description'),
+    sku: text('sku'),
+    barcode: text('barcode'),
+    categoryId: uuid('category_id'),
+    branchId: uuid('branch_id').notNull(),
+    price: doublePrecision('price').notNull(),
+    cost: doublePrecision('cost').notNull().default(0),
+    unit: text('unit').notNull().default('piece'),
+    image: text('image'),
+    images: text('images').array().notNull().default([]),
+    isActive: boolean('is_active').notNull().default(true),
+    isVat: boolean('is_vat').notNull().default(true),
+    vatRate: doublePrecision('vat_rate').notNull().default(7),
+    trackStock: boolean('track_stock').notNull().default(true),
+    lowStockThreshold: integer('low_stock_threshold').notNull().default(10),
+    allowDecimal: boolean('allow_decimal').notNull().default(false),
+    sortOrder: integer('sort_order').notNull().default(0),
+    tags: text('tags').array().notNull().default([]),
+    attributes: jsonb('attributes'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+export const skuVariants = pgTable('sku_variants', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    productId: uuid('product_id').notNull(),
+    sku: text('sku').notNull().unique(),
+    barcode: text('barcode').unique(),
+    name: text('name').notNull(),
+    attributes: jsonb('attributes').notNull(),
+    price: doublePrecision('price'),
+    cost: doublePrecision('cost'),
+    image: text('image'),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+export const billOfMaterials = pgTable('bill_of_materials', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    productId: uuid('product_id').notNull(),
+    ingredientId: uuid('ingredient_id').notNull(),
+    quantity: doublePrecision('quantity').notNull(),
+    unit: text('unit').notNull(),
+    cost: doublePrecision('cost').notNull().default(0),
+});
+
+export const priceLevels = pgTable('price_levels', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    name: text('name').notNull().unique(),
+    description: text('description'),
+    isDefault: boolean('is_default').notNull().default(false),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+export const productPriceLevels = pgTable('product_price_levels', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    productId: uuid('product_id').notNull(),
+    priceLevelId: uuid('price_level_id').notNull(),
+    price: doublePrecision('price').notNull(),
+}, (t) => [
+    uniqueIndex('product_price_levels_product_level_idx').on(t.productId, t.priceLevelId),
+]);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// INVENTORY
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const inventory = pgTable('inventory', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    productId: uuid('product_id').notNull(),
+    skuVariantId: uuid('sku_variant_id'),
+    branchId: uuid('branch_id').notNull(),
+    storeId: uuid('store_id'),
+    quantity: doublePrecision('quantity').notNull().default(0),
+    reserved: doublePrecision('reserved').notNull().default(0),
+    available: doublePrecision('available').notNull().default(0),
+    location: text('location'),
+    batchNumber: text('batch_number'),
+    expiryDate: timestamp('expiry_date'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (t) => [
+    uniqueIndex('inventory_product_branch_sku_batch_idx').on(t.productId, t.branchId, t.skuVariantId, t.batchNumber),
+    index('inventory_store_idx').on(t.storeId),
+]);
+
+export const stockMovements = pgTable('stock_movements', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    productId: uuid('product_id').notNull(),
+    branchId: uuid('branch_id').notNull(),
+    storeId: uuid('store_id'),
+    type: text('type').notNull(),
+    quantity: doublePrecision('quantity').notNull(),
+    previousQty: doublePrecision('previous_qty').notNull(),
+    newQty: doublePrecision('new_qty').notNull(),
+    unitCost: doublePrecision('unit_cost'),
+    supplier: text('supplier'),
+    reason: text('reason'),
+    reference: text('reference'),
+    referenceType: text('reference_type'),
+    userId: uuid('user_id').notNull(),
+    notes: text('notes'),
+    expiryDate: timestamp('expiry_date'),
+    batchNumber: text('batch_number'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (t) => [
+    index('stock_movements_store_idx').on(t.storeId),
+]);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CUSTOMERS
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const customers = pgTable('customers', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    memberCode: text('member_code').unique(),
+    name: text('name').notNull(),
+    email: text('email'),
+    phone: text('phone'),
+    address: text('address'),
+    taxId: text('tax_id'),
+    birthDate: timestamp('birth_date'),
+    gender: text('gender'),
+    notes: text('notes'),
+    points: integer('points').notNull().default(0),
+    totalSpent: doublePrecision('total_spent').notNull().default(0),
+    visitCount: integer('visit_count').notNull().default(0),
+    lastVisitAt: timestamp('last_visit_at'),
+    branchId: uuid('branch_id'),
+    storeId: uuid('store_id'),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (t) => [
+    index('customers_store_idx').on(t.storeId),
+]);
+
+export const pointsHistory = pgTable('points_history', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    customerId: uuid('customer_id').notNull(),
+    points: integer('points').notNull(),
+    type: text('type').notNull(),
+    reason: text('reason'),
+    referenceId: text('reference_id'),
+    createdBy: uuid('created_by'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (t) => [
+    index('points_history_customer_idx').on(t.customerId),
+]);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SALES & TRANSACTIONS
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const transactions = pgTable('transactions', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    transactionNo: text('transaction_no').notNull().unique(),
+    type: text('type').notNull().default('SALE'),
+    status: text('status').notNull().default('COMPLETED'),
+    branchId: uuid('branch_id').notNull(),
+    storeId: uuid('store_id'),
+    userId: uuid('user_id').notNull(),
+    shiftId: uuid('shift_id'),
+    memberId: uuid('member_id'),
+    customerId: uuid('customer_id'),
+    tableId: uuid('table_id'),
+    orderId: uuid('order_id'),
+    orderType: text('order_type').notNull().default('WALKIN'),
+    subtotal: doublePrecision('subtotal').notNull(),
+    discountType: text('discount_type'),
+    discountValue: doublePrecision('discount_value').notNull().default(0),
+    discountAmount: doublePrecision('discount_amount').notNull().default(0),
+    taxAmount: doublePrecision('tax_amount').notNull().default(0),
+    serviceCharge: doublePrecision('service_charge').notNull().default(0),
+    total: doublePrecision('total').notNull(),
+    received: doublePrecision('received').notNull().default(0),
+    change: doublePrecision('change').notNull().default(0),
+    pointsEarned: integer('points_earned').notNull().default(0),
+    pointsRedeemed: integer('points_redeemed').notNull().default(0),
+    note: text('note'),
+    voidReason: text('void_reason'),
+    refundReason: text('refund_reason'),
+    parentId: uuid('parent_id'),
+    isCredit: boolean('is_credit').notNull().default(false),
+    creditStatus: text('credit_status'),
+    dueDate: timestamp('due_date'),
+    paidAmount: doublePrecision('paid_amount').notNull().default(0),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (t) => [
+    index('transactions_store_idx').on(t.storeId),
+]);
+
+export const transactionItems = pgTable('transaction_items', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    transactionId: uuid('transaction_id').notNull(),
+    productId: uuid('product_id').notNull(),
+    productName: text('product_name').notNull(),
+    sku: text('sku'),
+    barcode: text('barcode'),
+    quantity: doublePrecision('quantity').notNull(),
+    unitPrice: doublePrecision('unit_price').notNull(),
+    cost: doublePrecision('cost').notNull().default(0),
+    discountType: text('discount_type'),
+    discountValue: doublePrecision('discount_value').notNull().default(0),
+    discountAmount: doublePrecision('discount_amount').notNull().default(0),
+    taxRate: doublePrecision('tax_rate').notNull().default(0),
+    taxAmount: doublePrecision('tax_amount').notNull().default(0),
+    total: doublePrecision('total').notNull(),
+    note: text('note'),
+    modifiers: jsonb('modifiers'),
+});
+
+export const transactionPayments = pgTable('transaction_payments', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    transactionId: uuid('transaction_id').notNull(),
+    methodId: uuid('method_id').notNull(),
+    methodName: text('method_name').notNull(),
+    amount: doublePrecision('amount').notNull(),
+    reference: text('reference'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+export const heldSales = pgTable('held_sales', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    name: text('name'),
+    branchId: uuid('branch_id').notNull(),
+    userId: uuid('user_id').notNull(),
+    memberId: uuid('member_id'),
+    tableId: uuid('table_id'),
+    items: jsonb('items').notNull(),
+    subtotal: doublePrecision('subtotal').notNull(),
+    discount: doublePrecision('discount').notNull().default(0),
+    total: doublePrecision('total').notNull(),
+    note: text('note'),
+    storeId: uuid('store_id'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (t) => [
+    index('held_sales_store_idx').on(t.storeId),
+]);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PAYMENTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const paymentMethods = pgTable('payment_methods', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    name: text('name').notNull(),
+    code: text('code').notNull().unique(),
+    type: text('type').notNull(),
+    icon: text('icon'),
+    isActive: boolean('is_active').notNull().default(true),
+    isDefault: boolean('is_default').notNull().default(false),
+    settings: jsonb('settings'),
+    sortOrder: integer('sort_order').notNull().default(0),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SHIFTS & CASH MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const shifts = pgTable('shifts', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    shiftNo: text('shift_no').notNull().unique(),
+    branchId: uuid('branch_id').notNull(),
+    userId: uuid('user_id').notNull(),
+    registerId: uuid('register_id'),
+    openingBalance: doublePrecision('opening_balance').notNull(),
+    closingBalance: doublePrecision('closing_balance'),
+    expectedBalance: doublePrecision('expected_balance'),
+    difference: doublePrecision('difference'),
+    status: text('status').notNull().default('OPEN'),
+    openedAt: timestamp('opened_at').notNull().defaultNow(),
+    closedAt: timestamp('closed_at'),
+    notes: text('notes'),
+    storeId: uuid('store_id'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (t) => [
+    index('shifts_store_idx').on(t.storeId),
+]);
+
+export const cashRegisters = pgTable('cash_registers', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    name: text('name').notNull(),
+    branchId: uuid('branch_id').notNull(),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+export const cashMovements = pgTable('cash_movements', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    shiftId: uuid('shift_id').notNull(),
+    type: text('type').notNull(),
+    amount: doublePrecision('amount').notNull(),
+    reason: text('reason'),
+    userId: uuid('user_id').notNull(),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RESTAURANT MODULE
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const tables = pgTable('tables', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    name: text('name').notNull(),
+    branchId: uuid('branch_id').notNull(),
+    areaId: uuid('area_id'),
+    capacity: integer('capacity').notNull().default(4),
+    status: text('status').notNull().default('AVAILABLE'),
+    posX: doublePrecision('pos_x').notNull().default(0),
+    posY: doublePrecision('pos_y').notNull().default(0),
+    shape: text('shape').notNull().default('SQUARE'),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+export const orders = pgTable('orders', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    orderNo: text('order_no').notNull().unique(),
+    branchId: uuid('branch_id').notNull(),
+    tableId: uuid('table_id'),
+    type: text('type').notNull().default('DINE_IN'),
+    status: text('status').notNull().default('PENDING'),
+    guestCount: integer('guest_count').notNull().default(1),
+    subtotal: doublePrecision('subtotal').notNull().default(0),
+    discount: doublePrecision('discount').notNull().default(0),
+    tax: doublePrecision('tax').notNull().default(0),
+    total: doublePrecision('total').notNull().default(0),
+    note: text('note'),
+    kitchenNote: text('kitchen_note'),
+    servedAt: timestamp('served_at'),
+    completedAt: timestamp('completed_at'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+export const orderItems = pgTable('order_items', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orderId: uuid('order_id').notNull(),
+    productId: uuid('product_id').notNull(),
+    productName: text('product_name').notNull(),
+    quantity: doublePrecision('quantity').notNull(),
+    unitPrice: doublePrecision('unit_price').notNull(),
+    total: doublePrecision('total').notNull(),
+    status: text('status').notNull().default('PENDING'),
+    note: text('note'),
+    modifiers: jsonb('modifiers'),
+    sentAt: timestamp('sent_at'),
+    preparedAt: timestamp('prepared_at'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+export const reservations = pgTable('reservations', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    branchId: uuid('branch_id').notNull(),
+    tableId: uuid('table_id'),
+    memberId: uuid('member_id'),
+    customerName: text('customer_name').notNull(),
+    phone: text('phone').notNull(),
+    email: text('email'),
+    guestCount: integer('guest_count').notNull(),
+    date: timestamp('date').notNull(),
+    time: text('time').notNull(),
+    duration: integer('duration').notNull().default(120),
+    status: text('status').notNull().default('PENDING'),
+    note: text('note'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CRM & MEMBERS
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const members = pgTable('members', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    cardNumber: text('card_number').unique(),
+    firstName: text('first_name').notNull(),
+    lastName: text('last_name'),
+    email: text('email'),
+    phone: text('phone').notNull().unique(),
+    birthdate: timestamp('birthdate'),
+    gender: text('gender'),
+    address: text('address'),
+    tierId: uuid('tier_id'),
+    points: integer('points').notNull().default(0),
+    totalSpent: doublePrecision('total_spent').notNull().default(0),
+    visitCount: integer('visit_count').notNull().default(0),
+    isActive: boolean('is_active').notNull().default(true),
+    notes: text('notes'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+export const membershipTiers = pgTable('membership_tiers', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    name: text('name').notNull().unique(),
+    minPoints: integer('min_points').notNull().default(0),
+    pointMultiplier: doublePrecision('point_multiplier').notNull().default(1),
+    discountPercent: doublePrecision('discount_percent').notNull().default(0),
+    benefits: jsonb('benefits'),
+    color: text('color'),
+    sortOrder: integer('sort_order').notNull().default(0),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+export const pointHistory = pgTable('point_history', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    memberId: uuid('member_id').notNull(),
+    type: text('type').notNull(),
+    points: integer('points').notNull(),
+    balance: integer('balance').notNull(),
+    reference: text('reference'),
+    referenceType: text('reference_type'),
+    description: text('description'),
+    expiresAt: timestamp('expires_at'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+export const pointSettings = pgTable('point_settings', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    pointsPerCurrency: doublePrecision('points_per_currency').notNull().default(1),
+    minSpendToEarn: doublePrecision('min_spend_to_earn').notNull().default(0),
+    redemptionRate: doublePrecision('redemption_rate').notNull().default(1),
+    minPointsToRedeem: integer('min_points_to_redeem').notNull().default(100),
+    expiryMonths: integer('expiry_months').default(12),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PROMOTIONS & DISCOUNTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const promotions = pgTable('promotions', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    name: text('name').notNull(),
+    description: text('description'),
+    type: text('type').notNull(),
+    value: doublePrecision('value').notNull(),
+    conditions: jsonb('conditions'),
+    applicableTo: jsonb('applicable_to'),
+    startDate: timestamp('start_date').notNull(),
+    endDate: timestamp('end_date'),
+    isActive: boolean('is_active').notNull().default(true),
+    priority: integer('priority').notNull().default(0),
+    usageLimit: integer('usage_limit'),
+    usageCount: integer('usage_count').notNull().default(0),
+    memberOnly: boolean('member_only').notNull().default(false),
+    storeId: uuid('store_id'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (t) => [
+    index('promotions_store_idx').on(t.storeId),
+]);
+
+export const coupons = pgTable('coupons', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    code: text('code').notNull().unique(),
+    name: text('name').notNull(),
+    description: text('description'),
+    type: text('type').notNull(),
+    value: doublePrecision('value').notNull(),
+    minPurchase: doublePrecision('min_purchase').notNull().default(0),
+    maxDiscount: doublePrecision('max_discount'),
+    startDate: timestamp('start_date').notNull(),
+    endDate: timestamp('end_date'),
+    usageLimit: integer('usage_limit'),
+    usageCount: integer('usage_count').notNull().default(0),
+    perUserLimit: integer('per_user_limit').default(1),
+    isActive: boolean('is_active').notNull().default(true),
+    storeId: uuid('store_id'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (t) => [
+    index('coupons_store_idx').on(t.storeId),
+]);
+
+export const discounts = pgTable('discounts', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    name: text('name').notNull(),
+    description: text('description'),
+    discountType: text('discount_type').notNull().default('percentage'),
+    discountValue: doublePrecision('discount_value').notNull(),
+    applyTo: text('apply_to').notNull().default('all'),
+    productIds: uuid('product_ids').array().notNull().default([]),
+    categoryIds: uuid('category_ids').array().notNull().default([]),
+    minQuantity: integer('min_quantity').notNull().default(1),
+    minPurchase: doublePrecision('min_purchase').notNull().default(0),
+    maxDiscount: doublePrecision('max_discount'),
+    startDate: timestamp('start_date'),
+    endDate: timestamp('end_date'),
+    usageLimit: integer('usage_limit'),
+    usageCount: integer('usage_count').notNull().default(0),
+    isActive: boolean('is_active').notNull().default(true),
+    storeId: uuid('store_id'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (t) => [
+    index('discounts_store_idx').on(t.storeId),
+]);
+
+export const settlements = pgTable('settlements', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    settlementDate: timestamp('settlement_date').notNull(),
+    totalAmount: doublePrecision('total_amount').notNull().default(0),
+    cashAmount: doublePrecision('cash_amount').notNull().default(0),
+    cardAmount: doublePrecision('card_amount').notNull().default(0),
+    otherAmount: doublePrecision('other_amount').notNull().default(0),
+    transactionCount: integer('transaction_count').notNull().default(0),
+    status: text('status').notNull().default('pending'),
+    settledBy: uuid('settled_by'),
+    notes: text('notes'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// VENDORS & PURCHASE ORDERS
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const vendors = pgTable('vendors', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    name: text('name').notNull(),
+    code: text('code'),
+    contactName: text('contact_name'),
+    email: text('email'),
+    phone: text('phone'),
+    address: text('address'),
+    taxId: text('tax_id'),
+    paymentTerms: integer('payment_terms').notNull().default(30),
+    notes: text('notes'),
+    isActive: boolean('is_active').notNull().default(true),
+    isStarred: boolean('is_starred').notNull().default(false),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+export const purchaseOrders = pgTable('purchase_orders', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    poNumber: text('po_number').notNull().unique(),
+    vendorId: uuid('vendor_id').notNull(),
+    branchId: uuid('branch_id').notNull(),
+    status: text('status').notNull().default('DRAFT'),
+    subtotal: doublePrecision('subtotal').notNull(),
+    tax: doublePrecision('tax').notNull().default(0),
+    discount: doublePrecision('discount').notNull().default(0),
+    total: doublePrecision('total').notNull(),
+    expectedDate: timestamp('expected_date'),
+    receivedDate: timestamp('received_date'),
+    notes: text('notes'),
+    approvedBy: uuid('approved_by'),
+    approvedAt: timestamp('approved_at'),
+    createdBy: uuid('created_by').notNull(),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+export const purchaseOrderItems = pgTable('purchase_order_items', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    purchaseOrderId: uuid('purchase_order_id').notNull(),
+    productId: uuid('product_id').notNull(),
+    productName: text('product_name').notNull(),
+    quantity: doublePrecision('quantity').notNull(),
+    receivedQty: doublePrecision('received_qty').notNull().default(0),
+    unitCost: doublePrecision('unit_cost').notNull(),
+    total: doublePrecision('total').notNull(),
+});
+
+export const stockTransfers = pgTable('stock_transfers', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    transferNo: text('transfer_no').notNull().unique(),
+    fromBranchId: uuid('from_branch_id').notNull(),
+    toBranchId: uuid('to_branch_id').notNull(),
+    status: text('status').notNull().default('PENDING'),
+    notes: text('notes'),
+    requestedBy: uuid('requested_by').notNull(),
+    approvedBy: uuid('approved_by'),
+    approvedAt: timestamp('approved_at'),
+    completedBy: uuid('completed_by'),
+    completedAt: timestamp('completed_at'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+export const stockTransferItems = pgTable('stock_transfer_items', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    transferId: uuid('transfer_id').notNull(),
+    productId: uuid('product_id').notNull(),
+    productName: text('product_name').notNull(),
+    quantity: doublePrecision('quantity').notNull(),
+    receivedQty: doublePrecision('received_qty').notNull().default(0),
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STOCK COUNTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const stockCounts = pgTable('stock_counts', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    countNo: text('count_no').notNull().unique(),
+    branchId: uuid('branch_id').notNull(),
+    date: timestamp('date').notNull().defaultNow(),
+    status: text('status').notNull().default('pending'),
+    notes: text('notes'),
+    hasDiscrepancy: boolean('has_discrepancy').notNull().default(false),
+    countedBy: uuid('counted_by').notNull(),
+    approvedBy: uuid('approved_by'),
+    approvedAt: timestamp('approved_at'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+export const stockCountItems = pgTable('stock_count_items', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    countId: uuid('count_id').notNull(),
+    productId: uuid('product_id').notNull(),
+    productName: text('product_name').notNull(),
+    systemQty: doublePrecision('system_qty').notNull(),
+    actualQty: doublePrecision('actual_qty').notNull(),
+    difference: doublePrecision('difference').notNull(),
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DOCUMENTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const documents = pgTable('documents', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    type: text('type').notNull(),
+    documentNo: text('document_no').notNull().unique(),
+    referenceId: uuid('reference_id').notNull(),
+    referenceType: text('reference_type').notNull(),
+    branchId: uuid('branch_id'),
+    storeId: uuid('store_id'),
+    data: jsonb('data').notNull(),
+    status: text('status').notNull().default('CREATED'),
+    printCount: integer('print_count').notNull().default(0),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (t) => [
+    index('documents_branch_idx').on(t.branchId),
+    index('documents_store_idx').on(t.storeId),
+]);
+
+export const documentTemplates = pgTable('document_templates', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    type: text('type').notNull().unique(),
+    name: text('name').notNull(),
+    template: text('template').notNull(),
+    settings: jsonb('settings'),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SETTINGS & CONFIGURATION
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const settings = pgTable('settings', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    category: text('category').notNull(),
+    key: text('key').notNull(),
+    value: jsonb('value').notNull(),
+    branchId: uuid('branch_id'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (t) => [
+    uniqueIndex('settings_category_key_branch_idx').on(t.category, t.key, t.branchId),
+]);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SYSTEM ENUMS (dropdown/select values stored in DB, editable by admin)
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const systemEnums = pgTable('system_enums', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    type: text('type').notNull(),       // e.g. 'business_type', 'stockout_reason'
+    value: text('value').notNull(),     // e.g. 'retail', 'damaged'
+    label: text('label').notNull(),     // English label
+    labelLao: text('label_lao'),        // Lao label
+    order: integer('order').notNull().default(0),
+    isActive: boolean('is_active').notNull().default(true),
+    isSystem: boolean('is_system').notNull().default(false), // system enums can't be deleted
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (t) => [
+    uniqueIndex('system_enums_type_value_idx').on(t.type, t.value),
+    index('system_enums_type_idx').on(t.type),
+]);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// NOTIFICATIONS & ACTIVITY
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const notifications = pgTable('notifications', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    userId: uuid('user_id').notNull(),
+    type: text('type').notNull(),
+    title: text('title').notNull(),
+    message: text('message').notNull(),
+    data: jsonb('data'),
+    isRead: boolean('is_read').notNull().default(false),
+    readAt: timestamp('read_at'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+export const activityLogs = pgTable('activity_logs', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    userId: uuid('user_id').notNull(),
+    action: text('action').notNull(),
+    description: text('description'),
+    entity: text('entity'),
+    entityId: uuid('entity_id'),
+    metadata: jsonb('metadata'),
+    oldData: jsonb('old_data'),
+    newData: jsonb('new_data'),
+    ip: text('ip'),
+    userAgent: text('user_agent'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (t) => [
+    index('activity_logs_user_idx').on(t.userId),
+    index('activity_logs_action_idx').on(t.action),
+    index('activity_logs_created_idx').on(t.createdAt),
+]);

@@ -12,8 +12,9 @@ import { isDatabaseConnected } from '@/config/database.config';
 import { errorHandler, notFoundHandler } from './middleware/error.middleware';
 import { requestLogger } from './middleware/logger.middleware';
 import { rateLimiter } from './middleware/rateLimit.middleware';
+import { inputSanitizer, noCacheHeaders } from './middleware/security.middleware';
 import { setupRoutes } from './routes';
-import { setupSocketHandlers } from './socket';
+import { setupSocketHandlers, SocketEventEmitter } from './socket';
 
 export class AppServer {
     private app: Application;
@@ -53,6 +54,10 @@ export class AppServer {
         this.app.use(express.json({ limit: '10mb' }));
         this.app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+        // Security: input sanitization + no-cache API headers
+        this.app.use(inputSanitizer);
+        this.app.use(noCacheHeaders);
+
         // Logging
         this.app.use(requestLogger);
 
@@ -76,6 +81,7 @@ export class AppServer {
     }
 
     private setupSocketHandlers(): void {
+        SocketEventEmitter.setIO(this.io);
         setupSocketHandlers(this.io);
     }
 

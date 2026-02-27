@@ -3,7 +3,8 @@
 // Publishes to RabbitMQ queue if available, falls back to direct DB write
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { prisma } from '@/config/database.config';
+import { db } from '@/config/database.config';
+import { activityLogs } from '@/db/schema/tables';
 import { publish, QUEUES, isRabbitMQConnected } from '@/config/rabbitmq.config';
 
 export async function queueActivityLog(
@@ -31,15 +32,13 @@ export async function queueActivityLog(
         // Publish to queue (async, non-blocking) — fall back to direct DB write
         const queued = isRabbitMQConnected() && publish(QUEUES.ACTIVITY_LOG, payload);
         if (!queued) {
-            await prisma.activityLog.create({
-                data: {
-                    userId,
-                    action,
-                    description: details,
-                    metadata: metadata || {},
-                    ip,
-                    userAgent,
-                },
+            await db.insert(activityLogs).values({
+                userId,
+                action,
+                description: details,
+                metadata: metadata || {},
+                ip,
+                userAgent,
             });
         }
     } catch {

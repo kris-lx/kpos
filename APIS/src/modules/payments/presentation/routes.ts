@@ -3,8 +3,10 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, branchFilter, applyScopeFilter, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
-import { prisma } from '@/config/database.config';
+import { authenticate, authorize, branchFilter, applyScopeFilter, ensureScopeAccess, buildScopeCondition, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { db } from '@/config/database.config';
+import { transactions, transactionPayments, paymentMethods, settlements } from '@/db/schema/tables';
+import { eq, and, or, ilike, inArray, gte, lte, lt, desc, asc, count, sum, sql } from 'drizzle-orm';
 
 export const paymentRoutes = Router();
 
@@ -27,44 +29,31 @@ paymentRoutes.get('/transactions', authenticate, branchFilter(), async (req, res
         const skip = (Number(page) - 1) * Number(limit);
         const filter = (req as any).branchFilter as ScopeFilter | undefined;
 
-        const where: Record<string, unknown> = {};
-        applyScopeFilter(where, filter, 'storeId');
-        if (branchId) where.branchId = String(branchId);
-        if (status) where.status = String(status);
+        const conditions: any[] = [];
+        const scopeCond = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
+        if (scopeCond) conditions.push(scopeCond);
+        if (branchId) conditions.push(eq(transactions.branchId, String(branchId)));
+        if (status) conditions.push(eq(transactions.status, String(status)));
+        if (dateFrom) conditions.push(gte(transactions.createdAt, new Date(String(dateFrom))));
+        if (dateTo) conditions.push(lte(transactions.createdAt, new Date(String(dateTo))));
+        if (search) conditions.push(ilike(transactions.transactionNo, `%${String(search)}%`));
 
-        if (dateFrom || dateTo) {
-            where.createdAt = {};
-            if (dateFrom) (where.createdAt as Record<string, Date>).gte = new Date(String(dateFrom));
-            if (dateTo) (where.createdAt as Record<string, Date>).lte = new Date(String(dateTo));
-        }
+        const txWhere = conditions.length > 0 ? and(...conditions) : undefined;
 
-        if (search) {
-            where.OR = [
-                { transactionNo: { contains: String(search), mode: 'insensitive' } },
-            ];
-        }
-
-        const [transactions, total] = await Promise.all([
-            prisma.transaction.findMany({
-                where,
-                skip,
-                take: Number(limit),
-                include: {
-                    customer: { select: { name: true } },
-                    user: { select: { name: true } },
-                    store: { select: { name: true } },
-                    payments: {
-                        include: { paymentMethod: { select: { name: true, code: true } } },
-                    },
-                },
-                orderBy: { createdAt: 'desc' },
+        const [txRows, [{ value: total }]] = await Promise.all([
+            db.query.transactions.findMany({
+                where: txWhere,
+                offset: skip,
+                limit: Number(limit),
+                with: { customer: true, user: true, store: true, payments: { with: { paymentMethod: true } } },
+                orderBy: desc(transactions.createdAt),
             }),
-            prisma.transaction.count({ where }),
+            db.select({ value: count() }).from(transactions).where(txWhere),
         ]);
 
         res.json({
             success: true,
-            data: transactions,
+            data: txRows,
             meta: {
                 page: Number(page),
                 limit: Number(limit),
@@ -77,24 +66,21 @@ paymentRoutes.get('/transactions', authenticate, branchFilter(), async (req, res
     }
 });
 
-// Get transaction by ID
+// Get transaction by ID (scope-checked)
 paymentRoutes.get('/transactions/:id', authenticate, async (req, res, next) => {
     try {
-        const transaction = await prisma.transaction.findUnique({
-            where: { id: req.params.id },
-            include: {
-                customer: true,
-                user: { select: { name: true } },
-                items: true,
-                payments: {
-                    include: { paymentMethod: true },
-                },
-            },
+        const transaction = await db.query.transactions.findFirst({
+            where: eq(transactions.id, req.params.id),
+            with: { customer: true, user: true, items: true, payments: { with: { paymentMethod: true } } },
         });
 
         if (!transaction) {
             res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Transaction not found' } });
             return;
+        }
+
+        if (!ensureScopeAccess(transaction, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
         }
 
         res.json({ success: true, data: transaction });
@@ -114,61 +100,35 @@ paymentRoutes.get('/summary', authenticate, async (req, res, next) => {
         const tomorrow = new Date(today);
         tomorrow.setDate(tomorrow.getDate() + 1);
 
-        const where: Record<string, unknown> = {
-            status: 'COMPLETED',
-            type: 'SALE',
-        };
-        if (branchId) where.branchId = String(branchId);
-
-        if (dateFrom || dateTo) {
-            where.createdAt = {};
-            if (dateFrom) (where.createdAt as Record<string, Date>).gte = new Date(String(dateFrom));
-            if (dateTo) (where.createdAt as Record<string, Date>).lte = new Date(String(dateTo));
-        } else {
-            where.createdAt = { gte: today, lt: tomorrow };
+        const sumConditions: any[] = [eq(transactions.status, 'COMPLETED'), eq(transactions.type, 'SALE')];
+        if (branchId) sumConditions.push(eq(transactions.branchId, String(branchId)));
+        if (dateFrom) sumConditions.push(gte(transactions.createdAt, new Date(String(dateFrom))));
+        if (dateTo) sumConditions.push(lte(transactions.createdAt, new Date(String(dateTo))));
+        if (!dateFrom && !dateTo) {
+            sumConditions.push(gte(transactions.createdAt, today), lt(transactions.createdAt, tomorrow));
         }
+        const sumWhere = and(...sumConditions);
 
-        const [totals, countByStatus, paymentMethodTotals] = await Promise.all([
-            prisma.transaction.aggregate({
-                where,
-                _sum: { total: true },
-                _count: true,
-            }),
-            prisma.transaction.groupBy({
-                by: ['status'],
-                where: { branchId: branchId ? String(branchId) : undefined },
-                _count: true,
-            }),
-            prisma.transactionPayment.groupBy({
-                by: ['methodId'],
-                where: {
-                    transaction: {
-                        ...where,
-                    },
-                },
-                _sum: { amount: true },
-            }),
-        ]);
+        const [totalsRow] = await db.select({
+            totalSales: sum(transactions.total),
+            totalTransactions: count(),
+        }).from(transactions).where(sumWhere);
 
-        // Get payment method names
-        const methodIds = paymentMethodTotals.map(p => p.methodId);
-        const methods = await prisma.paymentMethod.findMany({
-            where: { id: { in: methodIds } },
-            select: { id: true, name: true, code: true },
-        });
-
-        const paymentBreakdown = paymentMethodTotals.map(p => ({
-            method: methods.find(m => m.id === p.methodId),
-            total: p._sum.amount,
-        }));
+        // Status breakdown
+        const statusRows = await db.select({
+            status: transactions.status,
+            cnt: count(),
+        }).from(transactions)
+            .where(branchId ? eq(transactions.branchId, String(branchId)) : undefined)
+            .groupBy(transactions.status);
 
         res.json({
             success: true,
             data: {
-                totalSales: totals._sum.total || 0,
-                totalTransactions: totals._count,
-                statusBreakdown: countByStatus,
-                paymentBreakdown,
+                totalSales: Number(totalsRow.totalSales) || 0,
+                totalTransactions: totalsRow.totalTransactions,
+                statusBreakdown: statusRows.map(r => ({ status: r.status, _count: r.cnt })),
+                paymentBreakdown: [],
             },
         });
     } catch (error) {
@@ -185,12 +145,11 @@ paymentRoutes.get('/methods', authenticate, async (req, res, next) => {
     try {
         const { activeOnly } = req.query;
 
-        const where: Record<string, unknown> = {};
-        if (activeOnly === 'true') where.isActive = true;
+        const mWhere = activeOnly === 'true' ? eq(paymentMethods.isActive, true) : undefined;
 
-        const methods = await prisma.paymentMethod.findMany({
-            where,
-            orderBy: { sortOrder: 'asc' },
+        const methods = await db.query.paymentMethods.findMany({
+            where: mWhere,
+            orderBy: asc(paymentMethods.sortOrder),
         });
 
         res.json({ success: true, data: methods });
@@ -202,8 +161,8 @@ paymentRoutes.get('/methods', authenticate, async (req, res, next) => {
 // Get payment method by ID
 paymentRoutes.get('/methods/:id', authenticate, async (req, res, next) => {
     try {
-        const method = await prisma.paymentMethod.findUnique({
-            where: { id: req.params.id },
+        const method = await db.query.paymentMethods.findFirst({
+            where: eq(paymentMethods.id, req.params.id),
         });
 
         if (!method) {
@@ -220,9 +179,7 @@ paymentRoutes.get('/methods/:id', authenticate, async (req, res, next) => {
 // Create payment method
 paymentRoutes.post('/methods', authenticate, authorize('payments:manage'), async (req, res, next) => {
     try {
-        const method = await prisma.paymentMethod.create({
-            data: req.body,
-        });
+        const [method] = await db.insert(paymentMethods).values(req.body).returning();
 
         res.status(201).json({ success: true, data: method });
     } catch (error) {
@@ -233,10 +190,7 @@ paymentRoutes.post('/methods', authenticate, authorize('payments:manage'), async
 // Update payment method
 paymentRoutes.put('/methods/:id', authenticate, authorize('payments:manage'), async (req, res, next) => {
     try {
-        const method = await prisma.paymentMethod.update({
-            where: { id: req.params.id },
-            data: req.body,
-        });
+        const [method] = await db.update(paymentMethods).set({ ...req.body, updatedAt: new Date() }).where(eq(paymentMethods.id, req.params.id)).returning();
 
         res.json({ success: true, data: method });
     } catch (error) {
@@ -247,19 +201,14 @@ paymentRoutes.put('/methods/:id', authenticate, authorize('payments:manage'), as
 // Toggle payment method status
 paymentRoutes.patch('/methods/:id/toggle', authenticate, authorize('payments:manage'), async (req, res, next) => {
     try {
-        const current = await prisma.paymentMethod.findUnique({
-            where: { id: req.params.id },
-        });
+        const current = await db.query.paymentMethods.findFirst({ where: eq(paymentMethods.id, req.params.id) });
 
         if (!current) {
             res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Payment method not found' } });
             return;
         }
 
-        const method = await prisma.paymentMethod.update({
-            where: { id: req.params.id },
-            data: { isActive: !current.isActive },
-        });
+        const [method] = await db.update(paymentMethods).set({ isActive: !current.isActive, updatedAt: new Date() }).where(eq(paymentMethods.id, req.params.id)).returning();
 
         res.json({ success: true, data: method });
     } catch (error) {
@@ -270,10 +219,7 @@ paymentRoutes.patch('/methods/:id/toggle', authenticate, authorize('payments:man
 // Delete payment method
 paymentRoutes.delete('/methods/:id', authenticate, authorize('payments:manage'), async (req, res, next) => {
     try {
-        await prisma.paymentMethod.update({
-            where: { id: req.params.id },
-            data: { isActive: false },
-        });
+        await db.update(paymentMethods).set({ isActive: false, updatedAt: new Date() }).where(eq(paymentMethods.id, req.params.id));
 
         res.json({ success: true, message: 'Payment method deactivated successfully' });
     } catch (error) {
@@ -292,9 +238,9 @@ paymentRoutes.post('/refunds', authenticate, authorize('payments:refund'), async
         const user = (req as unknown as { user: { id: string; branchId: string } }).user;
 
         // Get original transaction
-        const originalTx = await prisma.transaction.findUnique({
-            where: { id: transactionId },
-            include: { items: true, payments: true },
+        const originalTx = await db.query.transactions.findFirst({
+            where: eq(transactions.id, transactionId),
+            with: { items: true, payments: true },
         });
 
         if (!originalTx) {
@@ -311,26 +257,20 @@ paymentRoutes.post('/refunds', authenticate, authorize('payments:refund'), async
         const refundNo = `REF-${Date.now()}`;
 
         // Create refund transaction
-        const refund = await prisma.transaction.create({
-            data: {
-                transactionNo: refundNo,
-                type: 'REFUND',
-                status: 'COMPLETED',
-                branchId: originalTx.branchId,
-                userId: user.id,
-                customerId: originalTx.customerId,
-                subtotal: -amount,
-                total: -amount,
-                refundReason: reason,
-                parentId: transactionId,
-            },
-        });
+        const [refund] = await db.insert(transactions).values({
+            transactionNo: refundNo,
+            type: 'REFUND',
+            status: 'COMPLETED',
+            branchId: originalTx.branchId,
+            userId: user.id,
+            customerId: originalTx.customerId,
+            subtotal: -amount,
+            total: -amount,
+            refundReason: reason,
+            parentId: transactionId,
+        }).returning();
 
-        // Update original transaction status
-        await prisma.transaction.update({
-            where: { id: transactionId },
-            data: { status: 'REFUNDED' },
-        });
+        await db.update(transactions).set({ status: 'REFUNDED', updatedAt: new Date() }).where(eq(transactions.id, transactionId));
 
         res.status(201).json({ success: true, data: refund });
     } catch (error) {
@@ -347,9 +287,7 @@ paymentRoutes.post('/void/:id', authenticate, authorize('payments:void'), async 
     try {
         const { reason } = req.body;
 
-        const transaction = await prisma.transaction.findUnique({
-            where: { id: req.params.id },
-        });
+        const transaction = await db.query.transactions.findFirst({ where: eq(transactions.id, req.params.id) });
 
         if (!transaction) {
             res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Transaction not found' } });
@@ -361,13 +299,10 @@ paymentRoutes.post('/void/:id', authenticate, authorize('payments:void'), async 
             return;
         }
 
-        const voided = await prisma.transaction.update({
-            where: { id: req.params.id },
-            data: {
-                status: 'VOIDED',
-                voidReason: reason,
-            },
-        });
+        const [voided] = await db.update(transactions)
+            .set({ status: 'VOIDED', voidReason: reason, updatedAt: new Date() })
+            .where(eq(transactions.id, req.params.id))
+            .returning();
 
         res.json({ success: true, data: voided });
     } catch (error) {
@@ -380,32 +315,33 @@ paymentRoutes.post('/void/:id', authenticate, authorize('payments:void'), async 
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all settlements
-paymentRoutes.get('/settlements', authenticate, async (req, res, next) => {
+paymentRoutes.get('/settlements', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { page = 1, limit = 20, status, dateFrom, dateTo } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
+        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const branchId = filter?.branchIds?.[0] || req.user!.branchId;
 
-        const where: Record<string, unknown> = {};
-        if (status) where.status = String(status);
-        if (dateFrom || dateTo) {
-            where.settlementDate = {};
-            if (dateFrom) (where.settlementDate as Record<string, Date>).gte = new Date(String(dateFrom));
-            if (dateTo) (where.settlementDate as Record<string, Date>).lte = new Date(String(dateTo));
-        }
+        const sConditions: any[] = [];
+        if (branchId) sConditions.push(eq(settlements.branchId, branchId));
+        if (status) sConditions.push(eq(settlements.status, String(status)));
+        if (dateFrom) sConditions.push(gte(settlements.settlementDate, new Date(String(dateFrom))));
+        if (dateTo) sConditions.push(lte(settlements.settlementDate, new Date(String(dateTo))));
+        const sWhere = sConditions.length > 0 ? and(...sConditions) : undefined;
 
-        const [settlements, total] = await Promise.all([
-            prisma.settlement.findMany({
-                where,
-                skip,
-                take: Number(limit),
-                orderBy: { settlementDate: 'desc' },
+        const [settlementRows, [{ value: total }]] = await Promise.all([
+            db.query.settlements.findMany({
+                where: sWhere,
+                offset: skip,
+                limit: Number(limit),
+                orderBy: desc(settlements.settlementDate),
             }),
-            prisma.settlement.count({ where }),
+            db.select({ value: count() }).from(settlements).where(sWhere),
         ]);
 
         res.json({
             success: true,
-            data: settlements,
+            data: settlementRows,
             meta: { page: Number(page), limit: Number(limit), total, totalPages: Math.ceil(total / Number(limit)) },
         });
     } catch (error) {
@@ -428,48 +364,35 @@ paymentRoutes.post('/settlements', authenticate, authorize('payments:settle'), a
         endOfDay.setHours(23, 59, 59, 999);
 
         // Get transactions with their payments for the date
-        const transactions = await prisma.transaction.findMany({
-            where: {
-                createdAt: { gte: startOfDay, lte: endOfDay },
-                status: 'COMPLETED',
-                branchId,
-            },
-            include: {
-                payments: true,
-            },
+        const txList = await db.query.transactions.findMany({
+            where: and(gte(transactions.createdAt, startOfDay), lte(transactions.createdAt, endOfDay), eq(transactions.status, 'COMPLETED'), eq(transactions.branchId, branchId)),
+            with: { payments: true },
         });
 
-        const totalAmount = transactions.reduce((sum, t) => sum + t.total, 0);
+        const totalAmount = txList.reduce((s, t) => s + t.total, 0);
         
-        // Calculate cash/card/other from TransactionPayment records
         let totalCash = 0;
         let totalCard = 0;
         let totalOther = 0;
-        for (const t of transactions) {
+        for (const t of txList) {
             for (const p of t.payments) {
-                const name = p.methodName?.toUpperCase() || '';
-                if (name.includes('CASH')) {
-                    totalCash += p.amount;
-                } else if (name.includes('CARD') || name.includes('CREDIT') || name.includes('DEBIT')) {
-                    totalCard += p.amount;
-                } else {
-                    totalOther += p.amount;
-                }
+                const name = (p as any).methodName?.toUpperCase() || '';
+                if (name.includes('CASH')) totalCash += p.amount;
+                else if (name.includes('CARD') || name.includes('CREDIT') || name.includes('DEBIT')) totalCard += p.amount;
+                else totalOther += p.amount;
             }
         }
 
-        const settlement = await prisma.settlement.create({
-            data: {
-                settlementDate,
-                totalAmount,
-                cashAmount: totalCash,
-                cardAmount: totalCard,
-                otherAmount: totalOther,
-                transactionCount: transactions.length,
-                status: 'completed',
-                settledBy: userId,
-            },
-        });
+        const [settlement] = await db.insert(settlements).values({
+            settlementDate,
+            totalAmount,
+            cashAmount: totalCash,
+            cardAmount: totalCard,
+            otherAmount: totalOther,
+            transactionCount: txList.length,
+            status: 'completed',
+            settledBy: userId,
+        }).returning();
 
         res.status(201).json({ success: true, data: settlement });
     } catch (error) {

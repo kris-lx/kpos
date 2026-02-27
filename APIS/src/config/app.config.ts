@@ -9,8 +9,9 @@ const envSchema = z.object({
     PORT: z.coerce.number().default(5000),
     API_VERSION: z.string().default('v1'),
 
-    // Database
-    DATABASE_URL: z.string().url(),
+    // Database (PostgreSQL)
+    DATABASE_URL: z.string(),
+    DATABASE_READ_URL: z.string().optional(),
     REDIS_URL: z.string().url().optional().default('redis://localhost:6379'),
     RABBITMQ_URL: z.string().optional(),
 
@@ -51,6 +52,7 @@ export const appConfig = {
 
 export const dbConfig = {
     url: config.DATABASE_URL,
+    readUrl: config.DATABASE_READ_URL,
 };
 
 export const redisConfig = {

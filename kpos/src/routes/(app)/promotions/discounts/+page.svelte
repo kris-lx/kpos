@@ -44,6 +44,16 @@
     let products = $state<any[]>([]);
     let categories = $state<any[]>([]);
 
+    // API-fetched enum types
+    let discountTypeOptions = $state<{value: string; label: string; labelLao?: string}[]>([]);
+
+    async function loadEnums() {
+        try {
+            const res = await api.get("settings/enums?type=discount_type").json<any>();
+            if (res.data?.discount_type) discountTypeOptions = res.data.discount_type;
+        } catch { /* keep defaults */ }
+    }
+
     // Form
     let formData = $state({
         name: "",
@@ -131,6 +141,7 @@
     // Watch for page changes
     $effect(() => {
         const page = currentPage;
+        loadEnums();
         loadData();
     });
 
@@ -582,8 +593,14 @@
                             bind:value={formData.discountType}
                             class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-orange-500 focus:border-transparent"
                         >
-                            <option value="PERCENTAGE">ເປີເຊັນ (%)</option>
-                            <option value="FIXED">ຈຳນວນເງິນ</option>
+                            {#if discountTypeOptions.length > 0}
+                                {#each discountTypeOptions as dt (dt.value)}
+                                    <option value={dt.value}>{dt.labelLao || dt.label}</option>
+                                {/each}
+                            {:else}
+                                <option value="PERCENTAGE">ເປີເຊັນ (%)</option>
+                                <option value="FIXED">ຈຳນວນເງິນ</option>
+                            {/if}
                         </select>
                     </div>
                     <div>

@@ -148,28 +148,30 @@
             }
 
             // Transform transactions data from API format
-            const rawTransactions = (transactionsRes as any)?.data || [];
-            recentTransactions = rawTransactions.map((tx: any) => ({
+            const rawTransactions = (transactionsRes as any)?.data;
+            recentTransactions = Array.isArray(rawTransactions) ? rawTransactions.map((tx: any) => ({
                 id: tx.transactionNo || tx.id,
                 time: tx.createdAt || new Date(),
                 total: tx.total || 0,
                 items: tx.items?.length || tx.itemCount || 0,
                 paymentMethod: tx.paymentMethod || 'cash',
-            }));
+            })) : [];
 
             // Transform top products data from API format  
-            const rawProducts = (productsRes as any)?.data || [];
-            topProducts = rawProducts.map((p: any) => ({
+            const rawProducts = (productsRes as any)?.data;
+            topProducts = Array.isArray(rawProducts) ? rawProducts.map((p: any) => ({
                 name: p.name,
                 sold: p.totalQuantity || p.sold || 0,
                 revenue: p.totalRevenue || p.revenue || 0,
-            }));
+            })) : [];
 
-            lowStockAlerts = (alertsRes as any)?.data || [];
+            const rawAlerts = (alertsRes as any)?.data;
+            lowStockAlerts = Array.isArray(rawAlerts) ? rawAlerts : [];
             lastUpdated = new Date();
 
             // Load chart data from API or use sample data
-            const chartData = (chartRes as any)?.data || [];
+            const rawChartData = (chartRes as any)?.data;
+            const chartData = Array.isArray(rawChartData) ? rawChartData : [];
             if (chartData.length > 0) {
                 hourlyData = chartData.map((d: any) => ({
                     hour: d.date?.split('T')[0] || d.date,
@@ -581,7 +583,7 @@
                 </div>
             {:else}
                 <div class="space-y-3">
-                    {#each lowStockAlerts as alert (alert.id)}
+                    {#each lowStockAlerts as alert, i (alert.name ?? alert.sku ?? i)}
                         <div
                             class="flex items-center justify-between p-3 bg-orange-50 dark:bg-orange-900/20 rounded-lg border border-orange-200 dark:border-orange-800"
                         >

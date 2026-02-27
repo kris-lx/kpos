@@ -3,9 +3,11 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, branchFilter, applyScopeFilter, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, branchFilter, applyScopeFilter, ensureScopeAccess, buildScopeCondition, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { publish, QUEUES } from '@/config/rabbitmq.config';
-import { prisma } from '@/config/database.config';
+import { db } from '@/config/database.config';
+import { transactions, transactionItems, transactionPayments, products, inventory, stockMovements, paymentMethods, shifts, cashRegisters, cashMovements, heldSales } from '@/db/schema/tables';
+import { eq, and, or, ne, ilike, inArray, gte, lte, desc, asc, count, sum, sql } from 'drizzle-orm';
 import { queueActivityLog } from '@/infrastructure/helpers/activity-log.helper';
 
 export const salesRoutes = Router();
@@ -37,9 +39,9 @@ salesRoutes.post('/', authenticate, async (req, res, next) => {
         const transactionItems = [];
 
         for (const item of items) {
-            const product = await prisma.product.findUnique({
-                where: { id: item.productId },
-                select: { id: true, name: true, sku: true, barcode: true, price: true, cost: true }
+            const product = await db.query.products.findFirst({
+                where: eq(products.id, item.productId),
+                columns: { id: true, name: true, sku: true, barcode: true, price: true, cost: true },
             });
 
             if (!product) {
@@ -90,60 +92,38 @@ salesRoutes.post('/', authenticate, async (req, res, next) => {
         const now = new Date();
         const today = now.toISOString().slice(0, 10).replace(/-/g, '');
         const timeStr = now.getTime().toString().slice(-6); // Last 6 digits of timestamp
-        const count = await prisma.transaction.count({
-            where: { createdAt: { gte: new Date(now.setHours(0, 0, 0, 0)) } },
-        });
-        const transactionNo = `TXN-${branchId.slice(-4)}-${today}-${String(count + 1).padStart(4, '0')}-${timeStr}`;
+        const [{ value: txCount }] = await db.select({ value: count() }).from(transactions).where(gte(transactions.createdAt, new Date(now.setHours(0, 0, 0, 0))));
+        const transactionNo = `TXN-${branchId.slice(-4)}-${today}-${String(txCount + 1).padStart(4, '0')}-${timeStr}`;
 
         // Get payment method details
         let methodName = paymentMethod || 'CASH';
         let methodId = paymentMethodId;
 
         if (!methodId) {
-            const method = await prisma.paymentMethod.findFirst({
-                where: { type: methodName }
-            });
-            if (method) {
-                methodId = method.id;
-                methodName = method.name;
-            }
+            const method = await db.query.paymentMethods.findFirst({ where: eq(paymentMethods.type, methodName) });
+            if (method) { methodId = method.id; methodName = method.name; }
         }
 
-        // Create transaction with items and payment
-        const transaction = await prisma.transaction.create({
-            data: {
-                transactionNo,
-                type: 'SALE',
-                status: 'COMPLETED',
-                branchId,
-                storeId,
-                userId,
-                customerId,
-                memberId,
-                orderType,
-                subtotal,
-                discountType,
-                discountValue,
-                discountAmount,
-                taxAmount,
-                total: totalAmount,
-                received: totalAmount,
-                change: 0,
-                note: notes,
-                items: { create: transactionItems },
-                payments: methodId ? {
-                    create: {
-                        methodId,
-                        methodName,
-                        amount: totalAmount
-                    }
-                } : undefined
-            },
-            include: {
-                items: { include: { product: true } },
-                customer: true,
-                payments: true
-            },
+        // Create transaction
+        const [transaction] = await db.insert(transactions).values({
+            transactionNo, type: 'SALE', status: 'COMPLETED', branchId, storeId, userId, customerId, memberId, orderType,
+            subtotal, discountType, discountValue, discountAmount, taxAmount, total: totalAmount, received: totalAmount, change: 0, note: notes,
+        }).returning();
+
+        // Create items
+        if (transactionItems.length > 0) {
+            await db.insert(transactionItems).values(transactionItems.map(ti => ({ ...ti, transactionId: transaction.id })));
+        }
+
+        // Create payment
+        if (methodId) {
+            await db.insert(transactionPayments).values({ transactionId: transaction.id, methodId, methodName, amount: totalAmount });
+        }
+
+        // Fetch full transaction with relations
+        const fullTransaction = await db.query.transactions.findFirst({
+            where: eq(transactions.id, transaction.id),
+            with: { items: { with: { product: true } }, customer: true, payments: true },
         });
 
         // Publish stock deduction to RabbitMQ (async) or fall back to sync
@@ -160,24 +140,16 @@ salesRoutes.post('/', authenticate, async (req, res, next) => {
                 userId,
             });
 
-            // Sync fallback if RabbitMQ unavailable
             if (!published) {
-                const inventory = await prisma.inventory.findFirst({
-                    where: { productId: item.productId, branchId }
-                });
-                if (inventory) {
-                    const previousQty = inventory.quantity;
+                const inv = await db.query.inventory.findFirst({ where: and(eq(inventory.productId, item.productId), eq(inventory.branchId, branchId)) });
+                if (inv) {
+                    const previousQty = inv.quantity;
                     const newQty = previousQty - item.quantity;
-                    await prisma.inventory.update({
-                        where: { id: inventory.id },
-                        data: { quantity: newQty, available: newQty - inventory.reserved },
-                    });
-                    await prisma.stockMovement.create({
-                        data: {
-                            productId: item.productId, branchId, storeId, type: 'OUT',
-                            quantity: item.quantity, previousQty, newQty,
-                            reason: 'Sale', reference: transaction.id, referenceType: 'SALE', userId,
-                        },
+                    await db.update(inventory).set({ quantity: newQty, available: newQty - inv.reserved }).where(eq(inventory.id, inv.id));
+                    await db.insert(stockMovements).values({
+                        productId: item.productId, branchId, storeId, type: 'OUT',
+                        quantity: item.quantity, previousQty, newQty,
+                        reason: 'Sale', reference: transaction.id, referenceType: 'SALE', userId,
                     });
                 }
             }
@@ -190,7 +162,7 @@ salesRoutes.post('/', authenticate, async (req, res, next) => {
         // Log activity async
         queueActivityLog(userId, 'sale_created', 'sales', `ສ້າງການຂາຍ ${transaction.transactionNo} ມູນຄ່າ ${transaction.total}`, { transactionId: transaction.id }, req).catch(() => {});
 
-        res.status(201).json({ success: true, data: transaction });
+        res.status(201).json({ success: true, data: fullTransaction });
     } catch (error) {
         next(error);
     }
@@ -206,54 +178,39 @@ salesRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
         const userPermissions = req.authUser?.permissions || [];
         const filter = (req as any).branchFilter as ScopeFilter | undefined;
 
-        const where: Record<string, unknown> = {
-            type: 'SALE' // Only get sale transactions
-        };
+        const txConds: any[] = [eq(transactions.type, 'SALE')];
 
-        // Check if user can only view their own sales
         const canViewAllSales = userPermissions.includes('sales:view') || userPermissions.includes('*');
         const canViewOwnSales = userPermissions.includes('sales:view-own');
-        
-        if (!canViewAllSales && canViewOwnSales) {
-            // User can only view their own sales
-            where.userId = req.user!.userId;
-        }
+        if (!canViewAllSales && canViewOwnSales) txConds.push(eq(transactions.userId, req.user!.userId));
 
-        // Apply store-level or branch-level scope (Transaction now has storeId)
-        applyScopeFilter(where, filter, 'storeId');
+        const scopeCond = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
+        if (scopeCond) txConds.push(scopeCond);
 
-        // Override with explicit query param
-        if (branchId) where.branchId = String(branchId);
-        else if (!filter) where.branchId = req.user!.branchId;
+        if (branchId) txConds.push(eq(transactions.branchId, String(branchId)));
+        else if (!filter) txConds.push(eq(transactions.branchId, req.user!.branchId));
 
-        if (status) where.status = String(status);
-        if (type) where.type = String(type);
+        if (status) txConds.push(eq(transactions.status, String(status)));
+        if (type) txConds.push(eq(transactions.type, String(type)));
+        if (startDate) txConds.push(gte(transactions.createdAt, new Date(String(startDate))));
+        if (endDate) txConds.push(lte(transactions.createdAt, new Date(String(endDate))));
 
-        if (startDate || endDate) {
-            where.createdAt = {};
-            if (startDate) (where.createdAt as Record<string, unknown>).gte = new Date(String(startDate));
-            if (endDate) (where.createdAt as Record<string, unknown>).lte = new Date(String(endDate));
-        }
+        const txWhere = and(...txConds);
 
-        const [transactions, total] = await Promise.all([
-            prisma.transaction.findMany({
-                where,
-                skip,
-                take: Number(limit),
-                include: {
-                    items: true,
-                    customer: true,
-                    payments: true,
-                    user: { select: { id: true, name: true } }
-                },
-                orderBy: { createdAt: 'desc' },
+        const [txRows, [{ value: total }]] = await Promise.all([
+            db.query.transactions.findMany({
+                where: txWhere,
+                offset: skip,
+                limit: Number(limit),
+                with: { items: true, customer: true, payments: true, user: { columns: { id: true, name: true } } },
+                orderBy: desc(transactions.createdAt),
             }),
-            prisma.transaction.count({ where }),
+            db.select({ value: count() }).from(transactions).where(txWhere),
         ]);
 
         res.json({
             success: true,
-            data: transactions,
+            data: txRows,
             meta: { page: Number(page), limit: Number(limit), total, totalPages: Math.ceil(total / Number(limit)) },
         });
     } catch (error) {
@@ -267,15 +224,9 @@ salesRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
 // ═══════════════════════════════════════════════════════════════════════════
 salesRoutes.get('/:id([a-fA-F0-9]{24})', authenticate, async (req, res, next) => {
     try {
-        const transaction = await prisma.transaction.findUnique({
-            where: { id: req.params.id },
-            include: {
-                items: { include: { product: true } },
-                customer: true,
-                member: true,
-                payments: true,
-                user: { select: { id: true, name: true } }
-            },
+        const transaction = await db.query.transactions.findFirst({
+            where: eq(transactions.id, req.params.id),
+            with: { items: { with: { product: true } }, customer: true, member: true, payments: true, user: { columns: { id: true, name: true } } },
         });
 
         if (!transaction) {
@@ -283,6 +234,10 @@ salesRoutes.get('/:id([a-fA-F0-9]{24})', authenticate, async (req, res, next) =>
                 success: false,
                 error: { code: 'NOT_FOUND', message: 'Transaction not found' }
             });
+        }
+
+        if (!ensureScopeAccess(transaction, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
         }
 
         res.json({ success: true, data: transaction });
@@ -298,65 +253,31 @@ salesRoutes.post('/:id([a-fA-F0-9]{24})/void', authenticate, authorize('sales:de
     try {
         const { reason } = req.body;
 
-        const transaction = await prisma.transaction.findUnique({
-            where: { id: req.params.id },
-            include: { items: true },
+        const transaction = await db.query.transactions.findFirst({
+            where: eq(transactions.id, req.params.id),
+            with: { items: true },
         });
 
         if (!transaction) {
-            return res.status(404).json({
-                success: false,
-                error: { code: 'NOT_FOUND', message: 'Transaction not found' }
-            });
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Transaction not found' } });
         }
 
         if (transaction.status === 'VOIDED') {
-            return res.status(400).json({
-                success: false,
-                error: { code: 'ALREADY_VOIDED', message: 'Transaction already voided' }
-            });
+            return res.status(400).json({ success: false, error: { code: 'ALREADY_VOIDED', message: 'Transaction already voided' } });
         }
 
-        // Void the transaction
-        await prisma.transaction.update({
-            where: { id: req.params.id },
-            data: {
-                status: 'VOIDED',
-                voidReason: reason
-            },
-        });
+        await db.update(transactions).set({ status: 'VOIDED', voidReason: reason }).where(eq(transactions.id, req.params.id));
 
-        // Restore inventory
         for (const item of transaction.items) {
-            const inventory = await prisma.inventory.findFirst({
-                where: { productId: item.productId, branchId: transaction.branchId }
-            });
-
-            if (inventory) {
-                const previousQty = inventory.quantity;
+            const inv = await db.query.inventory.findFirst({ where: and(eq(inventory.productId, item.productId), eq(inventory.branchId, transaction.branchId)) });
+            if (inv) {
+                const previousQty = inv.quantity;
                 const newQty = previousQty + item.quantity;
-
-                await prisma.inventory.update({
-                    where: { id: inventory.id },
-                    data: {
-                        quantity: newQty,
-                        available: newQty - inventory.reserved
-                    },
-                });
-
-                await prisma.stockMovement.create({
-                    data: {
-                        productId: item.productId,
-                        branchId: transaction.branchId,
-                        type: 'IN',
-                        quantity: item.quantity,
-                        previousQty,
-                        newQty,
-                        reason: `Void: ${reason || 'No reason provided'}`,
-                        reference: transaction.id,
-                        referenceType: 'VOID',
-                        userId: req.user!.userId,
-                    },
+                await db.update(inventory).set({ quantity: newQty, available: newQty - inv.reserved }).where(eq(inventory.id, inv.id));
+                await db.insert(stockMovements).values({
+                    productId: item.productId, branchId: transaction.branchId, type: 'IN',
+                    quantity: item.quantity, previousQty, newQty,
+                    reason: `Void: ${reason || 'No reason provided'}`, reference: transaction.id, referenceType: 'VOID', userId: req.user!.userId,
                 });
             }
         }
@@ -381,115 +302,57 @@ salesRoutes.post('/:id([a-fA-F0-9]{24})/refund', authenticate, authorize('sales:
     try {
         const { reason, items: refundItems } = req.body;
 
-        const transaction = await prisma.transaction.findUnique({
-            where: { id: req.params.id },
-            include: { items: true },
+        const transaction = await db.query.transactions.findFirst({
+            where: eq(transactions.id, req.params.id),
+            with: { items: true },
         });
 
         if (!transaction) {
-            return res.status(404).json({
-                success: false,
-                error: { code: 'NOT_FOUND', message: 'Transaction not found' }
-            });
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Transaction not found' } });
         }
-
         if (transaction.status !== 'COMPLETED') {
-            return res.status(400).json({
-                success: false,
-                error: { code: 'INVALID_STATUS', message: 'Can only refund completed transactions' }
-            });
+            return res.status(400).json({ success: false, error: { code: 'INVALID_STATUS', message: 'Can only refund completed transactions' } });
         }
 
-        // Calculate refund amount
         let refundAmount = 0;
         const itemsToRefund = refundItems || transaction.items;
+        for (const item of itemsToRefund) { refundAmount += item.total || (item.unitPrice * item.quantity); }
 
-        for (const item of itemsToRefund) {
-            refundAmount += item.total || (item.unitPrice * item.quantity);
-        }
-
-        // Generate refund transaction number
         const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-        const count = await prisma.transaction.count({
-            where: { type: 'REFUND', createdAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) } },
-        });
-        const transactionNo = `REF-${transaction.branchId.slice(-4)}-${today}-${String(count + 1).padStart(4, '0')}`;
+        const [{ value: refCnt }] = await db.select({ value: count() }).from(transactions).where(and(eq(transactions.type, 'REFUND'), gte(transactions.createdAt, new Date(new Date().setHours(0, 0, 0, 0)))));
+        const transactionNo = `REF-${transaction.branchId.slice(-4)}-${today}-${String(refCnt + 1).padStart(4, '0')}`;
 
-        // Create refund transaction
-        const refund = await prisma.transaction.create({
-            data: {
-                transactionNo,
-                type: 'REFUND',
-                status: 'COMPLETED',
-                branchId: transaction.branchId,
-                userId: req.user!.userId,
-                customerId: transaction.customerId,
-                memberId: transaction.memberId,
-                orderType: transaction.orderType,
-                subtotal: -refundAmount,
-                discountAmount: 0,
-                taxAmount: 0,
-                total: -refundAmount,
-                received: 0,
-                change: refundAmount,
-                refundReason: reason,
-                parentId: transaction.id,
-                items: {
-                    create: itemsToRefund.map((item: any) => ({
-                        productId: item.productId,
-                        productName: item.productName,
-                        quantity: -item.quantity,
-                        unitPrice: item.unitPrice,
-                        cost: item.cost || 0,
-                        total: -(item.total || (item.unitPrice * item.quantity)),
-                    }))
-                }
-            },
-            include: { items: true }
-        });
+        const [refund] = await db.insert(transactions).values({
+            transactionNo, type: 'REFUND', status: 'COMPLETED', branchId: transaction.branchId,
+            userId: req.user!.userId, customerId: transaction.customerId, memberId: transaction.memberId,
+            orderType: transaction.orderType, subtotal: -refundAmount, discountAmount: 0, taxAmount: 0,
+            total: -refundAmount, received: 0, change: refundAmount, refundReason: reason, parentId: transaction.id,
+        }).returning();
 
-        // Restore inventory for refunded items
+        await db.insert(transactionItems).values(itemsToRefund.map((item: any) => ({
+            transactionId: refund.id, productId: item.productId, productName: item.productName,
+            quantity: -item.quantity, unitPrice: item.unitPrice, cost: item.cost || 0,
+            total: -(item.total || (item.unitPrice * item.quantity)),
+        })));
+
         for (const item of itemsToRefund) {
-            const inventory = await prisma.inventory.findFirst({
-                where: { productId: item.productId, branchId: transaction.branchId }
-            });
-
-            if (inventory) {
-                const previousQty = inventory.quantity;
+            const inv = await db.query.inventory.findFirst({ where: and(eq(inventory.productId, item.productId), eq(inventory.branchId, transaction.branchId)) });
+            if (inv) {
+                const previousQty = inv.quantity;
                 const newQty = previousQty + item.quantity;
-
-                await prisma.inventory.update({
-                    where: { id: inventory.id },
-                    data: {
-                        quantity: newQty,
-                        available: newQty - inventory.reserved
-                    },
-                });
-
-                await prisma.stockMovement.create({
-                    data: {
-                        productId: item.productId,
-                        branchId: transaction.branchId,
-                        type: 'IN',
-                        quantity: item.quantity,
-                        previousQty,
-                        newQty,
-                        reason: `Refund: ${reason || 'No reason provided'}`,
-                        reference: refund.id,
-                        referenceType: 'REFUND',
-                        userId: req.user!.userId,
-                    },
+                await db.update(inventory).set({ quantity: newQty, available: newQty - inv.reserved }).where(eq(inventory.id, inv.id));
+                await db.insert(stockMovements).values({
+                    productId: item.productId, branchId: transaction.branchId, type: 'IN',
+                    quantity: item.quantity, previousQty, newQty,
+                    reason: `Refund: ${reason || 'No reason provided'}`, reference: refund.id, referenceType: 'REFUND', userId: req.user!.userId,
                 });
             }
         }
 
-        // Update original transaction status
-        await prisma.transaction.update({
-            where: { id: req.params.id },
-            data: { status: 'REFUNDED' }
-        });
+        await db.update(transactions).set({ status: 'REFUNDED' }).where(eq(transactions.id, req.params.id));
 
-        res.json({ success: true, data: refund });
+        const fullRefund = await db.query.transactions.findFirst({ where: eq(transactions.id, refund.id), with: { items: true } });
+        res.json({ success: true, data: fullRefund });
     } catch (error) {
         next(error);
     }
@@ -498,7 +361,7 @@ salesRoutes.post('/:id([a-fA-F0-9]{24})/refund', authenticate, authorize('sales:
 // ═══════════════════════════════════════════════════════════════════════════
 // DAILY SALES SUMMARY
 // ═══════════════════════════════════════════════════════════════════════════
-salesRoutes.get('/summary/daily', authenticate, async (req, res, next) => {
+salesRoutes.get('/summary/daily', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { date } = req.query;
         const targetDate = date ? new Date(String(date)) : new Date();
@@ -507,47 +370,30 @@ salesRoutes.get('/summary/daily', authenticate, async (req, res, next) => {
         const endOfDay = new Date(targetDate);
         endOfDay.setHours(23, 59, 59, 999);
 
-        const branchId = req.user!.branchId;
+        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const branchId = filter?.branchIds?.[0] || req.user!.branchId;
 
-        const [salesStats, voidedCount, refundStats] = await Promise.all([
-            prisma.transaction.aggregate({
-                where: {
-                    branchId,
-                    createdAt: { gte: startOfDay, lte: endOfDay },
-                    type: 'SALE',
-                    status: 'COMPLETED'
-                },
-                _count: { id: true },
-                _sum: { total: true },
-            }),
-            prisma.transaction.count({
-                where: {
-                    branchId,
-                    createdAt: { gte: startOfDay, lte: endOfDay },
-                    status: 'VOIDED'
-                },
-            }),
-            prisma.transaction.aggregate({
-                where: {
-                    branchId,
-                    createdAt: { gte: startOfDay, lte: endOfDay },
-                    type: 'REFUND'
-                },
-                _count: { id: true },
-                _sum: { total: true },
-            }),
+        const baseConds: any[] = [gte(transactions.createdAt, startOfDay), lte(transactions.createdAt, endOfDay)];
+        const dayScopeCond = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
+        if (dayScopeCond) baseConds.push(dayScopeCond);
+        if (!filter) baseConds.push(eq(transactions.branchId, branchId));
+
+        const [[salesStats], [{ value: voidedCount }], [refundStats]] = await Promise.all([
+            db.select({ cnt: count(), total: sum(transactions.total) }).from(transactions).where(and(...baseConds, eq(transactions.type, 'SALE'), eq(transactions.status, 'COMPLETED'))),
+            db.select({ value: count() }).from(transactions).where(and(...baseConds, eq(transactions.status, 'VOIDED'))),
+            db.select({ cnt: count(), total: sum(transactions.total) }).from(transactions).where(and(...baseConds, eq(transactions.type, 'REFUND'))),
         ]);
 
         res.json({
             success: true,
             data: {
                 date: startOfDay.toISOString().slice(0, 10),
-                salesCount: salesStats._count.id,
-                totalRevenue: salesStats._sum.total || 0,
+                salesCount: salesStats.cnt,
+                totalRevenue: Number(salesStats.total) || 0,
                 voidedCount,
-                refundCount: refundStats._count.id,
-                refundAmount: Math.abs(refundStats._sum.total || 0),
-                netRevenue: (salesStats._sum.total || 0) + (refundStats._sum.total || 0),
+                refundCount: refundStats.cnt,
+                refundAmount: Math.abs(Number(refundStats.total) || 0),
+                netRevenue: (Number(salesStats.total) || 0) + (Number(refundStats.total) || 0),
             },
         });
     } catch (error) {
@@ -568,35 +414,31 @@ salesRoutes.get('/shifts', authenticate, branchFilter(), async (req, res, next) 
         const authUser = (req as any).authUser;
         const isSuperAdmin = authUser?.isSuperAdmin;
 
-        const where: Record<string, unknown> = {};
-
+        const shiftConds: any[] = [];
         if (!isSuperAdmin) {
-            // Scope by storeId for store-level isolation
             const activeStoreId = authUser?.activeStoreId;
-            if (activeStoreId) {
-                where.storeId = activeStoreId;
-            } else if (filter?.branchIds?.length) {
-                where.branchId = { in: filter.branchIds };
-            }
+            if (activeStoreId) shiftConds.push(eq(shifts.storeId, activeStoreId));
+            else if (filter?.branchIds?.length) shiftConds.push(inArray(shifts.branchId, filter.branchIds));
         }
-        if (branchId) where.branchId = String(branchId);
-        if (userId) where.userId = String(userId);
-        if (status) where.status = String(status);
+        if (branchId) shiftConds.push(eq(shifts.branchId, String(branchId)));
+        if (userId) shiftConds.push(eq(shifts.userId, String(userId)));
+        if (status) shiftConds.push(eq(shifts.status, String(status)));
+        const shiftWhere = shiftConds.length > 0 ? and(...shiftConds) : undefined;
 
-        const [shifts, total] = await Promise.all([
-            prisma.shift.findMany({
-                where,
-                skip,
-                take: Number(limit),
-                include: { user: { select: { name: true, email: true } }, register: true },
-                orderBy: { openedAt: 'desc' },
+        const [shiftRows, [{ value: total }]] = await Promise.all([
+            db.query.shifts.findMany({
+                where: shiftWhere,
+                offset: skip,
+                limit: Number(limit),
+                with: { user: { columns: { name: true, email: true } }, register: true },
+                orderBy: desc(shifts.openedAt),
             }),
-            prisma.shift.count({ where }),
+            db.select({ value: count() }).from(shifts).where(shiftWhere),
         ]);
 
         res.json({
             success: true,
-            data: shifts,
+            data: shiftRows,
             meta: { page: Number(page), limit: Number(limit), total, totalPages: Math.ceil(total / Number(limit)) },
         });
     } catch (error) {
@@ -607,12 +449,9 @@ salesRoutes.get('/shifts', authenticate, branchFilter(), async (req, res, next) 
 // Get current user's active shift
 salesRoutes.get('/shifts/current', authenticate, async (req, res, next) => {
     try {
-        const shift = await prisma.shift.findFirst({
-            where: {
-                userId: req.user!.userId,
-                status: 'OPEN',
-            },
-            include: { user: { select: { name: true } }, register: true },
+        const shift = await db.query.shifts.findFirst({
+            where: and(eq(shifts.userId, req.user!.userId), eq(shifts.status, 'OPEN')),
+            with: { user: { columns: { name: true } }, register: true },
         });
 
         res.json({ success: true, data: shift });
@@ -624,13 +463,13 @@ salesRoutes.get('/shifts/current', authenticate, async (req, res, next) => {
 // Get shift by ID
 salesRoutes.get('/shifts/:id', authenticate, async (req, res, next) => {
     try {
-        const shift = await prisma.shift.findUnique({
-            where: { id: req.params.id },
-            include: {
-                user: { select: { name: true, email: true } },
+        const shift = await db.query.shifts.findFirst({
+            where: eq(shifts.id, req.params.id),
+            with: {
+                user: { columns: { name: true, email: true } },
                 register: true,
-                transactions: { orderBy: { createdAt: 'desc' }, take: 50 },
-                cashMovements: { orderBy: { createdAt: 'desc' } },
+                transactions: { orderBy: desc(transactions.createdAt), limit: 50 },
+                cashMovements: { orderBy: desc(cashMovements.createdAt) },
             },
         });
 
@@ -653,33 +492,25 @@ salesRoutes.post('/shifts/open', authenticate, async (req, res, next) => {
         const branchId = req.user!.branchId;
 
         // Check if user already has an open shift
-        const existingShift = await prisma.shift.findFirst({
-            where: { userId, status: 'OPEN' },
-        });
+        const existingShift = await db.query.shifts.findFirst({ where: and(eq(shifts.userId, userId), eq(shifts.status, 'OPEN')) });
 
         if (existingShift) {
             res.status(400).json({ success: false, error: { code: 'SHIFT_001', message: 'You already have an open shift' } });
             return;
         }
 
-        // Generate shift number
         const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-        const count = await prisma.shift.count({
-            where: { createdAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) } },
-        });
-        const shiftNo = `SFT-${today}-${String(count + 1).padStart(3, '0')}`;
+        const [{ value: shiftCount }] = await db.select({ value: count() }).from(shifts).where(gte(shifts.createdAt, new Date(new Date().setHours(0, 0, 0, 0))));
+        const shiftNo = `SFT-${today}-${String(shiftCount + 1).padStart(3, '0')}`;
 
-        const shift = await prisma.shift.create({
-            data: {
-                shiftNo,
-                branchId,
-                userId,
-                registerId,
-                openingBalance: openingBalance || 0,
-                notes,
-                storeId: req.authUser?.activeStoreId || undefined,
-            },
-            include: { user: { select: { name: true } }, register: true },
+        const [newShift] = await db.insert(shifts).values({
+            shiftNo, branchId, userId, registerId, openingBalance: openingBalance || 0, notes,
+            storeId: req.authUser?.activeStoreId || undefined,
+        }).returning();
+
+        const shift = await db.query.shifts.findFirst({
+            where: eq(shifts.id, newShift.id),
+            with: { user: { columns: { name: true } }, register: true },
         });
 
         res.status(201).json({ success: true, data: shift });
@@ -693,42 +524,31 @@ salesRoutes.post('/shifts/:id/close', authenticate, async (req, res, next) => {
     try {
         const { closingBalance, notes } = req.body;
 
-        const shift = await prisma.shift.findUnique({
-            where: { id: req.params.id },
-            include: { transactions: { where: { status: 'COMPLETED' } }, cashMovements: true },
+        const shift = await db.query.shifts.findFirst({
+            where: eq(shifts.id, req.params.id),
+            with: { transactions: true, cashMovements: true },
         });
 
-        if (!shift) {
-            res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Shift not found' } });
-            return;
-        }
+        if (!shift) { res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Shift not found' } }); return; }
+        if (shift.status !== 'OPEN') { res.status(400).json({ success: false, error: { code: 'SHIFT_002', message: 'Shift is already closed' } }); return; }
 
-        if (shift.status !== 'OPEN') {
-            res.status(400).json({ success: false, error: { code: 'SHIFT_002', message: 'Shift is already closed' } });
-            return;
-        }
-
-        // Calculate expected balance
-        const cashSales = shift.transactions.reduce((sum, t) => sum + t.total, 0);
-        const cashMovementsTotal = shift.cashMovements.reduce((sum, m) => {
-            if (m.type === 'FLOAT') return sum + m.amount;
-            if (m.type === 'PICKUP' || m.type === 'PAYOUT') return sum - m.amount;
-            return sum;
+        const completedTxns = (shift.transactions || []).filter(t => t.status === 'COMPLETED');
+        const cashSales = completedTxns.reduce((s, t) => s + t.total, 0);
+        const cashMovementsTotal = (shift.cashMovements || []).reduce((s, m) => {
+            if (m.type === 'FLOAT') return s + m.amount;
+            if (m.type === 'PICKUP' || m.type === 'PAYOUT') return s - m.amount;
+            return s;
         }, 0);
         const expectedBalance = shift.openingBalance + cashSales + cashMovementsTotal;
         const difference = (closingBalance || 0) - expectedBalance;
 
-        const updatedShift = await prisma.shift.update({
-            where: { id: req.params.id },
-            data: {
-                status: 'CLOSED',
-                closingBalance: closingBalance || 0,
-                expectedBalance,
-                difference,
-                closedAt: new Date(),
-                notes: notes || shift.notes,
-            },
-            include: { user: { select: { name: true } }, register: true },
+        await db.update(shifts).set({
+            status: 'CLOSED', closingBalance: closingBalance || 0, expectedBalance, difference, closedAt: new Date(), notes: notes || shift.notes,
+        }).where(eq(shifts.id, req.params.id));
+
+        const updatedShift = await db.query.shifts.findFirst({
+            where: eq(shifts.id, req.params.id),
+            with: { user: { columns: { name: true } }, register: true },
         });
 
         res.json({ success: true, data: updatedShift });
@@ -743,15 +563,7 @@ salesRoutes.post('/shifts/:id/cash-movement', authenticate, async (req, res, nex
         const { type, amount, reason } = req.body;
         const userId = req.user!.userId;
 
-        const movement = await prisma.cashMovement.create({
-            data: {
-                shiftId: req.params.id,
-                type,
-                amount,
-                reason,
-                userId,
-            },
-        });
+        const [movement] = await db.insert(cashMovements).values({ shiftId: req.params.id, type, amount, reason, userId }).returning();
 
         res.status(201).json({ success: true, data: movement });
     } catch (error) {
@@ -769,21 +581,19 @@ salesRoutes.get('/registers', authenticate, branchFilter(), async (req, res, nex
         const { branchId, isActive } = req.query;
         const filter = (req as any).branchFilter;
 
-        const where: Record<string, unknown> = {};
-        // Scope to accessible branches for non-admin users
+        const regConds: any[] = [];
         if (filter?.branchIds?.length) {
-            where.branchId = branchId && filter.branchIds.includes(String(branchId))
-                ? String(branchId)
-                : { in: filter.branchIds };
+            if (branchId && filter.branchIds.includes(String(branchId))) regConds.push(eq(cashRegisters.branchId, String(branchId)));
+            else regConds.push(inArray(cashRegisters.branchId, filter.branchIds));
         } else if (branchId) {
-            where.branchId = String(branchId);
+            regConds.push(eq(cashRegisters.branchId, String(branchId)));
         }
-        if (isActive !== undefined) where.isActive = isActive === 'true';
+        if (isActive !== undefined) regConds.push(eq(cashRegisters.isActive, isActive === 'true'));
 
-        const registers = await prisma.cashRegister.findMany({
-            where,
-            include: { branch: { select: { name: true } } },
-            orderBy: { name: 'asc' },
+        const registers = await db.query.cashRegisters.findMany({
+            where: regConds.length > 0 ? and(...regConds) : undefined,
+            with: { branch: { columns: { name: true } } },
+            orderBy: asc(cashRegisters.name),
         });
 
         res.json({ success: true, data: registers });
@@ -795,12 +605,9 @@ salesRoutes.get('/registers', authenticate, branchFilter(), async (req, res, nex
 // Get register by ID
 salesRoutes.get('/registers/:id', authenticate, async (req, res, next) => {
     try {
-        const register = await prisma.cashRegister.findUnique({
-            where: { id: req.params.id },
-            include: {
-                branch: true,
-                shifts: { orderBy: { openedAt: 'desc' }, take: 10 },
-            },
+        const register = await db.query.cashRegisters.findFirst({
+            where: eq(cashRegisters.id, req.params.id),
+            with: { branch: true, shifts: { orderBy: desc(shifts.openedAt), limit: 10 } },
         });
 
         if (!register) {
@@ -821,9 +628,7 @@ salesRoutes.post('/registers', authenticate, authorize('settings:update'), async
         if (!name || !branchId) {
             return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'name and branchId are required' } });
         }
-        const register = await prisma.cashRegister.create({
-            data: { name, branchId, isActive: isActive !== undefined ? isActive : true },
-        });
+        const [register] = await db.insert(cashRegisters).values({ name, branchId, isActive: isActive !== undefined ? isActive : true }).returning();
 
         res.status(201).json({ success: true, data: register });
     } catch (error) {
@@ -836,10 +641,7 @@ salesRoutes.put('/registers/:id', authenticate, authorize('settings:update'), as
     try {
         const { id, _id, createdAt, updatedAt, branch, shifts, ...updateData } = req.body;
         if (updateData.branchId === '' || updateData.branchId === null) delete updateData.branchId;
-        const register = await prisma.cashRegister.update({
-            where: { id: req.params.id },
-            data: updateData,
-        });
+        const [register] = await db.update(cashRegisters).set(updateData).where(eq(cashRegisters.id, req.params.id)).returning();
 
         res.json({ success: true, data: register });
     } catch (error) {
@@ -850,10 +652,7 @@ salesRoutes.put('/registers/:id', authenticate, authorize('settings:update'), as
 // Delete cash register (soft delete)
 salesRoutes.delete('/registers/:id', authenticate, authorize('settings:update'), async (req, res, next) => {
     try {
-        await prisma.cashRegister.update({
-            where: { id: req.params.id },
-            data: { isActive: false },
-        });
+        await db.update(cashRegisters).set({ isActive: false }).where(eq(cashRegisters.id, req.params.id));
 
         res.json({ success: true, data: { message: 'Register deleted' } });
     } catch (error) {
@@ -869,18 +668,18 @@ salesRoutes.delete('/registers/:id', authenticate, authorize('settings:update'),
 salesRoutes.get('/held', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const filter = (req as any).branchFilter as ScopeFilter | undefined;
-        const where: Record<string, unknown> = {};
-        applyScopeFilter(where, filter, 'storeId');
-        if (!filter) {
-            where.branchId = req.user!.branchId;
-        }
 
-        const heldSales = await prisma.heldSale.findMany({
-            where,
-            orderBy: { createdAt: 'desc' },
+        const heldConds: any[] = [];
+        const heldScope = buildScopeCondition(filter, { storeId: heldSales.storeId }, 'storeId');
+        if (heldScope) heldConds.push(heldScope);
+        if (!filter) heldConds.push(eq(heldSales.branchId, req.user!.branchId));
+
+        const heldRows = await db.query.heldSales.findMany({
+            where: heldConds.length > 0 ? and(...heldConds) : undefined,
+            orderBy: desc(heldSales.createdAt),
         });
 
-        res.json({ success: true, data: heldSales });
+        res.json({ success: true, data: heldRows });
     } catch (error) {
         next(error);
     }
@@ -889,9 +688,7 @@ salesRoutes.get('/held', authenticate, branchFilter(), async (req, res, next) =>
 // Get held sale by ID
 salesRoutes.get('/held/:id', authenticate, async (req, res, next) => {
     try {
-        const heldSale = await prisma.heldSale.findUnique({
-            where: { id: req.params.id },
-        });
+        const heldSale = await db.query.heldSales.findFirst({ where: eq(heldSales.id, req.params.id) });
 
         if (!heldSale) {
             res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Held sale not found' } });
@@ -910,14 +707,12 @@ salesRoutes.post('/held', authenticate, async (req, res, next) => {
         const userId = req.user!.userId;
         const branchId = req.user!.branchId;
 
-        const heldSale = await prisma.heldSale.create({
-            data: {
-                ...req.body,
-                userId,
-                branchId,
-                storeId: req.authUser?.activeStoreId || undefined,
-            },
-        });
+        const [heldSale] = await db.insert(heldSales).values({
+            ...req.body,
+            userId,
+            branchId,
+            storeId: req.authUser?.activeStoreId || undefined,
+        }).returning();
 
         res.status(201).json({ success: true, data: heldSale });
     } catch (error) {
@@ -928,9 +723,7 @@ salesRoutes.post('/held', authenticate, async (req, res, next) => {
 // Delete held sale (when recalled or completed)
 salesRoutes.delete('/held/:id', authenticate, async (req, res, next) => {
     try {
-        await prisma.heldSale.delete({
-            where: { id: req.params.id },
-        });
+        await db.delete(heldSales).where(eq(heldSales.id, req.params.id));
 
         res.json({ success: true, data: { message: 'Held sale deleted' } });
     } catch (error) {
@@ -943,43 +736,35 @@ salesRoutes.delete('/held/:id', authenticate, async (req, res, next) => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all credit sales
-salesRoutes.get('/credit', authenticate, async (req, res, next) => {
+salesRoutes.get('/credit', authenticate, branchFilter(), async (req, res, next) => {
     try {
-        const branchId = req.user!.branchId;
+        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const branchId = filter?.branchIds?.[0] || req.user!.branchId;
         const { status, customerId, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
 
-        const where: Record<string, unknown> = {
-            branchId,
-            isCredit: true,
-            type: 'SALE',
-            status: 'COMPLETED'
-        };
+        const creditConds: any[] = [eq(transactions.isCredit, true), eq(transactions.type, 'SALE'), eq(transactions.status, 'COMPLETED')];
+        const creditScope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
+        if (creditScope) creditConds.push(creditScope);
+        if (!filter) creditConds.push(eq(transactions.branchId, branchId));
 
-        if (status && status !== 'all') {
-            where.creditStatus = String(status).toUpperCase();
-        }
-        if (customerId) {
-            where.customerId = String(customerId);
-        }
+        if (status && status !== 'all') creditConds.push(eq(transactions.creditStatus, String(status).toUpperCase()));
+        if (customerId) creditConds.push(eq(transactions.customerId, String(customerId)));
 
-        const [transactions, total] = await Promise.all([
-            prisma.transaction.findMany({
-                where,
-                skip,
-                take: Number(limit),
-                include: {
-                    customer: true,
-                    items: true,
-                    payments: true,
-                },
-                orderBy: { createdAt: 'desc' },
+        const creditWhere = and(...creditConds);
+        const [txRows, [{ value: total }]] = await Promise.all([
+            db.query.transactions.findMany({
+                where: creditWhere,
+                offset: skip,
+                limit: Number(limit),
+                with: { customer: true, items: true, payments: true },
+                orderBy: desc(transactions.createdAt),
             }),
-            prisma.transaction.count({ where }),
+            db.select({ value: count() }).from(transactions).where(creditWhere),
         ]);
 
         // Map to credit sale format
-        const creditSales = transactions.map(t => ({
+        const creditSales = txRows.map(t => ({
             id: t.id,
             receiptNo: t.transactionNo,
             customer: t.customer,
@@ -1033,9 +818,9 @@ salesRoutes.post('/credit', authenticate, async (req, res, next) => {
         const transactionItems = [];
 
         for (const item of items) {
-            const product = await prisma.product.findUnique({
-                where: { id: item.productId },
-                select: { id: true, name: true, sku: true, barcode: true, price: true, cost: true }
+            const product = await db.query.products.findFirst({
+                where: eq(products.id, item.productId),
+                columns: { id: true, name: true, sku: true, barcode: true, price: true, cost: true },
             });
 
             if (!product) {
@@ -1084,86 +869,41 @@ salesRoutes.post('/credit', authenticate, async (req, res, next) => {
 
         // Generate transaction number
         const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-        const count = await prisma.transaction.count({
-            where: { createdAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) } },
-        });
-        const transactionNo = `CRD-${branchId.slice(-4)}-${today}-${String(count + 1).padStart(4, '0')}`;
+        const [{ value: crdCnt }] = await db.select({ value: count() }).from(transactions).where(gte(transactions.createdAt, new Date(new Date().setHours(0, 0, 0, 0))));
+        const transactionNo = `CRD-${branchId.slice(-4)}-${today}-${String(crdCnt + 1).padStart(4, '0')}`;
 
-        // Determine credit status
         let creditStatus = 'PENDING';
-        if (initialPayment >= totalAmount) {
-            creditStatus = 'PAID';
-        } else if (initialPayment > 0) {
-            creditStatus = 'PARTIAL';
+        if (initialPayment >= totalAmount) creditStatus = 'PAID';
+        else if (initialPayment > 0) creditStatus = 'PARTIAL';
+
+        const [txn] = await db.insert(transactions).values({
+            transactionNo, type: 'SALE', status: 'COMPLETED', branchId, storeId: creditStoreId, userId, customerId, memberId,
+            orderType: 'CREDIT', subtotal, discountType, discountValue, discountAmount, taxAmount,
+            total: totalAmount, received: initialPayment, change: 0, note: notes,
+            isCredit: true, creditStatus, dueDate: dueDate ? new Date(dueDate) : null, paidAmount: initialPayment,
+        }).returning();
+
+        if (transactionItems.length > 0) {
+            await db.insert(transactionItems).values(transactionItems.map(ti => ({ ...ti, transactionId: txn.id })));
         }
 
-        // Create transaction
-        const transaction = await prisma.transaction.create({
-            data: {
-                transactionNo,
-                type: 'SALE',
-                status: 'COMPLETED',
-                branchId,
-                storeId: creditStoreId,
-                userId,
-                customerId,
-                memberId,
-                orderType: 'CREDIT',
-                subtotal,
-                discountType,
-                discountValue,
-                discountAmount,
-                taxAmount,
-                total: totalAmount,
-                received: initialPayment,
-                change: 0,
-                note: notes,
-                isCredit: true,
-                creditStatus,
-                dueDate: dueDate ? new Date(dueDate) : null,
-                paidAmount: initialPayment,
-                items: { create: transactionItems },
-            },
-            include: {
-                items: { include: { product: true } },
-                customer: true,
-            },
-        });
-
-        // Update inventory (stock deduction)
         for (const item of items) {
-            const inventory = await prisma.inventory.findFirst({
-                where: { productId: item.productId, branchId }
-            });
-
-            if (inventory) {
-                const previousQty = inventory.quantity;
+            const inv = await db.query.inventory.findFirst({ where: and(eq(inventory.productId, item.productId), eq(inventory.branchId, branchId)) });
+            if (inv) {
+                const previousQty = inv.quantity;
                 const newQty = previousQty - item.quantity;
-
-                await prisma.inventory.update({
-                    where: { id: inventory.id },
-                    data: {
-                        quantity: newQty,
-                        available: newQty - inventory.reserved
-                    },
-                });
-
-                await prisma.stockMovement.create({
-                    data: {
-                        productId: item.productId,
-                        branchId,
-                        type: 'OUT',
-                        quantity: item.quantity,
-                        previousQty,
-                        newQty,
-                        reason: 'Credit Sale',
-                        reference: transaction.id,
-                        referenceType: 'CREDIT_SALE',
-                        userId,
-                    },
+                await db.update(inventory).set({ quantity: newQty, available: newQty - inv.reserved }).where(eq(inventory.id, inv.id));
+                await db.insert(stockMovements).values({
+                    productId: item.productId, branchId, type: 'OUT', quantity: item.quantity, previousQty, newQty,
+                    reason: 'Credit Sale', reference: txn.id, referenceType: 'CREDIT_SALE', userId,
                 });
             }
         }
+
+        const transaction = await db.query.transactions.findFirst({
+            where: eq(transactions.id, txn.id),
+            with: { items: { with: { product: true } }, customer: true },
+        });
 
         res.status(201).json({ success: true, data: transaction });
     } catch (error) {
@@ -1177,101 +917,44 @@ salesRoutes.post('/credit/:id/payment', authenticate, async (req, res, next) => 
         const { amount, paymentMethodId, reference, notes } = req.body;
         const transactionId = req.params.id;
 
-        const transaction = await prisma.transaction.findUnique({
-            where: { id: transactionId },
-        });
+        const transaction = await db.query.transactions.findFirst({ where: eq(transactions.id, transactionId) });
 
-        if (!transaction) {
-            return res.status(404).json({
-                success: false,
-                error: { code: 'NOT_FOUND', message: 'Transaction not found' }
-            });
-        }
-
-        if (!transaction.isCredit) {
-            return res.status(400).json({
-                success: false,
-                error: { code: 'NOT_CREDIT', message: 'Transaction is not a credit sale' }
-            });
-        }
+        if (!transaction) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Transaction not found' } });
+        if (!transaction.isCredit) return res.status(400).json({ success: false, error: { code: 'NOT_CREDIT', message: 'Transaction is not a credit sale' } });
 
         const remaining = transaction.total - transaction.paidAmount;
-        if (amount > remaining) {
-            return res.status(400).json({
-                success: false,
-                error: { code: 'AMOUNT_EXCEEDS', message: 'Payment amount exceeds remaining balance' }
-            });
-        }
+        if (amount > remaining) return res.status(400).json({ success: false, error: { code: 'AMOUNT_EXCEEDS', message: 'Payment amount exceeds remaining balance' } });
 
         const newPaidAmount = transaction.paidAmount + amount;
-        let newStatus = 'PARTIAL';
-        if (newPaidAmount >= transaction.total) {
-            newStatus = 'PAID';
-        }
+        const newStatus = newPaidAmount >= transaction.total ? 'PAID' : 'PARTIAL';
 
-        // Update transaction
-        const updated = await prisma.transaction.update({
-            where: { id: transactionId },
-            data: {
-                paidAmount: newPaidAmount,
-                creditStatus: newStatus,
-            },
-            include: { customer: true },
-        });
+        const [updated] = await db.update(transactions).set({ paidAmount: newPaidAmount, creditStatus: newStatus }).where(eq(transactions.id, transactionId)).returning();
 
-        // Get payment method - default to CASH
         let methodId = paymentMethodId;
         let methodName = 'CASH';
-        
         if (paymentMethodId) {
-            const method = await prisma.paymentMethod.findUnique({
-                where: { id: paymentMethodId }
-            });
+            const method = await db.query.paymentMethods.findFirst({ where: eq(paymentMethods.id, paymentMethodId) });
             if (method) methodName = method.name;
         } else {
-            // Find default cash payment method
-            const cashMethod = await prisma.paymentMethod.findFirst({ 
-                where: { type: 'cash' } 
-            });
-            if (cashMethod) {
-                methodId = cashMethod.id;
-                methodName = cashMethod.name;
-            } else {
-                // If no cash method, try to find any active payment method
-                const anyMethod = await prisma.paymentMethod.findFirst({ 
-                    where: { isActive: true } 
-                });
-                if (anyMethod) {
-                    methodId = anyMethod.id;
-                    methodName = anyMethod.name;
-                } else {
-                    return res.status(400).json({
-                        success: false,
-                        error: { code: 'NO_PAYMENT_METHOD', message: 'No payment method available' }
-                    });
-                }
+            const cashMethod = await db.query.paymentMethods.findFirst({ where: eq(paymentMethods.type, 'cash') });
+            if (cashMethod) { methodId = cashMethod.id; methodName = cashMethod.name; }
+            else {
+                const anyMethod = await db.query.paymentMethods.findFirst({ where: eq(paymentMethods.isActive, true) });
+                if (anyMethod) { methodId = anyMethod.id; methodName = anyMethod.name; }
+                else return res.status(400).json({ success: false, error: { code: 'NO_PAYMENT_METHOD', message: 'No payment method available' } });
             }
         }
 
-        // Create payment record
-        await prisma.transactionPayment.create({
-            data: {
-                transactionId,
-                methodId,
-                methodName,
-                amount,
-                reference: reference || `Credit Payment - ${new Date().toISOString()}`,
-            },
+        await db.insert(transactionPayments).values({
+            transactionId, methodId, methodName, amount,
+            reference: reference || `Credit Payment - ${new Date().toISOString()}`,
         });
 
         res.json({
             success: true,
             data: {
-                id: updated.id,
-                total: updated.total,
-                paid: updated.paidAmount,
-                remaining: updated.total - updated.paidAmount,
-                status: updated.creditStatus?.toLowerCase(),
+                id: updated.id, total: updated.total, paid: updated.paidAmount,
+                remaining: updated.total - updated.paidAmount, status: updated.creditStatus?.toLowerCase(),
             }
         });
     } catch (error) {
@@ -1282,13 +965,9 @@ salesRoutes.post('/credit/:id/payment', authenticate, async (req, res, next) => 
 // Get credit sale details
 salesRoutes.get('/credit/:id', authenticate, async (req, res, next) => {
     try {
-        const transaction = await prisma.transaction.findUnique({
-            where: { id: req.params.id },
-            include: {
-                customer: true,
-                items: { include: { product: true } },
-                payments: true,
-            },
+        const transaction = await db.query.transactions.findFirst({
+            where: eq(transactions.id, req.params.id),
+            with: { customer: true, items: { with: { product: true } }, payments: true },
         });
 
         if (!transaction || !transaction.isCredit) {

@@ -4,6 +4,7 @@
     import { cn, formatCurrency, formatDate } from "$utils";
     import { api } from "$api";
     import { toast } from "svelte-sonner";
+    import { auth } from "$stores";
     import MoneyInput from "$lib/components/MoneyInput.svelte";
     import {
         Wallet,
@@ -22,6 +23,10 @@
         Building,
         TrendingUp,
     } from "lucide-svelte";
+
+    // Rule-based CRUD gating
+    const hasWriteAccess = $derived(auth.hasStoreAccess('write') || !auth.activeStoreId);
+    const canCreateSettlement = $derived(auth.canCreate('payments') && hasWriteAccess);
 
     // State
     let searchQuery = $state("");
@@ -45,6 +50,15 @@
         reference: "",
         notes: "",
     });
+
+    let paymentMethodOptions = $state<{value: string; label: string; labelLao?: string}[]>([]);
+
+    async function loadEnums() {
+        try {
+            const res = await api.get("settings/enums?type=payment_method").json<any>();
+            if (res.data?.payment_method) paymentMethodOptions = res.data.payment_method;
+        } catch { /* keep defaults */ }
+    }
 
     // Stats
     let stats = $derived({
@@ -114,7 +128,10 @@
 
     let totalPages = $derived(Math.ceil(filteredSettlements.length / itemsPerPage));
 
-    onMount(() => loadData());
+    onMount(() => {
+        loadEnums();
+        loadData();
+    });
 </script>
 
 <svelte:head>
@@ -141,6 +158,7 @@
                 <Download class="w-4 h-4" />
                 ສົ່ງອອກ
             </button>
+            {#if canCreateSettlement}
             <button
                 onclick={() => { resetForm(); showModal = true; }}
                 class="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-xl text-sm font-semibold shadow-lg"
@@ -148,6 +166,7 @@
                 <Plus class="w-5 h-5" />
                 ເພີ່ມການຊຳລະ
             </button>
+            {/if}
         </div>
     </div>
 
@@ -315,9 +334,15 @@
                 <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ວິທີຊຳລະ</label>
                     <select bind:value={formData.paymentMethod} class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white">
-                        <option value="cash">ເງິນສົດ</option>
-                        <option value="bank">ໂອນທະນາຄານ</option>
-                        <option value="check">ເຊັກ</option>
+                        {#if paymentMethodOptions.length > 0}
+                            {#each paymentMethodOptions as pm (pm.value)}
+                                <option value={pm.value}>{pm.labelLao || pm.label}</option>
+                            {/each}
+                        {:else}
+                            <option value="cash">ເງິນສົດ</option>
+                            <option value="bank">ໂອນທະນາຄານ</option>
+                            <option value="check">ເຊັກ</option>
+                        {/if}
                     </select>
                 </div>
 

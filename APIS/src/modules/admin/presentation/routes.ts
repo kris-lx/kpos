@@ -4,14 +4,135 @@
 
 import { Router } from 'express';
 import { authenticate, requireSuperAdmin, requireAdmin, isSuperAdmin, isAdmin, invalidateRoleRulesCache, invalidateAllUserStoreCache } from '@/infrastructure/http/middleware/auth.middleware';
-import { prisma } from '@/config/database.config';
+import { db } from '@/config/database.config';
 import { publish, QUEUES, isRabbitMQConnected } from '@/config/rabbitmq.config';
+import argon2 from 'argon2';
+import { users, sessions, roles, rules, roleRules, permissionGroups, permissions, menuPermissions, stores, userStores, productStores, storeRequests, branches, activityLogs, transactions, transactionItems, transactionPayments, heldSales, orders, orderItems, reservations, tables, cashMovements, shifts, cashRegisters, stockTransferItems, stockTransfers, stockMovements, stockCounts, stockCountItems, inventory, purchaseOrderItems, purchaseOrders, vendors, billOfMaterials, productPriceLevels, skuVariants, products, categories, priceLevels, pointsHistory, customers, pointHistory, members, membershipTiers, pointSettings, promotions, coupons, paymentMethods, discounts, systemEnums } from '@/db/schema/tables';
+import { eq, and, or, ne, ilike, inArray, notInArray, gte, lte, desc, asc, count, sql, isNull, isNotNull } from 'drizzle-orm';
+import { ENUM_SEED_DATA } from '@/modules/settings/presentation/routes';
 
 export const adminRoutes = Router();
 
 // ═══════════════════════════════════════════════════════════════════════════
+// PUBLIC STORE REGISTRATION (No Auth Required)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * POST /admin/register-and-apply
+ * Public endpoint: create account + submit store application in one step.
+ * User is created with isActive=false until approved by super_admin.
+ */
+adminRoutes.post('/register-and-apply', async (req, res, next) => {
+    try {
+        const {
+            // Account fields
+            name, email, password, phone,
+            // Business fields
+            storeName, storeCode, storeAddress, storePhone, storeEmail, businessType,
+            // KYC fields (stored in metadata)
+            ownerIdType, ownerIdNumber, ownerName, ownerPhone, ownerNationality,
+            businessLicenseNo, taxCertificateNo,
+            // Request fields
+            reason,
+            // Document URLs (uploaded separately or as base64 refs)
+            documents,
+        } = req.body;
+
+        // Validate required fields
+        if (!name || !email || !password || !storeName || !storeCode) {
+            return res.status(400).json({
+                success: false,
+                error: { code: 'VALIDATION_ERROR', message: 'name, email, password, storeName, storeCode are required' }
+            });
+        }
+
+        if (password.length < 8) {
+            return res.status(400).json({
+                success: false,
+                error: { code: 'VALIDATION_ERROR', message: 'Password must be at least 8 characters' }
+            });
+        }
+
+        // Check email uniqueness
+        const existing = await db.query.users.findFirst({ where: eq(users.email, String(email).toLowerCase()) });
+        if (existing) {
+            return res.status(409).json({
+                success: false,
+                error: { code: 'EMAIL_EXISTS', message: 'Email already registered' }
+            });
+        }
+
+        const hashedPassword = await argon2.hash(String(password));
+
+        // Create user + store request atomically
+        const [newUser] = await db.transaction(async (tx) => {
+            const [user] = await tx.insert(users).values({
+                email: String(email).toLowerCase(),
+                password: hashedPassword,
+                name: String(name),
+                phone: phone ? String(phone) : undefined,
+                role: 'store_owner',
+                isActive: false,
+                emailVerified: false,
+                permissions: [],
+            }).returning();
+
+            await tx.insert(storeRequests).values({
+                requesterId: user.id,
+                type: 'new_store',
+                storeName: String(storeName),
+                storeCode: String(storeCode).toUpperCase(),
+                storeAddress: storeAddress ? String(storeAddress) : undefined,
+                storePhone: storePhone ? String(storePhone) : undefined,
+                storeEmail: storeEmail ? String(storeEmail) : undefined,
+                reason: reason ? String(reason) : undefined,
+                documents: Array.isArray(documents) ? documents : [],
+                metadata: {
+                    businessType: businessType || 'retail',
+                    ownerIdType: ownerIdType || 'national_id',
+                    ownerIdNumber: ownerIdNumber || '',
+                    ownerName: ownerName || name,
+                    ownerPhone: ownerPhone || phone || '',
+                    ownerNationality: ownerNationality || 'LAO',
+                    businessLicenseNo: businessLicenseNo || '',
+                    taxCertificateNo: taxCertificateNo || '',
+                },
+                status: 'pending',
+                priority: 'normal',
+            });
+
+            return [user];
+        });
+
+        res.status(201).json({
+            success: true,
+            data: {
+                userId: newUser.id,
+                email: newUser.email,
+                message: 'Application submitted. Your account will be activated after approval.',
+            },
+        });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // STORE REQUESTS MANAGEMENT
 // ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * GET /admin/requests/count - Get count of pending requests (for notification badge)
+ * Must be before /requests/:id to avoid route conflict
+ */
+adminRoutes.get('/requests/count', authenticate, requireAdmin(), async (req, res, next) => {
+    try {
+        const [{ value: pending }] = await db.select({ value: count() }).from(storeRequests).where(eq(storeRequests.status, 'pending'));
+        res.json({ success: true, data: { pending } });
+    } catch (error) {
+        next(error);
+    }
+});
 
 /**
  * GET /admin/requests - Get all store/branch requests (Super Admin only)
@@ -21,37 +142,24 @@ adminRoutes.get('/requests', authenticate, requireAdmin(), async (req, res, next
         const { status, type, page = 1, limit = 20 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
 
-        const where: Record<string, unknown> = {};
-        
-        if (status) {
-            where.status = String(status);
-        }
-        if (type) {
-            where.type = String(type);
-        }
+        const reqConds: any[] = [];
+        if (status) reqConds.push(eq(storeRequests.status, String(status)));
+        if (type) reqConds.push(eq(storeRequests.type, String(type)));
+        const reqWhere = reqConds.length > 0 ? and(...reqConds) : undefined;
 
-        const [requests, total] = await Promise.all([
-            prisma.storeRequest.findMany({
-                where,
-                skip,
-                take: Number(limit),
-                include: {
-                    requester: {
-                        select: { id: true, name: true, email: true, phone: true }
-                    },
-                    reviewer: {
-                        select: { id: true, name: true, email: true }
-                    },
-                    branch: {
-                        select: { id: true, name: true, code: true }
-                    }
+        const [requests, [{ value: total }]] = await Promise.all([
+            db.query.storeRequests.findMany({
+                where: reqWhere,
+                offset: skip,
+                limit: Number(limit),
+                with: {
+                    requester: { columns: { id: true, name: true, email: true, phone: true } },
+                    reviewer: { columns: { id: true, name: true, email: true } },
+                    branch: { columns: { id: true, name: true, code: true } },
                 },
-                orderBy: [
-                    { priority: 'desc' },
-                    { createdAt: 'desc' }
-                ]
+                orderBy: [desc(storeRequests.priority), desc(storeRequests.createdAt)],
             }),
-            prisma.storeRequest.count({ where })
+            db.select({ value: count() }).from(storeRequests).where(reqWhere),
         ]);
 
         res.json({
@@ -76,19 +184,13 @@ adminRoutes.get('/requests/:id', authenticate, requireAdmin(), async (req, res, 
     try {
         const { id } = req.params;
 
-        const request = await prisma.storeRequest.findUnique({
-            where: { id },
-            include: {
-                requester: {
-                    select: { id: true, name: true, email: true, phone: true, avatar: true }
-                },
-                reviewer: {
-                    select: { id: true, name: true, email: true }
-                },
-                branch: {
-                    select: { id: true, name: true, code: true, address: true }
-                }
-            }
+        const request = await db.query.storeRequests.findFirst({
+            where: eq(storeRequests.id, id),
+            with: {
+                requester: { columns: { id: true, name: true, email: true, phone: true, avatar: true } },
+                reviewer: { columns: { id: true, name: true, email: true } },
+                branch: { columns: { id: true, name: true, code: true, address: true } },
+            },
         });
 
         if (!request) {
@@ -113,9 +215,7 @@ adminRoutes.post('/requests/:id/approve', authenticate, requireAdmin(), async (r
         const { note } = req.body;
         const reviewerId = req.authUser!.userId;
 
-        const request = await prisma.storeRequest.findUnique({
-            where: { id }
-        });
+        const request = await db.query.storeRequests.findFirst({ where: eq(storeRequests.id, id) });
 
         if (!request) {
             return res.status(404).json({
@@ -135,98 +235,52 @@ adminRoutes.post('/requests/:id/approve', authenticate, requireAdmin(), async (r
         let createdEntity: any = null;
 
         if (request.type === 'new_branch' && request.branchName && request.branchCode) {
-            // Create new branch
-            createdEntity = await prisma.branch.create({
-                data: {
-                    name: request.branchName,
-                    code: request.branchCode,
-                    address: request.branchAddress,
-                    phone: request.branchPhone,
-                    email: request.branchEmail,
-                    isActive: true
-                }
-            });
+            const [br] = await db.insert(branches).values({
+                name: request.branchName, code: request.branchCode,
+                address: request.branchAddress, phone: request.branchPhone, email: request.branchEmail, isActive: true,
+            }).returning();
+            createdEntity = br;
         } else if (request.type === 'new_store' && request.storeName && request.storeCode) {
-            // Determine branchId — use existing or create a default branch
             let targetBranchId = request.branchId;
             if (!targetBranchId) {
-                const defaultBranch = await prisma.branch.create({
-                    data: {
-                        name: `${request.storeName} - ສາຂາຫຼັກ`,
-                        code: `BR-${request.storeCode}`,
-                        address: request.storeAddress,
-                        phone: request.storePhone,
-                        email: request.storeEmail,
-                        isActive: true
-                    }
-                });
+                const [defaultBranch] = await db.insert(branches).values({
+                    name: `${request.storeName} - ສາຂາຫຼັກ`, code: `BR-${request.storeCode}`,
+                    address: request.storeAddress, phone: request.storePhone, email: request.storeEmail, isActive: true,
+                }).returning();
                 targetBranchId = defaultBranch.id;
             }
 
-            // Create new store
-            createdEntity = await prisma.store.create({
-                data: {
-                    name: request.storeName,
-                    code: request.storeCode,
-                    branchId: targetBranchId,
-                    address: request.storeAddress,
-                    phone: request.storePhone,
-                    email: request.storeEmail,
-                    isActive: true
-                }
-            });
+            const [store] = await db.insert(stores).values({
+                name: request.storeName, code: request.storeCode, branchId: targetBranchId,
+                address: request.storeAddress, phone: request.storePhone, email: request.storeEmail, isActive: true,
+            }).returning();
+            createdEntity = store;
 
-            // Assign requester to the new store with full access
-            await prisma.userStore.create({
-                data: {
-                    userId: request.requesterId,
-                    storeId: createdEntity.id,
-                    branchId: targetBranchId,
-                    canRead: true,
-                    canWrite: true,
-                    canDelete: true,
-                    canManage: true,
-                    isDefault: true,
-                    assignedBy: reviewerId
-                }
-            });
+            await db.insert(userStores).values([{
+                userId: request.requesterId as string, storeId: createdEntity.id as string, branchId: targetBranchId as string,
+                canRead: true, canWrite: true, canDelete: true, canManage: true, isDefault: true, assignedBy: reviewerId as string,
+            }]);
 
-            // Assign store_owner role to requester
-            let storeOwnerRole = await prisma.role.findFirst({ where: { name: 'store_owner' } });
+            let storeOwnerRole = await db.query.roles.findFirst({ where: eq(roles.name, 'store_owner') });
             if (!storeOwnerRole) {
-                storeOwnerRole = await prisma.role.create({
-                    data: {
-                        name: 'store_owner',
-                        displayName: 'Store Owner',
-                        description: 'ເຈົ້າຂອງຮ້ານ - ສິດຄວບຄຸມຮ້ານທັງໝົດ',
-                        permissions: DEFAULT_ROLES.find(r => r.name === 'store_owner')?.permissions || [],
-                        isSystem: true
-                    }
-                });
+                const [created] = await db.insert(roles).values({
+                    name: 'store_owner', displayName: 'Store Owner',
+                    description: 'ເຈົ້າຂອງຮ້ານ - ສິດຄວບຄຸມຮ້ານທັງໝົດ',
+                    permissions: DEFAULT_ROLES.find(r => r.name === 'store_owner')?.permissions || [],
+                    isSystem: true,
+                }).returning();
+                storeOwnerRole = created;
             }
-            await prisma.user.update({
-                where: { id: request.requesterId },
-                data: {
-                    roleId: storeOwnerRole.id,
-                    role: 'store_owner',
-                    branchId: targetBranchId
-                }
-            });
+            await db.update(users).set({ roleId: storeOwnerRole.id, role: 'store_owner', branchId: targetBranchId }).where(eq(users.id, request.requesterId));
         }
 
-        // Update request status
-        const updatedRequest = await prisma.storeRequest.update({
-            where: { id },
-            data: {
-                status: 'approved',
-                reviewerId,
-                reviewNote: note,
-                reviewedAt: new Date()
+        await db.update(storeRequests).set({ status: 'approved', reviewerId, reviewNote: note, reviewedAt: new Date() }).where(eq(storeRequests.id, id));
+        const updatedRequest = await db.query.storeRequests.findFirst({
+            where: eq(storeRequests.id, id),
+            with: {
+                requester: { columns: { id: true, name: true, email: true } },
+                reviewer: { columns: { id: true, name: true } },
             },
-            include: {
-                requester: { select: { id: true, name: true, email: true } },
-                reviewer: { select: { id: true, name: true } }
-            }
         });
 
         res.json({
@@ -248,9 +302,7 @@ adminRoutes.post('/requests/:id/reject', authenticate, requireAdmin(), async (re
         const { note } = req.body;
         const reviewerId = req.authUser!.userId;
 
-        const request = await prisma.storeRequest.findUnique({
-            where: { id }
-        });
+        const request = await db.query.storeRequests.findFirst({ where: eq(storeRequests.id, id) });
 
         if (!request) {
             return res.status(404).json({
@@ -266,18 +318,13 @@ adminRoutes.post('/requests/:id/reject', authenticate, requireAdmin(), async (re
             });
         }
 
-        const updatedRequest = await prisma.storeRequest.update({
-            where: { id },
-            data: {
-                status: 'rejected',
-                reviewerId,
-                reviewNote: note || 'ຄຳຂໍຖືກປະຕິເສດ',
-                reviewedAt: new Date()
+        await db.update(storeRequests).set({ status: 'rejected', reviewerId, reviewNote: note || 'ຄຳຂໍຖືກປະຕິເສດ', reviewedAt: new Date() }).where(eq(storeRequests.id, id));
+        const updatedRequest = await db.query.storeRequests.findFirst({
+            where: eq(storeRequests.id, id),
+            with: {
+                requester: { columns: { id: true, name: true, email: true } },
+                reviewer: { columns: { id: true, name: true } },
             },
-            include: {
-                requester: { select: { id: true, name: true, email: true } },
-                reviewer: { select: { id: true, name: true } }
-            }
         });
 
         res.json({ success: true, data: updatedRequest });
@@ -297,43 +344,41 @@ adminRoutes.get('/branches', authenticate, requireAdmin(), async (req, res, next
     try {
         const { search, isActive, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
+        const authUser = (req as any).authUser;
 
-        const where: Record<string, unknown> = {};
-        
-        if (isActive !== undefined) {
-            where.isActive = isActive === 'true';
+        // Non-super-admins only see branches linked to their accessible stores
+        let allowedBranchIds: string[] | null = null;
+        if (!authUser?.isSuperAdmin) {
+            const activeStoreId = authUser?.activeStoreId;
+            if (activeStoreId) {
+                const storeRow = await db.query.stores.findFirst({ where: eq(stores.id, activeStoreId), columns: { branchId: true } });
+                allowedBranchIds = storeRow ? [storeRow.branchId] : [];
+            } else {
+                const usRows = await db.query.userStores.findMany({ where: eq(userStores.userId, authUser.userId), columns: { branchId: true } });
+                allowedBranchIds = [...new Set(usRows.map(r => r.branchId))];
+            }
         }
-        
+
+        const brConds: any[] = [];
+        if (allowedBranchIds !== null) {
+            if (allowedBranchIds.length === 0) brConds.push(eq(branches.id, 'no-access'));
+            else brConds.push(inArray(branches.id, allowedBranchIds));
+        }
+        if (isActive !== undefined) brConds.push(eq(branches.isActive, isActive === 'true'));
         if (search) {
-            where.OR = [
-                { name: { contains: String(search), mode: 'insensitive' } },
-                { code: { contains: String(search), mode: 'insensitive' } },
-            ];
+            const s = String(search);
+            brConds.push(or(ilike(branches.name, `%${s}%`), ilike(branches.code, `%${s}%`)));
         }
+        const brWhere = brConds.length > 0 ? and(...brConds) : undefined;
 
-        const [branches, total] = await Promise.all([
-            prisma.branch.findMany({
-                where,
-                skip,
-                take: Number(limit),
-                include: {
-                    _count: {
-                        select: {
-                            users: true,
-                            stores: true,
-                            products: true,
-                            transactions: true
-                        }
-                    }
-                },
-                orderBy: [{ isMain: 'desc' }, { name: 'asc' }]
-            }),
-            prisma.branch.count({ where })
+        const [branchList, [{ value: total }]] = await Promise.all([
+            db.query.branches.findMany({ where: brWhere, offset: skip, limit: Number(limit), orderBy: [desc(branches.isMain), asc(branches.name)] }),
+            db.select({ value: count() }).from(branches).where(brWhere),
         ]);
 
         res.json({
             success: true,
-            data: branches,
+            data: branchList,
             meta: {
                 page: Number(page),
                 limit: Number(limit),
@@ -360,8 +405,7 @@ adminRoutes.post('/branches', authenticate, requireAdmin(), async (req, res, nex
             return res.status(400).json({ success: false, error: { code: 'VALIDATION', message: 'Branch code is required' } });
         }
 
-        // Check for duplicate code
-        const existing = await prisma.branch.findUnique({ where: { code: String(code).trim() } });
+        const existing = await db.query.branches.findFirst({ where: eq(branches.code, String(code).trim()) });
         if (existing) {
             return res.status(400).json({
                 success: false,
@@ -369,28 +413,16 @@ adminRoutes.post('/branches', authenticate, requireAdmin(), async (req, res, nex
             });
         }
 
-        // If this is main branch, unset other main branches
         if (isMain) {
-            await prisma.branch.updateMany({
-                where: { isMain: true },
-                data: { isMain: false }
-            });
+            await db.update(branches).set({ isMain: false }).where(eq(branches.isMain, true));
         }
 
-        const branch = await prisma.branch.create({
-            data: {
-                name: String(name).trim(),
-                code: String(code).trim(),
-                address: address || undefined,
-                phone: phone || undefined,
-                email: email || undefined,
-                taxId: taxId || undefined,
-                logo: logo || undefined,
-                isMain: isMain || false,
-                settings: settings || {},
-                isActive: isActive !== undefined ? Boolean(isActive) : true
-            }
-        });
+        const [branch] = await db.insert(branches).values({
+            name: String(name).trim(), code: String(code).trim(),
+            address: address || undefined, phone: phone || undefined, email: email || undefined,
+            taxId: taxId || undefined, logo: logo || undefined,
+            isMain: isMain || false, settings: settings || {},
+        }).returning();
 
         res.status(201).json({ success: true, data: branch });
     } catch (error) {
@@ -406,8 +438,7 @@ adminRoutes.put('/branches/:id', authenticate, requireAdmin(), async (req, res, 
         const { id } = req.params;
         const { name, code, address, phone, email, taxId, logo, isMain, isActive, settings } = req.body;
 
-        // Check if branch exists
-        const existing = await prisma.branch.findUnique({ where: { id } });
+        const existing = await db.query.branches.findFirst({ where: eq(branches.id, id) });
         if (!existing) {
             return res.status(404).json({
                 success: false,
@@ -415,9 +446,8 @@ adminRoutes.put('/branches/:id', authenticate, requireAdmin(), async (req, res, 
             });
         }
 
-        // Check for duplicate code if changed
         if (code && code !== existing.code) {
-            const duplicate = await prisma.branch.findUnique({ where: { code } });
+            const duplicate = await db.query.branches.findFirst({ where: eq(branches.code, code) });
             if (duplicate) {
                 return res.status(400).json({
                     success: false,
@@ -426,29 +456,11 @@ adminRoutes.put('/branches/:id', authenticate, requireAdmin(), async (req, res, 
             }
         }
 
-        // If setting as main, unset other main branches
         if (isMain && !existing.isMain) {
-            await prisma.branch.updateMany({
-                where: { isMain: true },
-                data: { isMain: false }
-            });
+            await db.update(branches).set({ isMain: false }).where(eq(branches.isMain, true));
         }
 
-        const branch = await prisma.branch.update({
-            where: { id },
-            data: {
-                name,
-                code,
-                address,
-                phone,
-                email,
-                taxId,
-                logo,
-                isMain,
-                isActive,
-                settings
-            }
-        });
+        const [branch] = await db.update(branches).set({ name, code, address, phone, email, taxId, logo, isMain, isActive, settings }).where(eq(branches.id, id)).returning();
 
         res.json({ success: true, data: branch });
     } catch (error) {
@@ -463,10 +475,7 @@ adminRoutes.delete('/branches/:id', authenticate, requireAdmin(), async (req, re
     try {
         const { id } = req.params;
 
-        const branch = await prisma.branch.findUnique({ 
-            where: { id },
-            include: { _count: { select: { users: true, stores: true } } }
-        });
+        const branch = await db.query.branches.findFirst({ where: eq(branches.id, id) });
 
         if (!branch) {
             return res.status(404).json({
@@ -482,11 +491,7 @@ adminRoutes.delete('/branches/:id', authenticate, requireAdmin(), async (req, re
             });
         }
 
-        // Soft delete - deactivate instead of hard delete
-        await prisma.branch.update({
-            where: { id },
-            data: { isActive: false }
-        });
+        await db.update(branches).set({ isActive: false }).where(eq(branches.id, id));
 
         res.json({ success: true, message: 'Branch deactivated successfully' });
     } catch (error) {
@@ -506,38 +511,23 @@ adminRoutes.get('/stores', authenticate, requireAdmin(), async (req, res, next) 
         const { search, branchId, isActive, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
 
-        const where: Record<string, unknown> = {};
-        
-        if (isActive !== undefined) {
-            where.isActive = isActive === 'true';
-        }
-        if (branchId) {
-            where.branchId = String(branchId);
-        }
+        const stConds: any[] = [];
+        if (isActive !== undefined) stConds.push(eq(stores.isActive, isActive === 'true'));
+        if (branchId) stConds.push(eq(stores.branchId, String(branchId)));
         if (search) {
-            where.OR = [
-                { name: { contains: String(search), mode: 'insensitive' } },
-                { code: { contains: String(search), mode: 'insensitive' } },
-            ];
+            const s = String(search);
+            stConds.push(or(ilike(stores.name, `%${s}%`), ilike(stores.code, `%${s}%`)));
         }
+        const stWhere = stConds.length > 0 ? and(...stConds) : undefined;
 
-        const [stores, total] = await Promise.all([
-            prisma.store.findMany({
-                where,
-                skip,
-                take: Number(limit),
-                include: {
-                    branch: { select: { id: true, name: true, code: true } },
-                    _count: { select: { userAccess: true } }
-                },
-                orderBy: { name: 'asc' }
-            }),
-            prisma.store.count({ where })
+        const [storeList, [{ value: total }]] = await Promise.all([
+            db.query.stores.findMany({ where: stWhere, offset: skip, limit: Number(limit), with: { branch: { columns: { id: true, name: true, code: true } } }, orderBy: asc(stores.name) }),
+            db.select({ value: count() }).from(stores).where(stWhere),
         ]);
 
         res.json({
             success: true,
-            data: stores,
+            data: storeList,
             meta: {
                 page: Number(page),
                 limit: Number(limit),
@@ -557,8 +547,7 @@ adminRoutes.post('/stores', authenticate, requireAdmin(), async (req, res, next)
     try {
         const { name, code, branchId, address, phone, email, settings } = req.body;
 
-        // Check for duplicate code
-        const existing = await prisma.store.findUnique({ where: { code } });
+        const existing = await db.query.stores.findFirst({ where: eq(stores.code, code) });
         if (existing) {
             return res.status(400).json({
                 success: false,
@@ -566,23 +555,10 @@ adminRoutes.post('/stores', authenticate, requireAdmin(), async (req, res, next)
             });
         }
 
-        const store = await prisma.store.create({
-            data: {
-                name,
-                code,
-                branchId,
-                address,
-                phone,
-                email,
-                settings: settings || {},
-                isActive: true
-            },
-            include: {
-                branch: { select: { id: true, name: true } }
-            }
-        });
+        const [store] = await db.insert(stores).values({ name, code, branchId, address, phone, email, settings: settings || {}, isActive: true }).returning();
+        const storeWithBranch = await db.query.stores.findFirst({ where: eq(stores.id, store.id), with: { branch: { columns: { id: true, name: true } } } });
 
-        res.status(201).json({ success: true, data: store });
+        res.status(201).json({ success: true, data: storeWithBranch });
     } catch (error) {
         next(error);
     }
@@ -596,7 +572,7 @@ adminRoutes.put('/stores/:id', authenticate, requireAdmin(), async (req, res, ne
         const { id } = req.params;
         const { name, code, branchId, address, phone, email, isActive, settings } = req.body;
 
-        const existing = await prisma.store.findUnique({ where: { id } });
+        const existing = await db.query.stores.findFirst({ where: eq(stores.id, id) });
         if (!existing) {
             return res.status(404).json({
                 success: false,
@@ -604,9 +580,8 @@ adminRoutes.put('/stores/:id', authenticate, requireAdmin(), async (req, res, ne
             });
         }
 
-        // Check for duplicate code if changed
         if (code && code !== existing.code) {
-            const duplicate = await prisma.store.findUnique({ where: { code } });
+            const duplicate = await db.query.stores.findFirst({ where: eq(stores.code, code) });
             if (duplicate) {
                 return res.status(400).json({
                     success: false,
@@ -615,13 +590,8 @@ adminRoutes.put('/stores/:id', authenticate, requireAdmin(), async (req, res, ne
             }
         }
 
-        const store = await prisma.store.update({
-            where: { id },
-            data: { name, code, branchId, address, phone, email, isActive, settings },
-            include: {
-                branch: { select: { id: true, name: true } }
-            }
-        });
+        await db.update(stores).set({ name, code, branchId, address, phone, email, isActive, settings }).where(eq(stores.id, id));
+        const store = await db.query.stores.findFirst({ where: eq(stores.id, id), with: { branch: { columns: { id: true, name: true } } } });
 
         res.json({ success: true, data: store });
     } catch (error) {
@@ -636,7 +606,7 @@ adminRoutes.delete('/stores/:id', authenticate, requireAdmin(), async (req, res,
     try {
         const { id } = req.params;
 
-        const store = await prisma.store.findUnique({ where: { id } });
+        const store = await db.query.stores.findFirst({ where: eq(stores.id, id) });
         if (!store) {
             return res.status(404).json({
                 success: false,
@@ -644,10 +614,7 @@ adminRoutes.delete('/stores/:id', authenticate, requireAdmin(), async (req, res,
             });
         }
 
-        await prisma.store.update({
-            where: { id },
-            data: { isActive: false }
-        });
+        await db.update(stores).set({ isActive: false }).where(eq(stores.id, id));
 
         res.json({ success: true, message: 'Store deactivated successfully' });
     } catch (error) {
@@ -664,11 +631,9 @@ adminRoutes.delete('/stores/:id', authenticate, requireAdmin(), async (req, res,
  */
 adminRoutes.get('/stores/:id/details', authenticate, async (req, res, next) => {
     try {
-        const store = await prisma.store.findUnique({
-            where: { id: req.params.id },
-            include: {
-                branch: { select: { id: true, name: true, code: true, address: true, phone: true } },
-            },
+        const store = await db.query.stores.findFirst({
+            where: eq(stores.id, req.params.id),
+            with: { branch: { columns: { id: true, name: true, code: true, address: true, phone: true } } },
         });
         if (!store) {
             return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Store not found' } });
@@ -684,7 +649,7 @@ adminRoutes.get('/stores/:id/details', authenticate, async (req, res, next) => {
  */
 adminRoutes.get('/stores/:id/stats', authenticate, async (req, res, next) => {
     try {
-        const store = await prisma.store.findUnique({ where: { id: req.params.id } });
+        const store = await db.query.stores.findFirst({ where: eq(stores.id, req.params.id) });
         if (!store) {
             return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Store not found' } });
         }
@@ -693,17 +658,14 @@ adminRoutes.get('/stores/:id/stats', authenticate, async (req, res, next) => {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
-        const [totalProducts, totalUsers, todayTransactions, todaySales] = await Promise.all([
-            prisma.productStore.count({ where: { storeId: req.params.id, isActive: true } }),
-            prisma.userStore.count({ where: { storeId: req.params.id } }),
-            prisma.transaction.count({ where: { branchId, createdAt: { gte: today }, status: 'COMPLETED' } }),
-            prisma.transaction.findMany({
-                where: { branchId, createdAt: { gte: today }, status: 'COMPLETED' },
-                select: { total: true },
-            }),
+        const [[{ value: totalProducts }], [{ value: totalUsers }], [{ value: todayTransactions }], todaySales] = await Promise.all([
+            db.select({ value: count() }).from(productStores).where(and(eq(productStores.storeId, req.params.id), eq(productStores.isActive, true))),
+            db.select({ value: count() }).from(userStores).where(eq(userStores.storeId, req.params.id)),
+            db.select({ value: count() }).from(transactions).where(and(eq(transactions.branchId, branchId), gte(transactions.createdAt, today), eq(transactions.status, 'COMPLETED'))),
+            db.query.transactions.findMany({ where: and(eq(transactions.branchId, branchId), gte(transactions.createdAt, today), eq(transactions.status, 'COMPLETED')), columns: { total: true } }),
         ]);
 
-        const totalSalesToday = todaySales.reduce((sum, t) => sum + t.total, 0);
+        const totalSalesToday = todaySales.reduce((sum: number, t: any) => sum + t.total, 0);
 
         res.json({
             success: true,
@@ -724,18 +686,12 @@ adminRoutes.get('/stores/:id/stats', authenticate, async (req, res, next) => {
  */
 adminRoutes.get('/stores/:id/branches', authenticate, async (req, res, next) => {
     try {
-        const store = await prisma.store.findUnique({
-            where: { id: req.params.id },
-            select: { branchId: true },
-        });
+        const store = await db.query.stores.findFirst({ where: eq(stores.id, req.params.id), columns: { branchId: true } });
         if (!store) {
             return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Store not found' } });
         }
-        const branches = await prisma.branch.findMany({
-            where: { id: store.branchId },
-            select: { id: true, name: true, code: true, address: true, phone: true, isActive: true },
-        });
-        res.json({ success: true, data: branches });
+        const branchList = await db.query.branches.findMany({ where: eq(branches.id, store.branchId), columns: { id: true, name: true, code: true, address: true, phone: true, isActive: true } });
+        res.json({ success: true, data: branchList });
     } catch (error) {
         next(error);
     }
@@ -746,13 +702,11 @@ adminRoutes.get('/stores/:id/branches', authenticate, async (req, res, next) => 
  */
 adminRoutes.get('/stores/:id/users', authenticate, async (req, res, next) => {
     try {
-        const userStores = await prisma.userStore.findMany({
-            where: { storeId: req.params.id },
-            include: {
-                user: { select: { id: true, name: true, email: true, phone: true, role: true, avatar: true, isActive: true } },
-            },
+        const usList = await db.query.userStores.findMany({
+            where: eq(userStores.storeId, req.params.id),
+            with: { user: { columns: { id: true, name: true, email: true, phone: true, role: true, avatar: true, isActive: true } } },
         });
-        const users = userStores.map(us => ({
+        const userList = usList.map((us: any) => ({
             ...us.user,
             canRead: us.canRead,
             canWrite: us.canWrite,
@@ -760,7 +714,7 @@ adminRoutes.get('/stores/:id/users', authenticate, async (req, res, next) => {
             canManage: us.canManage,
             isDefault: us.isDefault,
         }));
-        res.json({ success: true, data: users });
+        res.json({ success: true, data: userList });
     } catch (error) {
         next(error);
     }
@@ -780,15 +734,12 @@ adminRoutes.put('/stores/:id/update', authenticate, async (req, res, next) => {
         if (description !== undefined) updateData.description = description;
         if (settings !== undefined) updateData.settings = settings;
 
-        const store = await prisma.store.update({
-            where: { id: req.params.id },
-            data: updateData,
-        });
-        res.json({ success: true, data: store });
-    } catch (error: any) {
-        if (error.code === 'P2025') {
+        const [store] = await db.update(stores).set(updateData).where(eq(stores.id, req.params.id)).returning();
+        if (!store) {
             return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Store not found' } });
         }
+        res.json({ success: true, data: store });
+    } catch (error: any) {
         next(error);
     }
 });
@@ -803,38 +754,30 @@ adminRoutes.put('/stores/:id/update', authenticate, async (req, res, next) => {
 adminRoutes.get('/dashboard', authenticate, requireAdmin(), async (req, res, next) => {
     try {
         const [
-            totalBranches,
-            activeBranches,
-            totalStores,
-            activeStores,
-            totalUsers,
-            activeUsers,
-            pendingRequests,
+            [{ value: totalBranches }],
+            [{ value: activeBranches }],
+            [{ value: totalStores }],
+            [{ value: activeStores }],
+            [{ value: totalUsers }],
+            [{ value: activeUsers }],
+            [{ value: pendingRequests }],
             recentRequests,
-            todayTransactions
+            [{ value: todayTransactions }]
         ] = await Promise.all([
-            prisma.branch.count(),
-            prisma.branch.count({ where: { isActive: true } }),
-            prisma.store.count(),
-            prisma.store.count({ where: { isActive: true } }),
-            prisma.user.count(),
-            prisma.user.count({ where: { isActive: true } }),
-            prisma.storeRequest.count({ where: { status: 'pending' } }),
-            prisma.storeRequest.findMany({
-                where: { status: 'pending' },
-                take: 5,
-                orderBy: { createdAt: 'desc' },
-                include: {
-                    requester: { select: { name: true, email: true } }
-                }
+            db.select({ value: count() }).from(branches),
+            db.select({ value: count() }).from(branches).where(eq(branches.isActive, true)),
+            db.select({ value: count() }).from(stores),
+            db.select({ value: count() }).from(stores).where(eq(stores.isActive, true)),
+            db.select({ value: count() }).from(users),
+            db.select({ value: count() }).from(users).where(eq(users.isActive, true)),
+            db.select({ value: count() }).from(storeRequests).where(eq(storeRequests.status, 'pending')),
+            db.query.storeRequests.findMany({
+                where: eq(storeRequests.status, 'pending'),
+                limit: 5,
+                orderBy: desc(storeRequests.createdAt),
+                with: { requester: { columns: { name: true, email: true } } },
             }),
-            prisma.transaction.count({
-                where: {
-                    createdAt: {
-                        gte: new Date(new Date().setHours(0, 0, 0, 0))
-                    }
-                }
-            })
+            db.select({ value: count() }).from(transactions).where(gte(transactions.createdAt, new Date(new Date().setHours(0, 0, 0, 0)))),
         ]);
 
         res.json({
@@ -860,51 +803,34 @@ adminRoutes.get('/users', authenticate, requireAdmin(), async (req, res, next) =
         const { search, branchId, isActive, isSuperAdmin, page = 1, limit = 20 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
 
-        const where: Record<string, unknown> = {};
-
-        if (isActive !== undefined) {
-            where.isActive = isActive === 'true';
-        }
-        if (isSuperAdmin !== undefined) {
-            where.isSuperAdmin = isSuperAdmin === 'true';
-        }
-        if (branchId) {
-            where.branchId = String(branchId);
-        }
+        const uConds: any[] = [];
+        if (isActive !== undefined) uConds.push(eq(users.isActive, isActive === 'true'));
+        if (isSuperAdmin !== undefined) uConds.push(eq(users.isSuperAdmin, isSuperAdmin === 'true'));
+        if (branchId) uConds.push(eq(users.branchId, String(branchId)));
         if (search) {
-            where.OR = [
-                { name: { contains: String(search), mode: 'insensitive' } },
-                { email: { contains: String(search), mode: 'insensitive' } },
-            ];
+            const s = String(search);
+            uConds.push(or(ilike(users.name, `%${s}%`), ilike(users.email, `%${s}%`)));
         }
+        const uWhere = uConds.length > 0 ? and(...uConds) : undefined;
 
-        const [users, total] = await Promise.all([
-            prisma.user.findMany({
-                where,
-                skip,
-                take: Number(limit),
-                select: {
-                    id: true,
-                    email: true,
-                    name: true,
-                    phone: true,
-                    role: true,
-                    isActive: true,
-                    isSuperAdmin: true,
-                    lastLoginAt: true,
-                    createdAt: true,
-                    branch: { select: { id: true, name: true, code: true } },
-                    roleRelation: { select: { id: true, name: true, displayName: true } },
-                    _count: { select: { accessibleStores: true } }
+        const [userList, [{ value: total }]] = await Promise.all([
+            db.query.users.findMany({
+                where: uWhere,
+                offset: skip,
+                limit: Number(limit),
+                columns: { id: true, email: true, name: true, phone: true, role: true, isActive: true, isSuperAdmin: true, lastLoginAt: true, createdAt: true },
+                with: {
+                    branch: { columns: { id: true, name: true, code: true } },
+                    roleRelation: { columns: { id: true, name: true, displayName: true } },
                 },
-                orderBy: [{ isSuperAdmin: 'desc' }, { name: 'asc' }]
+                orderBy: [desc(users.isSuperAdmin), asc(users.name)],
             }),
-            prisma.user.count({ where })
+            db.select({ value: count() }).from(users).where(uWhere),
         ]);
 
         res.json({
             success: true,
-            data: users,
+            data: userList,
             meta: {
                 page: Number(page),
                 limit: Number(limit),
@@ -925,7 +851,6 @@ adminRoutes.put('/users/:id/super-admin', authenticate, requireAdmin(), async (r
         const { id } = req.params;
         const { isSuperAdmin: newStatus } = req.body;
 
-        // Prevent self-demotion
         if (id === req.authUser!.userId && newStatus === false) {
             return res.status(400).json({
                 success: false,
@@ -933,16 +858,7 @@ adminRoutes.put('/users/:id/super-admin', authenticate, requireAdmin(), async (r
             });
         }
 
-        const user = await prisma.user.update({
-            where: { id },
-            data: { isSuperAdmin: Boolean(newStatus) },
-            select: {
-                id: true,
-                name: true,
-                email: true,
-                isSuperAdmin: true
-            }
-        });
+        const [user] = await db.update(users).set({ isSuperAdmin: Boolean(newStatus) }).where(eq(users.id, id)).returning({ id: users.id, name: users.name, email: users.email, isSuperAdmin: users.isSuperAdmin });
 
         res.json({ success: true, data: user });
     } catch (error) {
@@ -980,18 +896,12 @@ adminRoutes.post('/requests', authenticate, async (req, res, next) => {
 
 
 
-        // Check for duplicate pending requests
-        const existingRequest = await prisma.storeRequest.findFirst({
-            where: {
-                requesterId,
-                status: 'pending',
-                type,
-                OR: [
-                    { storeCode: storeCode || undefined },
-                    { branchCode: branchCode || undefined }
-                ]
-            }
-        });
+        const dupConds: any[] = [eq(storeRequests.requesterId, requesterId), eq(storeRequests.status, 'pending'), eq(storeRequests.type, type)];
+        const orConds: any[] = [];
+        if (storeCode) orConds.push(eq(storeRequests.storeCode, storeCode));
+        if (branchCode) orConds.push(eq(storeRequests.branchCode, branchCode));
+        if (orConds.length > 0) dupConds.push(or(...orConds));
+        const existingRequest = await db.query.storeRequests.findFirst({ where: and(...dupConds) });
 
         if (existingRequest) {
             return res.status(400).json({
@@ -1000,30 +910,12 @@ adminRoutes.post('/requests', authenticate, async (req, res, next) => {
             });
         }
 
-        const request = await prisma.storeRequest.create({
-            data: {
-                requesterId,
-                type,
-                branchId,
-                storeName,
-                storeCode,
-                storeAddress,
-                storePhone,
-                storeEmail,
-                branchName,
-                branchCode,
-                branchAddress,
-                branchPhone,
-                branchEmail,
-                reason,
-                documents: documents || [],
-                priority: priority || 'normal',
-                status: 'pending'
-            },
-            include: {
-                requester: { select: { name: true, email: true } }
-            }
-        });
+        const [created] = await db.insert(storeRequests).values({
+            requesterId, type, branchId, storeName, storeCode, storeAddress, storePhone, storeEmail,
+            branchName, branchCode, branchAddress, branchPhone, branchEmail, reason,
+            documents: documents || [], priority: priority || 'normal', status: 'pending',
+        }).returning();
+        const request = await db.query.storeRequests.findFirst({ where: eq(storeRequests.id, created.id), with: { requester: { columns: { name: true, email: true } } } });
 
         res.status(201).json({ success: true, data: request });
     } catch (error) {
@@ -1040,23 +932,17 @@ adminRoutes.get('/my-requests', authenticate, async (req, res, next) => {
         const { status, page = 1, limit = 10 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
 
-        const where: Record<string, unknown> = { requesterId };
-        if (status) {
-            where.status = String(status);
-        }
+        const myConds: any[] = [eq(storeRequests.requesterId, requesterId)];
+        if (status) myConds.push(eq(storeRequests.status, String(status)));
+        const myWhere = and(...myConds);
 
-        const [requests, total] = await Promise.all([
-            prisma.storeRequest.findMany({
-                where,
-                skip,
-                take: Number(limit),
-                include: {
-                    reviewer: { select: { name: true } },
-                    branch: { select: { name: true, code: true } }
-                },
-                orderBy: { createdAt: 'desc' }
+        const [requests, [{ value: total }]] = await Promise.all([
+            db.query.storeRequests.findMany({
+                where: myWhere, offset: skip, limit: Number(limit),
+                with: { reviewer: { columns: { name: true } }, branch: { columns: { name: true, code: true } } },
+                orderBy: desc(storeRequests.createdAt),
             }),
-            prisma.storeRequest.count({ where })
+            db.select({ value: count() }).from(storeRequests).where(myWhere),
         ]);
 
         res.json({
@@ -1087,17 +973,10 @@ adminRoutes.get('/check-super-admin', authenticate, async (req, res) => {
  */
 adminRoutes.get('/permissions', authenticate, requireAdmin(), async (req, res, next) => {
     try {
-        // Try to get from database first
-        const dbPermissions = await prisma.permissionGroup.findMany({
-            where: { isActive: true },
-            orderBy: { order: 'asc' },
-            include: {
-                permissions: {
-                    where: { isActive: true },
-                    orderBy: { order: 'asc' },
-                    select: { key: true, label: true }
-                }
-            }
+        const dbPermissions = await db.query.permissionGroups.findMany({
+            where: eq(permissionGroups.isActive, true),
+            orderBy: asc(permissionGroups.order),
+            with: { permissions: true },
         });
 
         if (dbPermissions.length > 0) {
@@ -1126,31 +1005,16 @@ adminRoutes.post('/permissions', authenticate, requireAdmin(), async (req, res, 
     try {
         const { groups } = req.body;
 
-        // Delete existing and recreate
-        await prisma.permission.deleteMany({});
-        await prisma.permissionGroup.deleteMany({});
+        await db.delete(permissions);
+        await db.delete(permissionGroups);
 
-        // Create new permission groups
         for (let i = 0; i < groups.length; i++) {
             const group = groups[i];
-            await prisma.permissionGroup.create({
-                data: {
-                    key: group.key,
-                    label: group.label,
-                    icon: group.icon,
-                    color: group.color,
-                    order: i,
-                    isActive: true,
-                    permissions: {
-                        create: group.permissions.map((p: any, j: number) => ({
-                            key: p.key,
-                            label: p.label,
-                            order: j,
-                            isActive: true
-                        }))
-                    }
-                }
-            });
+            const [pg] = await db.insert(permissionGroups).values({ key: group.key, label: group.label, icon: group.icon, color: group.color, order: i, isActive: true }).returning();
+            for (let j = 0; j < group.permissions.length; j++) {
+                const p = group.permissions[j];
+                await db.insert(permissions).values({ key: p.key, label: p.label, groupId: pg.id, order: j, isActive: true });
+            }
         }
 
         res.json({ success: true, message: 'Permissions updated successfully' });
@@ -1171,30 +1035,21 @@ adminRoutes.get('/roles', authenticate, requireAdmin(), async (req, res, next) =
         const { search, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
 
-        const where: Record<string, unknown> = {};
+        const rConds: any[] = [];
         if (search) {
-            where.OR = [
-                { name: { contains: String(search), mode: 'insensitive' } },
-                { displayName: { contains: String(search), mode: 'insensitive' } },
-            ];
+            const s = String(search);
+            rConds.push(or(ilike(roles.name, `%${s}%`), ilike(roles.displayName, `%${s}%`)));
         }
+        const rWhere = rConds.length > 0 ? and(...rConds) : undefined;
 
-        const [roles, total] = await Promise.all([
-            prisma.role.findMany({
-                where,
-                skip,
-                take: Number(limit),
-                include: {
-                    _count: { select: { users: true } }
-                },
-                orderBy: [{ isSystem: 'desc' }, { name: 'asc' }]
-            }),
-            prisma.role.count({ where })
+        const [roleList, [{ value: total }]] = await Promise.all([
+            db.query.roles.findMany({ where: rWhere, offset: skip, limit: Number(limit), orderBy: [desc(roles.isSystem), asc(roles.name)] }),
+            db.select({ value: count() }).from(roles).where(rWhere),
         ]);
 
         res.json({
             success: true,
-            data: roles,
+            data: roleList,
             meta: { page: Number(page), limit: Number(limit), total }
         });
     } catch (error) {
@@ -1219,23 +1074,16 @@ adminRoutes.post('/roles/seed', authenticate, requireAdmin(), async (req, res, n
         const results = [];
 
         for (const roleData of DEFAULT_ROLES) {
-            const existing = await prisma.role.findUnique({ where: { name: roleData.name } });
+            const existing = await db.query.roles.findFirst({ where: eq(roles.name, roleData.name) });
             
             if (existing) {
-                const updated = await prisma.role.update({
-                    where: { name: roleData.name },
-                    data: {
-                        displayName: roleData.displayName,
-                        description: roleData.description,
-                        permissions: roleData.permissions,
-                        isSystem: roleData.isSystem
-                    }
-                });
+                const [updated] = await db.update(roles).set({
+                    displayName: roleData.displayName, description: roleData.description,
+                    permissions: roleData.permissions, isSystem: roleData.isSystem,
+                }).where(eq(roles.name, roleData.name)).returning();
                 results.push({ ...updated, action: 'updated' });
             } else {
-                const created = await prisma.role.create({
-                    data: roleData
-                });
+                const [created] = await db.insert(roles).values(roleData).returning();
                 results.push({ ...created, action: 'created' });
             }
         }
@@ -1255,12 +1103,7 @@ adminRoutes.get('/roles/:id', authenticate, requireAdmin(), async (req, res, nex
     try {
         const { id } = req.params;
 
-        const role = await prisma.role.findUnique({
-            where: { id },
-            include: {
-                _count: { select: { users: true } }
-            }
-        });
+        const role = await db.query.roles.findFirst({ where: eq(roles.id, id) });
 
         if (!role) {
             return res.status(404).json({
@@ -1282,8 +1125,7 @@ adminRoutes.post('/roles', authenticate, requireAdmin(), async (req, res, next) 
     try {
         const { name, displayName, description, permissions } = req.body;
 
-        // Check for duplicate name
-        const existing = await prisma.role.findUnique({ where: { name } });
+        const existing = await db.query.roles.findFirst({ where: eq(roles.name, name) });
         if (existing) {
             return res.status(400).json({
                 success: false,
@@ -1291,15 +1133,7 @@ adminRoutes.post('/roles', authenticate, requireAdmin(), async (req, res, next) 
             });
         }
 
-        const role = await prisma.role.create({
-            data: {
-                name,
-                displayName,
-                description,
-                permissions: permissions || [],
-                isSystem: false
-            }
-        });
+        const [role] = await db.insert(roles).values({ name, displayName, description, permissions: permissions || [], isSystem: false }).returning();
 
         // Log activity
         await logActivity(req.authUser!.userId, 'role_created', `ສ້າງບົດບາດ: ${displayName}`, { roleId: role.id }, req);
@@ -1318,7 +1152,7 @@ adminRoutes.patch('/roles/:id', authenticate, requireAdmin(), async (req, res, n
         const { id } = req.params;
         const { name, displayName, description, permissions } = req.body;
 
-        const existing = await prisma.role.findUnique({ where: { id } });
+        const existing = await db.query.roles.findFirst({ where: eq(roles.id, id) });
         if (!existing) {
             return res.status(404).json({
                 success: false,
@@ -1326,9 +1160,8 @@ adminRoutes.patch('/roles/:id', authenticate, requireAdmin(), async (req, res, n
             });
         }
 
-        // Check for duplicate name if changed
         if (name && name !== existing.name) {
-            const duplicate = await prisma.role.findUnique({ where: { name } });
+            const duplicate = await db.query.roles.findFirst({ where: eq(roles.name, name) });
             if (duplicate) {
                 return res.status(400).json({
                     success: false,
@@ -1337,15 +1170,12 @@ adminRoutes.patch('/roles/:id', authenticate, requireAdmin(), async (req, res, n
             }
         }
 
-        const role = await prisma.role.update({
-            where: { id },
-            data: {
-                name: name || existing.name,
-                displayName: displayName || existing.displayName,
-                description: description !== undefined ? description : existing.description,
-                permissions: permissions || existing.permissions
-            }
-        });
+        const [role] = await db.update(roles).set({
+            name: name || existing.name,
+            displayName: displayName || existing.displayName,
+            description: description !== undefined ? description : existing.description,
+            permissions: permissions || existing.permissions,
+        }).where(eq(roles.id, id)).returning();
 
         // Log activity
         await logActivity(req.authUser!.userId, 'role_updated', `ແກ້ໄຂບົດບາດ: ${role.displayName}`, { roleId: role.id }, req);
@@ -1363,10 +1193,7 @@ adminRoutes.delete('/roles/:id', authenticate, requireAdmin(), async (req, res, 
     try {
         const { id } = req.params;
 
-        const role = await prisma.role.findUnique({
-            where: { id },
-            include: { _count: { select: { users: true } } }
-        });
+        const role = await db.query.roles.findFirst({ where: eq(roles.id, id) });
 
         if (!role) {
             return res.status(404).json({
@@ -1382,14 +1209,15 @@ adminRoutes.delete('/roles/:id', authenticate, requireAdmin(), async (req, res, 
             });
         }
 
-        if (role._count.users > 0) {
+        const [{ value: userCount }] = await db.select({ value: count() }).from(users).where(eq(users.roleId, id));
+        if (userCount > 0) {
             return res.status(400).json({
                 success: false,
                 error: { code: 'HAS_USERS', message: 'Cannot delete role with assigned users' }
             });
         }
 
-        await prisma.role.delete({ where: { id } });
+        await db.delete(roles).where(eq(roles.id, id));
 
         // Log activity
         await logActivity(req.authUser!.userId, 'role_deleted', `ລຶບບົດບາດ: ${role.displayName}`, { roleId: id }, req);
@@ -1428,15 +1256,13 @@ async function logActivity(
         // Try async queue first; fall back to synchronous DB write
         const queued = isRabbitMQConnected() && publish(QUEUES.ACTIVITY_LOG, payload as Record<string, unknown>);
         if (!queued) {
-            await prisma.activityLog.create({
-                data: {
-                    userId,
-                    action,
-                    description,
-                    metadata: metadata || {},
-                    ip: payload.ip,
-                    userAgent: payload.userAgent,
-                }
+            await db.insert(activityLogs).values({
+                userId,
+                action,
+                description,
+                metadata: metadata || {},
+                ip: payload.ip,
+                userAgent: payload.userAgent,
             });
         }
     } catch (error) {
@@ -1451,14 +1277,10 @@ adminRoutes.get('/activity', authenticate, requireAdmin(), async (req, res, next
     try {
         const { limit = 10 } = req.query;
 
-        const activities = await prisma.activityLog.findMany({
-            take: Number(limit),
-            orderBy: { createdAt: 'desc' },
-            include: {
-                user: {
-                    select: { id: true, name: true, email: true }
-                }
-            }
+        const activities = await db.query.activityLogs.findMany({
+            limit: Number(limit),
+            orderBy: desc(activityLogs.createdAt),
+            with: { user: { columns: { id: true, name: true, email: true } } },
         });
 
         res.json({ success: true, data: activities });
@@ -1475,47 +1297,28 @@ adminRoutes.get('/audit', authenticate, requireAdmin(), async (req, res, next) =
         const { search, action, userId, dateFrom, dateTo, page = 1, limit = 20 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
 
-        const where: Record<string, unknown> = {};
-
-        if (action) {
-            where.action = String(action);
-        }
-        if (userId) {
-            where.userId = String(userId);
-        }
-        if (dateFrom || dateTo) {
-            where.createdAt = {};
-            if (dateFrom) {
-                (where.createdAt as Record<string, unknown>).gte = new Date(String(dateFrom));
-            }
-            if (dateTo) {
-                (where.createdAt as Record<string, unknown>).lte = new Date(String(dateTo) + 'T23:59:59.999Z');
-            }
-        }
+        const aConds: any[] = [];
+        if (action) aConds.push(eq(activityLogs.action, String(action)));
+        if (userId) aConds.push(eq(activityLogs.userId, String(userId)));
+        if (dateFrom) aConds.push(gte(activityLogs.createdAt, new Date(String(dateFrom))));
+        if (dateTo) aConds.push(lte(activityLogs.createdAt, new Date(String(dateTo) + 'T23:59:59.999Z')));
         if (search) {
-            where.OR = [
-                { description: { contains: String(search), mode: 'insensitive' } },
-                { action: { contains: String(search), mode: 'insensitive' } },
-            ];
+            const s = String(search);
+            aConds.push(or(ilike(activityLogs.description, `%${s}%`), ilike(activityLogs.action, `%${s}%`)));
         }
+        const aWhere = aConds.length > 0 ? and(...aConds) : undefined;
 
-        const [logs, total, stats] = await Promise.all([
-            prisma.activityLog.findMany({
-                where,
-                skip,
-                take: Number(limit),
-                orderBy: { createdAt: 'desc' },
-                include: {
-                    user: {
-                        select: { id: true, name: true, email: true }
-                    }
-                }
+        const [logs, [{ value: total }], stats] = await Promise.all([
+            db.query.activityLogs.findMany({
+                where: aWhere, offset: skip, limit: Number(limit),
+                orderBy: desc(activityLogs.createdAt),
+                with: { user: { columns: { id: true, name: true, email: true } } },
             }),
-            prisma.activityLog.count({ where }),
+            db.select({ value: count() }).from(activityLogs).where(aWhere),
             Promise.all([
-                prisma.activityLog.count({ where: { action: { contains: 'login' } } }),
-                prisma.activityLog.count({ where: { action: { contains: 'updated' } } }),
-                prisma.activityLog.count({ where: { action: { contains: 'failed' } } })
+                db.select({ value: count() }).from(activityLogs).where(ilike(activityLogs.action, '%login%')),
+                db.select({ value: count() }).from(activityLogs).where(ilike(activityLogs.action, '%updated%')),
+                db.select({ value: count() }).from(activityLogs).where(ilike(activityLogs.action, '%failed%')),
             ])
         ]);
 
@@ -1524,9 +1327,9 @@ adminRoutes.get('/audit', authenticate, requireAdmin(), async (req, res, next) =
             data: logs,
             total,
             stats: {
-                logins: stats[0],
-                changes: stats[1],
-                errors: stats[2]
+                logins: stats[0][0].value,
+                changes: stats[1][0].value,
+                errors: stats[2][0].value,
             },
             meta: {
                 page: Number(page),
@@ -1547,22 +1350,16 @@ adminRoutes.get('/audit/export', authenticate, requireAdmin(), async (req, res, 
     try {
         const { action, userId, dateFrom, dateTo } = req.query;
 
-        const where: Record<string, unknown> = {};
-        if (action) where.action = String(action);
-        if (userId) where.userId = String(userId);
-        if (dateFrom || dateTo) {
-            where.createdAt = {};
-            if (dateFrom) (where.createdAt as Record<string, unknown>).gte = new Date(String(dateFrom));
-            if (dateTo) (where.createdAt as Record<string, unknown>).lte = new Date(String(dateTo) + 'T23:59:59.999Z');
-        }
+        const eConds: any[] = [];
+        if (action) eConds.push(eq(activityLogs.action, String(action)));
+        if (userId) eConds.push(eq(activityLogs.userId, String(userId)));
+        if (dateFrom) eConds.push(gte(activityLogs.createdAt, new Date(String(dateFrom))));
+        if (dateTo) eConds.push(lte(activityLogs.createdAt, new Date(String(dateTo) + 'T23:59:59.999Z')));
+        const eWhere = eConds.length > 0 ? and(...eConds) : undefined;
 
-        const logs = await prisma.activityLog.findMany({
-            where,
-            orderBy: { createdAt: 'desc' },
-            take: 10000,
-            include: {
-                user: { select: { name: true, email: true } }
-            }
+        const logs = await db.query.activityLogs.findMany({
+            where: eWhere, orderBy: desc(activityLogs.createdAt), limit: 10000,
+            with: { user: { columns: { name: true, email: true } } },
         });
 
         // Generate CSV
@@ -1596,7 +1393,7 @@ adminRoutes.get('/system/health', authenticate, requireAdmin(), async (req, res,
         let dbLatency = 0;
         try {
             const dbStart = Date.now();
-            await prisma.$queryRaw`SELECT 1`;
+            await db.execute(sql`SELECT 1`);
             dbLatency = Date.now() - dbStart;
         } catch {
             dbStatus = 'unhealthy';
@@ -1653,30 +1450,14 @@ adminRoutes.get('/users/:id', authenticate, requireAdmin(), async (req, res, nex
     try {
         const { id } = req.params;
 
-        const user = await prisma.user.findUnique({
-            where: { id },
-            select: {
-                id: true,
-                email: true,
-                name: true,
-                phone: true,
-                role: true,
-                roleId: true,
-                branchId: true,
-                permissions: true,
-                isActive: true,
-                isSuperAdmin: true,
-                lastLoginAt: true,
-                createdAt: true,
-                updatedAt: true,
-                branch: { select: { id: true, name: true, code: true } },
-                roleRelation: { select: { id: true, name: true, displayName: true, permissions: true } },
-                accessibleStores: {
-                    include: {
-                        store: { select: { id: true, name: true, code: true } }
-                    }
-                }
-            }
+        const user = await db.query.users.findFirst({
+            where: eq(users.id, id),
+            columns: { id: true, email: true, name: true, phone: true, role: true, roleId: true, branchId: true, permissions: true, isActive: true, isSuperAdmin: true, lastLoginAt: true, createdAt: true, updatedAt: true },
+            with: {
+                branch: { columns: { id: true, name: true, code: true } },
+                roleRelation: { columns: { id: true, name: true, displayName: true, permissions: true } },
+                accessibleStores: { with: { store: { columns: { id: true, name: true, code: true } } } },
+            },
         });
 
         if (!user) {
@@ -1700,7 +1481,7 @@ adminRoutes.patch('/users/:id', authenticate, requireAdmin(), async (req, res, n
         const { id } = req.params;
         const { name, email, phone, roleId, branchId, permissions, isActive } = req.body;
 
-        const existing = await prisma.user.findUnique({ where: { id } });
+        const existing = await db.query.users.findFirst({ where: eq(users.id, id) });
         if (!existing) {
             return res.status(404).json({
                 success: false,
@@ -1708,9 +1489,8 @@ adminRoutes.patch('/users/:id', authenticate, requireAdmin(), async (req, res, n
             });
         }
 
-        // Check for duplicate email if changed
         if (email && email !== existing.email) {
-            const duplicate = await prisma.user.findUnique({ where: { email } });
+            const duplicate = await db.query.users.findFirst({ where: eq(users.email, email) });
             if (duplicate) {
                 return res.status(400).json({
                     success: false,
@@ -1719,42 +1499,26 @@ adminRoutes.patch('/users/:id', authenticate, requireAdmin(), async (req, res, n
             }
         }
 
-        // Get role name if roleId provided
         let roleName = existing.role;
         if (roleId) {
-            const role = await prisma.role.findUnique({ where: { id: roleId } });
-            if (role) {
-                roleName = role.name;
-            }
+            const role = await db.query.roles.findFirst({ where: eq(roles.id, roleId) });
+            if (role) roleName = role.name;
         }
 
         const updateData: Record<string, unknown> = {};
         if (name !== undefined) updateData.name = name;
         if (email !== undefined) updateData.email = email;
         if (phone !== undefined) updateData.phone = phone;
-        if (roleId !== undefined) {
-            updateData.roleId = roleId;
-            updateData.role = roleName;
-        }
+        if (roleId !== undefined) { updateData.roleId = roleId; updateData.role = roleName; }
         if (branchId !== undefined) updateData.branchId = branchId;
         if (permissions !== undefined) updateData.permissions = permissions;
         if (isActive !== undefined) updateData.isActive = isActive;
 
-        const user = await prisma.user.update({
-            where: { id },
-            data: updateData,
-            select: {
-                id: true,
-                email: true,
-                name: true,
-                phone: true,
-                role: true,
-                isActive: true,
-                isSuperAdmin: true,
-                createdAt: true,
-                branch: { select: { id: true, name: true } },
-                roleRelation: { select: { id: true, name: true, displayName: true } }
-            }
+        await db.update(users).set(updateData).where(eq(users.id, id));
+        const user = await db.query.users.findFirst({
+            where: eq(users.id, id),
+            columns: { id: true, email: true, name: true, phone: true, role: true, isActive: true, isSuperAdmin: true, createdAt: true },
+            with: { branch: { columns: { id: true, name: true } }, roleRelation: { columns: { id: true, name: true, displayName: true } } },
         });
 
         // Log activity
@@ -1781,7 +1545,7 @@ adminRoutes.delete('/users/:id', authenticate, requireAdmin(), async (req, res, 
             });
         }
 
-        const user = await prisma.user.findUnique({ where: { id } });
+        const user = await db.query.users.findFirst({ where: eq(users.id, id) });
         if (!user) {
             return res.status(404).json({
                 success: false,
@@ -1789,11 +1553,7 @@ adminRoutes.delete('/users/:id', authenticate, requireAdmin(), async (req, res, 
             });
         }
 
-        // Soft delete - deactivate
-        await prisma.user.update({
-            where: { id },
-            data: { isActive: false }
-        });
+        await db.update(users).set({ isActive: false }).where(eq(users.id, id));
 
         // Log activity
         await logActivity(req.authUser!.userId, 'user_deleted', `ປິດການໃຊ້ງານຜູ້ໃຊ້: ${user.name}`, { targetUserId: id }, req);
@@ -1820,22 +1580,143 @@ adminRoutes.patch('/users/:id/super-admin', authenticate, requireAdmin(), async 
             });
         }
 
-        const user = await prisma.user.update({
-            where: { id },
-            data: { isSuperAdmin: Boolean(newStatus) },
-            select: {
-                id: true,
-                name: true,
-                email: true,
-                isSuperAdmin: true
-            }
-        });
+        const [user] = await db.update(users).set({ isSuperAdmin: Boolean(newStatus) }).where(eq(users.id, id)).returning({ id: users.id, name: users.name, email: users.email, isSuperAdmin: users.isSuperAdmin });
 
-        // Log activity
         const action = newStatus ? 'ເພີ່ມ Super Admin' : 'ຖອນ Super Admin';
         await logActivity(req.authUser!.userId, 'user_updated', `${action}: ${user.name}`, { targetUserId: id }, req);
 
         res.json({ success: true, data: user });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SYSTEM ENUMS MANAGEMENT (Admin CRUD for dropdown values)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * POST /admin/enums/seed - Seed all enum values into DB from hardcoded defaults
+ */
+adminRoutes.post('/enums/seed', authenticate, requireAdmin(), async (req, res, next) => {
+    try {
+        let inserted = 0;
+        let skipped = 0;
+        for (const [type, entries] of Object.entries(ENUM_SEED_DATA)) {
+            for (let i = 0; i < entries.length; i++) {
+                const e = entries[i];
+                const existing = await db.query.systemEnums.findFirst({
+                    where: and(eq(systemEnums.type, type), eq(systemEnums.value, e.value)),
+                });
+                if (!existing) {
+                    await db.insert(systemEnums).values({
+                        type, value: e.value, label: e.label, labelLao: e.labelLao,
+                        order: i, isSystem: e.isSystem ?? true, isActive: true,
+                    });
+                    inserted++;
+                } else {
+                    skipped++;
+                }
+            }
+        }
+        res.json({ success: true, data: { inserted, skipped } });
+    } catch (error) {
+        next(error);
+    }
+});
+
+/**
+ * GET /admin/enums - List all enum types or a specific type
+ */
+adminRoutes.get('/enums', authenticate, requireAdmin(), async (req, res, next) => {
+    try {
+        const { type } = req.query;
+        const rows = await db.query.systemEnums.findMany({
+            where: type ? eq(systemEnums.type, String(type)) : undefined,
+            orderBy: [asc(systemEnums.type), asc(systemEnums.order), asc(systemEnums.label)],
+        });
+
+        // Return as grouped by type
+        const grouped: Record<string, any[]> = {};
+        for (const row of rows) {
+            if (!grouped[row.type]) grouped[row.type] = [];
+            grouped[row.type].push(row);
+        }
+
+        // Also return list of all types
+        const types = [...new Set(rows.map(r => r.type))].sort();
+
+        res.json({ success: true, data: { types, grouped, flat: rows } });
+    } catch (error) {
+        next(error);
+    }
+});
+
+/**
+ * POST /admin/enums - Create a new enum value
+ */
+adminRoutes.post('/enums', authenticate, requireAdmin(), async (req, res, next) => {
+    try {
+        const { type, value, label, labelLao, order = 0, isActive = true } = req.body;
+        if (!type || !value || !label) {
+            return res.status(400).json({ success: false, error: { code: 'VALIDATION', message: 'type, value, label are required' } });
+        }
+        const existing = await db.query.systemEnums.findFirst({
+            where: and(eq(systemEnums.type, String(type)), eq(systemEnums.value, String(value))),
+        });
+        if (existing) {
+            return res.status(409).json({ success: false, error: { code: 'DUPLICATE', message: 'Enum value already exists for this type' } });
+        }
+        const [created] = await db.insert(systemEnums).values({
+            type: String(type), value: String(value), label: String(label),
+            labelLao: labelLao ? String(labelLao) : undefined,
+            order: Number(order), isActive: Boolean(isActive), isSystem: false,
+        }).returning();
+        res.status(201).json({ success: true, data: created });
+    } catch (error) {
+        next(error);
+    }
+});
+
+/**
+ * PUT /admin/enums/:id - Update an enum value
+ */
+adminRoutes.put('/enums/:id', authenticate, requireAdmin(), async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const { label, labelLao, order, isActive } = req.body;
+        const existing = await db.query.systemEnums.findFirst({ where: eq(systemEnums.id, id) });
+        if (!existing) {
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Enum not found' } });
+        }
+        const [updated] = await db.update(systemEnums).set({
+            ...(label !== undefined && { label: String(label) }),
+            ...(labelLao !== undefined && { labelLao: String(labelLao) }),
+            ...(order !== undefined && { order: Number(order) }),
+            ...(isActive !== undefined && { isActive: Boolean(isActive) }),
+            updatedAt: new Date(),
+        }).where(eq(systemEnums.id, id)).returning();
+        res.json({ success: true, data: updated });
+    } catch (error) {
+        next(error);
+    }
+});
+
+/**
+ * DELETE /admin/enums/:id - Delete a non-system enum value
+ */
+adminRoutes.delete('/enums/:id', authenticate, requireAdmin(), async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const existing = await db.query.systemEnums.findFirst({ where: eq(systemEnums.id, id) });
+        if (!existing) {
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Enum not found' } });
+        }
+        if (existing.isSystem) {
+            return res.status(400).json({ success: false, error: { code: 'SYSTEM_ENUM', message: 'System enums cannot be deleted. Disable them instead.' } });
+        }
+        await db.delete(systemEnums).where(eq(systemEnums.id, id));
+        res.json({ success: true, data: { message: 'Deleted successfully' } });
     } catch (error) {
         next(error);
     }
@@ -2656,15 +2537,10 @@ const DEFAULT_ROLE_RULES: Record<string, Record<string, { r: boolean; c: boolean
 adminRoutes.get('/menu-permissions', authenticate, requireAdmin(), async (req, res, next) => {
     try {
         // Try to get from database first
-        const dbMenus = await prisma.menuPermission.findMany({
-            where: { isActive: true, parentId: null },
-            orderBy: { order: 'asc' },
-            include: {
-                children: {
-                    where: { isActive: true },
-                    orderBy: { order: 'asc' }
-                }
-            }
+        const dbMenus = await db.query.menuPermissions.findMany({
+            where: and(eq(menuPermissions.isActive, true), isNull(menuPermissions.parentId)),
+            orderBy: asc(menuPermissions.order),
+            with: { children: true },
         });
 
         if (dbMenus.length > 0) {
@@ -2684,41 +2560,23 @@ adminRoutes.get('/menu-permissions', authenticate, requireAdmin(), async (req, r
  */
 adminRoutes.post('/menu-permissions/seed', authenticate, requireAdmin(), async (req, res, next) => {
     try {
-        // Clear existing
-        await prisma.menuPermission.deleteMany({});
+        await db.delete(menuPermissions);
 
-        // Create menu structure
         for (let i = 0; i < DEFAULT_MENU_STRUCTURE.length; i++) {
             const menu = DEFAULT_MENU_STRUCTURE[i];
-            const parent = await prisma.menuPermission.create({
-                data: {
-                    key: menu.key,
-                    label: menu.label,
-                    labelLao: menu.labelLao,
-                    icon: menu.icon,
-                    path: (menu as any).path || null,
-                    requiredPermission: menu.requiredPermission || null,
-                    order: i,
-                    isActive: true
-                }
-            });
+            const [parent] = await (db.insert(menuPermissions) as any).values({
+                key: menu.key, label: menu.label, labelLao: menu.labelLao, icon: menu.icon,
+                path: (menu as any).path || null, requiredPermission: menu.requiredPermission || null,
+                order: i, isActive: true,
+            }).returning();
 
-            // Create children
             if (menu.children && menu.children.length > 0) {
                 for (let j = 0; j < menu.children.length; j++) {
                     const child = menu.children[j];
-                    await prisma.menuPermission.create({
-                        data: {
-                            key: child.key,
-                            label: child.label,
-                            labelLao: child.labelLao,
-                            icon: child.icon,
-                            path: child.path,
-                            requiredPermission: child.requiredPermission || null,
-                            parentId: parent.id,
-                            order: j,
-                            isActive: true
-                        }
+                    await (db.insert(menuPermissions) as any).values({
+                        key: child.key, label: child.label, labelLao: child.labelLao, icon: child.icon,
+                        path: child.path, requiredPermission: child.requiredPermission || null,
+                        parentId: parent.id, order: j, isActive: true,
                     });
                 }
             }
@@ -2735,57 +2593,31 @@ adminRoutes.post('/menu-permissions/seed', authenticate, requireAdmin(), async (
  */
 adminRoutes.post('/rules/seed', authenticate, requireAdmin(), async (req, res, next) => {
     try {
-        // Clear existing
-        await prisma.roleRule.deleteMany({});
-        await prisma.rule.deleteMany({});
+        await db.delete(roleRules);
+        await db.delete(rules);
 
-        // Create rules
-        const ruleMap: Record<string, string> = {}; // name → id
+        const ruleMap: Record<string, string> = {};
         for (const ruleDef of DEFAULT_RULES) {
-            const rule = await prisma.rule.create({
-                data: {
-                    name: ruleDef.name,
-                    displayName: ruleDef.displayName,
-                    description: ruleDef.description || null,
-                    module: ruleDef.module,
-                    icon: ruleDef.icon || null,
-                    routes: ruleDef.routes,
-                    permissions: ruleDef.permissions,
-                    order: ruleDef.order,
-                    isSystem: ruleDef.isSystem,
-                    isActive: true,
-                }
-            });
+            const [rule] = await db.insert(rules).values({
+                name: ruleDef.name, displayName: ruleDef.displayName, description: ruleDef.description || null,
+                module: ruleDef.module, icon: ruleDef.icon || null, routes: ruleDef.routes,
+                permissions: ruleDef.permissions, order: ruleDef.order, isSystem: ruleDef.isSystem, isActive: true,
+            }).returning();
             ruleMap[ruleDef.name] = rule.id;
         }
 
-        // Load existing roles
-        const roles = await prisma.role.findMany();
+        const allRoles = await db.query.roles.findMany();
         const roleMap: Record<string, string> = {};
-        for (const role of roles) {
-            roleMap[role.name] = role.id;
-        }
+        for (const role of allRoles) { roleMap[role.name] = role.id; }
 
-        // Create RoleRule entries
         let roleRuleCount = 0;
-        for (const [roleName, rules] of Object.entries(DEFAULT_ROLE_RULES)) {
+        for (const [roleName, ruleEntries] of Object.entries(DEFAULT_ROLE_RULES)) {
             const roleId = roleMap[roleName];
             if (!roleId) continue;
-
-            for (const [ruleName, crud] of Object.entries(rules)) {
+            for (const [ruleName, crud] of Object.entries(ruleEntries)) {
                 const ruleId = ruleMap[ruleName];
                 if (!ruleId) continue;
-
-                await prisma.roleRule.create({
-                    data: {
-                        roleId,
-                        ruleId,
-                        canRead: crud.r,
-                        canCreate: crud.c,
-                        canUpdate: crud.u,
-                        canDelete: crud.d,
-                    }
-                });
+                await db.insert(roleRules).values({ roleId, ruleId, canRead: crud.r, canCreate: crud.c, canUpdate: crud.u, canDelete: crud.d });
                 roleRuleCount++;
             }
         }
@@ -2811,16 +2643,12 @@ adminRoutes.post('/rules/seed', authenticate, requireAdmin(), async (req, res, n
  */
 adminRoutes.get('/rules', authenticate, requireAdmin(), async (req, res, next) => {
     try {
-        const rules = await prisma.rule.findMany({
-            where: { isActive: true },
-            orderBy: { order: 'asc' },
-            include: {
-                roleRules: {
-                    include: { role: { select: { id: true, name: true, displayName: true } } }
-                }
-            }
+        const allRules = await db.query.rules.findMany({
+            where: eq(rules.isActive, true),
+            orderBy: asc(rules.order),
+            with: { roleRules: { with: { role: { columns: { id: true, name: true, displayName: true } } } } },
         });
-        res.json({ success: true, data: rules });
+        res.json({ success: true, data: allRules });
     } catch (error) {
         next(error);
     }
@@ -2831,13 +2659,11 @@ adminRoutes.get('/rules', authenticate, requireAdmin(), async (req, res, next) =
  */
 adminRoutes.get('/roles/:id/rules', authenticate, requireAdmin(), async (req, res, next) => {
     try {
-        const roleRules = await prisma.roleRule.findMany({
-            where: { roleId: req.params.id },
-            include: {
-                rule: true,
-            }
+        const rrList = await db.query.roleRules.findMany({
+            where: eq(roleRules.roleId, req.params.id),
+            with: { rule: true },
         });
-        res.json({ success: true, data: roleRules });
+        res.json({ success: true, data: rrList });
     } catch (error) {
         next(error);
     }
@@ -2856,27 +2682,20 @@ adminRoutes.put('/roles/:id/rules', authenticate, requireAdmin(), async (req, re
             return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'rules must be an array' } });
         }
 
-        // Delete existing role-rules
-        await prisma.roleRule.deleteMany({ where: { roleId } });
+        await db.delete(roleRules).where(eq(roleRules.roleId, roleId));
 
-        // Create new ones
         const created = [];
         for (const rr of rules) {
             if (!rr.ruleId) continue;
-            const entry = await prisma.roleRule.create({
-                data: {
-                    roleId,
-                    ruleId: rr.ruleId,
-                    canRead: rr.canRead ?? true,
-                    canCreate: rr.canCreate ?? false,
-                    canUpdate: rr.canUpdate ?? false,
-                    canDelete: rr.canDelete ?? false,
-                }
-            });
+            const [entry] = await db.insert(roleRules).values({
+                roleId, ruleId: rr.ruleId,
+                canRead: rr.canRead ?? true, canCreate: rr.canCreate ?? false,
+                canUpdate: rr.canUpdate ?? false, canDelete: rr.canDelete ?? false,
+            }).returning();
             created.push(entry);
         }
 
-        const role = await prisma.role.findUnique({ where: { id: roleId }, select: { name: true } });
+        const role = await db.query.roles.findFirst({ where: eq(roles.id, roleId), columns: { name: true } });
         await logActivity(req.authUser!.userId, 'role_rules_updated', `ອັບເດດ rules ສຳລັບ ${role?.name}: ${created.length} rules`, { roleId }, req);
 
         // Invalidate cached rules for this role
@@ -2894,36 +2713,29 @@ adminRoutes.put('/roles/:id/rules', authenticate, requireAdmin(), async (req, re
  */
 adminRoutes.get('/rules/matrix', authenticate, requireAdmin(), async (req, res, next) => {
     try {
-        const [rules, roles, roleRules] = await Promise.all([
-            prisma.rule.findMany({ where: { isActive: true }, orderBy: { order: 'asc' } }),
-            prisma.role.findMany({ orderBy: { name: 'asc' } }),
-            prisma.roleRule.findMany(),
+        const [matrixRules, matrixRoles, matrixRoleRules] = await Promise.all([
+            db.query.rules.findMany({ where: eq(rules.isActive, true), orderBy: asc(rules.order) }),
+            db.query.roles.findMany({ orderBy: asc(roles.name) }),
+            db.query.roleRules.findMany(),
         ]);
 
-        // Build matrix
         const matrix: Record<string, Record<string, { r: boolean; c: boolean; u: boolean; d: boolean }>> = {};
-        for (const role of roles) {
+        for (const role of matrixRoles) {
             matrix[role.id] = {};
-            for (const rule of rules) {
+            for (const rule of matrixRules) {
                 matrix[role.id][rule.id] = { r: false, c: false, u: false, d: false };
             }
         }
-        for (const rr of roleRules) {
+        for (const rr of matrixRoleRules) {
             if (matrix[rr.roleId]?.[rr.ruleId]) {
-                matrix[rr.roleId][rr.ruleId] = {
-                    r: rr.canRead,
-                    c: rr.canCreate,
-                    u: rr.canUpdate,
-                    d: rr.canDelete,
-                };
+                matrix[rr.roleId][rr.ruleId] = { r: rr.canRead, c: rr.canCreate, u: rr.canUpdate, d: rr.canDelete };
             }
         }
 
-        // Compute stats per role
         const roleStats: Record<string, { total: number; read: number; create: number; update: number; delete: number }> = {};
-        for (const role of roles) {
-            const stats = { total: rules.length, read: 0, create: 0, update: 0, delete: 0 };
-            for (const rule of rules) {
+        for (const role of matrixRoles) {
+            const stats = { total: matrixRules.length, read: 0, create: 0, update: 0, delete: 0 };
+            for (const rule of matrixRules) {
                 const crud = matrix[role.id]?.[rule.id];
                 if (crud?.r) stats.read++;
                 if (crud?.c) stats.create++;
@@ -2936,8 +2748,8 @@ adminRoutes.get('/rules/matrix', authenticate, requireAdmin(), async (req, res, 
         res.json({
             success: true,
             data: {
-                roles: roles.map(r => ({ id: r.id, name: r.name, displayName: r.displayName, description: r.description, isSystem: r.isSystem })),
-                rules: rules.map(r => ({ id: r.id, name: r.name, displayName: r.displayName, module: r.module, icon: r.icon, routes: r.routes, permissions: r.permissions, order: r.order })),
+                roles: matrixRoles.map(r => ({ id: r.id, name: r.name, displayName: r.displayName, description: r.description, isSystem: r.isSystem })),
+                rules: matrixRules.map(r => ({ id: r.id, name: r.name, displayName: r.displayName, module: r.module, icon: r.icon, routes: r.routes, permissions: r.permissions, order: r.order })),
                 matrix,
                 roleStats,
             }
@@ -2958,8 +2770,7 @@ adminRoutes.put('/rules/matrix', authenticate, requireAdmin(), async (req, res, 
             return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'matrix is required' } });
         }
 
-        // Delete all existing role-rules and recreate
-        await prisma.roleRule.deleteMany({});
+        await db.delete(roleRules);
 
         let count = 0;
         const entries: { roleId: string; ruleId: string; canRead: boolean; canCreate: boolean; canUpdate: boolean; canDelete: boolean }[] = [];
@@ -2967,21 +2778,13 @@ adminRoutes.put('/rules/matrix', authenticate, requireAdmin(), async (req, res, 
         for (const [roleId, ruleMap] of Object.entries(matrix) as [string, Record<string, { r: boolean; c: boolean; u: boolean; d: boolean }>][]) {
             for (const [ruleId, crud] of Object.entries(ruleMap)) {
                 if (crud.r || crud.c || crud.u || crud.d) {
-                    entries.push({
-                        roleId,
-                        ruleId,
-                        canRead: crud.r,
-                        canCreate: crud.c,
-                        canUpdate: crud.u,
-                        canDelete: crud.d,
-                    });
+                    entries.push({ roleId, ruleId, canRead: crud.r, canCreate: crud.c, canUpdate: crud.u, canDelete: crud.d });
                 }
             }
         }
 
-        // Batch create
         for (const entry of entries) {
-            await prisma.roleRule.create({ data: entry });
+            await db.insert(roleRules).values(entry);
             count++;
         }
 
@@ -3009,31 +2812,21 @@ adminRoutes.post('/roles/:id/copy-rules', authenticate, requireAdmin(), async (r
             return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'sourceRoleId is required' } });
         }
 
-        // Get source role rules
-        const sourceRules = await prisma.roleRule.findMany({ where: { roleId: sourceRoleId } });
-        
-        // Delete target's existing rules
-        await prisma.roleRule.deleteMany({ where: { roleId: targetRoleId } });
+        const sourceRulesList = await db.query.roleRules.findMany({ where: eq(roleRules.roleId, sourceRoleId) });
+        await db.delete(roleRules).where(eq(roleRules.roleId, targetRoleId));
 
-        // Copy
         let count = 0;
-        for (const sr of sourceRules) {
-            await prisma.roleRule.create({
-                data: {
-                    roleId: targetRoleId,
-                    ruleId: sr.ruleId,
-                    canRead: sr.canRead,
-                    canCreate: sr.canCreate,
-                    canUpdate: sr.canUpdate,
-                    canDelete: sr.canDelete,
-                }
+        for (const sr of sourceRulesList) {
+            await db.insert(roleRules).values({
+                roleId: targetRoleId, ruleId: sr.ruleId,
+                canRead: sr.canRead, canCreate: sr.canCreate, canUpdate: sr.canUpdate, canDelete: sr.canDelete,
             });
             count++;
         }
 
         const [sourceRole, targetRole] = await Promise.all([
-            prisma.role.findUnique({ where: { id: sourceRoleId }, select: { name: true } }),
-            prisma.role.findUnique({ where: { id: targetRoleId }, select: { name: true } }),
+            db.query.roles.findFirst({ where: eq(roles.id, sourceRoleId), columns: { name: true } }),
+            db.query.roles.findFirst({ where: eq(roles.id, targetRoleId), columns: { name: true } }),
         ]);
         await logActivity(req.authUser!.userId, 'role_rules_copied', `ຄັດລອກ rules ຈາກ ${sourceRole?.name} → ${targetRole?.name}: ${count} rules`, { sourceRoleId, targetRoleId }, req);
 
@@ -3066,10 +2859,7 @@ adminRoutes.patch('/stores/:id/status', authenticate, async (req, res, next) => 
             });
         }
 
-        const store = await prisma.store.update({
-            where: { id },
-            data: { isActive: Boolean(isActive) }
-        });
+        const [store] = await (db.update(stores) as any).set({ isActive: Boolean(isActive) }).where(eq(stores.id, id)).returning();
 
         res.json({ success: true, data: store });
     } catch (error) {
@@ -3083,105 +2873,101 @@ adminRoutes.patch('/stores/:id/status', authenticate, async (req, res, next) => 
  */
 adminRoutes.post('/reset-database', authenticate, requireSuperAdmin(), async (req, res, next) => {
     try {
-        // Get Super Admin IDs to preserve
-        const superAdmins = await prisma.user.findMany({
-            where: { isSuperAdmin: true },
-            select: { id: true, email: true, name: true }
+        const superAdmins = await db.query.users.findMany({
+            where: eq(users.isSuperAdmin, true),
+            columns: { id: true, email: true, name: true },
         });
         const superAdminIds = superAdmins.map(u => u.id);
         
-        // Get roles count
-        const rolesCount = await prisma.role.count();
+        const [{ value: rolesCount }] = await db.select({ value: count() }).from(roles);
         
         // Delete all data in order (child tables first)
         // 1. Transaction related
-        await prisma.transactionPayment.deleteMany({});
-        await prisma.transactionItem.deleteMany({});
-        await prisma.transaction.deleteMany({});
-        await prisma.heldSale.deleteMany({});
+        await db.delete(transactionPayments);
+        await db.delete(transactionItems);
+        await db.delete(transactions);
+        await db.delete(heldSales);
         
         // 2. Order related
-        await prisma.orderItem.deleteMany({});
-        await prisma.order.deleteMany({});
-        await prisma.reservation.deleteMany({});
-        await prisma.table.deleteMany({});
+        await db.delete(orderItems);
+        await db.delete(orders);
+        await db.delete(reservations);
+        await db.delete(tables);
         
         // 3. Shift related
-        await prisma.cashMovement.deleteMany({});
-        await prisma.shift.deleteMany({});
-        await prisma.cashRegister.deleteMany({});
+        await db.delete(cashMovements);
+        await db.delete(shifts);
+        await db.delete(cashRegisters);
         
         // 4. Inventory related
-        await prisma.stockTransferItem.deleteMany({});
-        await prisma.stockTransfer.deleteMany({});
-        await prisma.stockMovement.deleteMany({});
-        await prisma.stockCount.deleteMany({});
-        await prisma.inventory.deleteMany({});
+        await db.delete(stockTransferItems);
+        await db.delete(stockTransfers);
+        await db.delete(stockMovements);
+        await db.delete(stockCounts);
+        await db.delete(inventory);
         
         // 5. Purchase Order related
-        await prisma.purchaseOrderItem.deleteMany({});
-        await prisma.purchaseOrder.deleteMany({});
-        await prisma.vendor.deleteMany({});
+        await db.delete(purchaseOrderItems);
+        await db.delete(purchaseOrders);
+        await db.delete(vendors);
         
         // 6. Product related
-        await prisma.billOfMaterial.deleteMany({});
-        await prisma.productPriceLevel.deleteMany({});
-        await prisma.sKUVariant.deleteMany({});
-        await prisma.productStore.deleteMany({});
-        await prisma.product.deleteMany({});
-        await prisma.category.deleteMany({});
-        await prisma.priceLevel.deleteMany({});
+        await db.delete(billOfMaterials);
+        await db.delete(productPriceLevels);
+        await db.delete(skuVariants);
+        await db.delete(productStores);
+        await db.delete(products);
+        await db.delete(categories);
+        await db.delete(priceLevels);
         
         // 7. Customer related
-        await prisma.pointsHistory.deleteMany({});
-        await prisma.customer.deleteMany({});
+        await db.delete(pointsHistory);
+        await db.delete(customers);
         
         // 8. Member related
-        await prisma.pointHistory.deleteMany({});
-        await prisma.member.deleteMany({});
-        await prisma.membershipTier.deleteMany({});
-        await prisma.pointSettings.deleteMany({});
+        await db.delete(pointHistory);
+        await db.delete(members);
+        await db.delete(membershipTiers);
+        await db.delete(pointSettings);
         
         // 9. Promotion related
-        await prisma.promotion.deleteMany({});
-        await prisma.coupon.deleteMany({});
+        await db.delete(promotions);
+        await db.delete(coupons);
         
         // 10. User related (except Super Admins)
-        await prisma.session.deleteMany({});
-        await prisma.activityLog.deleteMany({});
-        await prisma.storeRequest.deleteMany({});
-        await prisma.userStore.deleteMany({});
-        await prisma.user.deleteMany({ where: { id: { notIn: superAdminIds } } });
+        await db.delete(sessions);
+        await db.delete(activityLogs);
+        await db.delete(storeRequests);
+        await db.delete(userStores);
+        if (superAdminIds.length > 0) {
+            await db.delete(users).where(notInArray(users.id, superAdminIds));
+        } else {
+            await db.delete(users);
+        }
         
         // 11. Store related
-        await prisma.store.deleteMany({});
+        await db.delete(stores);
         
         // 12. Branch related
-        await prisma.branch.deleteMany({});
+        await db.delete(branches);
         
         // 13. Payment methods
-        await prisma.paymentMethod.deleteMany({});
+        await db.delete(paymentMethods);
         
         // 14. Permissions
-        await prisma.permission.deleteMany({});
-        await prisma.permissionGroup.deleteMany({});
-        await prisma.menuPermission.deleteMany({});
+        await db.delete(permissions);
+        await db.delete(permissionGroups);
+        await db.delete(menuPermissions);
         
         // Create default branch for Super Admins
-        const defaultBranch = await prisma.branch.create({
-            data: {
-                name: 'ສຳນັກງານໃຫຍ່',
-                code: 'HQ',
-                isMain: true,
-                isActive: true
-            }
-        });
+        const [defaultBranch] = await (db.insert(branches) as any).values({
+            name: 'ສຳນັກງານໃຫຍ່', code: 'HQ', isMain: true,
+        }).returning();
         
         // Update Super Admin users with new branch
-        await prisma.user.updateMany({
-            where: { id: { in: superAdminIds } },
-            data: { branchId: defaultBranch.id }
-        });
+        if (superAdminIds.length > 0) {
+            await (db.update(users) as any).set({ branchId: defaultBranch.id }).where(inArray(users.id, superAdminIds));
+        }
         
         res.json({
             success: true,
@@ -3195,6 +2981,186 @@ adminRoutes.post('/reset-database', authenticate, requireSuperAdmin(), async (re
                     defaultBranch: defaultBranch.name
                 }
             }
+        });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DATABASE BACKUP
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * POST /admin/backup
+ * Export all tables as a JSON backup file (super admin only).
+ */
+adminRoutes.post('/backup', authenticate, requireSuperAdmin(), async (req, res, next) => {
+    try {
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+
+        const [
+            branchRows, userRows, sessionRows, roleRows, ruleRows, roleRuleRows,
+            permGroupRows, permRows, menuPermRows, storeRows, userStoreRows, productStoreRows,
+            storeRequestRows, categoryRows, productRows, skuVariantRows, bomRows,
+            priceLevelRows, productPriceLevelRows, inventoryRows, stockMovementRows,
+            customerRows, pointsHistoryRows, transactionRows, transactionItemRows,
+            transactionPaymentRows, heldSaleRows, paymentMethodRows, shiftRows,
+            cashRegisterRows, cashMovementRows, tableRows, orderRows, orderItemRows,
+            reservationRows, memberRows, membershipTierRows, pointHistoryRows,
+            pointSettingsRows, promotionRows, couponRows, discountRows, settlementRows,
+            vendorRows, purchaseOrderRows, purchaseOrderItemRows, stockTransferRows,
+            stockTransferItemRows, stockCountRows, stockCountItemRows, documentRows,
+            documentTemplateRows, settingRows, notificationRows, activityLogRows,
+        ] = await Promise.all([
+            db.select().from(branches),
+            db.select({ id: users.id, email: users.email, name: users.name, role: users.role,
+                roleId: users.roleId, branchId: users.branchId, isActive: users.isActive,
+                isSuperAdmin: users.isSuperAdmin, createdAt: users.createdAt }).from(users),
+            db.select().from(sessions),
+            db.select().from(roles),
+            db.select().from(rules),
+            db.select().from(roleRules),
+            db.select().from(permissionGroups),
+            db.select().from(permissions),
+            db.select().from(menuPermissions),
+            db.select().from(stores),
+            db.select().from(userStores),
+            db.select().from(productStores),
+            db.select().from(storeRequests),
+            db.select().from(categories),
+            db.select().from(products),
+            db.select().from(skuVariants),
+            db.select().from(billOfMaterials),
+            db.select().from(priceLevels),
+            db.select().from(productPriceLevels),
+            db.select().from(inventory),
+            db.select().from(stockMovements),
+            db.select().from(customers),
+            db.select().from(pointsHistory),
+            db.select().from(transactions),
+            db.select().from(transactionItems),
+            db.select().from(transactionPayments),
+            db.select().from(heldSales),
+            db.select().from(paymentMethods),
+            db.select().from(shifts),
+            db.select().from(cashRegisters),
+            db.select().from(cashMovements),
+            db.select().from(tables),
+            db.select().from(orders),
+            db.select().from(orderItems),
+            db.select().from(reservations),
+            db.select().from(members),
+            db.select().from(membershipTiers),
+            db.select().from(pointHistory),
+            db.select().from(pointSettings),
+            db.select().from(promotions),
+            db.select().from(coupons),
+            db.select().from(discounts),
+            db.select().from(settlements),
+            db.select().from(vendors),
+            db.select().from(purchaseOrders),
+            db.select().from(purchaseOrderItems),
+            db.select().from(stockTransfers),
+            db.select().from(stockTransferItems),
+            db.select().from(stockCounts),
+            db.select().from(stockCountItems),
+            db.select().from(documents),
+            db.select().from(documentTemplates),
+            db.select().from(settings),
+            db.select().from(notifications),
+            db.select().from(activityLogs),
+        ]);
+
+        const backup = {
+            version: '1.0',
+            exportedAt: new Date().toISOString(),
+            tables: {
+                branches: branchRows, users: userRows, sessions: sessionRows,
+                roles: roleRows, rules: ruleRows, roleRules: roleRuleRows,
+                permissionGroups: permGroupRows, permissions: permRows, menuPermissions: menuPermRows,
+                stores: storeRows, userStores: userStoreRows, productStores: productStoreRows,
+                storeRequests: storeRequestRows, categories: categoryRows, products: productRows,
+                skuVariants: skuVariantRows, billOfMaterials: bomRows, priceLevels: priceLevelRows,
+                productPriceLevels: productPriceLevelRows, inventory: inventoryRows,
+                stockMovements: stockMovementRows, customers: customerRows,
+                pointsHistory: pointsHistoryRows, transactions: transactionRows,
+                transactionItems: transactionItemRows, transactionPayments: transactionPaymentRows,
+                heldSales: heldSaleRows, paymentMethods: paymentMethodRows, shifts: shiftRows,
+                cashRegisters: cashRegisterRows, cashMovements: cashMovementRows, tables: tableRows,
+                orders: orderRows, orderItems: orderItemRows, reservations: reservationRows,
+                members: memberRows, membershipTiers: membershipTierRows,
+                pointHistory: pointHistoryRows, pointSettings: pointSettingsRows,
+                promotions: promotionRows, coupons: couponRows, discounts: discountRows,
+                settlements: settlementRows, vendors: vendorRows, purchaseOrders: purchaseOrderRows,
+                purchaseOrderItems: purchaseOrderItemRows, stockTransfers: stockTransferRows,
+                stockTransferItems: stockTransferItemRows, stockCounts: stockCountRows,
+                stockCountItems: stockCountItemRows, documents: documentRows,
+                documentTemplates: documentTemplateRows, settings: settingRows,
+                notifications: notificationRows, activityLogs: activityLogRows,
+            },
+            stats: {
+                branches: branchRows.length, users: userRows.length, roles: roleRows.length,
+                stores: storeRows.length, products: productRows.length, customers: customerRows.length,
+                transactions: transactionRows.length, inventory: inventoryRows.length,
+                activityLogs: activityLogRows.length,
+            },
+        };
+
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Content-Disposition', `attachment; filename="kpos-backup-${timestamp}.json"`);
+        res.json(backup);
+    } catch (error) {
+        next(error);
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BACKFILL USER STORE RECORDS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * POST /admin/backfill-user-stores
+ * Creates UserStore records for existing users who have none.
+ * Associates each user with the store that belongs to their branch.
+ * Safe to run multiple times (upsert).
+ */
+adminRoutes.post('/backfill-user-stores', authenticate, requireAdmin(), async (req, res, next) => {
+    try {
+        const usersWithoutStores = await db.query.users.findMany({
+            where: and(eq(users.isSuperAdmin, false), ne(users.branchId, '')),
+            columns: { id: true, branchId: true, name: true, email: true },
+        });
+
+        let created = 0;
+        let skipped = 0;
+
+        for (const user of usersWithoutStores) {
+            const [{ value: existing }] = await db.select({ value: count() }).from(userStores).where(eq(userStores.userId, user.id));
+            if (existing > 0) { skipped++; continue; }
+
+            const store = await db.query.stores.findFirst({
+                where: and(eq(stores.branchId, user.branchId!), eq(stores.isActive, true)),
+                orderBy: desc(stores.isDefault),
+            });
+
+            if (!store) { skipped++; continue; }
+
+            await db.insert(userStores).values({
+                userId: user.id, storeId: store.id, branchId: user.branchId!,
+                canRead: true, canWrite: true, canDelete: false, canManage: false, isDefault: true,
+            });
+            created++;
+        }
+
+        res.json({
+            success: true,
+            data: {
+                message: 'Backfill complete',
+                total: usersWithoutStores.length,
+                created,
+                skipped,
+            },
         });
     } catch (error) {
         next(error);

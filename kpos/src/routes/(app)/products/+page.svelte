@@ -353,12 +353,27 @@
         const file = input.files?.[0];
         if (!file) return;
 
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            imagePreview = e.target?.result as string;
-            formData.image = imagePreview;
-        };
-        reader.readAsDataURL(file);
+        isUploading = true;
+        try {
+            const base64 = await new Promise<string>((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result as string);
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+            const res = await api.post("upload/single", {
+                json: { image: base64, folder: "products" },
+            }).json<any>();
+            if (!res.success) throw new Error(res.error?.message || "Upload failed");
+            formData.image = res.data.url;
+            imagePreview = res.data.url;
+            toast.success("ອັບໂຫລດຮູບພາບສຳເລັດ");
+        } catch (e) {
+            console.error("Image upload failed:", e);
+            toast.error("ອັບໂຫລດຮູບພາບບໍ່ສຳເລັດ");
+        } finally {
+            isUploading = false;
+        }
     }
 
     function copySku(sku: string) {
@@ -836,13 +851,19 @@
                         {/if}
                     </div>
                     <div>
-                        <label class="flex items-center gap-2 px-4 py-2.5 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-xl cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600 transition-all">
-                            <Image class="w-4 h-4" />
-                            <span class="text-sm font-medium">ອັບໂຫລດຮູບພາບ</span>
+                        <label class="flex items-center gap-2 px-4 py-2.5 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-xl cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600 transition-all {isUploading ? 'opacity-60 pointer-events-none' : ''}">
+                            {#if isUploading}
+                                <Loader2 class="w-4 h-4 animate-spin" />
+                                <span class="text-sm font-medium">ກຳລັງອັບໂຫລດ...</span>
+                            {:else}
+                                <Image class="w-4 h-4" />
+                                <span class="text-sm font-medium">ອັບໂຫລດຮູບພາບ</span>
+                            {/if}
                             <input
                                 type="file"
                                 accept="image/*"
                                 class="hidden"
+                                disabled={isUploading}
                                 onchange={handleImageUpload}
                             />
                         </label>

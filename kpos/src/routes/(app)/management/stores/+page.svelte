@@ -66,11 +66,11 @@
         isDefault: false,
     });
 
-    // Fetch branches for filter (scoped to user's accessible branches)
+    // Fetch branches scoped to admin's store
     const branchesQuery = createQuery({
-        queryKey: ["branches-list"],
+        queryKey: ["admin-branches-list"],
         queryFn: async () => {
-            const response = await api.get("staff/branches/list").json<any>();
+            const response = await api.get("admin/branches?limit=100").json<any>();
             return response.data || [];
         },
     });

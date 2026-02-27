@@ -1,22 +1,31 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// Branches Module - Routes
+// Branches Module - Routes (Drizzle ORM + PostgreSQL)
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize } from '@/infrastructure/http/middleware/auth.middleware';
-import { prisma } from '@/config/database.config';
+import { authenticate, authorize, branchFilter, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { db } from '@/config/database.config';
+import { branches, stores, users } from '@/db/schema/tables';
+import { eq, and, inArray, ne, asc, count } from 'drizzle-orm';
 
 export const branchRoutes = Router();
 
-// Get all branches
-branchRoutes.get('/', authenticate, async (_req, res, next) => {
+// Get all branches — scoped for non-admin users
+branchRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
     try {
-        const branches = await prisma.branch.findMany({
-            where: { isActive: true },
-            orderBy: { name: 'asc' },
+        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const conditions = [eq(branches.isActive, true)];
+
+        if (filter?.branchIds?.length) {
+            conditions.push(inArray(branches.id, filter.branchIds));
+        }
+
+        const rows = await db.query.branches.findMany({
+            where: and(...conditions),
+            orderBy: asc(branches.name),
         });
 
-        res.json({ success: true, data: branches });
+        res.json({ success: true, data: rows });
     } catch (error) {
         next(error);
     }
@@ -25,8 +34,8 @@ branchRoutes.get('/', authenticate, async (_req, res, next) => {
 // Get branch by ID
 branchRoutes.get('/:id', authenticate, async (req, res, next) => {
     try {
-        const branch = await prisma.branch.findUnique({
-            where: { id: req.params.id },
+        const branch = await db.query.branches.findFirst({
+            where: eq(branches.id, req.params.id),
         });
 
         if (!branch) {
@@ -52,7 +61,7 @@ branchRoutes.post('/', authenticate, authorize('branches:create'), async (req, r
             });
         }
 
-        const existing = await prisma.branch.findUnique({ where: { code } });
+        const existing = await db.query.branches.findFirst({ where: eq(branches.code, code) });
         if (existing) {
             return res.status(400).json({
                 success: false,
@@ -61,12 +70,13 @@ branchRoutes.post('/', authenticate, authorize('branches:create'), async (req, r
         }
 
         if (isMain) {
-            await prisma.branch.updateMany({ where: { isMain: true }, data: { isMain: false } });
+            await db.update(branches).set({ isMain: false }).where(eq(branches.isMain, true));
         }
 
-        const branch = await prisma.branch.create({
-            data: { name, code, address, phone, email, taxId, logo, isMain: isMain || false, isActive: isActive !== false, settings: settings || {} }
-        });
+        const [branch] = await db.insert(branches).values({
+            name, code, address, phone, email, taxId, logo,
+            isMain: isMain || false, isActive: isActive !== false, settings: settings || {},
+        }).returning();
         res.status(201).json({ success: true, data: branch });
     } catch (error) {
         next(error);
@@ -77,7 +87,7 @@ branchRoutes.post('/', authenticate, authorize('branches:create'), async (req, r
 branchRoutes.put('/:id', authenticate, authorize('branches:update'), async (req, res, next) => {
     try {
         const { name, code, address, phone, email, taxId, logo, isMain, isActive, settings } = req.body;
-        const data: Record<string, unknown> = {};
+        const data: Record<string, unknown> = { updatedAt: new Date() };
         if (name !== undefined) data.name = name;
         if (code !== undefined) data.code = code;
         if (address !== undefined) data.address = address;
@@ -90,13 +100,13 @@ branchRoutes.put('/:id', authenticate, authorize('branches:update'), async (req,
         if (settings !== undefined) data.settings = settings;
 
         if (isMain) {
-            await prisma.branch.updateMany({ where: { isMain: true, id: { not: req.params.id } }, data: { isMain: false } });
+            await db.update(branches).set({ isMain: false }).where(and(eq(branches.isMain, true), ne(branches.id, req.params.id)));
         }
 
-        const branch = await prisma.branch.update({
-            where: { id: req.params.id },
-            data,
-        });
+        const [branch] = await db.update(branches)
+            .set(data as any)
+            .where(eq(branches.id, req.params.id))
+            .returning();
         res.json({ success: true, data: branch });
     } catch (error) {
         next(error);
@@ -107,12 +117,11 @@ branchRoutes.put('/:id', authenticate, authorize('branches:update'), async (req,
 branchRoutes.delete('/:id', authenticate, authorize('branches:delete'), async (req, res, next) => {
     try {
         const { id } = req.params;
-        
+
         // Check if branch has any stores
-        const storeCount = await prisma.store.count({
-            where: { branchId: id, isActive: true }
-        });
-        
+        const [{ value: storeCount }] = await db.select({ value: count() }).from(stores)
+            .where(and(eq(stores.branchId, id), eq(stores.isActive, true)));
+
         if (storeCount > 0) {
             return res.status(400).json({
                 success: false,
@@ -122,12 +131,11 @@ branchRoutes.delete('/:id', authenticate, authorize('branches:delete'), async (r
                 }
             });
         }
-        
+
         // Check if branch has any users
-        const userCount = await prisma.user.count({
-            where: { branchId: id, isActive: true }
-        });
-        
+        const [{ value: userCount }] = await db.select({ value: count() }).from(users)
+            .where(and(eq(users.branchId, id), eq(users.isActive, true)));
+
         if (userCount > 0) {
             return res.status(400).json({
                 success: false,
@@ -137,11 +145,10 @@ branchRoutes.delete('/:id', authenticate, authorize('branches:delete'), async (r
                 }
             });
         }
-        
-        await prisma.branch.update({
-            where: { id },
-            data: { isActive: false },
-        });
+
+        await db.update(branches)
+            .set({ isActive: false, updatedAt: new Date() })
+            .where(eq(branches.id, id));
         res.json({ success: true, data: { message: 'Branch deleted' } });
     } catch (error) {
         next(error);

@@ -16,6 +16,7 @@ export interface LoginResult {
         name: string;
         role: string;
         branchId: string;
+        tenantId: string;
         isSuperAdmin: boolean;
         permissions: string[];
     };

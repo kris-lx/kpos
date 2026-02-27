@@ -27,22 +27,24 @@ export function formatCurrency(amount: number): string {
 /**
  * Format number as currency with custom symbol
  */
-export function formatCurrencyWithSymbol(amount: number, symbol: string = '₭', decimals: number = 0): string {
+export function formatCurrencyWithSymbol(amount: number | null | undefined, symbol: string = '₭', decimals: number = 0): string {
+    if (amount == null || isNaN(Number(amount))) return `${symbol}0`;
     const formatted = new Intl.NumberFormat('lo-LA', {
         minimumFractionDigits: decimals,
         maximumFractionDigits: decimals,
-    }).format(amount);
+    }).format(Number(amount));
     return `${symbol}${formatted}`;
 }
 
 /**
  * Format number with commas
  */
-export function formatNumber(num: number, decimals = 0): string {
+export function formatNumber(num: number | null | undefined, decimals = 0): string {
+    if (num === null || num === undefined || isNaN(Number(num))) return '0';
     return new Intl.NumberFormat('lo-LA', {
         minimumFractionDigits: decimals,
         maximumFractionDigits: decimals,
-    }).format(num);
+    }).format(Number(num));
 }
 
 // Map app locale codes to BCP47 tags

@@ -2,69 +2,69 @@ services:
   # ═══════════════════════════════════════════════════════════════════════════
   # KPOS API Backend
   # ═══════════════════════════════════════════════════════════════════════════
-  api:
-    build:
-      context: ./APIS
-      dockerfile: Dockerfile
-      target: dev
-    container_name: kpos-api
-    restart: unless-stopped
-    ports:
-      - "${API_PORT:-5000}:5000"
-    environment:
-      - NODE_ENV=${NODE_ENV:-development}
-      - PORT=5000
-      - DATABASE_URL=mongodb://host.docker.internal:27017/kpos_db?replicaSet=rs0&directConnection=true
-      - REDIS_URL=redis://redis:6379
-      - RABBITMQ_URL=amqp://rabbitmq:5672
-      - JWT_SECRET=${JWT_SECRET:-kpos-dev-secret-key-change-in-production-2024-must-be-32-chars}
-      - JWT_EXPIRES_IN=${JWT_EXPIRES_IN:-15m}
-      - JWT_REFRESH_EXPIRES_IN=${JWT_REFRESH_EXPIRES_IN:-7d}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    depends_on:
-      mongo:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
-    networks:
-      - kpos-network
-    volumes:
-      - ./APIS:/app
-      - /app/node_modules
-    healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:5000/health" ]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
+  # api:
+  #   build:
+  #     context: ./APIS
+  #     dockerfile: Dockerfile
+  #     target: dev
+  #   container_name: kpos-api
+  #   restart: unless-stopped
+  #   ports:
+  #     - "${API_PORT:-5000}:5000"
+  #   environment:
+  #     - NODE_ENV=${NODE_ENV:-development}
+  #     - PORT=5000
+  #     - DATABASE_URL=postgresql://kpos:password@postgres:5432/kpos_db
+  #     - REDIS_URL=redis://redis:6379
+  #     - RABBITMQ_URL=amqp://rabbitmq:5672
+  #     - JWT_SECRET=${JWT_SECRET:-kpos-dev-secret-key-change-in-production-2024-must-be-32-chars}
+  #     - JWT_EXPIRES_IN=${JWT_EXPIRES_IN:-15m}
+  #     - JWT_REFRESH_EXPIRES_IN=${JWT_REFRESH_EXPIRES_IN:-7d}
+  #   extra_hosts:
+  #     - "host.docker.internal:host-gateway"
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+  #     rabbitmq:
+  #       condition: service_healthy
+  #   networks:
+  #     - kpos-network
+  #   volumes:
+  #     - ./APIS:/app
+  #     - /app/node_modules
+  #   healthcheck:
+  #     test: [ "CMD", "curl", "-f", "http://localhost:5000/health" ]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 40s
 
   # ═══════════════════════════════════════════════════════════════════════════
   # KPOS Frontend
   # ═══════════════════════════════════════════════════════════════════════════
-  frontend:
-    build:
-      context: ./kpos
-      dockerfile: Dockerfile
-      target: dev
-    container_name: kpos-frontend
-    restart: unless-stopped
-    ports:
-      - "${FRONTEND_PORT:-3000}:3000"
-    environment:
-      - NODE_ENV=${NODE_ENV:-development}
-      - PUBLIC_API_URL=http://api:5000/api/v1
-      - PUBLIC_WS_URL=ws://api:5000
-    depends_on:
-      - api
-    networks:
-      - kpos-network
-    volumes:
-      - ./kpos:/app
-      - /app/node_modules
-      - /app/.svelte-kit
+  # frontend:
+  #   build:
+  #     context: ./kpos
+  #     dockerfile: Dockerfile
+  #     target: dev
+  #   container_name: kpos-frontend
+  #   restart: unless-stopped
+  #   ports:
+  #     - "${FRONTEND_PORT:-3000}:3000"
+  #   environment:
+  #     - NODE_ENV=${NODE_ENV:-development}
+  #     - PUBLIC_API_URL=http://api:5000/api/v1
+  #     - PUBLIC_WS_URL=ws://api:5000
+  #   depends_on:
+  #     - api
+  #   networks:
+  #     - kpos-network
+  #   volumes:
+  #     - ./kpos:/app
+  #     - /app/node_modules
+  #     - /app/.svelte-kit
 
   # ═══════════════════════════════════════════════════════════════════════════
   # MongoDB with Replica Set

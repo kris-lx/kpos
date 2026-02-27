@@ -8,11 +8,16 @@ import { connectDatabase, disconnectDatabase } from './config/database.config';
 import { connectRedis, disconnectRedis } from './config/redis.config';
 import { connectRabbitMQ, disconnectRabbitMQ } from './config/rabbitmq.config';
 import { startWorkers } from './infrastructure/workers';
+import { ensureSystemEnums } from './db/ensure-enums';
+import { ensureDefaultTenant } from './db/ensure-tenant';
 
 async function main(): Promise<void> {
     try {
         console.log('🔌 Connecting to database...');
         await connectDatabase();
+
+        await ensureDefaultTenant();
+        await ensureSystemEnums();
 
         console.log('🔌 Connecting to Redis...');
         await connectRedis();

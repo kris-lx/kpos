@@ -6,14 +6,18 @@ import type { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { jwtConfig } from '@/config/app.config';
 import { ApiError } from './error.middleware';
-import { prisma } from '@/config/database.config';
+import { db } from '@/config/database.config';
 import { cache } from '@/config/redis.config';
+import { eq, inArray, and, type SQL } from 'drizzle-orm';
+import { users, userStores, roleRules as roleRulesTable } from '@/db/schema/tables';
+import type { PgColumn } from 'drizzle-orm/pg-core';
 
 export interface JwtPayload {
     userId: string;
     email: string;
     role: string;
     branchId: string;
+    tenantId: string;
 }
 
 // Extended user context with store access
@@ -36,7 +40,8 @@ export interface AuthenticatedUser extends JwtPayload {
     accessibleStoreIds: string[];
     activeStoreId?: string;
     activeBranchId: string;
-    isSuperAdmin: boolean;  // Super Admin flag
+    isSuperAdmin: boolean;
+    tenantId: string;
 }
 
 declare global {
@@ -87,16 +92,16 @@ async function loadUserStoreAccess(userId: string): Promise<UserStoreAccess[]> {
     const cached = await cache.get<UserStoreAccess[]>(cacheKey);
     if (cached) return cached;
 
-    const userStores = await prisma.userStore.findMany({
-        where: { userId },
-        include: {
-            store: { select: { id: true, name: true, isActive: true } },
-            branch: { select: { id: true, name: true, isActive: true } }
-        }
+    const userStoreRows = await db.query.userStores.findMany({
+        where: eq(userStores.userId, userId),
+        with: {
+            store: true,
+            branch: true,
+        },
     });
 
-    const result = userStores
-        .filter(us => us.store.isActive && us.branch.isActive)
+    const result = userStoreRows
+        .filter(us => us.store != null && us.branch != null && us.store.isActive && us.branch.isActive)
         .map(us => ({
             storeId: us.storeId,
             branchId: us.branchId,
@@ -106,7 +111,7 @@ async function loadUserStoreAccess(userId: string): Promise<UserStoreAccess[]> {
             canWrite: us.canWrite,
             canDelete: us.canDelete,
             canManage: us.canManage,
-            isDefault: us.isDefault
+            isDefault: us.isDefault,
         }));
 
     await cache.set(cacheKey, result, CACHE_TTL);
@@ -117,6 +122,7 @@ async function loadUserStoreAccess(userId: string): Promise<UserStoreAccess[]> {
 interface CachedAuthUser {
     isActive: boolean;
     branchId: string;
+    tenantId: string | null;
     isSuperAdmin: boolean;
     permissions: string[];
     role: string;
@@ -128,19 +134,10 @@ async function loadCachedAuthUser(userId: string): Promise<CachedAuthUser | null
     const cached = await cache.get<CachedAuthUser>(cacheKey);
     if (cached) return cached;
 
-    const user = await prisma.user.findUnique({
-        where: { id: userId },
-        select: {
-            id: true,
-            isActive: true,
-            branchId: true,
-            isSuperAdmin: true,
-            permissions: true,
-            role: true,
-            roleId: true,
-            roleRelation: {
-                select: { permissions: true }
-            }
+    const user = await db.query.users.findFirst({
+        where: eq(users.id, userId),
+        with: {
+            roleRelation: true,
         },
     });
 
@@ -151,7 +148,8 @@ async function loadCachedAuthUser(userId: string): Promise<CachedAuthUser | null
 
     const result: CachedAuthUser = {
         isActive: user.isActive,
-        branchId: user.branchId,
+        branchId: user.branchId!,
+        tenantId: user.tenantId || null,
         isSuperAdmin: user.isSuperAdmin,
         permissions: [...new Set([...rolePerms, ...userPerms])],
         role: user.role,
@@ -216,6 +214,7 @@ export async function authenticate(
                 ...decoded,
                 permissions: mergedPermissions,
                 role: user.role,
+                tenantId: user.tenantId || decoded.tenantId,
                 accessibleStores,
                 accessibleBranchIds,
                 accessibleStoreIds,
@@ -310,9 +309,9 @@ export function authorizeRule(module: string, action: 'read' | 'create' | 'updat
                     const rulesCacheKey = `${CACHE_PREFIX}:rules:${roleId}`;
                     let roleRules = await cache.get<any[]>(rulesCacheKey);
                     if (!roleRules) {
-                        const dbRules = await prisma.roleRule.findMany({
-                            where: { roleId },
-                            include: { rule: { select: { name: true, module: true, isActive: true } } },
+                        const dbRules = await db.query.roleRules.findMany({
+                            where: eq(roleRulesTable.roleId, roleId),
+                            with: { rule: true },
                         });
                         roleRules = dbRules.filter(rr => rr.rule.isActive);
                         await cache.set(rulesCacheKey, roleRules, CACHE_TTL);
@@ -394,6 +393,7 @@ export function requireStoreAccess(accessType: 'read' | 'write' | 'delete' | 'ma
 
 // Scope filter type for route handlers
 export interface ScopeFilter {
+    tenantId: string;
     branchIds: string[];
     storeIds: string[];
     activeBranchId: string;
@@ -409,11 +409,24 @@ export function branchFilter() {
             // Super Admin and admin role have access to all branches (no branch restriction)
             const isSuperOrAdmin = req.authUser.isSuperAdmin || req.authUser.role === 'admin' || req.authUser.permissions.includes('*');
             if (!isSuperOrAdmin) {
-                const hasStoreScope = req.authUser.accessibleStoreIds.length > 0;
+                let branchIds = req.authUser.accessibleBranchIds;
+                let storeIds = req.authUser.accessibleStoreIds;
+                const hasStoreScope = storeIds.length > 0;
+
+                // Fallback: if no UserStore records, scope to user's own branchId
+                if (branchIds.length === 0 && req.authUser.branchId) {
+                    branchIds = [req.authUser.branchId];
+                }
+                // Fallback: if no storeIds but activeStoreId resolved from header, include it
+                if (!hasStoreScope && req.authUser.activeStoreId) {
+                    storeIds = [req.authUser.activeStoreId];
+                }
+
                 // Store accessible branch/store IDs for route handlers to use
                 (req as any).branchFilter = {
-                    branchIds: req.authUser.accessibleBranchIds,
-                    storeIds: req.authUser.accessibleStoreIds,
+                    tenantId: req.authUser.tenantId,
+                    branchIds,
+                    storeIds,
                     activeBranchId: req.authUser.activeBranchId,
                     activeStoreId: req.authUser.activeStoreId,
                     scopeByStore: hasStoreScope,
@@ -425,38 +438,107 @@ export function branchFilter() {
 }
 
 /**
- * Helper: apply scope filter to a Prisma where clause.
+ * Helper: build Drizzle scope condition from ScopeFilter.
  * - 'store' model: filters by store.id ∈ storeIds (or branchId fallback)
  * - 'storeId' model (Customer, etc.): filters by storeId ∈ storeIds
  * - 'branchId' model (Product, Inventory, Transaction, etc.): filters by branchId ∈ branchIds
+ *
+ * Pass column refs from the target table, e.g. buildScopeCondition(filter, { id: stores.id, branchId: stores.branchId }, 'store')
  */
+export function buildScopeCondition(
+    filter: ScopeFilter | undefined,
+    columns: { id?: PgColumn; branchId?: PgColumn; storeId?: PgColumn; tenantId?: PgColumn },
+    modelType: 'store' | 'storeId' | 'branchId' = 'branchId'
+): SQL | undefined {
+    if (!filter) return undefined;
+
+    const conditions: SQL[] = [];
+
+    // Tenant isolation — always applied when tenantId column is available
+    if (filter.tenantId && columns.tenantId) {
+        conditions.push(eq(columns.tenantId, filter.tenantId));
+    }
+
+    // Branch/Store scoping
+    if (modelType === 'store') {
+        if (filter.scopeByStore && filter.storeIds.length > 0 && columns.id) {
+            conditions.push(inArray(columns.id, filter.storeIds));
+        } else if (filter.branchIds.length > 0 && columns.branchId) {
+            conditions.push(inArray(columns.branchId, filter.branchIds));
+        }
+    } else if (modelType === 'storeId') {
+        if (filter.scopeByStore && filter.storeIds.length > 0 && columns.storeId) {
+            conditions.push(inArray(columns.storeId, filter.storeIds));
+        } else if (filter.branchIds.length > 0 && columns.branchId) {
+            conditions.push(inArray(columns.branchId, filter.branchIds));
+        }
+    } else {
+        if (filter.branchIds.length > 0 && columns.branchId) {
+            conditions.push(inArray(columns.branchId, filter.branchIds));
+        }
+    }
+
+    if (conditions.length === 0) return undefined;
+    if (conditions.length === 1) return conditions[0];
+    return and(...conditions);
+}
+
+/**
+ * Build tenant-only condition (no branch/store scoping).
+ * Use for tables that only need tenant isolation (e.g. roles, rules, settings).
+ */
+export function buildTenantCondition(
+    filter: ScopeFilter | undefined,
+    tenantIdColumn: PgColumn
+): SQL | undefined {
+    if (!filter?.tenantId) return undefined;
+    return eq(tenantIdColumn, filter.tenantId);
+}
+
+/** @deprecated Use buildScopeCondition for Drizzle queries. Kept for migration reference. */
 export function applyScopeFilter(
     where: Record<string, unknown>,
     filter: ScopeFilter | undefined,
     modelType: 'store' | 'storeId' | 'branchId' = 'branchId'
 ): void {
     if (!filter) return;
-
     if (modelType === 'store') {
-        // For Store model — filter by store's own id
-        if (filter.scopeByStore && filter.storeIds.length > 0) {
-            where.id = { in: filter.storeIds };
-        } else if (filter.branchIds.length > 0) {
-            where.branchId = { in: filter.branchIds };
-        }
+        if (filter.scopeByStore && filter.storeIds.length > 0) where.id = { in: filter.storeIds };
+        else if (filter.branchIds.length > 0) where.branchId = { in: filter.branchIds };
     } else if (modelType === 'storeId') {
-        // For models with storeId field (Customer, etc.)
-        if (filter.scopeByStore && filter.storeIds.length > 0) {
-            where.storeId = { in: filter.storeIds };
-        } else if (filter.branchIds.length > 0) {
-            where.branchId = { in: filter.branchIds };
-        }
+        if (filter.scopeByStore && filter.storeIds.length > 0) where.storeId = { in: filter.storeIds };
+        else if (filter.branchIds.length > 0) where.branchId = { in: filter.branchIds };
     } else {
-        // For models with only branchId (Product, Inventory, Transaction, etc.)
-        if (filter.branchIds.length > 0) {
-            where.branchId = { in: filter.branchIds };
-        }
+        if (filter.branchIds.length > 0) where.branchId = { in: filter.branchIds };
     }
+}
+
+/**
+ * Check if the current user has access to a specific record based on its branchId/storeId.
+ * Returns true if user is admin/superadmin or the record belongs to their accessible scope.
+ * Use this on GET /:id, PUT /:id, DELETE /:id routes to prevent cross-store data leaks.
+ */
+export function ensureScopeAccess(
+    record: { branchId?: string | null; storeId?: string | null },
+    req: Request
+): boolean {
+    if (!req.authUser) return false;
+    if (req.authUser.isSuperAdmin || req.authUser.role === 'admin' || req.authUser.permissions.includes('*')) return true;
+
+    const { accessibleBranchIds, accessibleStoreIds } = req.authUser;
+
+    // Check store-level scope first
+    if (record.storeId && accessibleStoreIds.length > 0) {
+        return accessibleStoreIds.includes(record.storeId);
+    }
+    // Fall back to branch-level scope
+    if (record.branchId && accessibleBranchIds.length > 0) {
+        return accessibleBranchIds.includes(record.branchId);
+    }
+    // If record has no scope fields at all, allow (backward compat for old data)
+    if (!record.storeId && !record.branchId) return true;
+
+    return false;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

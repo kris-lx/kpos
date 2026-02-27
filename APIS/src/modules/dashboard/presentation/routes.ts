@@ -1,13 +1,24 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// Dashboard Module - Routes
+// Dashboard Module - Routes (Drizzle ORM + PostgreSQL)
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, branchFilter, applyScopeFilter, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, branchFilter, buildScopeCondition, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { queryCache } from '@/infrastructure/http/middleware/cache.middleware';
-import { prisma } from '@/config/database.config';
+import { db } from '@/config/database.config';
+import { transactions, products, customers, inventory, transactionItems } from '@/db/schema/tables';
+import { eq, and, gte, lt, lte, inArray, asc, desc, count, sum, sql } from 'drizzle-orm';
 
 export const dashboardRoutes = Router();
+
+// Helper: build branch check condition
+function branchAccessCheck(filter: ScopeFilter | undefined, branchIdParam: string | undefined, res: any): { ok: boolean; branchCondition?: any } {
+    if (branchIdParam && filter && !filter.branchIds.includes(String(branchIdParam))) {
+        res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+        return { ok: false };
+    }
+    return { ok: true };
+}
 
 // Get dashboard stats
 dashboardRoutes.get('/stats', authenticate, branchFilter(), queryCache(30, 'dashboard'), async (req, res, next) => {
@@ -16,62 +27,59 @@ dashboardRoutes.get('/stats', authenticate, branchFilter(), queryCache(30, 'dash
         const filter = (req as any).branchFilter as ScopeFilter | undefined;
         const today = new Date();
         today.setHours(0, 0, 0, 0);
-
         const tomorrow = new Date(today);
         tomorrow.setDate(tomorrow.getDate() + 1);
 
-        // Build where clause with store/branch filtering
-        const transactionWhere: Record<string, unknown> = {
-            createdAt: { gte: today, lt: tomorrow },
-            status: 'COMPLETED',
-            type: 'SALE',
-        };
-        
-        // Apply store-level or branch-level scope (Transaction now has storeId)
-        applyScopeFilter(transactionWhere, filter, 'storeId');
-        // Override with specific branchId if provided and user has access
-        if (branchId) {
-            if (filter && !filter.branchIds.includes(String(branchId))) {
-                return res.status(403).json({
-                    success: false,
-                    error: { code: 'FORBIDDEN', message: 'No access to this branch' }
-                });
-            }
-            transactionWhere.branchId = String(branchId);
-        }
+        const check = branchAccessCheck(filter, branchId as string, res);
+        if (!check.ok) return;
 
-        // Get today's stats
+        // Transaction conditions
+        const txConds = [
+            gte(transactions.createdAt, today),
+            lt(transactions.createdAt, tomorrow),
+            eq(transactions.status, 'COMPLETED'),
+            eq(transactions.type, 'SALE'),
+        ];
+        const txScope = buildScopeCondition(filter, { storeId: transactions.storeId, branchId: transactions.branchId }, 'storeId');
+        if (txScope) txConds.push(txScope);
+        if (branchId) txConds.push(eq(transactions.branchId, String(branchId)));
+        const txWhere = and(...txConds);
+
+        // Product conditions
+        const prodConds = [eq(products.isActive, true)];
+        const prodScope = buildScopeCondition(filter, { branchId: products.branchId }, 'branchId');
+        if (prodScope) prodConds.push(prodScope);
+
+        // Customer conditions
+        const custConds = [eq(customers.isActive, true)];
+        const custScope = buildScopeCondition(filter, { storeId: customers.storeId, branchId: customers.branchId }, 'storeId');
+        if (custScope) custConds.push(custScope);
+
+        // Low stock conditions
+        const invConds = [lte(inventory.quantity, 10)];
+        const invScope = buildScopeCondition(filter, { branchId: inventory.branchId }, 'branchId');
+        if (invScope) invConds.push(invScope);
+
         const [
-            todaySales,
-            todayOrders,
-            totalProducts,
-            totalCustomers,
-            lowStockCount,
+            [{ salesSum, orderCount }],
+            [{ value: totalProducts }],
+            [{ value: totalCustomers }],
+            [{ value: lowStockCount }],
         ] = await Promise.all([
-            prisma.transaction.aggregate({
-                where: transactionWhere,
-                _sum: { total: true },
-            }),
-            prisma.transaction.count({ where: transactionWhere }),
-            prisma.product.count({ where: { isActive: true } }),
-            prisma.customer.count({ where: { isActive: true } }),
-            prisma.inventory.count({
-                where: {
-                    quantity: { lte: 10 },
-                    product: { isActive: true },
-                },
-            }),
+            db.select({ salesSum: sum(transactions.total), orderCount: count() }).from(transactions).where(txWhere),
+            db.select({ value: count() }).from(products).where(and(...prodConds)),
+            db.select({ value: count() }).from(customers).where(and(...custConds)),
+            db.select({ value: count() }).from(inventory).where(and(...invConds)),
         ]);
 
-        // Calculate average order value
-        const avgOrderValue = todayOrders > 0
-            ? (todaySales._sum.total || 0) / todayOrders
-            : 0;
+        const todaySalesNum = Number(salesSum) || 0;
+        const todayOrders = Number(orderCount) || 0;
+        const avgOrderValue = todayOrders > 0 ? todaySalesNum / todayOrders : 0;
 
         res.json({
             success: true,
             data: {
-                todaySales: todaySales._sum.total || 0,
+                todaySales: todaySalesNum,
                 todayOrders,
                 avgOrderValue,
                 totalProducts,
@@ -90,38 +98,34 @@ dashboardRoutes.get('/low-stock', authenticate, branchFilter(), async (req, res,
         const { branchId } = req.query;
         const filter = (req as any).branchFilter as ScopeFilter | undefined;
 
-        const where: Record<string, unknown> = {
-            quantity: { lte: 10 },
-            product: { isActive: true },
-        };
-        
-        // Apply store-level or branch-level scope (Inventory now has storeId)
-        applyScopeFilter(where, filter, 'storeId');
+        const check = branchAccessCheck(filter, branchId as string, res);
+        if (!check.ok) return;
+
+        const conditions = [lte(inventory.quantity, 10)];
+        const scope = buildScopeCondition(filter, { branchId: inventory.branchId }, 'branchId');
+        if (scope) conditions.push(scope);
         if (branchId) {
-            if (filter && !filter.branchIds.includes(String(branchId))) {
-                return res.status(403).json({
-                    success: false,
-                    error: { code: 'FORBIDDEN', message: 'No access to this branch' }
-                });
-            }
-            where.branchId = String(branchId);
+            conditions.push(eq(inventory.branchId, String(branchId)));
+        } else if (!filter) {
+            const authUser = (req as any).authUser;
+            if (authUser?.activeBranchId) conditions.push(eq(inventory.branchId, authUser.activeBranchId));
         }
 
-        const lowStockItems = await prisma.inventory.findMany({
-            where,
-            include: {
-                product: { select: { name: true, sku: true } },
-            },
-            take: 10,
-            orderBy: { quantity: 'asc' },
+        const lowStockItems = await db.query.inventory.findMany({
+            where: and(...conditions),
+            with: { product: true },
+            limit: 10,
+            orderBy: asc(inventory.quantity),
         });
 
-        const alerts = lowStockItems.map(item => ({
-            name: item.product.name,
-            sku: item.product.sku,
-            currentStock: item.quantity,
-            minStock: 10,
-        }));
+        const alerts = lowStockItems
+            .filter(item => item.product?.isActive)
+            .map(item => ({
+                name: item.product!.name,
+                sku: item.product!.sku,
+                currentStock: item.quantity,
+                minStock: 10,
+            }));
 
         res.json({ success: true, data: alerts });
     } catch (error) {
@@ -137,56 +141,37 @@ dashboardRoutes.get('/sales-chart', authenticate, branchFilter(), queryCache(60,
 
         let startDate = new Date();
         switch (period) {
-            case '7days':
-                startDate.setDate(startDate.getDate() - 7);
-                break;
-            case '30days':
-                startDate.setDate(startDate.getDate() - 30);
-                break;
-            case '90days':
-                startDate.setDate(startDate.getDate() - 90);
-                break;
+            case '7days': startDate.setDate(startDate.getDate() - 7); break;
+            case '30days': startDate.setDate(startDate.getDate() - 30); break;
+            case '90days': startDate.setDate(startDate.getDate() - 90); break;
         }
         startDate.setHours(0, 0, 0, 0);
 
-        const where: Record<string, unknown> = {
-            createdAt: { gte: startDate },
-            status: 'COMPLETED',
-            type: 'SALE',
-        };
-        
-        // Apply store-level or branch-level scope
-        applyScopeFilter(where, filter, 'storeId');
-        if (branchId) {
-            if (filter && !filter.branchIds.includes(String(branchId))) {
-                return res.status(403).json({
-                    success: false,
-                    error: { code: 'FORBIDDEN', message: 'No access to this branch' }
-                });
-            }
-            where.branchId = String(branchId);
-        }
+        const check = branchAccessCheck(filter, branchId as string, res);
+        if (!check.ok) return;
 
-        const transactions = await prisma.transaction.findMany({
-            where,
-            select: {
-                total: true,
-                createdAt: true,
-            },
-            orderBy: { createdAt: 'asc' },
+        const conditions = [
+            gte(transactions.createdAt, startDate),
+            eq(transactions.status, 'COMPLETED'),
+            eq(transactions.type, 'SALE'),
+        ];
+        const scope = buildScopeCondition(filter, { storeId: transactions.storeId, branchId: transactions.branchId }, 'storeId');
+        if (scope) conditions.push(scope);
+        if (branchId) conditions.push(eq(transactions.branchId, String(branchId)));
+
+        const rows = await db.query.transactions.findMany({
+            where: and(...conditions),
+            orderBy: asc(transactions.createdAt),
         });
 
         // Group by date
-        const groupedData = transactions.reduce((acc: Record<string, number>, tx) => {
+        const groupedData = rows.reduce((acc: Record<string, number>, tx) => {
             const date = tx.createdAt.toISOString().split('T')[0];
             acc[date] = (acc[date] || 0) + tx.total;
             return acc;
         }, {});
 
-        const chartData = Object.entries(groupedData).map(([date, total]) => ({
-            date,
-            total,
-        }));
+        const chartData = Object.entries(groupedData).map(([date, total]) => ({ date, total }));
 
         res.json({ success: true, data: chartData });
     } catch (error) {
@@ -200,31 +185,25 @@ dashboardRoutes.get('/recent-transactions', authenticate, branchFilter(), async 
         const { branchId, limit = 10 } = req.query;
         const filter = (req as any).branchFilter as ScopeFilter | undefined;
 
-        const where: Record<string, unknown> = {};
-        
-        // Apply store-level or branch-level scope
-        applyScopeFilter(where, filter, 'storeId');
-        if (branchId) {
-            if (filter && !filter.branchIds.includes(String(branchId))) {
-                return res.status(403).json({
-                    success: false,
-                    error: { code: 'FORBIDDEN', message: 'No access to this branch' }
-                });
-            }
-            where.branchId = String(branchId);
-        }
+        const check = branchAccessCheck(filter, branchId as string, res);
+        if (!check.ok) return;
 
-        const transactions = await prisma.transaction.findMany({
-            where,
-            take: Number(limit),
-            orderBy: { createdAt: 'desc' },
-            include: {
-                customer: { select: { name: true } },
-                user: { select: { name: true } },
+        const conditions: any[] = [];
+        const scope = buildScopeCondition(filter, { storeId: transactions.storeId, branchId: transactions.branchId }, 'storeId');
+        if (scope) conditions.push(scope);
+        if (branchId) conditions.push(eq(transactions.branchId, String(branchId)));
+
+        const rows = await db.query.transactions.findMany({
+            where: conditions.length > 0 ? and(...conditions) : undefined,
+            limit: Number(limit),
+            orderBy: desc(transactions.createdAt),
+            with: {
+                customer: true,
+                user: true,
             },
         });
 
-        res.json({ success: true, data: transactions });
+        res.json({ success: true, data: rows });
     } catch (error) {
         next(error);
     }
@@ -238,41 +217,30 @@ dashboardRoutes.get('/top-products', authenticate, branchFilter(), queryCache(60
         const thirtyDaysAgo = new Date();
         thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-        // Get completed transactions from last 30 days
-        const transactionWhere: Record<string, unknown> = {
-            createdAt: { gte: thirtyDaysAgo },
-            status: 'COMPLETED',
-            type: 'SALE',
-        };
-        
-        // Apply store-level or branch-level scope
-        applyScopeFilter(transactionWhere, filter, 'storeId');
-        if (branchId) {
-            if (filter && !filter.branchIds.includes(String(branchId))) {
-                return res.status(403).json({
-                    success: false,
-                    error: { code: 'FORBIDDEN', message: 'No access to this branch' }
-                });
-            }
-            transactionWhere.branchId = String(branchId);
-        }
+        const check = branchAccessCheck(filter, branchId as string, res);
+        if (!check.ok) return;
 
-        const transactions = await prisma.transaction.findMany({
-            where: transactionWhere,
-            select: { id: true },
+        const conditions = [
+            gte(transactions.createdAt, thirtyDaysAgo),
+            eq(transactions.status, 'COMPLETED'),
+            eq(transactions.type, 'SALE'),
+        ];
+        const scope = buildScopeCondition(filter, { storeId: transactions.storeId, branchId: transactions.branchId }, 'storeId');
+        if (scope) conditions.push(scope);
+        if (branchId) conditions.push(eq(transactions.branchId, String(branchId)));
+
+        const txRows = await db.query.transactions.findMany({
+            where: and(...conditions),
+            columns: { id: true },
         });
 
-        const transactionIds = transactions.map(t => t.id);
+        const transactionIds = txRows.map(t => t.id);
+        if (transactionIds.length === 0) {
+            return res.json({ success: true, data: [] });
+        }
 
-        // Get all items from these transactions
-        const items = await prisma.transactionItem.findMany({
-            where: { transactionId: { in: transactionIds } },
-            select: {
-                productId: true,
-                productName: true,
-                quantity: true,
-                total: true,
-            },
+        const items = await db.query.transactionItems.findMany({
+            where: inArray(transactionItems.transactionId, transactionIds),
         });
 
         // Aggregate by product
@@ -285,14 +253,8 @@ dashboardRoutes.get('/top-products', authenticate, branchFilter(), queryCache(60
             productMap[item.productId].revenue += item.total;
         });
 
-        // Sort and take top N
         const topProducts = Object.entries(productMap)
-            .map(([id, data]) => ({
-                id,
-                name: data.name,
-                totalQuantity: data.quantity,
-                totalRevenue: data.revenue,
-            }))
+            .map(([id, data]) => ({ id, name: data.name, totalQuantity: data.quantity, totalRevenue: data.revenue }))
             .sort((a, b) => b.totalQuantity - a.totalQuantity)
             .slice(0, Number(limit));
 

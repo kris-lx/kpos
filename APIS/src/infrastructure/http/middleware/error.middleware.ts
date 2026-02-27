@@ -4,7 +4,7 @@
 
 import type { Request, Response, NextFunction } from 'express';
 import { ZodError } from 'zod';
-import { DatabaseConnectionError, isPrismaConnectionError } from '@/shared/domain/errors';
+import { DatabaseConnectionError, isConnectionError } from '@/shared/domain/errors';
 
 export interface AppError extends Error {
     statusCode?: number;
@@ -88,12 +88,12 @@ export function errorHandler(
     }
 
     // Database connection error
-    if (err instanceof DatabaseConnectionError || isPrismaConnectionError(err)) {
+    if (err instanceof DatabaseConnectionError || isConnectionError(err)) {
         res.status(503).json({
             success: false,
             error: {
                 code: 'DB_001',
-                message: 'Database is not available. Please ensure MongoDB is running.',
+                message: 'Database is not available. Please ensure PostgreSQL is running.',
             },
         });
         return;

@@ -22,6 +22,10 @@
         Download,
     } from "lucide-svelte";
 
+    // Rule-based CRUD gating
+    const hasWriteAccess = $derived(auth.hasStoreAccess('write') || !auth.activeStoreId);
+    const canCreateAdjust = $derived(auth.canCreate('inventory') && hasWriteAccess);
+
     // State
     let searchQuery = $state("");
     let typeFilter = $state<string | null>(null);
@@ -46,6 +50,22 @@
         notes: "",
         date: new Date().toISOString().split("T")[0],
     });
+
+    let adjustReasons = $state<{value: string; label: string; labelLao?: string}[]>([
+        { value: "count_correction", label: "Count Correction", labelLao: "ແກ້ໄຂຈຳນວນ" },
+        { value: "damaged", label: "Damaged", labelLao: "ເສຍຫາຍ" },
+        { value: "expired", label: "Expired", labelLao: "ໝົດອາຍຸ" },
+        { value: "recount", label: "Recount", labelLao: "ນັບຄືນ" },
+        { value: "received", label: "Received Stock", labelLao: "ຮັບສິນຄ້າ" },
+        { value: "other", label: "Other", labelLao: "ອື່ນໆ" },
+    ]);
+
+    async function loadEnums() {
+        try {
+            const res = await api.get("settings/enums?type=adjust_reason").json<any>();
+            if (res.data?.adjust_reason) adjustReasons = res.data.adjust_reason;
+        } catch { /* keep defaults */ }
+    }
 
     // Stats
     let stats = $derived({
@@ -133,6 +153,7 @@
 
     $effect(() => {
         auth.activeStoreId;
+        loadEnums();
         loadData();
     });
 </script>
@@ -161,6 +182,7 @@
                 <Download class="w-4 h-4" />
                 ສົ່ງອອກ
             </button>
+            {#if canCreateAdjust}
             <button
                 onclick={() => { resetForm(); showModal = true; }}
                 class="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-orange-500 to-red-600 text-white rounded-xl text-sm font-semibold shadow-lg hover:from-orange-600 hover:to-red-700"
@@ -168,6 +190,7 @@
                 <Plus class="w-5 h-5" />
                 ປັບສະຕ໋ອກ
             </button>
+            {/if}
         </div>
     </div>
 
@@ -365,12 +388,9 @@
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ເຫດຜົນ</label>
                     <select bind:value={formData.reason} class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white">
                         <option value="">ເລືອກເຫດຜົນ</option>
-                        <option value="damaged">ເສຍຫາຍ</option>
-                        <option value="expired">ໝົດອາຍຸ</option>
-                        <option value="lost">ສູນຫາຍ</option>
-                        <option value="returned">ສົ່ງຄືນ</option>
-                        <option value="recount">ນັບຄືນ</option>
-                        <option value="other">ອື່ນໆ</option>
+                        {#each adjustReasons as r (r.value)}
+                            <option value={r.value}>{r.labelLao || r.label}</option>
+                        {/each}
                     </select>
                 </div>
 

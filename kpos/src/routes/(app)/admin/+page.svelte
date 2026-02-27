@@ -83,34 +83,34 @@
     });
 
     // ດຶງຂໍ້ມູນ Dashboard ຕາມບົດບາດ
-    const dashboardQuery = createQuery({
+    const dashboardQuery = createQuery($derived({
         queryKey: ["admin-dashboard", userRole],
         queryFn: async () => {
             const response = await api.get("admin/dashboard").json<any>();
             return response.data;
         },
         enabled: canAccess
-    });
+    }));
 
-    const pendingRequestsQuery = createQuery({
+    const pendingRequestsQuery = createQuery($derived({
         queryKey: ["admin-requests", "pending"],
         queryFn: async () => {
             const response = await api.get("admin/requests?status=pending&limit=5").json<any>();
             return response.data || [];
         },
         enabled: userRole === 'super_admin' || userRole === 'admin'
-    });
+    }));
 
-    const recentActivityQuery = createQuery({
+    const recentActivityQuery = createQuery($derived({
         queryKey: ["admin-activity"],
         queryFn: async () => {
             const response = await api.get("admin/activity?limit=10").json<any>();
             return response.data || [];
         },
         enabled: userRole === 'super_admin' || userRole === 'admin'
-    });
+    }));
 
-    const systemHealthQuery = createQuery({
+    const systemHealthQuery = createQuery($derived({
         queryKey: ["admin-system-health"],
         queryFn: async () => {
             const response = await api.get("admin/system/health").json<any>();
@@ -122,7 +122,7 @@
             };
         },
         enabled: userRole === 'super_admin' || userRole === 'admin'
-    });
+    }));
 
     const approveMutation = createMutation({
         mutationFn: async ({ id, note }: { id: string; note?: string }) => {
@@ -245,6 +245,31 @@
             manager: "from-amber-600 to-orange-600"
         };
         return colors[role] || "from-gray-600 to-slate-600";
+    }
+
+    // Database Backup
+    let isBackingUp = $state(false);
+
+    async function downloadBackup() {
+        if (isBackingUp) return;
+        isBackingUp = true;
+        try {
+            const response = await api.post("admin/backup").json<any>();
+            const json = JSON.stringify(response, null, 2);
+            const blob = new Blob([json], { type: "application/json" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `kpos-backup-${new Date().toISOString().slice(0,10)}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+            toast.success("ດາວໂຫລດ Backup ສຳເລັດ");
+        } catch (e) {
+            console.error("Backup failed:", e);
+            toast.error("ການ Backup ລົ້ມເຫລວ");
+        } finally {
+            isBackingUp = false;
+        }
     }
 
     // Quick Links ຕາມບົດບາດ
@@ -672,6 +697,54 @@
                     </div>
                 </div>
             </div>
+
+            <!-- Database Backup (super admin only) -->
+            {#if userRole === 'super_admin'}
+            <div class="bg-white dark:bg-gray-800/50 backdrop-blur-xl rounded-2xl border border-gray-100 dark:border-gray-700/50 shadow-xl shadow-gray-200/50 dark:shadow-none overflow-hidden">
+                <div class="p-5 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
+                    <h3 class="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+                        <Database class="w-5 h-5 text-emerald-500" />
+                        ສຳຮອງຂໍ້ມູນ (Database Backup)
+                    </h3>
+                    <span class="px-2 py-1 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 text-xs font-medium rounded-full">Super Admin</span>
+                </div>
+                <div class="p-5">
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-5">
+                        <div class="bg-gray-50 dark:bg-gray-700/30 rounded-xl p-4 text-center">
+                            <p class="text-2xl font-bold text-gray-900 dark:text-white">{$dashboardQuery.data?.users?.total || 0}</p>
+                            <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">ຜູ້ໃຊ້</p>
+                        </div>
+                        <div class="bg-gray-50 dark:bg-gray-700/30 rounded-xl p-4 text-center">
+                            <p class="text-2xl font-bold text-gray-900 dark:text-white">{$dashboardQuery.data?.stores?.total || 0}</p>
+                            <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">ຮ້ານ</p>
+                        </div>
+                        <div class="bg-gray-50 dark:bg-gray-700/30 rounded-xl p-4 text-center">
+                            <p class="text-2xl font-bold text-gray-900 dark:text-white">{$dashboardQuery.data?.transactions?.today || 0}</p>
+                            <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">ທຸລະກຳມື້ນີ້</p>
+                        </div>
+                    </div>
+                    <div class="flex flex-col sm:flex-row gap-3">
+                        <button
+                            onclick={downloadBackup}
+                            disabled={isBackingUp}
+                            class="flex items-center justify-center gap-2 px-5 py-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 disabled:cursor-not-allowed text-white font-medium rounded-xl transition-colors shadow-lg shadow-emerald-500/20"
+                        >
+                            {#if isBackingUp}
+                                <Loader2 class="w-5 h-5 animate-spin" />
+                                ກຳລັງດາວໂຫລດ...
+                            {:else}
+                                <HardDrive class="w-5 h-5" />
+                                ດາວໂຫລດ JSON Backup
+                            {/if}
+                        </button>
+                        <div class="flex items-center gap-2 px-4 py-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/50 rounded-xl text-sm text-amber-700 dark:text-amber-400">
+                            <Shield class="w-4 h-4 shrink-0" />
+                            <span>ລາຍລະອຽດລະຫັດຜ່ານຖືກຍົກເວັ້ນ. ເໝາະສຳລັບການ restore ຂໍ້ມູນ.</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {/if}
 
             <!-- Roles & Permissions Summary -->
             <div class="bg-white dark:bg-gray-800/50 backdrop-blur-xl rounded-2xl border border-gray-100 dark:border-gray-700/50 shadow-xl shadow-gray-200/50 dark:shadow-none overflow-hidden">

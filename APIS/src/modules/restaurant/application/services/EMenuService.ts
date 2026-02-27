@@ -2,7 +2,9 @@
 // Restaurant Module - E-Menu Service
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { prisma } from '@/config/database.config';
+import { db } from '@/config/database.config';
+import { settings, categories, products, tables } from '@/db/schema/tables';
+import { eq, and, asc } from 'drizzle-orm';
 import { OrderService, CreateOrderDTO, CreateOrderItemDTO } from './OrderService';
 import { OrderType } from '../../domain/entities';
 
@@ -56,37 +58,26 @@ export class EMenuService {
     }
 
     async getMenu(branchId?: string): Promise<EMenuData> {
-        // Get restaurant settings
-        const settings = await prisma.settings.findFirst({
-            where: { category: 'restaurant', key: 'info' },
+        const restaurantSettings = await db.query.settings.findFirst({
+            where: and(eq(settings.category, 'restaurant'), eq(settings.key, 'info')),
         });
 
-        // Get categories
-        const categories = await prisma.category.findMany({
-            where: { isActive: true },
-            orderBy: { sortOrder: 'asc' },
-            select: {
-                id: true,
-                name: true,
-                image: true,
-                sortOrder: true,
-            },
+        const categoryList = await db.query.categories.findMany({
+            where: eq(categories.isActive, true),
+            orderBy: asc(categories.sortOrder),
+            columns: { id: true, name: true, image: true, sortOrder: true },
         });
 
-        // Get products with inventory
-        const where: Record<string, unknown> = { isActive: true };
-        if (branchId) where.branchId = branchId;
+        const prodConds: any[] = [eq(products.isActive, true)];
+        if (branchId) prodConds.push(eq(products.branchId, branchId));
 
-        const products = await prisma.product.findMany({
-            where,
-            include: {
-                category: { select: { name: true } },
-                inventory: { select: { quantity: true } },
-            },
-            orderBy: { sortOrder: 'asc' },
+        const productList = await db.query.products.findMany({
+            where: and(...prodConds),
+            with: { category: { columns: { name: true } }, inventory: { columns: { quantity: true } } },
+            orderBy: asc(products.sortOrder),
         });
 
-        const restaurantInfo = settings?.value as Record<string, unknown> || {};
+        const restaurantInfo = restaurantSettings?.value as Record<string, unknown> || {};
 
         return {
             restaurant: {
@@ -100,13 +91,13 @@ export class EMenuService {
                 openTime: (restaurantInfo.openTime as string) || '09:00',
                 closeTime: (restaurantInfo.closeTime as string) || '22:00',
             },
-            categories: categories.map(c => ({
+            categories: categoryList.map(c => ({
                 id: c.id,
                 name: c.name,
                 icon: c.image || '🍽️',
                 sortOrder: c.sortOrder,
             })),
-            items: products.map(p => ({
+            items: productList.map((p: any) => ({
                 id: p.id,
                 name: p.name,
                 description: p.description || '',
@@ -132,23 +123,15 @@ export class EMenuService {
             // Find table by number/name
             let tableId: string | undefined;
             if (tableNumber) {
-                const table = await prisma.table.findFirst({
-                    where: { 
-                        branchId,
-                        name: tableNumber,
-                        isActive: true,
-                    },
+                const table = await db.query.tables.findFirst({
+                    where: and(eq(tables.branchId, branchId), eq(tables.name, tableNumber), eq(tables.isActive, true)),
                 });
                 tableId = table?.id;
             }
 
-            // Map e-menu items to order items
-            const orderItems: CreateOrderItemDTO[] = await Promise.all(
+            const orderItemsData: CreateOrderItemDTO[] = await Promise.all(
                 items.map(async (item) => {
-                    const product = await prisma.product.findUnique({
-                        where: { id: item.itemId },
-                    });
-                    
+                    const product = await db.query.products.findFirst({ where: eq(products.id, item.itemId) });
                     return {
                         productId: item.itemId,
                         productName: product?.name || item.name,
@@ -163,7 +146,7 @@ export class EMenuService {
                 branchId,
                 tableId,
                 type: tableId ? OrderType.DINE_IN : OrderType.TAKEAWAY,
-                items: orderItems,
+                items: orderItemsData,
             };
 
             const order = await this.orderService.create(orderData);

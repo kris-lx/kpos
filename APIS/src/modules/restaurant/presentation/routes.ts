@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router, Request, Response, NextFunction } from 'express';
-import { authenticate, authorize, branchFilter, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, branchFilter, ensureScopeAccess, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { 
     tableService, 
     orderService, 
@@ -57,7 +57,7 @@ restaurantRoutes.get('/tables/stats', authenticate, async (req: Request, res: Re
     }
 });
 
-// Get table by ID
+// Get table by ID (scope-checked)
 restaurantRoutes.get('/tables/:id', authenticate, async (req: Request, res: Response, next: NextFunction) => {
     try {
         const table = await tableService.findById(req.params.id);
@@ -65,6 +65,10 @@ restaurantRoutes.get('/tables/:id', authenticate, async (req: Request, res: Resp
         if (!table) {
             res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Table not found' } });
             return;
+        }
+
+        if (!ensureScopeAccess(table as any, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
         }
 
         res.json({ success: true, data: table });

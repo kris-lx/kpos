@@ -138,18 +138,26 @@
         const file = input.files?.[0];
         if (!file) return;
 
-        const formData = new FormData();
-        formData.append("avatar", file);
-
         try {
-            const response = await api.post("users/me/avatar", {
-                body: formData,
+            const base64 = await new Promise<string>((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result as string);
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+
+            const uploadRes = await api.post("upload/single", {
+                json: { image: base64, folder: "avatars" },
             }).json<any>();
-            
-            if (response.success) {
-                profileData.avatar = response.data.url;
-                toast.success(t("profile.avatarUpdated"));
-            }
+
+            if (!uploadRes.success) throw new Error(uploadRes.error?.message || "Upload failed");
+
+            const url = uploadRes.data.url;
+
+            await api.post("users/me/avatar", { json: { url } }).json<any>();
+
+            profileData.avatar = url;
+            toast.success(t("profile.avatarUpdated"));
         } catch (error) {
             console.error("Failed to upload avatar:", error);
             toast.error(t("profile.avatarUploadFailed"));

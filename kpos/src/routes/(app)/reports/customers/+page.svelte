@@ -5,7 +5,7 @@
     import { onMount } from "svelte";
     import { auth } from "$stores";
     import { toast } from "svelte-sonner";
-    import { Download, Loader2, Users, UserPlus, Activity, DollarSign, Receipt, Heart, Trophy, PieChart, TrendingUp, Target, Cake, Star, Calendar, ChevronLeft, ChevronRight, Search } from "lucide-svelte";
+    import { Download, Loader2, Users, UserPlus, Activity, DollarSign, Receipt, Heart, Trophy, PieChart, TrendingUp, Target, Cake, Star, Calendar, ChevronLeft, ChevronRight, Search, FileText, FileSpreadsheet, ChevronDown } from "lucide-svelte";
 
     let reportData = $state<any>({
         summary: {},
@@ -97,10 +97,79 @@
         return colors[name] || "bg-gray-500";
     }
 
-    function exportReport() {
-        toast.info(t("reports.exporting"));
-        // Add actual export implementation here
-        toast.success(t("reports.exportSuccess"));
+    let showExportMenu = $state(false);
+
+    function buildCsvRows(): string[][] {
+        const headers = ['#', 'ຊື່', 'ໂທລະສັບ', 'ອີເມວ', 'ລະຫັດສະມາຊິກ', 'ຍອດຊື້ລວມ', 'ຈຳນວນອໍເດີ'];
+        const rows = (reportData.topCustomers || []).map((c: any) => [
+            c.rank,
+            c.name,
+            c.phone || '',
+            c.email || '',
+            c.memberCode || '',
+            c.totalSpent ?? 0,
+            c.orderCount ?? 0,
+        ]);
+        return [headers, ...rows];
+    }
+
+    function exportExcel() {
+        showExportMenu = false;
+        const rows = buildCsvRows();
+        const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+        const bom = '\uFEFF';
+        const blob = new Blob([bom + csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `customers_report_${dateRange.from}_${dateRange.to}.csv`;
+        a.click();
+        URL.revokeObjectURL(url);
+        toast.success(t('reports.exportSuccess'));
+    }
+
+    function exportPdf() {
+        showExportMenu = false;
+        const rows = buildCsvRows();
+        const tableRows = rows.slice(1).map(r =>
+            `<tr>${r.map((v, i) => `<td style="border:1px solid #ddd;padding:6px 10px;${i >= 5 ? 'text-align:right' : ''}">${v}</td>`).join('')}</tr>`
+        ).join('');
+        const summary = reportData.summary || {};
+        const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>ລາຍງານລູກຄ້າ</title>
+<style>body{font-family:sans-serif;padding:24px}h1{font-size:20px;margin-bottom:8px}p{margin:2px 0;color:#555;font-size:13px}table{width:100%;border-collapse:collapse;margin-top:16px}th{background:#f3f4f6;border:1px solid #ddd;padding:8px 10px;text-align:left;font-size:13px}td{font-size:12px}@media print{button{display:none}}</style>
+</head><body>
+<h1>ລາຍງານລູກຄ້າ</h1>
+<p>ໄລຍະ: ${dateRange.from} ຫາ ${dateRange.to}</p>
+<p>ລູກຄ້າທັງໝົດ: ${summary.totalCustomers ?? 0} | ລູກຄ້າໃໝ່: ${summary.newCustomers ?? 0} | ລູກຄ້າມີການຊື້: ${summary.activeCustomers ?? 0}</p>
+<table><thead><tr>${rows[0].map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${tableRows}</tbody></table>
+<script>window.onload=()=>window.print()<\/script></body></html>`;
+        const w = window.open('', '_blank');
+        if (w) { w.document.write(html); w.document.close(); }
+        toast.success(t('reports.exportSuccess'));
+    }
+
+    function exportWord() {
+        showExportMenu = false;
+        const rows = buildCsvRows();
+        const tableRows = rows.slice(1).map(r =>
+            `<w:tr>${r.map(v => `<w:tc><w:p><w:r><w:t>${String(v).replace(/[<>&]/g, c => c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&amp;')}</w:t></w:r></w:p></w:tc>`).join('')}</w:tr>`
+        ).join('');
+        const headerRow = `<w:tr>${rows[0].map(h => `<w:tc><w:tcPr><w:shd w:fill="F3F4F6"/></w:tcPr><w:p><w:r><w:rPr><w:b/></w:rPr><w:t>${h}</w:t></w:r></w:p></w:tc>`).join('')}</w:tr>`;
+        const xml = `<?xml version="1.0" encoding="UTF-8"?><?mso-application progid="Word.Document"?>
+<w:wordDocument xmlns:w="http://schemas.microsoft.com/office/word/2003/wordml">
+<w:body><w:p><w:r><w:rPr><w:b/><w:sz w:val="28"/></w:rPr><w:t>ລາຍງານລູກຄ້າ</w:t></w:r></w:p>
+<w:p><w:r><w:t>ໄລຍະ: ${dateRange.from} ຫາ ${dateRange.to}</w:t></w:r></w:p>
+<w:tbl><w:tblPr><w:tblW w:w="5000" w:type="pct"/><w:tblBorders><w:top w:val="single"/><w:left w:val="single"/><w:bottom w:val="single"/><w:right w:val="single"/><w:insideH w:val="single"/><w:insideV w:val="single"/></w:tblBorders></w:tblPr>
+${headerRow}${tableRows}</w:tbl></w:body></w:wordDocument>`;
+        const blob = new Blob([xml], { type: 'application/msword' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `customers_report_${dateRange.from}_${dateRange.to}.doc`;
+        a.click();
+        URL.revokeObjectURL(url);
+        toast.success(t('reports.exportSuccess'));
     }
 </script>
 
@@ -140,13 +209,29 @@
                     ໂຫຼດ
                 </button>
             </div>
-            <button
-                onclick={exportReport}
-                class="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 flex items-center gap-2"
-            >
-                <Download class="w-4 h-4" />
-                ສົ່ງອອກ
-            </button>
+            <div class="relative">
+                <button
+                    onclick={() => showExportMenu = !showExportMenu}
+                    class="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 flex items-center gap-2"
+                >
+                    <Download class="w-4 h-4" />
+                    ສົ່ງອອກ
+                    <ChevronDown class="w-4 h-4" />
+                </button>
+                {#if showExportMenu}
+                    <div class="absolute right-0 mt-1 w-44 bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 z-20">
+                        <button onclick={exportExcel} class="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 rounded-t-xl">
+                            <FileSpreadsheet class="w-4 h-4 text-green-600" /> Excel / CSV
+                        </button>
+                        <button onclick={exportPdf} class="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
+                            <FileText class="w-4 h-4 text-red-500" /> PDF (Print)
+                        </button>
+                        <button onclick={exportWord} class="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 rounded-b-xl">
+                            <FileText class="w-4 h-4 text-blue-600" /> Word (.doc)
+                        </button>
+                    </div>
+                {/if}
+            </div>
         </div>
     </div>
 

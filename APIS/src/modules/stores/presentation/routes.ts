@@ -3,8 +3,10 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, branchFilter, requireStoreAccess, applyScopeFilter, invalidateUserStoreCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
-import { prisma } from '@/config/database.config';
+import { authenticate, authorize, branchFilter, requireStoreAccess, applyScopeFilter, invalidateUserStoreCache, type ScopeFilter, buildScopeCondition } from '@/infrastructure/http/middleware/auth.middleware';
+import { db } from '@/config/database.config';
+import { stores, branches, users, userStores, storeRequests } from '@/db/schema/tables';
+import { eq, and, or, ilike, inArray, desc, asc, count } from 'drizzle-orm';
 
 export const storeRoutes = Router();
 
@@ -17,46 +19,40 @@ storeRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
         const skip = (Number(page) - 1) * Number(limit);
         const filter = (req as any).branchFilter as ScopeFilter | undefined;
         
-        const where: Record<string, unknown> = { isActive: true };
+        const conditions: any[] = [eq(stores.isActive, true)];
         
-        // Apply store-level or branch-level scope
-        applyScopeFilter(where, filter, 'store');
+        // Apply scope
+        const scopeCond = buildScopeCondition(filter, { id: stores.id, branchId: stores.branchId }, 'store');
+        if (scopeCond) conditions.push(scopeCond);
         
-        // Additional branch filter from query (only when not store-scoped)
         if (branchId) {
             if (filter && !filter.branchIds.includes(String(branchId))) {
-                return res.status(403).json({
-                    success: false,
-                    error: { code: 'FORBIDDEN', message: 'No access to this branch' }
-                });
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
             }
-            where.branchId = String(branchId);
+            conditions.push(eq(stores.branchId, String(branchId)));
         }
         
         if (search) {
-            where.OR = [
-                { name: { contains: String(search), mode: 'insensitive' } },
-                { code: { contains: String(search), mode: 'insensitive' } },
-            ];
+            const s = String(search);
+            conditions.push(or(ilike(stores.name, `%${s}%`), ilike(stores.code, `%${s}%`)));
         }
 
-        const [stores, total] = await Promise.all([
-            prisma.store.findMany({
-                where,
-                skip,
-                take: Number(limit),
-                include: {
-                    branch: { select: { id: true, name: true, code: true } },
-                    _count: { select: { userAccess: true, products: true } }
-                },
-                orderBy: [{ isDefault: 'desc' }, { name: 'asc' }]
+        const whereClause = and(...conditions);
+
+        const [storeRows, [{ value: total }]] = await Promise.all([
+            db.query.stores.findMany({
+                where: whereClause,
+                offset: skip,
+                limit: Number(limit),
+                with: { branch: true },
+                orderBy: [desc(stores.isDefault), asc(stores.name)],
             }),
-            prisma.store.count({ where })
+            db.select({ value: count() }).from(stores).where(whereClause),
         ]);
 
         res.json({
             success: true,
-            data: stores,
+            data: storeRows,
             meta: {
                 page: Number(page),
                 limit: Number(limit),
@@ -109,27 +105,19 @@ storeRoutes.get('/requests', authenticate, async (req, res, next) => {
         const { status, page = 1, limit = 10 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
 
-        const where: Record<string, unknown> = { requesterId: userId };
-        if (status) {
-            where.status = String(status);
-        }
+        const reqConditions: any[] = [eq(storeRequests.requesterId, userId!)];
+        if (status) reqConditions.push(eq(storeRequests.status, String(status)));
+        const reqWhere = and(...reqConditions);
 
-        const [requests, total] = await Promise.all([
-            prisma.storeRequest.findMany({
-                where,
-                skip,
-                take: Number(limit),
-                include: {
-                    reviewer: {
-                        select: { id: true, name: true }
-                    },
-                    branch: {
-                        select: { id: true, name: true, code: true }
-                    }
-                },
-                orderBy: { createdAt: 'desc' }
+        const [requests, [{ value: total }]] = await Promise.all([
+            db.query.storeRequests.findMany({
+                where: reqWhere,
+                offset: skip,
+                limit: Number(limit),
+                with: { reviewer: true, branch: true },
+                orderBy: desc(storeRequests.createdAt),
             }),
-            prisma.storeRequest.count({ where })
+            db.select({ value: count() }).from(storeRequests).where(reqWhere),
         ]);
 
         res.json({
@@ -192,7 +180,7 @@ storeRoutes.post('/requests', authenticate, async (req, res, next) => {
                     error: { code: 'VALIDATION_ERROR', message: 'Branch name and code are required' }
                 });
             }
-            const existingBranch = await prisma.branch.findUnique({ where: { code: branchCode } });
+            const existingBranch = await db.query.branches.findFirst({ where: eq(branches.code, branchCode) });
             if (existingBranch) {
                 return res.status(400).json({
                     success: false,
@@ -206,7 +194,7 @@ storeRoutes.post('/requests', authenticate, async (req, res, next) => {
                     error: { code: 'VALIDATION_ERROR', message: 'Store name and code are required' }
                 });
             }
-            const existingStore = await prisma.store.findUnique({ where: { code: storeCode } });
+            const existingStore = await db.query.stores.findFirst({ where: eq(stores.code, storeCode) });
             if (existingStore) {
                 return res.status(400).json({
                     success: false,
@@ -215,26 +203,24 @@ storeRoutes.post('/requests', authenticate, async (req, res, next) => {
             }
         }
 
-        const request = await prisma.storeRequest.create({
-            data: {
-                requesterId: userId,
-                type,
-                storeName: storeName || null,
-                storeCode: storeCode || null,
-                storeAddress: storeAddress || null,
-                storePhone: storePhone || null,
-                storeEmail: storeEmail || null,
-                branchName: branchName || null,
-                branchCode: branchCode || null,
-                branchAddress: branchAddress || null,
-                branchPhone: branchPhone || null,
-                branchEmail: branchEmail || null,
-                reason: reason || null,
-                branchId: branchId || null,
-                priority: priority || 'normal',
-                status: 'pending'
-            }
-        });
+        const [request] = await db.insert(storeRequests).values({
+            requesterId: userId,
+            type,
+            storeName: storeName || null,
+            storeCode: storeCode || null,
+            storeAddress: storeAddress || null,
+            storePhone: storePhone || null,
+            storeEmail: storeEmail || null,
+            branchName: branchName || null,
+            branchCode: branchCode || null,
+            branchAddress: branchAddress || null,
+            branchPhone: branchPhone || null,
+            branchEmail: branchEmail || null,
+            reason: reason || null,
+            branchId: branchId || null,
+            priority: priority || 'normal',
+            status: 'pending',
+        }).returning();
 
         res.status(201).json({
             success: true,
@@ -254,16 +240,9 @@ storeRoutes.get('/requests/:id', authenticate, async (req, res, next) => {
         const userId = req.user?.userId;
         const { id } = req.params;
 
-        const request = await prisma.storeRequest.findUnique({
-            where: { id },
-            include: {
-                reviewer: {
-                    select: { id: true, name: true }
-                },
-                branch: {
-                    select: { id: true, name: true, code: true }
-                }
-            }
+        const request = await db.query.storeRequests.findFirst({
+            where: eq(storeRequests.id, id),
+            with: { reviewer: true, branch: true },
         });
 
         if (!request) {
@@ -294,34 +273,21 @@ storeRoutes.delete('/requests/:id', authenticate, async (req, res, next) => {
         const userId = req.user?.userId;
         const { id } = req.params;
 
-        const request = await prisma.storeRequest.findUnique({
-            where: { id }
-        });
+        const request = await db.query.storeRequests.findFirst({ where: eq(storeRequests.id, id) });
 
         if (!request) {
-            return res.status(404).json({
-                success: false,
-                error: { code: 'NOT_FOUND', message: 'Request not found' }
-            });
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Request not found' } });
         }
 
         if (request.requesterId !== userId) {
-            return res.status(403).json({
-                success: false,
-                error: { code: 'FORBIDDEN', message: 'You can only cancel your own requests' }
-            });
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'You can only cancel your own requests' } });
         }
 
         if (request.status !== 'pending') {
-            return res.status(400).json({
-                success: false,
-                error: { code: 'INVALID_STATUS', message: 'Can only cancel pending requests' }
-            });
+            return res.status(400).json({ success: false, error: { code: 'INVALID_STATUS', message: 'Can only cancel pending requests' } });
         }
 
-        await prisma.storeRequest.delete({
-            where: { id }
-        });
+        await db.delete(storeRequests).where(eq(storeRequests.id, id));
 
         res.json({
             success: true,
@@ -339,17 +305,9 @@ storeRoutes.get('/:id', authenticate, branchFilter(), async (req, res, next) => 
     try {
         const filter = (req as any).branchFilter as ScopeFilter | undefined;
         
-        const store = await prisma.store.findUnique({
-            where: { id: req.params.id },
-            include: {
-                branch: { select: { id: true, name: true, code: true } },
-                userAccess: {
-                    include: {
-                        user: { select: { id: true, name: true, email: true, avatar: true } }
-                    }
-                },
-                _count: { select: { products: true } }
-            }
+        const store = await db.query.stores.findFirst({
+            where: eq(stores.id, req.params.id),
+            with: { branch: true, userAccess: { with: { user: true } } },
         });
 
         if (!store) {
@@ -393,63 +351,34 @@ storeRoutes.post('/', authenticate, authorize('stores:create', 'branches:create'
             });
         }
 
-        // Check if code exists
-        const existing = await prisma.store.findUnique({ where: { code } });
+        const existing = await db.query.stores.findFirst({ where: eq(stores.code, code) });
         if (existing) {
-            return res.status(400).json({
-                success: false,
-                error: { code: 'DUPLICATE', message: 'Store code already exists' }
-            });
+            return res.status(400).json({ success: false, error: { code: 'DUPLICATE', message: 'Store code already exists' } });
         }
 
-        // Check if branch exists
-        const branch = await prisma.branch.findUnique({ where: { id: branchId } });
+        const branch = await db.query.branches.findFirst({ where: eq(branches.id, branchId) });
         if (!branch) {
-            return res.status(400).json({
-                success: false,
-                error: { code: 'INVALID_BRANCH', message: 'Branch not found' }
-            });
+            return res.status(400).json({ success: false, error: { code: 'INVALID_BRANCH', message: 'Branch not found' } });
         }
 
-        // If this is default, unset other defaults in the branch
         if (isDefault) {
-            await prisma.store.updateMany({
-                where: { branchId, isDefault: true },
-                data: { isDefault: false }
-            });
+            await db.update(stores).set({ isDefault: false, updatedAt: new Date() }).where(and(eq(stores.branchId, branchId), eq(stores.isDefault, true)));
         }
 
-        const store = await prisma.store.create({
-            data: {
-                name,
-                code,
-                branchId,
-                address,
-                phone,
-                email,
-                description,
-                isDefault: isDefault || false,
-                settings
-            },
-            include: {
-                branch: { select: { id: true, name: true, code: true } }
-            }
-        });
+        const [store] = await db.insert(stores).values({
+            name, code, branchId, address, phone, email, description,
+            isDefault: isDefault || false,
+            settings,
+        }).returning();
 
-        // Auto-assign creator to the new store with full manage access
         const creatorId = req.user?.userId;
         if (creatorId) {
-            await prisma.userStore.upsert({
-                where: { userId_storeId: { userId: creatorId, storeId: store.id } },
-                update: { canRead: true, canWrite: true, canDelete: true, canManage: true, isDefault: isDefault || false },
-                create: {
-                    userId: creatorId,
-                    storeId: store.id,
-                    branchId,
-                    canRead: true, canWrite: true, canDelete: true, canManage: true,
-                    isDefault: isDefault || false
-                }
-            });
+            const existingUs = await db.query.userStores.findFirst({ where: and(eq(userStores.userId, creatorId), eq(userStores.storeId, store.id)) });
+            if (existingUs) {
+                await db.update(userStores).set({ canRead: true, canWrite: true, canDelete: true, canManage: true, isDefault: isDefault || false }).where(eq(userStores.id, existingUs.id));
+            } else {
+                await db.insert(userStores).values({ userId: creatorId, storeId: store.id, branchId, canRead: true, canWrite: true, canDelete: true, canManage: true, isDefault: isDefault || false });
+            }
             await invalidateUserStoreCache(creatorId);
         }
 
@@ -467,50 +396,34 @@ storeRoutes.put('/:id', authenticate, authorize('stores:update', 'branches:updat
         const { id } = req.params;
         const { name, code, address, phone, email, description, isActive, isDefault, settings } = req.body;
 
-        const existing = await prisma.store.findUnique({ where: { id } });
+        const existing = await db.query.stores.findFirst({ where: eq(stores.id, id) });
         if (!existing) {
-            return res.status(404).json({
-                success: false,
-                error: { code: 'NOT_FOUND', message: 'Store not found' }
-            });
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Store not found' } });
         }
 
-        // Check code uniqueness if changed
         if (code && code !== existing.code) {
-            const codeExists = await prisma.store.findUnique({ where: { code } });
+            const codeExists = await db.query.stores.findFirst({ where: eq(stores.code, code) });
             if (codeExists) {
-                return res.status(400).json({
-                    success: false,
-                    error: { code: 'DUPLICATE', message: 'Store code already exists' }
-                });
+                return res.status(400).json({ success: false, error: { code: 'DUPLICATE', message: 'Store code already exists' } });
             }
         }
 
-        // If setting as default, unset others
         if (isDefault && !existing.isDefault) {
-            await prisma.store.updateMany({
-                where: { branchId: existing.branchId, isDefault: true },
-                data: { isDefault: false }
-            });
+            await db.update(stores).set({ isDefault: false, updatedAt: new Date() }).where(and(eq(stores.branchId, existing.branchId), eq(stores.isDefault, true)));
         }
 
-        const store = await prisma.store.update({
-            where: { id },
-            data: {
-                ...(name && { name }),
-                ...(code && { code }),
-                ...(address !== undefined && { address }),
-                ...(phone !== undefined && { phone }),
-                ...(email !== undefined && { email }),
-                ...(description !== undefined && { description }),
-                ...(isActive !== undefined && { isActive }),
-                ...(isDefault !== undefined && { isDefault }),
-                ...(settings && { settings })
-            },
-            include: {
-                branch: { select: { id: true, name: true, code: true } }
-            }
-        });
+        const updateData: any = { updatedAt: new Date() };
+        if (name) updateData.name = name;
+        if (code) updateData.code = code;
+        if (address !== undefined) updateData.address = address;
+        if (phone !== undefined) updateData.phone = phone;
+        if (email !== undefined) updateData.email = email;
+        if (description !== undefined) updateData.description = description;
+        if (isActive !== undefined) updateData.isActive = isActive;
+        if (isDefault !== undefined) updateData.isDefault = isDefault;
+        if (settings) updateData.settings = settings;
+
+        const [store] = await db.update(stores).set(updateData).where(eq(stores.id, id)).returning();
 
         res.json({ success: true, data: store });
     } catch (error) {
@@ -533,43 +446,23 @@ storeRoutes.put('/:id/transfer', authenticate, authorize('stores:update', 'branc
             });
         }
 
-        const store = await prisma.store.findUnique({
-            where: { id },
-            include: { branch: { select: { id: true, name: true } } }
-        });
+        const store = await db.query.stores.findFirst({ where: eq(stores.id, id), with: { branch: true } });
         if (!store) {
-            return res.status(404).json({
-                success: false,
-                error: { code: 'NOT_FOUND', message: 'Store not found' }
-            });
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Store not found' } });
         }
 
         if (store.branchId === toBranchId) {
-            return res.status(400).json({
-                success: false,
-                error: { code: 'SAME_BRANCH', message: 'ຮ້ານຢູ່ສາຂານີ້ຢູ່ແລ້ວ' }
-            });
+            return res.status(400).json({ success: false, error: { code: 'SAME_BRANCH', message: 'ຮ້ານຢູ່ສາຂານີ້ຢູ່ແລ້ວ' } });
         }
 
-        const targetBranch = await prisma.branch.findUnique({ where: { id: toBranchId } });
+        const targetBranch = await db.query.branches.findFirst({ where: eq(branches.id, toBranchId) });
         if (!targetBranch) {
-            return res.status(404).json({
-                success: false,
-                error: { code: 'NOT_FOUND', message: 'Target branch not found' }
-            });
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Target branch not found' } });
         }
 
-        // Transfer: update store branchId and all related UserStore records
-        const [updatedStore] = await Promise.all([
-            prisma.store.update({
-                where: { id },
-                data: { branchId: toBranchId },
-                include: { branch: { select: { id: true, name: true, code: true } } }
-            }),
-            prisma.userStore.updateMany({
-                where: { storeId: id },
-                data: { branchId: toBranchId }
-            })
+        const [[updatedStore]] = await Promise.all([
+            db.update(stores).set({ branchId: toBranchId, updatedAt: new Date() }).where(eq(stores.id, id)).returning(),
+            db.update(userStores).set({ branchId: toBranchId }).where(eq(userStores.storeId, id)),
         ]);
 
         res.json({
@@ -587,10 +480,7 @@ storeRoutes.put('/:id/transfer', authenticate, authorize('stores:update', 'branc
 // ═══════════════════════════════════════════════════════════════════════════
 storeRoutes.delete('/:id', authenticate, authorize('stores:delete', 'branches:delete'), async (req, res, next) => {
     try {
-        await prisma.store.update({
-            where: { id: req.params.id },
-            data: { isActive: false }
-        });
+        await db.update(stores).set({ isActive: false, updatedAt: new Date() }).where(eq(stores.id, req.params.id));
 
         res.json({ success: true, data: { message: 'Store deleted' } });
     } catch (error) {
@@ -606,68 +496,35 @@ storeRoutes.post('/:id/users', authenticate, authorize('staff:update'), async (r
         const { id: storeId } = req.params;
         const { userId, canRead = true, canWrite = true, canDelete = false, canManage = false, isDefault = false } = req.body;
 
-        // Validate store exists
-        const store = await prisma.store.findUnique({ where: { id: storeId } });
+        const store = await db.query.stores.findFirst({ where: eq(stores.id, storeId) });
         if (!store) {
-            return res.status(404).json({
-                success: false,
-                error: { code: 'NOT_FOUND', message: 'Store not found' }
-            });
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Store not found' } });
         }
 
-        // Validate user exists
-        const user = await prisma.user.findUnique({ where: { id: userId } });
+        const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
         if (!user) {
-            return res.status(404).json({
-                success: false,
-                error: { code: 'NOT_FOUND', message: 'User not found' }
-            });
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'User not found' } });
         }
 
-        // Check if assignment already exists
-        const existing = await prisma.userStore.findUnique({
-            where: { userId_storeId: { userId, storeId } }
+        const existing = await db.query.userStores.findFirst({
+            where: and(eq(userStores.userId, userId), eq(userStores.storeId, storeId)),
         });
 
         if (existing) {
-            // Update existing assignment
-            const updated = await prisma.userStore.update({
-                where: { id: existing.id },
-                data: { canRead, canWrite, canDelete, canManage, isDefault },
-                include: {
-                    user: { select: { id: true, name: true, email: true } },
-                    store: { select: { id: true, name: true, code: true } }
-                }
-            });
+            const [updated] = await db.update(userStores).set({ canRead, canWrite, canDelete, canManage, isDefault }).where(eq(userStores.id, existing.id)).returning();
             await invalidateUserStoreCache(userId);
             return res.json({ success: true, data: updated });
         }
 
-        // If setting as default, unset other defaults for this user
         if (isDefault) {
-            await prisma.userStore.updateMany({
-                where: { userId, isDefault: true },
-                data: { isDefault: false }
-            });
+            await db.update(userStores).set({ isDefault: false }).where(and(eq(userStores.userId, userId), eq(userStores.isDefault, true)));
         }
 
-        const assignment = await prisma.userStore.create({
-            data: {
-                userId,
-                storeId,
-                branchId: store.branchId,
-                canRead,
-                canWrite,
-                canDelete,
-                canManage,
-                isDefault,
-                assignedBy: req.user?.userId
-            },
-            include: {
-                user: { select: { id: true, name: true, email: true } },
-                store: { select: { id: true, name: true, code: true } }
-            }
-        });
+        const [assignment] = await db.insert(userStores).values({
+            userId, storeId, branchId: store.branchId,
+            canRead, canWrite, canDelete, canManage, isDefault,
+            assignedBy: req.user?.userId,
+        }).returning();
 
         await invalidateUserStoreCache(userId);
         res.status(201).json({ success: true, data: assignment });
@@ -683,18 +540,15 @@ storeRoutes.delete('/:id/users/:userId', authenticate, authorize('staff:update')
     try {
         const { id: storeId, userId } = req.params;
 
-        const assignment = await prisma.userStore.findUnique({
-            where: { userId_storeId: { userId, storeId } }
+        const assignment = await db.query.userStores.findFirst({
+            where: and(eq(userStores.userId, userId), eq(userStores.storeId, storeId)),
         });
 
         if (!assignment) {
-            return res.status(404).json({
-                success: false,
-                error: { code: 'NOT_FOUND', message: 'User store assignment not found' }
-            });
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'User store assignment not found' } });
         }
 
-        await prisma.userStore.delete({ where: { id: assignment.id } });
+        await db.delete(userStores).where(eq(userStores.id, assignment.id));
         await invalidateUserStoreCache(userId);
 
         res.json({ success: true, data: { message: 'User removed from store' } });
@@ -711,45 +565,24 @@ storeRoutes.get('/:id/users', authenticate, branchFilter(), async (req, res, nex
         const { id: storeId } = req.params;
         const filter = (req as any).branchFilter as ScopeFilter | undefined;
 
-        const store = await prisma.store.findUnique({ where: { id: storeId } });
+        const store = await db.query.stores.findFirst({ where: eq(stores.id, storeId) });
         if (!store) {
-            return res.status(404).json({
-                success: false,
-                error: { code: 'NOT_FOUND', message: 'Store not found' }
-            });
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Store not found' } });
         }
 
-        // Check store-level or branch-level access
         if (filter) {
-            const hasAccess = filter.scopeByStore
-                ? filter.storeIds.includes(store.id)
-                : filter.branchIds.includes(store.branchId);
+            const hasAccess = filter.scopeByStore ? filter.storeIds.includes(store.id) : filter.branchIds.includes(store.branchId);
             if (!hasAccess) {
-                return res.status(403).json({
-                    success: false,
-                    error: { code: 'FORBIDDEN', message: 'No access to this store' }
-                });
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this store' } });
             }
         }
 
-        const users = await prisma.userStore.findMany({
-            where: { storeId },
-            include: {
-                user: {
-                    select: {
-                        id: true,
-                        name: true,
-                        email: true,
-                        phone: true,
-                        avatar: true,
-                        role: true,
-                        isActive: true
-                    }
-                }
-            }
+        const storeUsers = await db.query.userStores.findMany({
+            where: eq(userStores.storeId, storeId),
+            with: { user: true },
         });
 
-        res.json({ success: true, data: users });
+        res.json({ success: true, data: storeUsers });
     } catch (error) {
         next(error);
     }
@@ -762,16 +595,9 @@ storeRoutes.get('/users/:userId/stores', authenticate, authorize('staff:read'), 
     try {
         const { userId } = req.params;
 
-        const assignments = await prisma.userStore.findMany({
-            where: { userId },
-            include: {
-                store: {
-                    select: { id: true, name: true, code: true, isActive: true }
-                },
-                branch: {
-                    select: { id: true, name: true, code: true }
-                }
-            }
+        const assignments = await db.query.userStores.findMany({
+            where: eq(userStores.userId, userId),
+            with: { store: true, branch: true },
         });
 
         res.json({ success: true, data: assignments });
@@ -795,52 +621,38 @@ storeRoutes.post('/users/:userId/bulk-assign', authenticate, authorize('staff:up
             });
         }
 
-        // Validate user
-        const user = await prisma.user.findUnique({ where: { id: userId } });
+        const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
         if (!user) {
-            return res.status(404).json({
-                success: false,
-                error: { code: 'NOT_FOUND', message: 'User not found' }
-            });
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'User not found' } });
         }
 
-        // Get stores
-        const stores = await prisma.store.findMany({
-            where: { id: { in: storeIds }, isActive: true }
+        const storeList = await db.query.stores.findMany({
+            where: and(inArray(stores.id, storeIds), eq(stores.isActive, true)),
         });
 
         const results = [];
-        for (const store of stores) {
-            const existing = await prisma.userStore.findUnique({
-                where: { userId_storeId: { userId, storeId: store.id } }
+        for (const store of storeList) {
+            const existing = await db.query.userStores.findFirst({
+                where: and(eq(userStores.userId, userId), eq(userStores.storeId, store.id)),
             });
 
             if (existing) {
-                // Update
-                const updated = await prisma.userStore.update({
-                    where: { id: existing.id },
-                    data: {
-                        canRead: permissions.canRead ?? true,
-                        canWrite: permissions.canWrite ?? true,
-                        canDelete: permissions.canDelete ?? false,
-                        canManage: permissions.canManage ?? false
-                    }
-                });
+                const [updated] = await db.update(userStores).set({
+                    canRead: permissions.canRead ?? true,
+                    canWrite: permissions.canWrite ?? true,
+                    canDelete: permissions.canDelete ?? false,
+                    canManage: permissions.canManage ?? false,
+                }).where(eq(userStores.id, existing.id)).returning();
                 results.push(updated);
             } else {
-                // Create
-                const created = await prisma.userStore.create({
-                    data: {
-                        userId,
-                        storeId: store.id,
-                        branchId: store.branchId,
-                        canRead: permissions.canRead ?? true,
-                        canWrite: permissions.canWrite ?? true,
-                        canDelete: permissions.canDelete ?? false,
-                        canManage: permissions.canManage ?? false,
-                        assignedBy: req.user?.userId
-                    }
-                });
+                const [created] = await db.insert(userStores).values({
+                    userId, storeId: store.id, branchId: store.branchId,
+                    canRead: permissions.canRead ?? true,
+                    canWrite: permissions.canWrite ?? true,
+                    canDelete: permissions.canDelete ?? false,
+                    canManage: permissions.canManage ?? false,
+                    assignedBy: req.user?.userId,
+                }).returning();
                 results.push(created);
             }
         }
@@ -864,17 +676,17 @@ storeRoutes.delete('/users/:userId/stores', authenticate, authorize('staff:updat
         const { userId } = req.params;
         const { storeIds } = req.body;
 
-        const where: Record<string, unknown> = { userId };
+        const delConditions: any[] = [eq(userStores.userId, userId)];
         if (Array.isArray(storeIds) && storeIds.length > 0) {
-            where.storeId = { in: storeIds };
+            delConditions.push(inArray(userStores.storeId, storeIds));
         }
 
-        const result = await prisma.userStore.deleteMany({ where });
+        const result = await db.delete(userStores).where(and(...delConditions));
         await invalidateUserStoreCache(userId);
 
         res.json({
             success: true,
-            data: { deleted: result.count }
+            data: { deleted: result.rowCount ?? 0 }
         });
     } catch (error) {
         next(error);

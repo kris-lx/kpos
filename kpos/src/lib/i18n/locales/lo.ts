@@ -95,6 +95,8 @@ export const lo = {
     'auth.loginFailed': 'ອີເມລ ຫຼື ລະຫັດຜ່ານບໍ່ຖືກຕ້ອງ',
     'auth.loginError': 'ເກີດຂໍ້ຜິດພາດໃນການເຂົ້າສູ່ລະບົບ',
     'auth.logoutSuccess': 'ອອກຈາກລະບົບສຳເລັດ',
+    'auth.noAccount': 'ຍັງບໍ່ມີບັນຊີບໍ່?',
+    'auth.registerNow': 'ລົງທະບຽນດຽວນີ້',
 
     // Register Store/Branch
     'register.storeTitle': 'ຂໍເປີດຮ້ານ/ສາຂາ',

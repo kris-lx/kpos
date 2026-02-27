@@ -134,8 +134,10 @@ export const en = {
   "auth.forgot": "Forgot password?",
   "auth.loginSuccess": "Login successful",
   "auth.loginFailed": "Invalid email or password",
-  "auth.loginError": "An error occurred during login",
-  "auth.logoutSuccess": "Logout successful",
+  "auth.loginError": "Error during login",
+  "auth.logoutSuccess": "Logged out successfully",
+  "auth.noAccount": "Don't have an account?",
+  "auth.registerNow": "Register now",
 
   // Register Store/Branch
   "register.storeTitle": "Request Store/Branch",
@@ -1476,7 +1478,6 @@ export const en = {
   "sku.product": "Product",
   "sku.allProducts": "All Products",
   "sku.allStatus": "All Status",
-  "sku.active": "Active",
   "sku.inactive": "Inactive",
   "sku.totalSku": "Total SKUs",
   "sku.activeSku": "Active",

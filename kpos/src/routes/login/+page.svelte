@@ -213,6 +213,14 @@
                         <span>{t("auth.login")}</span>
                     {/if}
                 </button>
+                
+                <!-- Register Link -->
+                <div class="text-center text-sm mt-6">
+                    <span class="text-gray-500 dark:text-gray-400">{t("auth.noAccount")}</span>
+                    <a href="/register/store" class="text-primary-600 hover:text-primary-700 dark:text-primary-400 font-medium ml-1">
+                        {t("auth.registerNow")}
+                    </a>
+                </div>
             </form>
 
             <!-- Demo Accounts -->
@@ -221,7 +229,7 @@
                 <div class="space-y-2 text-xs text-gray-600 dark:text-gray-400">
                     <div class="flex justify-between p-2 bg-gray-50 dark:bg-gray-700 rounded-lg">
                         <span>Admin:</span>
-                        <span class="font-mono text-gray-800 dark:text-gray-200">admin@kpos.la / admin123</span>
+                        <span class="font-mono text-gray-800 dark:text-gray-200">admin@kpos.la / Admin@123456</span>
                     </div>
                 </div>
             </div>

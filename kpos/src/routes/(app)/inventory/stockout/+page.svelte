@@ -9,6 +9,12 @@
 
     const t = i18n.t;
 
+    // Rule-based CRUD gating
+    const hasWriteAccess = $derived(auth.hasStoreAccess('write') || !auth.activeStoreId);
+    const canCreateStockOut = $derived(auth.canCreate('inventory') && hasWriteAccess);
+    const canUpdateStockOut = $derived(auth.canUpdate('inventory') && hasWriteAccess);
+    const canDeleteStockOut = $derived(auth.canDelete('inventory') && hasWriteAccess);
+
     let stockOuts = $state<any[]>([]);
     let products = $state<any[]>([]);
     let loading = $state(false);
@@ -34,14 +40,21 @@
         date: new Date().toISOString().split("T")[0],
     });
 
-    const reasons = [
-        { value: "damaged", label: "inventory.reasonDamaged" },
-        { value: "expired", label: "inventory.reasonExpired" },
-        { value: "lost", label: "inventory.reasonLost" },
-        { value: "returned", label: "inventory.reasonReturned" },
-        { value: "transfer", label: "inventory.reasonTransfer" },
-        { value: "other", label: "inventory.reasonOther" },
-    ];
+    let reasons = $state<{value: string; label: string; labelLao?: string}[]>([
+        { value: "damaged", label: "Damaged", labelLao: "ເສຍຫາຍ" },
+        { value: "expired", label: "Expired", labelLao: "ໝົດອາຍຸ" },
+        { value: "lost", label: "Lost/Missing", labelLao: "ສູນຫາຍ" },
+        { value: "returned", label: "Returned to Vendor", labelLao: "ສົ່ງຄືນຜູ້ສະໜອງ" },
+        { value: "transfer", label: "Transfer", labelLao: "ໂອນຍ້າຍ" },
+        { value: "other", label: "Other", labelLao: "ອື່ນໆ" },
+    ]);
+
+    async function loadEnums() {
+        try {
+            const res = await api.get("settings/enums?type=stockout_reason").json<any>();
+            if (res.data?.stockout_reason) reasons = res.data.stockout_reason;
+        } catch { /* keep defaults */ }
+    }
 
     async function loadData() {
         loading = true;
@@ -182,6 +195,7 @@
 
     $effect(() => {
         auth.activeStoreId;
+        loadEnums();
         loadData();
     });
 </script>
@@ -194,6 +208,7 @@
             </h1>
             <p class="text-sm text-gray-500 dark:text-gray-400">{t("inventory.stockOutDesc")}</p>
         </div>
+        {#if canCreateStockOut}
         <button
             onclick={openAdd}
             class="flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-white hover:bg-red-700"
@@ -201,6 +216,7 @@
             <Minus class="h-5 w-5" />
             {t("inventory.addStockOut")}
         </button>
+        {/if}
     </div>
 
     <div class="relative">
@@ -272,6 +288,7 @@
                             <td class="px-6 py-4 text-sm text-gray-500 dark:text-gray-400 max-w-xs truncate">{item.notes || "-"}</td>
                             <td class="px-6 py-4 text-center">
                                 <div class="flex items-center justify-center gap-1">
+                                    {#if canUpdateStockOut}
                                     <button
                                         onclick={() => openEdit(item)}
                                         class="p-2 text-gray-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg"
@@ -279,6 +296,8 @@
                                     >
                                         <Pencil class="w-4 h-4" />
                                     </button>
+                                    {/if}
+                                    {#if canDeleteStockOut}
                                     <button
                                         onclick={() => deleteStockOut(item.id)}
                                         class="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg"
@@ -286,6 +305,7 @@
                                     >
                                         <Trash2 class="w-4 h-4" />
                                     </button>
+                                    {/if}
                                 </div>
                             </td>
                         </tr>
@@ -408,7 +428,7 @@
                             class="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 p-2.5 text-gray-900 dark:text-white"
                         >
                             {#each reasons as r (r.value)}
-                                <option value={r.value}>{t(r.label)}</option>
+                                <option value={r.value}>{i18n.locale === 'lo' ? (r.labelLao || r.label) : r.label}</option>
                             {/each}
                         </select>
                     </div>

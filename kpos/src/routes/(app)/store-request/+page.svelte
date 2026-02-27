@@ -8,10 +8,19 @@
     import { 
         Store, Plus, Clock, CheckCircle, XCircle, Eye, 
         Building2, MapPin, Phone, Mail, FileText, Send,
-        AlertCircle, Loader2, ChevronRight
+        AlertCircle, Loader2, Tag, User, Hash
     } from "lucide-svelte";
 
     const queryClient = useQueryClient();
+
+    // Load business types from API
+    const enumsQuery = createQuery({
+        queryKey: ["enums-business-type"],
+        queryFn: async () => {
+            const res = await api.get("settings/enums?type=business_type").json<any>();
+            return res.data?.business_type || [];
+        }
+    });
 
     // Get user's requests
     const myRequestsQuery = createQuery({
@@ -43,11 +52,12 @@
     let selectedRequest = $state<any>(null);
     let requestType = $state<"store" | "branch">("store");
 
-    let formData = $state({
-        type: "store" as "store" | "branch",
+    // Store-specific form
+    let storeForm = $state({
         storeName: "",
         storeCode: "",
         businessType: "",
+        taxId: "",
         address: "",
         phone: "",
         email: "",
@@ -57,12 +67,22 @@
         ownerEmail: ""
     });
 
+    // Branch-specific form (branch of an existing store)
+    let branchForm = $state({
+        branchName: "",
+        branchCode: "",
+        address: "",
+        phone: "",
+        email: "",
+        description: ""
+    });
+
     function resetForm() {
-        formData = {
-            type: "store",
+        storeForm = {
             storeName: "",
             storeCode: "",
             businessType: "",
+            taxId: "",
             address: "",
             phone: "",
             email: "",
@@ -71,14 +91,21 @@
             ownerPhone: auth.user?.phone || "",
             ownerEmail: auth.user?.email || ""
         };
+        branchForm = {
+            branchName: "",
+            branchCode: "",
+            address: "",
+            phone: "",
+            email: "",
+            description: ""
+        };
     }
 
     function openCreateModal(type: "store" | "branch") {
         requestType = type;
-        formData.type = type;
-        formData.ownerName = auth.user?.name || "";
-        formData.ownerPhone = auth.user?.phone || "";
-        formData.ownerEmail = auth.user?.email || "";
+        storeForm.ownerName = auth.user?.name || "";
+        storeForm.ownerPhone = auth.user?.phone || "";
+        storeForm.ownerEmail = auth.user?.email || "";
         showFormModal = true;
     }
 
@@ -87,34 +114,59 @@
         showDetailModal = true;
     }
 
+    function getRequestDisplayName(request: any): string {
+        return request.storeName || request.branchName || request.data?.storeName || request.data?.branchName || '—';
+    }
+
+    function getRequestType(request: any): string {
+        if (request.type === 'new_store') return 'ຂໍເປີດຮ້ານໃໝ່';
+        if (request.type === 'new_branch') return 'ຂໍເປີດສາຂາ';
+        return request.type;
+    }
+
     function handleSubmit() {
-        if (!formData.storeName || !formData.address || !formData.phone) {
-            toast.error(t('storeRequest.validationError'));
-            return;
-        }
-        if (formData.phone.length < 8) {
-            toast.error('ເບີໂທຕ້ອງມີຢ່າງໜ້ອຍ 8 ຕົວເລກ');
-            return;
-        }
-        const isStore = formData.type === 'store';
-        const payload: Record<string, any> = {
-            type: isStore ? 'new_store' : 'new_branch',
-            reason: formData.description,
-        };
-        if (isStore) {
-            payload.storeName = formData.storeName;
-            payload.storeCode = formData.storeCode;
-            payload.storeAddress = formData.address;
-            payload.storePhone = formData.phone;
-            payload.storeEmail = formData.email;
+        if (requestType === 'store') {
+            if (!storeForm.storeName || !storeForm.address || !storeForm.phone) {
+                toast.error(t('storeRequest.validationError'));
+                return;
+            }
+            if (storeForm.phone.length < 8) {
+                toast.error('ເບີໂທຕ້ອງມີຢ່າງໜ້ອຍ 8 ຕົວເລກ');
+                return;
+            }
+            $createRequestMutation.mutate({
+                type: 'new_store',
+                storeName: storeForm.storeName,
+                storeCode: storeForm.storeCode,
+                businessType: storeForm.businessType,
+                taxId: storeForm.taxId,
+                storeAddress: storeForm.address,
+                storePhone: storeForm.phone,
+                storeEmail: storeForm.email,
+                ownerName: storeForm.ownerName,
+                ownerPhone: storeForm.ownerPhone,
+                ownerEmail: storeForm.ownerEmail,
+                reason: storeForm.description,
+            });
         } else {
-            payload.branchName = formData.storeName;
-            payload.branchCode = formData.storeCode;
-            payload.branchAddress = formData.address;
-            payload.branchPhone = formData.phone;
-            payload.branchEmail = formData.email;
+            if (!branchForm.branchName || !branchForm.address || !branchForm.phone) {
+                toast.error(t('storeRequest.validationError'));
+                return;
+            }
+            if (branchForm.phone.length < 8) {
+                toast.error('ເບີໂທຕ້ອງມີຢ່າງໜ້ອຍ 8 ຕົວເລກ');
+                return;
+            }
+            $createRequestMutation.mutate({
+                type: 'new_branch',
+                branchName: branchForm.branchName,
+                branchCode: branchForm.branchCode,
+                branchAddress: branchForm.address,
+                branchPhone: branchForm.phone,
+                branchEmail: branchForm.email,
+                reason: branchForm.description,
+            });
         }
-        $createRequestMutation.mutate(payload);
     }
 
     function getStatusColor(status: string) {
@@ -123,15 +175,6 @@
             case "approved": return "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400";
             case "rejected": return "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400";
             default: return "bg-gray-100 text-gray-800 dark:bg-gray-900/30 dark:text-gray-400";
-        }
-    }
-
-    function getStatusIcon(status: string) {
-        switch (status) {
-            case "pending": return Clock;
-            case "approved": return CheckCircle;
-            case "rejected": return XCircle;
-            default: return AlertCircle;
         }
     }
 
@@ -145,17 +188,6 @@
     }
 
     function formatDate(date: string) { return formatDateTime(date); }
-
-    const businessTypes = [
-        { value: "retail", label: "ຮ້ານຂາຍຍ່ອຍ" },
-        { value: "restaurant", label: "ຮ້ານອາຫານ" },
-        { value: "cafe", label: "ຮ້ານກາເຟ" },
-        { value: "grocery", label: "ຮ້ານຂາຍເຄື່ອງ" },
-        { value: "pharmacy", label: "ຮ້ານຂາຍຢາ" },
-        { value: "electronics", label: "ຮ້ານເຄື່ອງໄຟຟ້າ" },
-        { value: "clothing", label: "ຮ້ານເຄື່ອງນຸ່ງ" },
-        { value: "other", label: "ອື່ນໆ" }
-    ];
 </script>
 
 <svelte:head>
@@ -163,7 +195,7 @@
 </svelte:head>
 
 <div class="min-h-screen bg-gray-50 dark:bg-gray-900 p-4 md:p-6">
-    <div class="max-w-6xl mx-auto space-y-6">
+    <div class="max-w-5xl mx-auto space-y-6">
         <!-- Header -->
         <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
             <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
@@ -174,122 +206,68 @@
                         </div>
                         ຂໍເປີດຮ້ານ / ສາຂາ
                     </h1>
-                    <p class="text-gray-500 dark:text-gray-400 mt-1">
-                        ສົ່ງຄຳຂໍເປີດຮ້ານໃໝ່ ຫຼື ສາຂາເພີ່ມເຕີມ
-                    </p>
+                    <p class="text-gray-500 dark:text-gray-400 mt-1">ສົ່ງຄຳຂໍເປີດຮ້ານໃໝ່ ຫຼື ສາຂາເພີ່ມເຕີມ</p>
                 </div>
                 <div class="flex gap-3">
-                    <button
-                        onclick={() => openCreateModal("store")}
-                        class="flex items-center gap-2 px-4 py-2.5 bg-primary-600 hover:bg-primary-700 text-white rounded-xl font-medium transition-colors"
-                    >
-                        <Plus class="w-5 h-5" />
-                        ຂໍເປີດຮ້ານໃໝ່
+                    <button onclick={() => openCreateModal("store")}
+                        class="flex items-center gap-2 px-4 py-2.5 bg-primary-600 hover:bg-primary-700 text-white rounded-xl font-medium transition-colors">
+                        <Store class="w-4 h-4" />ຂໍເປີດຮ້ານໃໝ່
                     </button>
-                    <button
-                        onclick={() => openCreateModal("branch")}
-                        class="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-medium transition-colors"
-                    >
-                        <Building2 class="w-5 h-5" />
-                        ຂໍເປີດສາຂາ
+                    <button onclick={() => openCreateModal("branch")}
+                        class="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-medium transition-colors">
+                        <Building2 class="w-4 h-4" />ຂໍເປີດສາຂາ
                     </button>
                 </div>
             </div>
         </div>
 
-        <!-- Info Cards -->
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-5">
-                <div class="flex items-center gap-3">
-                    <div class="p-3 bg-yellow-100 dark:bg-yellow-900/30 rounded-xl">
-                        <Clock class="w-6 h-6 text-yellow-600 dark:text-yellow-400" />
-                    </div>
-                    <div>
-                        <p class="text-2xl font-bold text-gray-900 dark:text-white">
-                            {$myRequestsQuery.data?.filter((r: any) => r.status === "pending").length || 0}
-                        </p>
-                        <p class="text-sm text-gray-500 dark:text-gray-400">ລໍຖ້າອະນຸມັດ</p>
-                    </div>
-                </div>
+        <!-- Stats -->
+        <div class="grid grid-cols-3 gap-4">
+            <div class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-4 flex items-center gap-3">
+                <div class="p-2.5 bg-yellow-100 dark:bg-yellow-900/30 rounded-xl"><Clock class="w-5 h-5 text-yellow-600 dark:text-yellow-400" /></div>
+                <div><p class="text-xl font-bold text-gray-900 dark:text-white">{$myRequestsQuery.data?.filter((r:any)=>r.status==='pending').length||0}</p><p class="text-xs text-gray-500">ລໍຖ້າ</p></div>
             </div>
-            <div class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-5">
-                <div class="flex items-center gap-3">
-                    <div class="p-3 bg-green-100 dark:bg-green-900/30 rounded-xl">
-                        <CheckCircle class="w-6 h-6 text-green-600 dark:text-green-400" />
-                    </div>
-                    <div>
-                        <p class="text-2xl font-bold text-gray-900 dark:text-white">
-                            {$myRequestsQuery.data?.filter((r: any) => r.status === "approved").length || 0}
-                        </p>
-                        <p class="text-sm text-gray-500 dark:text-gray-400">ອະນຸມັດແລ້ວ</p>
-                    </div>
-                </div>
+            <div class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-4 flex items-center gap-3">
+                <div class="p-2.5 bg-green-100 dark:bg-green-900/30 rounded-xl"><CheckCircle class="w-5 h-5 text-green-600 dark:text-green-400" /></div>
+                <div><p class="text-xl font-bold text-gray-900 dark:text-white">{$myRequestsQuery.data?.filter((r:any)=>r.status==='approved').length||0}</p><p class="text-xs text-gray-500">ອະນຸມັດ</p></div>
             </div>
-            <div class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-5">
-                <div class="flex items-center gap-3">
-                    <div class="p-3 bg-red-100 dark:bg-red-900/30 rounded-xl">
-                        <XCircle class="w-6 h-6 text-red-600 dark:text-red-400" />
-                    </div>
-                    <div>
-                        <p class="text-2xl font-bold text-gray-900 dark:text-white">
-                            {$myRequestsQuery.data?.filter((r: any) => r.status === "rejected").length || 0}
-                        </p>
-                        <p class="text-sm text-gray-500 dark:text-gray-400">ຖືກປະຕິເສດ</p>
-                    </div>
-                </div>
+            <div class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-4 flex items-center gap-3">
+                <div class="p-2.5 bg-red-100 dark:bg-red-900/30 rounded-xl"><XCircle class="w-5 h-5 text-red-600 dark:text-red-400" /></div>
+                <div><p class="text-xl font-bold text-gray-900 dark:text-white">{$myRequestsQuery.data?.filter((r:any)=>r.status==='rejected').length||0}</p><p class="text-xs text-gray-500">ປະຕິເສດ</p></div>
             </div>
         </div>
 
         <!-- My Requests List -->
         <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700">
-            <div class="p-6 border-b border-gray-200 dark:border-gray-700">
+            <div class="p-5 border-b border-gray-200 dark:border-gray-700">
                 <h2 class="text-lg font-semibold text-gray-900 dark:text-white">ຄຳຂໍຂອງຂ້ອຍ</h2>
             </div>
-
             {#if $myRequestsQuery.isLoading}
-                <div class="p-12 text-center">
-                    <Loader2 class="w-8 h-8 animate-spin text-primary-600 mx-auto" />
-                    <p class="text-gray-500 dark:text-gray-400 mt-2">ກຳລັງໂຫຼດ...</p>
-                </div>
+                <div class="p-12 text-center"><Loader2 class="w-8 h-8 animate-spin text-primary-600 mx-auto" /></div>
             {:else if !$myRequestsQuery.data?.length}
                 <div class="p-12 text-center">
-                    <Store class="w-16 h-16 text-gray-300 dark:text-gray-600 mx-auto" />
-                    <p class="text-gray-500 dark:text-gray-400 mt-4">ທ່ານຍັງບໍ່ມີຄຳຂໍ</p>
-                    <p class="text-sm text-gray-400 dark:text-gray-500 mt-1">ກົດປຸ່ມ "ຂໍເປີດຮ້ານໃໝ່" ເພື່ອເລີ່ມຕົ້ນ</p>
+                    <Store class="w-14 h-14 text-gray-300 dark:text-gray-600 mx-auto mb-3" />
+                    <p class="text-gray-500 dark:text-gray-400">ທ່ານຍັງບໍ່ມີຄຳຂໍ</p>
                 </div>
             {:else}
-                <div class="divide-y divide-gray-200 dark:divide-gray-700">
+                <div class="divide-y divide-gray-100 dark:divide-gray-700">
                     {#each $myRequestsQuery.data as request (request.id)}
-                        <div class="p-4 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
-                            <div class="flex items-center justify-between">
-                                <div class="flex items-center gap-4">
-                                    <div class="p-3 bg-gray-100 dark:bg-gray-700 rounded-xl">
-                                        {#if request.type === "store"}
-                                            <Store class="w-6 h-6 text-primary-600 dark:text-primary-400" />
-                                        {:else}
-                                            <Building2 class="w-6 h-6 text-emerald-600 dark:text-emerald-400" />
-                                        {/if}
-                                    </div>
-                                    <div>
-                                        <h3 class="font-medium text-gray-900 dark:text-white">
-                                            {request.storeName}
-                                        </h3>
-                                        <p class="text-sm text-gray-500 dark:text-gray-400">
-                                            {request.type === "store" ? "ຂໍເປີດຮ້ານໃໝ່" : "ຂໍເປີດສາຂາ"} • {formatDate(request.createdAt)}
-                                        </p>
-                                    </div>
+                        <div class="p-4 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors flex items-center justify-between gap-4">
+                            <div class="flex items-center gap-3 min-w-0">
+                                <div class="p-2.5 rounded-xl {request.type==='new_store'?'bg-primary-100 dark:bg-primary-900/30':'bg-emerald-100 dark:bg-emerald-900/30'} shrink-0">
+                                    {#if request.type === 'new_store'}<Store class="w-5 h-5 text-primary-600 dark:text-primary-400" />
+                                    {:else}<Building2 class="w-5 h-5 text-emerald-600 dark:text-emerald-400" />{/if}
                                 </div>
-                                <div class="flex items-center gap-3">
-                                    <span class="px-3 py-1 rounded-full text-sm font-medium {getStatusColor(request.status)}">
-                                        {getStatusText(request.status)}
-                                    </span>
-                                    <button
-                                        onclick={() => viewDetail(request)}
-                                        class="p-2 hover:bg-gray-100 dark:hover:bg-gray-600 rounded-lg transition-colors"
-                                    >
-                                        <Eye class="w-5 h-5 text-gray-500" />
-                                    </button>
+                                <div class="min-w-0">
+                                    <p class="font-medium text-gray-900 dark:text-white truncate">{getRequestDisplayName(request)}</p>
+                                    <p class="text-sm text-gray-500">{getRequestType(request)} • {formatDate(request.createdAt)}</p>
                                 </div>
+                            </div>
+                            <div class="flex items-center gap-2 shrink-0">
+                                <span class="px-2.5 py-1 rounded-full text-xs font-medium {getStatusColor(request.status)}">{getStatusText(request.status)}</span>
+                                <button onclick={() => viewDetail(request)} class="p-1.5 hover:bg-gray-100 dark:hover:bg-gray-600 rounded-lg">
+                                    <Eye class="w-4 h-4 text-gray-500" />
+                                </button>
                             </div>
                         </div>
                     {/each}
@@ -299,252 +277,218 @@
     </div>
 </div>
 
-<!-- Create Request Modal -->
-{#if showFormModal}
-    <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-        <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-            <div class="p-6 border-b border-gray-200 dark:border-gray-700">
-                <h2 class="text-xl font-semibold text-gray-900 dark:text-white flex items-center gap-3">
-                    {#if formData.type === "store"}
-                        <Store class="w-6 h-6 text-primary-600" />
-                        ຂໍເປີດຮ້ານໃໝ່
-                    {:else}
-                        <Building2 class="w-6 h-6 text-emerald-600" />
-                        ຂໍເປີດສາຂາ
-                    {/if}
-                </h2>
-            </div>
-
-            <div class="p-6 space-y-6">
-                <!-- Store Info -->
-                <div class="space-y-4">
-                    <h3 class="font-medium text-gray-900 dark:text-white flex items-center gap-2">
-                        <Store class="w-5 h-5" />
-                        ຂໍ້ມູນຮ້ານ
-                    </h3>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                ຊື່ຮ້ານ <span class="text-red-500">*</span>
-                            </label>
-                            <input
-                                type="text"
-                                bind:value={formData.storeName}
-                                placeholder="ປ້ອນຊື່ຮ້ານ"
-                                class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                            />
-                        </div>
-                        <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                ລະຫັດຮ້ານ
-                            </label>
-                            <input
-                                type="text"
-                                bind:value={formData.storeCode}
-                                placeholder="ເຊັ່ນ: SHOP001"
-                                class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                            />
-                        </div>
+<!-- ══════════════════════════════════════════════════════════
+     NEW STORE Modal
+══════════════════════════════════════════════════════════ -->
+{#if showFormModal && requestType === 'store'}
+<div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+    <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-xl w-full max-w-2xl max-h-[92vh] overflow-y-auto">
+        <div class="sticky top-0 bg-white dark:bg-gray-800 p-5 border-b border-gray-200 dark:border-gray-700 flex items-center gap-3 z-10">
+            <div class="p-2 bg-primary-100 dark:bg-primary-900/30 rounded-xl"><Store class="w-5 h-5 text-primary-600" /></div>
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">ຂໍເປີດຮ້ານໃໝ່</h2>
+        </div>
+        <div class="p-5 space-y-5">
+            <!-- Section: Store Info -->
+            <div class="space-y-3">
+                <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 flex items-center gap-2 uppercase tracking-wide">
+                    <Store class="w-4 h-4" />ຂໍ້ມູນຮ້ານ
+                </h3>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                        <label for="store-name" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ຊື່ຮ້ານ <span class="text-red-500">*</span></label>
+                        <input id="store-name" type="text" bind:value={storeForm.storeName} placeholder="ຊື່ຮ້ານ" class="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent text-sm" />
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                            ປະເພດທຸລະກິດ
-                        </label>
-                        <select
-                            bind:value={formData.businessType}
-                            class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                        >
+                        <label for="store-code" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ລະຫັດຮ້ານ</label>
+                        <input id="store-code" type="text" bind:value={storeForm.storeCode} placeholder="SHOP001" class="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent text-sm" />
+                    </div>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                        <label for="store-business-type" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ປະເພດທຸລະກິດ</label>
+                        <select id="store-business-type" bind:value={storeForm.businessType} class="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 text-sm">
                             <option value="">ເລືອກປະເພດ</option>
-                            {#each businessTypes as type (type.value)}
-                                <option value={type.value}>{type.label}</option>
+                            {#each ($enumsQuery.data || []) as bt (bt.value)}
+                                <option value={bt.value}>{bt.labelLao || bt.label}</option>
                             {/each}
                         </select>
                     </div>
-                </div>
-
-                <!-- Contact Info -->
-                <div class="space-y-4">
-                    <h3 class="font-medium text-gray-900 dark:text-white flex items-center gap-2">
-                        <MapPin class="w-5 h-5" />
-                        ຂໍ້ມູນຕິດຕໍ່
-                    </h3>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                            ທີ່ຢູ່ <span class="text-red-500">*</span>
-                        </label>
-                        <textarea
-                            bind:value={formData.address}
-                            rows="2"
-                            placeholder="ປ້ອນທີ່ຢູ່ຮ້ານ"
-                            class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                        ></textarea>
+                        <label for="store-tax-id" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ເລກທີພາສີ (Tax ID)</label>
+                        <input id="store-tax-id" type="text" bind:value={storeForm.taxId} placeholder="0000000000000" class="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent text-sm" />
                     </div>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                ເບີໂທ <span class="text-red-500">*</span>
-                            </label>
-                            <input
-                                type="tel"
-                                inputmode="numeric"
-                                bind:value={formData.phone}
-                                oninput={(e) => { formData.phone = enforcePhoneInput(e.currentTarget.value); }}
-                                placeholder="20xxxxxxxx"
-                                maxlength="10"
-                                class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                            />
-                        </div>
-                        <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                ອີເມວ
-                            </label>
-                            <input
-                                type="email"
-                                bind:value={formData.email}
-                                placeholder="shop@example.com"
-                                class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                            />
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Owner Info -->
-                <div class="space-y-4">
-                    <h3 class="font-medium text-gray-900 dark:text-white flex items-center gap-2">
-                        <FileText class="w-5 h-5" />
-                        ຂໍ້ມູນເຈົ້າຂອງ
-                    </h3>
-                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                ຊື່ເຈົ້າຂອງ
-                            </label>
-                            <input
-                                type="text"
-                                bind:value={formData.ownerName}
-                                class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                            />
-                        </div>
-                        <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                ເບີໂທເຈົ້າຂອງ
-                            </label>
-                            <input
-                                type="tel"
-                                bind:value={formData.ownerPhone}
-                                class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                            />
-                        </div>
-                        <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                ອີເມວເຈົ້າຂອງ
-                            </label>
-                            <input
-                                type="email"
-                                bind:value={formData.ownerEmail}
-                                class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                            />
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Description -->
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                        ລາຍລະອຽດເພີ່ມເຕີມ
-                    </label>
-                    <textarea
-                        bind:value={formData.description}
-                        rows="3"
-                        placeholder="ອະທິບາຍກ່ຽວກັບທຸລະກິດຂອງທ່ານ..."
-                        class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                    ></textarea>
                 </div>
             </div>
 
-            <div class="p-6 border-t border-gray-200 dark:border-gray-700 flex justify-end gap-3">
-                <button
-                    onclick={() => showFormModal = false}
-                    class="px-4 py-2.5 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
-                >
-                    ຍົກເລີກ
-                </button>
-                <button
-                    onclick={handleSubmit}
-                    disabled={$createRequestMutation.isPending}
-                    class="flex items-center gap-2 px-6 py-2.5 bg-primary-600 hover:bg-primary-700 text-white rounded-xl font-medium transition-colors disabled:opacity-50"
-                >
-                    {#if $createRequestMutation.isPending}
-                        <Loader2 class="w-5 h-5 animate-spin" />
-                        ກຳລັງສົ່ງ...
-                    {:else}
-                        <Send class="w-5 h-5" />
-                        ສົ່ງຄຳຂໍ
-                    {/if}
-                </button>
+            <!-- Section: Contact -->
+            <div class="space-y-3">
+                <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 flex items-center gap-2 uppercase tracking-wide">
+                    <MapPin class="w-4 h-4" />ຂໍ້ມູນຕິດຕໍ່
+                </h3>
+                <div>
+                    <label for="store-address" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ທີ່ຢູ່ <span class="text-red-500">*</span></label>
+                    <textarea id="store-address" bind:value={storeForm.address} rows="2" placeholder="ທີ່ຢູ່ຮ້ານ" class="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent text-sm resize-none"></textarea>
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label for="store-phone" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ເບີໂທ <span class="text-red-500">*</span></label>
+                        <input id="store-phone" type="tel" inputmode="numeric" bind:value={storeForm.phone}
+                            oninput={(e)=>{storeForm.phone=enforcePhoneInput(e.currentTarget.value)}}
+                            placeholder="20xxxxxxxx" maxlength="10"
+                            class="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 text-sm" />
+                    </div>
+                    <div>
+                        <label for="store-email" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ອີເມວ</label>
+                        <input id="store-email" type="email" bind:value={storeForm.email} placeholder="shop@email.com" class="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 text-sm" />
+                    </div>
+                </div>
+            </div>
+
+            <!-- Section: Owner -->
+            <div class="space-y-3">
+                <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 flex items-center gap-2 uppercase tracking-wide">
+                    <User class="w-4 h-4" />ຂໍ້ມູນເຈົ້າຂອງ
+                </h3>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div>
+                        <label for="store-owner-name" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ຊື່ເຈົ້າຂອງ</label>
+                        <input id="store-owner-name" type="text" bind:value={storeForm.ownerName} class="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 text-sm" />
+                    </div>
+                    <div>
+                        <label for="store-owner-phone" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ເບີໂທ</label>
+                        <input id="store-owner-phone" type="tel" bind:value={storeForm.ownerPhone} class="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 text-sm" />
+                    </div>
+                    <div>
+                        <label for="store-owner-email" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ອີເມວ</label>
+                        <input id="store-owner-email" type="email" bind:value={storeForm.ownerEmail} class="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 text-sm" />
+                    </div>
+                </div>
+            </div>
+
+            <!-- Description -->
+            <div>
+                <label for="store-description" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ລາຍລະອຽດເພີ່ມເຕີມ</label>
+                <textarea id="store-description" bind:value={storeForm.description} rows="2" placeholder="ອະທິບາຍທຸລະກິດ..." class="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 text-sm resize-none"></textarea>
             </div>
         </div>
+        <div class="p-5 border-t border-gray-200 dark:border-gray-700 flex justify-end gap-3">
+            <button onclick={() => showFormModal = false} class="px-4 py-2.5 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700 text-sm">ຍົກເລີກ</button>
+            <button onclick={handleSubmit} disabled={$createRequestMutation.isPending}
+                class="flex items-center gap-2 px-5 py-2.5 bg-primary-600 hover:bg-primary-700 text-white rounded-xl font-medium text-sm disabled:opacity-50">
+                {#if $createRequestMutation.isPending}<Loader2 class="w-4 h-4 animate-spin" />ກຳລັງສົ່ງ...
+                {:else}<Send class="w-4 h-4" />ສົ່ງຄຳຂໍ{/if}
+            </button>
+        </div>
     </div>
+</div>
+{/if}
+
+<!-- ══════════════════════════════════════════════════════════
+     NEW BRANCH Modal
+══════════════════════════════════════════════════════════ -->
+{#if showFormModal && requestType === 'branch'}
+<div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+    <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-xl w-full max-w-lg max-h-[92vh] overflow-y-auto">
+        <div class="sticky top-0 bg-white dark:bg-gray-800 p-5 border-b border-gray-200 dark:border-gray-700 flex items-center gap-3 z-10">
+            <div class="p-2 bg-emerald-100 dark:bg-emerald-900/30 rounded-xl"><Building2 class="w-5 h-5 text-emerald-600" /></div>
+            <div>
+                <h2 class="text-lg font-semibold text-gray-900 dark:text-white">ຂໍເປີດສາຂາ</h2>
+                <p class="text-xs text-gray-500">ສາຂາຂອງຮ້ານທີ່ທ່ານເປັນເຈົ້າຂອງ</p>
+            </div>
+        </div>
+        <div class="p-5 space-y-4">
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label for="branch-name" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ຊື່ສາຂາ <span class="text-red-500">*</span></label>
+                    <input id="branch-name" type="text" bind:value={branchForm.branchName} placeholder="ສາຂາຕົ້ນຕານ" class="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-emerald-500 text-sm" />
+                </div>
+                <div>
+                    <label for="branch-code" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ລະຫັດສາຂາ</label>
+                    <input id="branch-code" type="text" bind:value={branchForm.branchCode} placeholder="BR001" class="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-emerald-500 text-sm" />
+                </div>
+            </div>
+            <div>
+                <label for="branch-address" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ທີ່ຢູ່ <span class="text-red-500">*</span></label>
+                <textarea id="branch-address" bind:value={branchForm.address} rows="2" placeholder="ທີ່ຢູ່ສາຂາ" class="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-emerald-500 text-sm resize-none"></textarea>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label for="branch-phone" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ເບີໂທ <span class="text-red-500">*</span></label>
+                    <input id="branch-phone" type="tel" inputmode="numeric" bind:value={branchForm.phone}
+                        oninput={(e)=>{branchForm.phone=enforcePhoneInput(e.currentTarget.value)}}
+                        placeholder="20xxxxxxxx" maxlength="10"
+                        class="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-emerald-500 text-sm" />
+                </div>
+                <div>
+                    <label for="branch-email" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ອີເມວ</label>
+                    <input id="branch-email" type="email" bind:value={branchForm.email} placeholder="branch@email.com" class="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-emerald-500 text-sm" />
+                </div>
+            </div>
+            <div>
+                <label for="branch-description" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ລາຍລະອຽດ</label>
+                <textarea id="branch-description" bind:value={branchForm.description} rows="2" placeholder="ເຫດຜົນທີ່ຕ້ອງການເປີດສາຂາ..." class="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-emerald-500 text-sm resize-none"></textarea>
+            </div>
+        </div>
+        <div class="p-5 border-t border-gray-200 dark:border-gray-700 flex justify-end gap-3">
+            <button onclick={() => showFormModal = false} class="px-4 py-2.5 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700 text-sm">ຍົກເລີກ</button>
+            <button onclick={handleSubmit} disabled={$createRequestMutation.isPending}
+                class="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-medium text-sm disabled:opacity-50">
+                {#if $createRequestMutation.isPending}<Loader2 class="w-4 h-4 animate-spin" />ກຳລັງສົ່ງ...
+                {:else}<Send class="w-4 h-4" />ສົ່ງຄຳຂໍ{/if}
+            </button>
+        </div>
+    </div>
+</div>
 {/if}
 
 <!-- Detail Modal -->
 {#if showDetailModal && selectedRequest}
-    <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-        <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-xl w-full max-w-lg">
-            <div class="p-6 border-b border-gray-200 dark:border-gray-700">
-                <h2 class="text-xl font-semibold text-gray-900 dark:text-white">
-                    ລາຍລະອຽດຄຳຂໍ
-                </h2>
+<div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+    <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-xl w-full max-w-md">
+        <div class="p-5 border-b border-gray-200 dark:border-gray-700 flex items-center gap-3">
+            {#if selectedRequest.type === 'new_store'}<Store class="w-5 h-5 text-primary-600" />
+            {:else}<Building2 class="w-5 h-5 text-emerald-600" />{/if}
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">ລາຍລະອຽດຄຳຂໍ</h2>
+        </div>
+        <div class="p-5 space-y-3">
+            <div class="flex justify-between items-center">
+                <span class="text-sm text-gray-500">ສະຖານະ</span>
+                <span class="px-2.5 py-1 rounded-full text-xs font-medium {getStatusColor(selectedRequest.status)}">{getStatusText(selectedRequest.status)}</span>
             </div>
-
-            <div class="p-6 space-y-4">
-                <div class="flex items-center justify-between">
-                    <span class="text-gray-500 dark:text-gray-400">ສະຖານະ</span>
-                    <span class="px-3 py-1 rounded-full text-sm font-medium {getStatusColor(selectedRequest.status)}">
-                        {getStatusText(selectedRequest.status)}
-                    </span>
-                </div>
-                <div class="flex items-center justify-between">
-                    <span class="text-gray-500 dark:text-gray-400">ປະເພດ</span>
-                    <span class="text-gray-900 dark:text-white">
-                        {selectedRequest.type === "store" ? "ເປີດຮ້ານໃໝ່" : "ເປີດສາຂາ"}
-                    </span>
-                </div>
-                <div class="flex items-center justify-between">
-                    <span class="text-gray-500 dark:text-gray-400">ຊື່ຮ້ານ</span>
-                    <span class="text-gray-900 dark:text-white font-medium">{selectedRequest.storeName}</span>
-                </div>
-                <div class="flex items-center justify-between">
-                    <span class="text-gray-500 dark:text-gray-400">ທີ່ຢູ່</span>
-                    <span class="text-gray-900 dark:text-white text-right max-w-[200px]">{selectedRequest.address}</span>
-                </div>
-                <div class="flex items-center justify-between">
-                    <span class="text-gray-500 dark:text-gray-400">ເບີໂທ</span>
-                    <span class="text-gray-900 dark:text-white">{selectedRequest.phone}</span>
-                </div>
-                <div class="flex items-center justify-between">
-                    <span class="text-gray-500 dark:text-gray-400">ວັນທີສົ່ງ</span>
-                    <span class="text-gray-900 dark:text-white">{formatDate(selectedRequest.createdAt)}</span>
-                </div>
-
-                {#if selectedRequest.reviewNote}
-                    <div class="pt-4 border-t border-gray-200 dark:border-gray-700">
-                        <p class="text-sm text-gray-500 dark:text-gray-400 mb-2">ບັນທຶກຈາກ Admin:</p>
-                        <p class="text-gray-900 dark:text-white bg-gray-50 dark:bg-gray-700 p-3 rounded-lg">
-                            {selectedRequest.reviewNote}
-                        </p>
-                    </div>
-                {/if}
+            <div class="flex justify-between items-center">
+                <span class="text-sm text-gray-500">ປະເພດ</span>
+                <span class="text-sm font-medium text-gray-900 dark:text-white">{getRequestType(selectedRequest)}</span>
             </div>
-
-            <div class="p-6 border-t border-gray-200 dark:border-gray-700">
-                <button
-                    onclick={() => showDetailModal = false}
-                    class="w-full px-4 py-2.5 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-xl hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
-                >
-                    ປິດ
-                </button>
+            <div class="flex justify-between items-center">
+                <span class="text-sm text-gray-500">{selectedRequest.type === 'new_store' ? 'ຊື່ຮ້ານ' : 'ຊື່ສາຂາ'}</span>
+                <span class="text-sm font-medium text-gray-900 dark:text-white">{getRequestDisplayName(selectedRequest)}</span>
             </div>
+            {#if selectedRequest.storeAddress || selectedRequest.branchAddress}
+            <div class="flex justify-between items-start gap-4">
+                <span class="text-sm text-gray-500 shrink-0">ທີ່ຢູ່</span>
+                <span class="text-sm text-gray-900 dark:text-white text-right">{selectedRequest.storeAddress || selectedRequest.branchAddress || '—'}</span>
+            </div>
+            {/if}
+            {#if selectedRequest.businessType}
+            <div class="flex justify-between items-center">
+                <span class="text-sm text-gray-500">ປະເພດທຸລະກິດ</span>
+                <span class="text-sm text-gray-900 dark:text-white">{selectedRequest.businessType}</span>
+            </div>
+            {/if}
+            <div class="flex justify-between items-center">
+                <span class="text-sm text-gray-500">ວັນທີ</span>
+                <span class="text-sm text-gray-900 dark:text-white">{formatDate(selectedRequest.createdAt)}</span>
+            </div>
+            {#if selectedRequest.reviewNote}
+            <div class="pt-3 border-t border-gray-200 dark:border-gray-700">
+                <p class="text-xs text-gray-500 mb-1.5">ບັນທຶກຈາກ Admin:</p>
+                <p class="text-sm text-gray-900 dark:text-white bg-gray-50 dark:bg-gray-700 p-3 rounded-lg">{selectedRequest.reviewNote}</p>
+            </div>
+            {/if}
+        </div>
+        <div class="p-5 border-t border-gray-200 dark:border-gray-700">
+            <button onclick={() => showDetailModal = false} class="w-full px-4 py-2.5 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-xl hover:bg-gray-200 dark:hover:bg-gray-600 text-sm">ປິດ</button>
         </div>
     </div>
+</div>
 {/if}

@@ -4,10 +4,12 @@
 
 import jwt from 'jsonwebtoken';
 import argon2 from 'argon2';
-import { prisma } from '@/config/database.config';
+import { db } from '@/config/database.config';
 import { jwtConfig } from '@/config/app.config';
 import { cache } from '@/config/redis.config';
-import { DatabaseConnectionError, isPrismaConnectionError } from '@/shared/domain/errors';
+import { DatabaseConnectionError } from '@/shared/domain/errors';
+import { users, storeRequests, roles, branches } from '@/db/schema/tables';
+import { eq, and } from 'drizzle-orm';
 import type { RegisterInput } from '../../application/dtos/auth.dto';
 
 export { DatabaseConnectionError } from '@/shared/domain/errors';
@@ -24,6 +26,7 @@ export interface LoginResponse extends TokenPair {
         name: string;
         role: string;
         branchId: string;
+        tenantId: string;
         isSuperAdmin: boolean;
         permissions: string[];
     };
@@ -42,16 +45,13 @@ export class AuthService {
 
         let user;
         try {
-            user = await prisma.user.findUnique({
-                where: { email: email.toLowerCase() },
-                include: { roleRelation: true },
+            user = await db.query.users.findFirst({
+                where: eq(users.email, email.toLowerCase()),
+                with: { roleRelation: true },
             });
         } catch (error) {
-            if (isPrismaConnectionError(error)) {
-                console.error('[Auth] Database connection error during login');
-                throw new DatabaseConnectionError('Database is not available. Please ensure MongoDB is running.');
-            }
-            throw error;
+            console.error('[Auth] Database connection error during login');
+            throw new DatabaseConnectionError('Database is not available. Please ensure PostgreSQL is running.');
         }
 
         if (!user) {
@@ -62,8 +62,24 @@ export class AuthService {
         console.log(`[Auth] User found: ${user.email}, isActive: ${user.isActive}`);
 
         if (!user.isActive) {
-            console.log(`[Auth] Account disabled: ${user.email}`);
-            throw new Error('Account is disabled');
+            console.log(`[Auth] Account inactive: ${user.email}, role: ${user.role}`);
+            // Store owners pending approval get a specific message
+            if (user.role === 'store_owner') {
+                const pendingRequest = await db.query.storeRequests.findFirst({
+                    where: and(eq(storeRequests.requesterId, user.id), eq(storeRequests.status, 'pending')),
+                });
+                if (pendingRequest) {
+                    throw Object.assign(new Error('Your store application is pending approval. You will be notified when approved.'), { code: 'PENDING_APPROVAL' });
+                }
+                // Rejected
+                const rejectedRequest = await db.query.storeRequests.findFirst({
+                    where: and(eq(storeRequests.requesterId, user.id), eq(storeRequests.status, 'rejected')),
+                });
+                if (rejectedRequest) {
+                    throw Object.assign(new Error('Your store application was rejected. Please contact support.'), { code: 'APPLICATION_REJECTED' });
+                }
+            }
+            throw Object.assign(new Error('Account is disabled. Please contact support.'), { code: 'ACCOUNT_DISABLED' });
         }
 
         const isValidPassword = await argon2.verify(user.password, password);
@@ -76,15 +92,14 @@ export class AuthService {
 
         // Update last login (non-critical, don't fail login if this fails)
         try {
-            await prisma.user.update({
-                where: { id: user.id },
-                data: { lastLoginAt: new Date() },
-            });
+            await db.update(users)
+                .set({ lastLoginAt: new Date() })
+                .where(eq(users.id, user.id));
         } catch (error) {
             console.warn('[Auth] Failed to update lastLoginAt:', error instanceof Error ? error.message : error);
         }
 
-        const tokens = this.generateTokens(user.id, user.email, user.role, user.branchId);
+        const tokens = this.generateTokens(user.id, user.email, user.role, user.branchId!, user.tenantId || '');
 
         // Store refresh token in Redis
         await this.storeRefreshToken(user.id, tokens.refreshToken);
@@ -101,7 +116,8 @@ export class AuthService {
                 email: user.email,
                 name: user.name,
                 role: user.role,
-                branchId: user.branchId,
+                branchId: user.branchId!,
+                tenantId: user.tenantId || '',
                 isSuperAdmin: user.isSuperAdmin || false,
                 permissions: combinedPermissions,
             },
@@ -109,8 +125,8 @@ export class AuthService {
     }
 
     async register(input: RegisterInput): Promise<RegisterResponse> {
-        const existingUser = await prisma.user.findUnique({
-            where: { email: input.email.toLowerCase() },
+        const existingUser = await db.query.users.findFirst({
+            where: eq(users.email, input.email.toLowerCase()),
         });
 
         if (existingUser) {
@@ -121,30 +137,28 @@ export class AuthService {
 
         // Look up the Role record to link roleId
         const roleName = input.role || 'store_owner';
-        const roleRecord = await prisma.role.findUnique({ where: { name: roleName } });
+        const roleRecord = await db.query.roles.findFirst({ where: eq(roles.name, roleName) });
 
         // Resolve branchId: use provided or fallback to default main branch
         let branchId = input.branchId;
         if (!branchId) {
-            const mainBranch = await prisma.branch.findFirst({ where: { isMain: true } });
+            const mainBranch = await db.query.branches.findFirst({ where: eq(branches.isMain, true) });
             if (!mainBranch) {
                 throw new Error('No default branch found. Please contact admin.');
             }
             branchId = mainBranch.id;
         }
 
-        const user = await prisma.user.create({
-            data: {
-                email: input.email.toLowerCase(),
-                password: hashedPassword,
-                name: input.name,
-                phone: input.phone || null,
-                role: roleName,
-                roleId: roleRecord?.id || null,
-                branchId,
-                isActive: true,
-            },
-        });
+        const [user] = await db.insert(users).values({
+            email: input.email.toLowerCase(),
+            password: hashedPassword,
+            name: input.name,
+            phone: input.phone || null,
+            role: roleName,
+            roleId: roleRecord?.id || null,
+            branchId,
+            isActive: true,
+        }).returning();
 
         return {
             id: user.id,
@@ -161,6 +175,7 @@ export class AuthService {
                 email: string;
                 role: string;
                 branchId: string;
+                tenantId: string;
             };
 
             // Verify token exists in cache (Redis or in-memory fallback)
@@ -173,7 +188,8 @@ export class AuthService {
                 decoded.userId,
                 decoded.email,
                 decoded.role,
-                decoded.branchId
+                decoded.branchId,
+                decoded.tenantId || ''
             );
 
             // Update refresh token in Redis
@@ -193,9 +209,10 @@ export class AuthService {
         userId: string,
         email: string,
         role: string,
-        branchId: string
+        branchId: string,
+        tenantId: string
     ): TokenPair {
-        const payload = { userId, email, role, branchId };
+        const payload = { userId, email, role, branchId, tenantId };
 
         const accessToken = jwt.sign(payload, jwtConfig.secret, {
             expiresIn: jwtConfig.expiresIn as jwt.SignOptions['expiresIn'],

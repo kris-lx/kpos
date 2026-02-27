@@ -2,7 +2,9 @@
 // Restaurant Module - Reservation Service
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { prisma } from '@/config/database.config';
+import { db } from '@/config/database.config';
+import { reservations, tables } from '@/db/schema/tables';
+import { eq, and, gte, lte, inArray, count } from 'drizzle-orm';
 import { Reservation, ReservationStatus, TableStatus } from '../../domain/entities';
 
 export interface CreateReservationDTO {
@@ -47,119 +49,72 @@ export class ReservationService {
         const limit = filters.limit || 50;
         const skip = (page - 1) * limit;
 
-        const where: Record<string, unknown> = {};
-        
-        if (filters.branchId) where.branchId = filters.branchId;
-        if (filters.tableId) where.tableId = filters.tableId;
-        if (filters.status) where.status = filters.status;
-        
+        const conds: any[] = [];
+        if (filters.branchId) conds.push(eq(reservations.branchId, filters.branchId));
+        if (filters.tableId) conds.push(eq(reservations.tableId, filters.tableId));
+        if (filters.status) conds.push(eq(reservations.status, filters.status));
         if (filters.date) {
-            const dateStart = new Date(filters.date);
-            dateStart.setHours(0, 0, 0, 0);
-            const dateEnd = new Date(filters.date);
-            dateEnd.setHours(23, 59, 59, 999);
-            where.date = { gte: dateStart, lte: dateEnd };
+            const dateStart = new Date(filters.date); dateStart.setHours(0, 0, 0, 0);
+            const dateEnd = new Date(filters.date); dateEnd.setHours(23, 59, 59, 999);
+            conds.push(gte(reservations.date, dateStart), lte(reservations.date, dateEnd));
         }
+        const where = conds.length > 0 ? and(...conds) : undefined;
 
-        const [reservations, total] = await Promise.all([
-            prisma.reservation.findMany({
-                where,
-                skip,
-                take: limit,
-                orderBy: [{ date: 'asc' }, { time: 'asc' }],
-            }),
-            prisma.reservation.count({ where }),
+        const [rows, [{ value: total }]] = await Promise.all([
+            db.query.reservations.findMany({ where, offset: skip, limit, orderBy: (r, { asc }) => [asc(r.date), asc(r.time)] }),
+            db.select({ value: count() }).from(reservations).where(where),
         ]);
 
         return {
-            data: reservations.map(r => new Reservation(r as any)),
+            data: rows.map(r => new Reservation(r as any)),
             total,
         };
     }
 
     async findById(id: string): Promise<Reservation | null> {
-        const reservation = await prisma.reservation.findUnique({
-            where: { id },
-        });
-
+        const reservation = await db.query.reservations.findFirst({ where: eq(reservations.id, id) });
         if (!reservation) return null;
         return new Reservation(reservation as any);
     }
 
     async create(data: CreateReservationDTO): Promise<Reservation> {
-        const reservation = await prisma.reservation.create({
-            data: {
-                branchId: data.branchId,
-                tableId: data.tableId,
-                memberId: data.memberId,
-                customerName: data.customerName,
-                phone: data.phone,
-                email: data.email,
-                guestCount: data.guestCount,
-                date: new Date(data.date),
-                time: data.time,
-                duration: data.duration || 120,
-                note: data.note,
-                status: ReservationStatus.PENDING,
-            },
-        });
+        const [reservation] = await db.insert(reservations).values({
+            branchId: data.branchId, tableId: data.tableId, memberId: data.memberId,
+            customerName: data.customerName, phone: data.phone, email: data.email,
+            guestCount: data.guestCount, date: new Date(data.date), time: data.time,
+            duration: data.duration || 120, note: data.note, status: ReservationStatus.PENDING,
+        }).returning();
 
         return new Reservation(reservation as any);
     }
 
     async update(id: string, data: UpdateReservationDTO): Promise<Reservation> {
         const updateData: Record<string, unknown> = { ...data };
-        
-        if (data.date) {
-            updateData.date = new Date(data.date);
-        }
+        if (data.date) updateData.date = new Date(data.date);
 
-        const reservation = await prisma.reservation.update({
-            where: { id },
-            data: updateData,
-        });
+        const [reservation] = await db.update(reservations).set(updateData).where(eq(reservations.id, id)).returning();
 
-        // Handle table reservation status
         if (data.status === ReservationStatus.CONFIRMED && reservation.tableId) {
-            await prisma.table.update({
-                where: { id: reservation.tableId },
-                data: { status: TableStatus.RESERVED },
-            });
+            await db.update(tables).set({ status: TableStatus.RESERVED }).where(eq(tables.id, reservation.tableId));
         }
-
         if (data.status === ReservationStatus.SEATED && reservation.tableId) {
-            await prisma.table.update({
-                where: { id: reservation.tableId },
-                data: { status: TableStatus.OCCUPIED },
-            });
+            await db.update(tables).set({ status: TableStatus.OCCUPIED }).where(eq(tables.id, reservation.tableId));
         }
-
         if ((data.status === ReservationStatus.CANCELLED || data.status === ReservationStatus.COMPLETED) && reservation.tableId) {
-            await prisma.table.update({
-                where: { id: reservation.tableId },
-                data: { status: TableStatus.AVAILABLE },
-            });
+            await db.update(tables).set({ status: TableStatus.AVAILABLE }).where(eq(tables.id, reservation.tableId));
         }
 
         return new Reservation(reservation as any);
     }
 
     async delete(id: string): Promise<void> {
-        const reservation = await prisma.reservation.findUnique({
-            where: { id },
-        });
+        const reservation = await db.query.reservations.findFirst({ where: eq(reservations.id, id) });
 
-        // Release table if reserved
         if (reservation?.tableId && reservation.status === ReservationStatus.CONFIRMED) {
-            await prisma.table.update({
-                where: { id: reservation.tableId },
-                data: { status: TableStatus.AVAILABLE },
-            });
+            await db.update(tables).set({ status: TableStatus.AVAILABLE }).where(eq(tables.id, reservation.tableId));
         }
 
-        await prisma.reservation.delete({
-            where: { id },
-        });
+        await db.delete(reservations).where(eq(reservations.id, id));
     }
 
     async getStats(branchId: string, date?: Date): Promise<{
@@ -177,22 +132,22 @@ export class ReservationService {
         const dateEnd = new Date(targetDate);
         dateEnd.setHours(23, 59, 59, 999);
 
-        const where = { branchId, date: { gte: dateStart, lte: dateEnd } };
+        const base = and(eq(reservations.branchId, branchId), gte(reservations.date, dateStart), lte(reservations.date, dateEnd));
 
-        const [total, pending, confirmed, seated, completed, cancelled, reservations] = await Promise.all([
-            prisma.reservation.count({ where }),
-            prisma.reservation.count({ where: { ...where, status: ReservationStatus.PENDING } }),
-            prisma.reservation.count({ where: { ...where, status: ReservationStatus.CONFIRMED } }),
-            prisma.reservation.count({ where: { ...where, status: ReservationStatus.SEATED } }),
-            prisma.reservation.count({ where: { ...where, status: ReservationStatus.COMPLETED } }),
-            prisma.reservation.count({ where: { ...where, status: ReservationStatus.CANCELLED } }),
-            prisma.reservation.findMany({
-                where: { ...where, status: { in: [ReservationStatus.PENDING, ReservationStatus.CONFIRMED, ReservationStatus.SEATED] } },
-                select: { guestCount: true },
+        const [[{ value: total }], [{ value: pending }], [{ value: confirmed }], [{ value: seated }], [{ value: completed }], [{ value: cancelled }], guestRows] = await Promise.all([
+            db.select({ value: count() }).from(reservations).where(base),
+            db.select({ value: count() }).from(reservations).where(and(base, eq(reservations.status, ReservationStatus.PENDING))),
+            db.select({ value: count() }).from(reservations).where(and(base, eq(reservations.status, ReservationStatus.CONFIRMED))),
+            db.select({ value: count() }).from(reservations).where(and(base, eq(reservations.status, ReservationStatus.SEATED))),
+            db.select({ value: count() }).from(reservations).where(and(base, eq(reservations.status, ReservationStatus.COMPLETED))),
+            db.select({ value: count() }).from(reservations).where(and(base, eq(reservations.status, ReservationStatus.CANCELLED))),
+            db.query.reservations.findMany({
+                where: and(base, inArray(reservations.status, [ReservationStatus.PENDING, ReservationStatus.CONFIRMED, ReservationStatus.SEATED])),
+                columns: { guestCount: true },
             }),
         ]);
 
-        const totalGuests = reservations.reduce((sum, r) => sum + r.guestCount, 0);
+        const totalGuests = guestRows.reduce((sum: number, r: any) => sum + r.guestCount, 0);
 
         return { total, pending, confirmed, seated, completed, cancelled, totalGuests };
     }

@@ -3,8 +3,10 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, branchFilter, applyScopeFilter, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
-import { prisma } from '@/config/database.config';
+import { authenticate, authorize, branchFilter, applyScopeFilter, ensureScopeAccess, buildScopeCondition, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { db } from '@/config/database.config';
+import { documents, settings } from '@/db/schema/tables';
+import { eq, and, or, ilike, isNull, gte, lte, desc, count, sql } from 'drizzle-orm';
 
 export const documentRoutes = Router();
 
@@ -21,35 +23,25 @@ documentRoutes.get('/invoices', authenticate, branchFilter(), async (req, res, n
         const skip = (pageNum - 1) * limitNum;
         const filter = (req as any).branchFilter as ScopeFilter | undefined;
 
-        const where: Record<string, unknown> = {
-            type: 'INVOICE',
-        };
-        applyScopeFilter(where, filter, 'storeId');
+        const conditions: any[] = [eq(documents.type, 'INVOICE')];
+        const scopeCond = buildScopeCondition(filter, { storeId: documents.storeId }, 'storeId');
+        if (scopeCond) conditions.push(scopeCond);
 
-        if (status && status !== 'all') {
-            where.status = String(status).toUpperCase();
-        }
+        if (status && status !== 'all') conditions.push(eq(documents.status, String(status).toUpperCase()));
+        if (search) conditions.push(ilike(documents.documentNo, `%${String(search)}%`));
+        if (from) conditions.push(gte(documents.createdAt, new Date(String(from))));
+        if (to) conditions.push(lte(documents.createdAt, new Date(String(to) + 'T23:59:59')));
 
-        if (search) {
-            where.OR = [
-                { documentNo: { contains: String(search), mode: 'insensitive' } },
-            ];
-        }
+        const invWhere = and(...conditions);
 
-        if (from || to) {
-            where.createdAt = {};
-            if (from) (where.createdAt as Record<string, unknown>).gte = new Date(String(from));
-            if (to) (where.createdAt as Record<string, unknown>).lte = new Date(String(to) + 'T23:59:59');
-        }
-
-        const [invoices, total] = await Promise.all([
-            prisma.document.findMany({
-                where,
-                skip,
-                take: limitNum,
-                orderBy: { createdAt: 'desc' },
+        const [invoices, [{ value: total }]] = await Promise.all([
+            db.query.documents.findMany({
+                where: invWhere,
+                offset: skip,
+                limit: limitNum,
+                orderBy: desc(documents.createdAt),
             }),
-            prisma.document.count({ where }),
+            db.select({ value: count() }).from(documents).where(invWhere),
         ]);
 
         // Transform for frontend
@@ -88,18 +80,19 @@ documentRoutes.get('/invoices', authenticate, branchFilter(), async (req, res, n
     }
 });
 
-// Get invoice by ID
+// Get invoice by ID (scope-checked)
 documentRoutes.get('/invoices/:id', authenticate, async (req, res, next) => {
     try {
-        const invoice = await prisma.document.findFirst({
-            where: { id: req.params.id, type: 'INVOICE' },
+        const invoice = await db.query.documents.findFirst({
+            where: and(eq(documents.id, req.params.id), eq(documents.type, 'INVOICE')),
         });
 
         if (!invoice) {
-            return res.status(404).json({
-                success: false,
-                error: { code: 'NOT_FOUND', message: 'Invoice not found' },
-            });
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Invoice not found' } });
+        }
+
+        if (!ensureScopeAccess(invoice, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
         }
 
         const docData = invoice.data as Record<string, unknown>;
@@ -144,37 +137,29 @@ documentRoutes.post('/invoices', authenticate, authorize('documents:create'), as
             notes,
         } = req.body;
 
-        // Generate invoice number
-        const count = await prisma.document.count({ where: { type: 'INVOICE' } });
-        const invoiceNo = `INV-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(count + 1).padStart(5, '0')}`;
+        const [{ value: invCount }] = await db.select({ value: count() }).from(documents).where(eq(documents.type, 'INVOICE'));
+        const invoiceNo = `INV-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(invCount + 1).padStart(5, '0')}`;
 
-        const invoice = await prisma.document.create({
+        const [invoice] = await db.insert(documents).values({
+            type: 'INVOICE',
+            documentNo: invoiceNo,
+            referenceId: req.user!.userId,
+            referenceType: 'USER',
+            status: 'PENDING',
+            branchId: (req as any).authUser?.activeBranchId || null,
+            storeId: (req as any).authUser?.activeStoreId || null,
             data: {
-                type: 'INVOICE',
-                documentNo: invoiceNo,
-                referenceId: req.user!.userId,
-                referenceType: 'USER',
-                status: 'PENDING',
-                branchId: (req as any).authUser?.activeBranchId || null,
-                storeId: (req as any).authUser?.activeStoreId || null,
-                data: {
-                    customerId,
-                    customer: {
-                        name: customerName,
-                        email: customerEmail,
-                        phone: customerPhone,
-                        address: customerAddress,
-                    },
-                    items: items || [],
-                    subtotal: subtotal || 0,
-                    tax: tax || 0,
-                    total: total || 0,
-                    dueDate,
-                    notes,
-                    createdBy: req.user!.userId,
-                },
+                customerId,
+                customer: { name: customerName, email: customerEmail, phone: customerPhone, address: customerAddress },
+                items: items || [],
+                subtotal: subtotal || 0,
+                tax: tax || 0,
+                total: total || 0,
+                dueDate,
+                notes,
+                createdBy: req.user!.userId,
             },
-        });
+        }).returning();
 
         res.status(201).json({
             success: true,
@@ -192,55 +177,31 @@ documentRoutes.post('/invoices', authenticate, authorize('documents:create'), as
 // Update invoice
 documentRoutes.put('/invoices/:id', authenticate, authorize('documents:update'), async (req, res, next) => {
     try {
-        const existing = await prisma.document.findFirst({
-            where: { id: req.params.id, type: 'INVOICE' },
+        const existing = await db.query.documents.findFirst({
+            where: and(eq(documents.id, req.params.id), eq(documents.type, 'INVOICE')),
         });
 
         if (!existing) {
-            return res.status(404).json({
-                success: false,
-                error: { code: 'NOT_FOUND', message: 'Invoice not found' },
-            });
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Invoice not found' } });
         }
 
-        const {
-            customerId,
-            customerName,
-            customerEmail,
-            customerPhone,
-            customerAddress,
-            items,
-            subtotal,
-            tax,
-            total,
-            dueDate,
-            notes,
-        } = req.body;
-
+        const { customerId, customerName, customerEmail, customerPhone, customerAddress, items, subtotal, tax, total, dueDate, notes } = req.body;
         const existingData = existing.data as Record<string, unknown>;
 
-        const invoice = await prisma.document.update({
-            where: { id: req.params.id },
+        const [invoice] = await db.update(documents).set({
             data: {
-                data: {
-                    ...existingData,
-                    customerId,
-                    customer: {
-                        name: customerName,
-                        email: customerEmail,
-                        phone: customerPhone,
-                        address: customerAddress,
-                    },
-                    items: items || existingData.items,
-                    subtotal: subtotal ?? existingData.subtotal,
-                    tax: tax ?? existingData.tax,
-                    total: total ?? existingData.total,
-                    dueDate,
-                    notes,
-                    updatedBy: req.user!.userId,
-                },
+                ...existingData,
+                customerId,
+                customer: { name: customerName, email: customerEmail, phone: customerPhone, address: customerAddress },
+                items: items || existingData.items,
+                subtotal: subtotal ?? existingData.subtotal,
+                tax: tax ?? existingData.tax,
+                total: total ?? existingData.total,
+                dueDate, notes,
+                updatedBy: req.user!.userId,
             },
-        });
+            updatedAt: new Date(),
+        }).where(eq(documents.id, req.params.id)).returning();
 
         res.json({ success: true, data: { id: invoice.id } });
     } catch (error) {
@@ -251,18 +212,15 @@ documentRoutes.put('/invoices/:id', authenticate, authorize('documents:update'),
 // Delete invoice
 documentRoutes.delete('/invoices/:id', authenticate, authorize('documents:delete'), async (req, res, next) => {
     try {
-        const existing = await prisma.document.findFirst({
-            where: { id: req.params.id, type: 'INVOICE' },
+        const existing = await db.query.documents.findFirst({
+            where: and(eq(documents.id, req.params.id), eq(documents.type, 'INVOICE')),
         });
 
         if (!existing) {
-            return res.status(404).json({
-                success: false,
-                error: { code: 'NOT_FOUND', message: 'Invoice not found' },
-            });
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Invoice not found' } });
         }
 
-        await prisma.document.delete({ where: { id: req.params.id } });
+        await db.delete(documents).where(eq(documents.id, req.params.id));
 
         res.json({ success: true, message: 'Invoice deleted' });
     } catch (error) {
@@ -273,10 +231,7 @@ documentRoutes.delete('/invoices/:id', authenticate, authorize('documents:delete
 // Mark invoice as paid
 documentRoutes.put('/invoices/:id/mark-paid', authenticate, authorize('documents:update'), async (req, res, next) => {
     try {
-        const invoice = await prisma.document.update({
-            where: { id: req.params.id },
-            data: { status: 'PAID' },
-        });
+        const [invoice] = await db.update(documents).set({ status: 'PAID', updatedAt: new Date() }).where(eq(documents.id, req.params.id)).returning();
 
         res.json({ success: true, data: { id: invoice.id, status: 'paid' } });
     } catch (error) {
@@ -287,10 +242,7 @@ documentRoutes.put('/invoices/:id/mark-paid', authenticate, authorize('documents
 // Send invoice
 documentRoutes.post('/invoices/:id/send', authenticate, authorize('documents:update'), async (req, res, next) => {
     try {
-        const invoice = await prisma.document.update({
-            where: { id: req.params.id },
-            data: { status: 'SENT' },
-        });
+        const [invoice] = await db.update(documents).set({ status: 'SENT', updatedAt: new Date() }).where(eq(documents.id, req.params.id)).returning();
 
         // TODO: Implement email sending
 
@@ -313,35 +265,25 @@ documentRoutes.get('/tax-invoices', authenticate, branchFilter(), async (req, re
         const skip = (pageNum - 1) * limitNum;
         const filter = (req as any).branchFilter as ScopeFilter | undefined;
 
-        const where: Record<string, unknown> = {
-            type: 'TAX_INVOICE',
-        };
-        applyScopeFilter(where, filter, 'storeId');
+        const tConditions: any[] = [eq(documents.type, 'TAX_INVOICE')];
+        const tScopeCond = buildScopeCondition(filter, { storeId: documents.storeId }, 'storeId');
+        if (tScopeCond) tConditions.push(tScopeCond);
 
-        if (status && status !== 'all') {
-            where.status = String(status).toUpperCase();
-        }
+        if (status && status !== 'all') tConditions.push(eq(documents.status, String(status).toUpperCase()));
+        if (search) tConditions.push(ilike(documents.documentNo, `%${String(search)}%`));
+        if (from) tConditions.push(gte(documents.createdAt, new Date(String(from))));
+        if (to) tConditions.push(lte(documents.createdAt, new Date(String(to) + 'T23:59:59')));
 
-        if (search) {
-            where.OR = [
-                { documentNo: { contains: String(search), mode: 'insensitive' } },
-            ];
-        }
+        const tWhere = and(...tConditions);
 
-        if (from || to) {
-            where.createdAt = {};
-            if (from) (where.createdAt as Record<string, unknown>).gte = new Date(String(from));
-            if (to) (where.createdAt as Record<string, unknown>).lte = new Date(String(to) + 'T23:59:59');
-        }
-
-        const [invoices, total] = await Promise.all([
-            prisma.document.findMany({
-                where,
-                skip,
-                take: limitNum,
-                orderBy: { createdAt: 'desc' },
+        const [invoices, [{ value: total }]] = await Promise.all([
+            db.query.documents.findMany({
+                where: tWhere,
+                offset: skip,
+                limit: limitNum,
+                orderBy: desc(documents.createdAt),
             }),
-            prisma.document.count({ where }),
+            db.select({ value: count() }).from(documents).where(tWhere),
         ]);
 
         // Transform for frontend
@@ -379,18 +321,19 @@ documentRoutes.get('/tax-invoices', authenticate, branchFilter(), async (req, re
     }
 });
 
-// Get tax invoice by ID
+// Get tax invoice by ID (scope-checked)
 documentRoutes.get('/tax-invoices/:id', authenticate, async (req, res, next) => {
     try {
-        const invoice = await prisma.document.findFirst({
-            where: { id: req.params.id, type: 'TAX_INVOICE' },
+        const invoice = await db.query.documents.findFirst({
+            where: and(eq(documents.id, req.params.id), eq(documents.type, 'TAX_INVOICE')),
         });
 
         if (!invoice) {
-            return res.status(404).json({
-                success: false,
-                error: { code: 'NOT_FOUND', message: 'Tax invoice not found' },
-            });
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Tax invoice not found' } });
+        }
+
+        if (!ensureScopeAccess(invoice, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
         }
 
         const docData = invoice.data as Record<string, unknown>;
@@ -422,29 +365,19 @@ documentRoutes.post('/tax-invoices', authenticate, authorize('documents:create')
         const { customerName, taxId, orderId, subtotal, taxAmount, total } = req.body;
 
         // Generate tax invoice number
-        const count = await prisma.document.count({ where: { type: 'TAX_INVOICE' } });
-        const invoiceNumber = `TXI-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(count + 1).padStart(5, '0')}`;
+        const [{ value: txiCount }] = await db.select({ value: count() }).from(documents).where(eq(documents.type, 'TAX_INVOICE'));
+        const invoiceNumber = `TXI-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(txiCount + 1).padStart(5, '0')}`;
 
-        const invoice = await prisma.document.create({
-            data: {
-                type: 'TAX_INVOICE',
-                documentNo: invoiceNumber,
-                referenceId: req.user!.userId,
-                referenceType: 'USER',
-                status: 'PENDING',
-                branchId: (req as any).authUser?.activeBranchId || null,
-                storeId: (req as any).authUser?.activeStoreId || null,
-                data: {
-                    customerName,
-                    taxId,
-                    orderId,
-                    subtotal: subtotal || 0,
-                    taxAmount: taxAmount || 0,
-                    total: total || 0,
-                    createdBy: req.user!.userId,
-                },
-            },
-        });
+        const [invoice] = await db.insert(documents).values({
+            type: 'TAX_INVOICE',
+            documentNo: invoiceNumber,
+            referenceId: req.user!.userId,
+            referenceType: 'USER',
+            status: 'PENDING',
+            branchId: (req as any).authUser?.activeBranchId || null,
+            storeId: (req as any).authUser?.activeStoreId || null,
+            data: { customerName, taxId, orderId, subtotal: subtotal || 0, taxAmount: taxAmount || 0, total: total || 0, createdBy: req.user!.userId },
+        }).returning();
 
         res.status(201).json({
             success: true,
@@ -459,38 +392,28 @@ documentRoutes.post('/tax-invoices', authenticate, authorize('documents:create')
     }
 });
 
-// Update tax invoice
+// Update tax invoice (scope-checked)
 documentRoutes.put('/tax-invoices/:id', authenticate, authorize('documents:update'), async (req, res, next) => {
     try {
-        const existing = await prisma.document.findFirst({
-            where: { id: req.params.id, type: 'TAX_INVOICE' },
+        const existing = await db.query.documents.findFirst({
+            where: and(eq(documents.id, req.params.id), eq(documents.type, 'TAX_INVOICE')),
         });
 
         if (!existing) {
-            return res.status(404).json({
-                success: false,
-                error: { code: 'NOT_FOUND', message: 'Tax invoice not found' },
-            });
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Tax invoice not found' } });
+        }
+
+        if (!ensureScopeAccess(existing, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
         }
 
         const { customerName, taxId, orderId, subtotal, taxAmount, total } = req.body;
         const existingData = existing.data as Record<string, unknown>;
 
-        const invoice = await prisma.document.update({
-            where: { id: req.params.id },
-            data: {
-                data: {
-                    ...existingData,
-                    customerName,
-                    taxId,
-                    orderId,
-                    subtotal: subtotal ?? existingData.subtotal,
-                    taxAmount: taxAmount ?? existingData.taxAmount,
-                    total: total ?? existingData.total,
-                    updatedBy: req.user!.userId,
-                },
-            },
-        });
+        const [invoice] = await db.update(documents).set({
+            data: { ...existingData, customerName, taxId, orderId, subtotal: subtotal ?? existingData.subtotal, taxAmount: taxAmount ?? existingData.taxAmount, total: total ?? existingData.total, updatedBy: req.user!.userId },
+            updatedAt: new Date(),
+        }).where(eq(documents.id, req.params.id)).returning();
 
         res.json({ success: true, data: { id: invoice.id } });
     } catch (error) {
@@ -498,21 +421,22 @@ documentRoutes.put('/tax-invoices/:id', authenticate, authorize('documents:updat
     }
 });
 
-// Delete tax invoice
+// Delete tax invoice (scope-checked)
 documentRoutes.delete('/tax-invoices/:id', authenticate, authorize('documents:delete'), async (req, res, next) => {
     try {
-        const existing = await prisma.document.findFirst({
-            where: { id: req.params.id, type: 'TAX_INVOICE' },
+        const existing = await db.query.documents.findFirst({
+            where: and(eq(documents.id, req.params.id), eq(documents.type, 'TAX_INVOICE')),
         });
 
         if (!existing) {
-            return res.status(404).json({
-                success: false,
-                error: { code: 'NOT_FOUND', message: 'Tax invoice not found' },
-            });
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Tax invoice not found' } });
         }
 
-        await prisma.document.delete({ where: { id: req.params.id } });
+        if (!ensureScopeAccess(existing, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
+        }
+
+        await db.delete(documents).where(eq(documents.id, req.params.id));
 
         res.json({ success: true, message: 'Tax invoice deleted' });
     } catch (error) {
@@ -520,33 +444,28 @@ documentRoutes.delete('/tax-invoices/:id', authenticate, authorize('documents:de
     }
 });
 
-// Issue tax invoice
+// Issue tax invoice (scope-checked)
 documentRoutes.put('/tax-invoices/:id/issue', authenticate, authorize('documents:update'), async (req, res, next) => {
     try {
-        const existing = await prisma.document.findFirst({
-            where: { id: req.params.id, type: 'TAX_INVOICE' },
+        const existing = await db.query.documents.findFirst({
+            where: and(eq(documents.id, req.params.id), eq(documents.type, 'TAX_INVOICE')),
         });
 
         if (!existing) {
-            return res.status(404).json({
-                success: false,
-                error: { code: 'NOT_FOUND', message: 'Tax invoice not found' },
-            });
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Tax invoice not found' } });
+        }
+
+        if (!ensureScopeAccess(existing, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
         }
 
         const existingData = existing.data as Record<string, unknown>;
 
-        const invoice = await prisma.document.update({
-            where: { id: req.params.id },
-            data: {
-                status: 'ISSUED',
-                data: {
-                    ...existingData,
-                    issuedAt: new Date().toISOString(),
-                    issuedBy: req.user!.userId,
-                },
-            },
-        });
+        const [invoice] = await db.update(documents).set({
+            status: 'ISSUED',
+            data: { ...existingData, issuedAt: new Date().toISOString(), issuedBy: req.user!.userId },
+            updatedAt: new Date(),
+        }).where(eq(documents.id, req.params.id)).returning();
 
         res.json({ success: true, data: { id: invoice.id, status: 'issued' } });
     } catch (error) {
@@ -554,33 +473,28 @@ documentRoutes.put('/tax-invoices/:id/issue', authenticate, authorize('documents
     }
 });
 
-// Cancel tax invoice
+// Cancel tax invoice (scope-checked)
 documentRoutes.put('/tax-invoices/:id/cancel', authenticate, authorize('documents:update'), async (req, res, next) => {
     try {
-        const existing = await prisma.document.findFirst({
-            where: { id: req.params.id, type: 'TAX_INVOICE' },
+        const existing = await db.query.documents.findFirst({
+            where: and(eq(documents.id, req.params.id), eq(documents.type, 'TAX_INVOICE')),
         });
 
         if (!existing) {
-            return res.status(404).json({
-                success: false,
-                error: { code: 'NOT_FOUND', message: 'Tax invoice not found' },
-            });
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Tax invoice not found' } });
+        }
+
+        if (!ensureScopeAccess(existing, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
         }
 
         const existingData = existing.data as Record<string, unknown>;
 
-        const invoice = await prisma.document.update({
-            where: { id: req.params.id },
-            data: {
-                status: 'CANCELLED',
-                data: {
-                    ...existingData,
-                    cancelledAt: new Date().toISOString(),
-                    cancelledBy: req.user!.userId,
-                },
-            },
-        });
+        const [invoice] = await db.update(documents).set({
+            status: 'CANCELLED',
+            data: { ...existingData, cancelledAt: new Date().toISOString(), cancelledBy: req.user!.userId },
+            updatedAt: new Date(),
+        }).where(eq(documents.id, req.params.id)).returning();
 
         res.json({ success: true, data: { id: invoice.id, status: 'cancelled' } });
     } catch (error) {
@@ -588,29 +502,25 @@ documentRoutes.put('/tax-invoices/:id/cancel', authenticate, authorize('document
     }
 });
 
-// Print tax invoice (return HTML for printing)
+// Print tax invoice (scope-checked)
 documentRoutes.get('/tax-invoices/:id/print', authenticate, async (req, res, next) => {
     try {
-        const invoice = await prisma.document.findFirst({
-            where: { id: req.params.id, type: 'TAX_INVOICE' },
+        const invoice = await db.query.documents.findFirst({
+            where: and(eq(documents.id, req.params.id), eq(documents.type, 'TAX_INVOICE')),
         });
 
         if (!invoice) {
-            return res.status(404).json({
-                success: false,
-                error: { code: 'NOT_FOUND', message: 'Tax invoice not found' },
-            });
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Tax invoice not found' } });
         }
 
-        // Increment print count
-        await prisma.document.update({
-            where: { id: req.params.id },
-            data: { printCount: { increment: 1 } },
-        });
+        if (!ensureScopeAccess(invoice, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
+        }
 
-        // Get store settings for logo
-        const storeSetting = await prisma.settings.findFirst({
-            where: { category: 'store', key: 'info' },
+        await db.update(documents).set({ printCount: sql`${documents.printCount} + 1` }).where(eq(documents.id, req.params.id));
+
+        const storeSetting = await db.query.settings.findFirst({
+            where: and(eq(settings.category, 'store'), eq(settings.key, 'info')),
         });
 
         const storeInfo = (storeSetting?.value || {}) as Record<string, unknown>;
@@ -651,11 +561,11 @@ documentRoutes.get('/tax-invoices/:id/print', authenticate, async (req, res, nex
 // Get invoice settings
 documentRoutes.get('/settings', authenticate, async (req, res, next) => {
     try {
-        const settings = await prisma.settings.findMany({
-            where: { category: 'invoice' },
+        const settingsRows = await db.query.settings.findMany({
+            where: eq(settings.category, 'invoice'),
         });
 
-        const settingsObj = settings.reduce((acc, s) => {
+        const settingsObj = settingsRows.reduce((acc, s) => {
             acc[s.key] = s.value;
             return acc;
         }, {} as Record<string, unknown>);
@@ -689,26 +599,17 @@ documentRoutes.get('/settings', authenticate, async (req, res, next) => {
 // Update invoice settings
 documentRoutes.put('/settings', authenticate, authorize('settings:update'), async (req, res, next) => {
     try {
-        const settings = req.body;
+        const settingsBody = req.body;
 
-        for (const [key, value] of Object.entries(settings)) {
-            await prisma.settings.upsert({
-                where: {
-                    category_key_branchId: {
-                        category: 'invoice',
-                        key,
-                        branchId: null as any,
-                    },
-                },
-                create: {
-                    category: 'invoice',
-                    key,
-                    value: value as any,
-                },
-                update: {
-                    value: value as any,
-                },
+        for (const [key, value] of Object.entries(settingsBody)) {
+            const existing = await db.query.settings.findFirst({
+                where: and(eq(settings.category, 'invoice'), eq(settings.key, key), isNull(settings.branchId)),
             });
+            if (existing) {
+                await db.update(settings).set({ value: value as any, updatedAt: new Date() }).where(eq(settings.id, existing.id));
+            } else {
+                await db.insert(settings).values({ category: 'invoice', key, value: value as any });
+            }
         }
 
         res.json({ success: true, message: 'Settings updated' });

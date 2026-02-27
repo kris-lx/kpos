@@ -1,64 +1,106 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// KPOS - Database Configuration (Prisma)
+// KPOS - Database Configuration (Drizzle ORM + PostgreSQL)
+// Load Balancing: Write → primary, Read → replica (if configured)
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { PrismaClient } from '@prisma/client';
-import { appConfig } from './app.config';
+import { drizzle } from "drizzle-orm/postgres-js";
+import postgres from "postgres";
+import { appConfig, dbConfig } from "./app.config";
+import * as schema from "@/db/schema";
 
-declare global {
-    var prisma: PrismaClient | undefined;
-}
+// ─── Connection Pools ────────────────────────────────────────────────────
+
+const primaryClient = postgres(dbConfig.url, {
+  max: appConfig.isProduction ? 20 : 5,
+  idle_timeout: 20,
+  connect_timeout: 10,
+  onnotice: () => {},
+});
+
+// Read replica pool (falls back to primary if not configured)
+const readClient = dbConfig.readUrl
+  ? postgres(dbConfig.readUrl, {
+      max: appConfig.isProduction ? 30 : 5,
+      idle_timeout: 20,
+      connect_timeout: 10,
+      onnotice: () => {},
+    })
+  : primaryClient;
+
+// ─── Drizzle Instances ──────────────────────────────────────────────────
+
+/** Primary DB — use for all writes and transactional reads */
+export const db = drizzle(primaryClient, {
+  schema,
+  logger: appConfig.isDevelopment,
+});
+
+/** Read replica DB — use for read-heavy queries (dashboards, reports, lists) */
+export const dbRead = drizzle(readClient, {
+  schema,
+  logger: appConfig.isDevelopment,
+});
+
+// ─── Connection State ────────────────────────────────────────────────────
 
 let dbConnected = false;
 
-const prismaClientSingleton = () => {
-    return new PrismaClient({
-        log: appConfig.isDevelopment
-            ? ['warn', 'error']
-            : ['error'],
-    });
-};
-
-export const prisma = globalThis.prisma ?? prismaClientSingleton();
-
-if (appConfig.isDevelopment) {
-    globalThis.prisma = prisma;
-}
-
 export function isDatabaseConnected(): boolean {
-    return dbConnected;
+  return dbConnected;
 }
 
-export async function connectDatabase(retries = 5, delayMs = 3000): Promise<void> {
-    for (let attempt = 1; attempt <= retries; attempt++) {
-        try {
-            await prisma.$connect();
-            dbConnected = true;
-            console.log('✅ Database connected successfully');
-            return;
-        } catch (error) {
-            const msg = error instanceof Error ? error.message : String(error);
-            console.error(`❌ Database connection attempt ${attempt}/${retries} failed: ${msg}`);
-            
-            if (attempt < retries) {
-                console.log(`⏳ Retrying in ${delayMs / 1000}s...`);
-                await new Promise(resolve => setTimeout(resolve, delayMs));
-            }
-        }
-    }
+export async function connectDatabase(
+  retries = 5,
+  delayMs = 3000,
+): Promise<void> {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      // Test connection with a simple query
+      await primaryClient`SELECT 1`;
+      dbConnected = true;
 
-    dbConnected = false;
-    if (appConfig.isProduction) {
-        console.error('❌ All database connection attempts failed. Exiting.');
-        process.exit(1);
-    } else {
-        console.error('⚠️  Database not available. Server will start but DB queries will fail.');
-        console.error('⚠️  Make sure MongoDB is running: docker compose up -d mongo');
+      const replicaStatus = dbConfig.readUrl
+        ? "(with read replica)"
+        : "(single node)";
+      console.log(`✅ PostgreSQL connected successfully ${replicaStatus}`);
+
+      if (dbConfig.readUrl) {
+        await readClient`SELECT 1`;
+        console.log("✅ Read replica connected successfully");
+      }
+      return;
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error(
+        `❌ Database connection attempt ${attempt}/${retries} failed: ${msg}`,
+      );
+
+      if (attempt < retries) {
+        console.log(`⏳ Retrying in ${delayMs / 1000}s...`);
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
     }
+  }
+
+  dbConnected = false;
+  if (appConfig.isProduction) {
+    console.error("❌ All database connection attempts failed. Exiting.");
+    process.exit(1);
+  } else {
+    console.error(
+      "⚠️  Database not available. Server will start but DB queries will fail.",
+    );
+    console.error(
+      "⚠️  Make sure PostgreSQL is running: docker compose up -d postgres",
+    );
+  }
 }
 
 export async function disconnectDatabase(): Promise<void> {
-    await prisma.$disconnect();
-    dbConnected = false;
-    console.log('📤 Database disconnected');
+  await primaryClient.end();
+  if (dbConfig.readUrl) {
+    await readClient.end();
+  }
+  dbConnected = false;
+  console.log("📤 Database disconnected");
 }

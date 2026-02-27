@@ -20,6 +20,7 @@ interface User {
     name: string;
     role: string;
     branchId: string;
+    tenantId: string;
     phone?: string;
     isSuperAdmin?: boolean;
     permissions?: string[];

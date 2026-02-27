@@ -37,6 +37,11 @@ export function setupSocketHandlers(io: Server): void {
     io.on('connection', (socket: AuthenticatedSocket) => {
         logger.info(`Socket connected: ${socket.id} (User: ${socket.userId})`);
 
+        // Join user-specific room (for notifications)
+        if (socket.userId) {
+            socket.join(`user:${socket.userId}`);
+        }
+
         // Join branch room
         if (socket.branchId) {
             socket.join(`branch:${socket.branchId}`);
@@ -74,6 +79,12 @@ export class SocketEventEmitter {
 
     static setIO(io: Server): void {
         this.io = io;
+    }
+
+    static emitToUser(userId: string, event: string, data: unknown): void {
+        if (this.io) {
+            this.io.to(`user:${userId}`).emit(event, data);
+        }
     }
 
     static emitToBranch(branchId: string, event: string, data: unknown): void {

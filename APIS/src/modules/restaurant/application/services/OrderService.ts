@@ -2,7 +2,9 @@
 // Restaurant Module - Order Service
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { prisma } from '@/config/database.config';
+import { db } from '@/config/database.config';
+import { orders, orderItems, tables } from '@/db/schema/tables';
+import { eq, and, inArray, gte, count } from 'drizzle-orm';
 import { Order, OrderStatus, OrderType, OrderItem, OrderItemStatus, TableStatus } from '../../domain/entities';
 
 export interface CreateOrderItemDTO {
@@ -48,46 +50,42 @@ export class OrderService {
     }
 
     async findAll(filters: OrderFilters = {}): Promise<Order[]> {
-        const where: Record<string, unknown> = {};
-        
-        if (filters.branchId) where.branchId = filters.branchId;
-        if (filters.tableId) where.tableId = filters.tableId;
-        if (filters.type) where.type = filters.type;
+        const conds: any[] = [];
+        if (filters.branchId) conds.push(eq(orders.branchId, filters.branchId));
+        if (filters.tableId) conds.push(eq(orders.tableId, filters.tableId));
+        if (filters.type) conds.push(eq(orders.type, filters.type));
         if (filters.status) {
-            where.status = Array.isArray(filters.status) 
-                ? { in: filters.status }
-                : filters.status;
+            if (Array.isArray(filters.status)) {
+                conds.push(inArray(orders.status, filters.status));
+            } else {
+                conds.push(eq(orders.status, filters.status));
+            }
         }
+        const where = conds.length > 0 ? and(...conds) : undefined;
 
-        const orders = await prisma.order.findMany({
+        const rows = await db.query.orders.findMany({
             where,
-            include: {
-                table: { select: { name: true } },
-                items: true,
-            },
-            orderBy: { createdAt: 'desc' },
+            with: { table: { columns: { name: true } }, items: true },
+            orderBy: (o, { desc }) => desc(o.createdAt),
         });
 
-        return orders.map(o => new Order({
+        return rows.map(o => new Order({
             ...o,
-            items: o.items.map(i => new OrderItem(i as any)),
+            items: (o as any).items?.map((i: any) => new OrderItem(i)) || [],
         } as any));
     }
 
     async findById(id: string): Promise<Order | null> {
-        const order = await prisma.order.findUnique({
-            where: { id },
-            include: {
-                table: true,
-                items: true,
-            },
+        const order = await db.query.orders.findFirst({
+            where: eq(orders.id, id),
+            with: { table: true, items: true },
         });
 
         if (!order) return null;
 
         return new Order({
             ...order,
-            items: order.items.map(i => new OrderItem(i as any)),
+            items: (order as any).items?.map((i: any) => new OrderItem(i)) || [],
         } as any);
     }
 
@@ -106,46 +104,27 @@ export class OrderService {
 
         const subtotal = itemsData.reduce((sum, item) => sum + item.total, 0);
 
-        // Create order first without items
-        const order = await prisma.order.create({
-            data: {
-                orderNo,
-                branchId: data.branchId,
-                tableId: data.tableId,
-                type: data.type || OrderType.DINE_IN,
-                guestCount: data.guestCount || 1,
-                note: data.note,
-                kitchenNote: data.kitchenNote,
-                subtotal,
-                total: subtotal,
-            },
+        const [order] = await db.insert(orders).values({
+            orderNo, branchId: data.branchId, tableId: data.tableId,
+            type: data.type || OrderType.DINE_IN, guestCount: data.guestCount || 1,
+            note: data.note, kitchenNote: data.kitchenNote, subtotal, total: subtotal,
+        }).returning();
+
+        for (const item of itemsData) {
+            await db.insert(orderItems).values({ ...item, orderId: order.id });
+        }
+
+        const completeOrder = await db.query.orders.findFirst({
+            where: eq(orders.id, order.id), with: { items: true },
         });
 
-        // Create items separately using createMany
-        await prisma.orderItem.createMany({
-            data: itemsData.map(item => ({
-                ...item,
-                orderId: order.id,
-            })),
-        });
-
-        // Fetch the complete order with items
-        const completeOrder = await prisma.order.findUnique({
-            where: { id: order.id },
-            include: { items: true },
-        });
-
-        // Update table status to OCCUPIED
         if (data.tableId) {
-            await prisma.table.update({
-                where: { id: data.tableId },
-                data: { status: TableStatus.OCCUPIED },
-            });
+            await db.update(tables).set({ status: TableStatus.OCCUPIED }).where(eq(tables.id, data.tableId));
         }
 
         return new Order({
             ...completeOrder,
-            items: completeOrder?.items.map(i => new OrderItem(i as any)) || [],
+            items: (completeOrder as any)?.items?.map((i: any) => new OrderItem(i)) || [],
         } as any);
     }
 
@@ -156,28 +135,21 @@ export class OrderService {
         if (data.status === OrderStatus.SERVED) updateData.servedAt = now;
         if (data.status === OrderStatus.COMPLETED) updateData.completedAt = now;
 
-        const order = await prisma.order.update({
-            where: { id },
-            data: updateData,
-            include: { table: true, items: true },
-        });
+        await db.update(orders).set(updateData).where(eq(orders.id, id));
+        const order = await db.query.orders.findFirst({ where: eq(orders.id, id), with: { table: true, items: true } });
 
-        // Handle table status based on order status
-        if (data.status === OrderStatus.COMPLETED && order.tableId) {
-            await prisma.table.update({
-                where: { id: order.tableId },
-                data: { status: TableStatus.CLEANING },
-            });
+        if (data.status === OrderStatus.COMPLETED && order?.tableId) {
+            await db.update(tables).set({ status: TableStatus.CLEANING }).where(eq(tables.id, order.tableId));
         }
 
         return new Order({
             ...order,
-            items: order.items.map(i => new OrderItem(i as any)),
+            items: (order as any)?.items?.map((i: any) => new OrderItem(i)) || [],
         } as any);
     }
 
     async addItems(orderId: string, items: CreateOrderItemDTO[]): Promise<Order> {
-        const orderItems = items.map(item => ({
+        const newItems = items.map(item => ({
             orderId,
             productId: item.productId,
             productName: item.productName,
@@ -189,23 +161,19 @@ export class OrderService {
             status: OrderItemStatus.PENDING,
         }));
 
-        await prisma.orderItem.createMany({ data: orderItems });
+        for (const oi of newItems) {
+            await db.insert(orderItems).values(oi);
+        }
 
-        // Recalculate totals
-        const allItems = await prisma.orderItem.findMany({
-            where: { orderId },
-        });
-        const subtotal = allItems.reduce((sum, item) => sum + item.total, 0);
+        const allItems = await db.query.orderItems.findMany({ where: eq(orderItems.orderId, orderId) });
+        const subtotal = allItems.reduce((sum: number, item: any) => sum + item.total, 0);
 
-        const order = await prisma.order.update({
-            where: { id: orderId },
-            data: { subtotal, total: subtotal },
-            include: { items: true },
-        });
+        await db.update(orders).set({ subtotal, total: subtotal }).where(eq(orders.id, orderId));
+        const order = await db.query.orders.findFirst({ where: eq(orders.id, orderId), with: { items: true } });
 
         return new Order({
             ...order,
-            items: order.items.map(i => new OrderItem(i as any)),
+            items: (order as any)?.items?.map((i: any) => new OrderItem(i)) || [],
         } as any);
     }
 
@@ -216,28 +184,18 @@ export class OrderService {
         if (status === OrderItemStatus.PREPARING) updateData.sentAt = now;
         if (status === OrderItemStatus.READY) updateData.preparedAt = now;
 
-        const item = await prisma.orderItem.update({
-            where: { id: itemId },
-            data: updateData,
-        });
+        const [item] = await db.update(orderItems).set(updateData).where(eq(orderItems.id, itemId)).returning();
 
-        // Check if all items are ready and update order status
-        const order = await prisma.order.findUnique({
-            where: { id: item.orderId },
-            include: { items: true },
+        const order = await db.query.orders.findFirst({
+            where: eq(orders.id, item.orderId), with: { items: true },
         });
 
         if (order) {
-            if (order.items.every(i => i.status === 'READY' || i.status === 'SERVED')) {
-                await prisma.order.update({
-                    where: { id: order.id },
-                    data: { status: OrderStatus.READY },
-                });
-            } else if (order.items.some(i => i.status === 'PREPARING')) {
-                await prisma.order.update({
-                    where: { id: order.id },
-                    data: { status: OrderStatus.PREPARING },
-                });
+            const items = (order as any).items || [];
+            if (items.every((i: any) => i.status === 'READY' || i.status === 'SERVED')) {
+                await db.update(orders).set({ status: OrderStatus.READY }).where(eq(orders.id, order.id));
+            } else if (items.some((i: any) => i.status === 'PREPARING')) {
+                await db.update(orders).set({ status: OrderStatus.PREPARING }).where(eq(orders.id, order.id));
             }
         }
 
@@ -245,27 +203,18 @@ export class OrderService {
     }
 
     async getKitchenOrders(branchId?: string): Promise<Order[]> {
-        const where: Record<string, unknown> = {
-            status: { in: [OrderStatus.PENDING, OrderStatus.PREPARING] },
-        };
-        if (branchId) where.branchId = branchId;
+        const conds: any[] = [inArray(orders.status, [OrderStatus.PENDING, OrderStatus.PREPARING])];
+        if (branchId) conds.push(eq(orders.branchId, branchId));
 
-        const orders = await prisma.order.findMany({
-            where,
-            include: {
-                table: { select: { name: true } },
-                items: {
-                    where: { 
-                        status: { in: [OrderItemStatus.PENDING, OrderItemStatus.PREPARING] } 
-                    },
-                },
-            },
-            orderBy: { createdAt: 'asc' },
+        const rows = await db.query.orders.findMany({
+            where: and(...conds),
+            with: { table: { columns: { name: true } }, items: true },
+            orderBy: (o, { asc }) => asc(o.createdAt),
         });
 
-        return orders.map(o => new Order({
+        return rows.map(o => new Order({
             ...o,
-            items: o.items.map(i => new OrderItem(i as any)),
+            items: ((o as any).items || []).filter((i: any) => [OrderItemStatus.PENDING, OrderItemStatus.PREPARING].includes(i.status)).map((i: any) => new OrderItem(i)),
         } as any));
     }
 
@@ -279,12 +228,13 @@ export class OrderService {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
-        const [total, pending, preparing, ready, completed] = await Promise.all([
-            prisma.order.count({ where: { branchId, createdAt: { gte: today } } }),
-            prisma.order.count({ where: { branchId, status: OrderStatus.PENDING } }),
-            prisma.order.count({ where: { branchId, status: OrderStatus.PREPARING } }),
-            prisma.order.count({ where: { branchId, status: OrderStatus.READY } }),
-            prisma.order.count({ where: { branchId, createdAt: { gte: today }, status: OrderStatus.COMPLETED } }),
+        const branchCond = eq(orders.branchId, branchId);
+        const [[{ value: total }], [{ value: pending }], [{ value: preparing }], [{ value: ready }], [{ value: completed }]] = await Promise.all([
+            db.select({ value: count() }).from(orders).where(and(branchCond, gte(orders.createdAt, today))),
+            db.select({ value: count() }).from(orders).where(and(branchCond, eq(orders.status, OrderStatus.PENDING))),
+            db.select({ value: count() }).from(orders).where(and(branchCond, eq(orders.status, OrderStatus.PREPARING))),
+            db.select({ value: count() }).from(orders).where(and(branchCond, eq(orders.status, OrderStatus.READY))),
+            db.select({ value: count() }).from(orders).where(and(branchCond, gte(orders.createdAt, today), eq(orders.status, OrderStatus.COMPLETED))),
         ]);
 
         return { total, pending, preparing, ready, completed };

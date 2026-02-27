@@ -5,7 +5,10 @@
 
 import { consume, subscribeCacheInvalidation, QUEUES, isRabbitMQConnected } from '@/config/rabbitmq.config';
 import { cache } from '@/config/redis.config';
-import { prisma } from '@/config/database.config';
+import { db } from '@/config/database.config';
+import { inventory, stockMovements, activityLogs, notifications } from '@/db/schema/tables';
+import { eq, and } from 'drizzle-orm';
+import { SocketEventEmitter } from '@/infrastructure/http/socket';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Stock Movement Worker
@@ -25,50 +28,46 @@ async function processStockMovement(data: {
     const { productId, branchId, storeId, type, quantity, reason, reference, referenceType, userId } = data;
 
     // Find current inventory
-    const inventory = await prisma.inventory.findFirst({
-        where: { productId, branchId },
+    const inv = await db.query.inventory.findFirst({
+        where: and(eq(inventory.productId, productId), eq(inventory.branchId, branchId)),
     });
 
-    const previousQty = inventory?.quantity || 0;
+    const previousQty = inv?.quantity || 0;
     const delta = type === 'OUT' || type === 'TRANSFER_OUT' ? -quantity : quantity;
     const newQty = Math.max(0, previousQty + delta);
 
     // Create stock movement record
-    await prisma.stockMovement.create({
-        data: {
-            productId,
-            branchId,
-            storeId,
-            type,
-            quantity,
-            previousQty,
-            newQty,
-            reason,
-            reference,
-            referenceType,
-            userId,
-        },
+    await db.insert(stockMovements).values({
+        productId,
+        branchId,
+        storeId,
+        type,
+        quantity,
+        previousQty,
+        newQty,
+        reason,
+        reference,
+        referenceType,
+        userId,
     });
 
     // Update inventory
-    if (inventory) {
-        await prisma.inventory.update({
-            where: { id: inventory.id },
-            data: {
+    if (inv) {
+        await db.update(inventory)
+            .set({
                 quantity: newQty,
-                available: Math.max(0, newQty - inventory.reserved),
-            },
-        });
+                available: Math.max(0, newQty - inv.reserved),
+                updatedAt: new Date(),
+            })
+            .where(eq(inventory.id, inv.id));
     } else if (delta > 0) {
-        await prisma.inventory.create({
-            data: {
-                productId,
-                branchId,
-                storeId,
-                quantity: newQty,
-                available: newQty,
-                reserved: 0,
-            },
+        await db.insert(inventory).values({
+            productId,
+            branchId,
+            storeId,
+            quantity: newQty,
+            available: newQty,
+            reserved: 0,
         });
     }
 
@@ -95,17 +94,15 @@ async function processActivityLog(data: {
     userAgent?: string;
 }): Promise<void> {
     const entityId = data.entityId || data.resourceId;
-    await prisma.activityLog.create({
-        data: {
-            userId: data.userId,
-            action: data.action,
-            entity: data.entity || data.resource,
-            ...(entityId ? { entityId } : {}),
-            description: data.details || data.description,
-            metadata: data.metadata as any,
-            ip: data.ip,
-            userAgent: data.userAgent,
-        },
+    await db.insert(activityLogs).values({
+        userId: data.userId,
+        action: data.action,
+        entity: data.entity || data.resource,
+        ...(entityId ? { entityId } : {}),
+        description: data.details || data.description,
+        metadata: data.metadata as any,
+        ip: data.ip,
+        userAgent: data.userAgent,
     });
 }
 
@@ -115,6 +112,35 @@ async function processActivityLog(data: {
 // ═══════════════════════════════════════════════════════════════════════════
 function handleCacheInvalidation(pattern: string): void {
     cache.delPattern(pattern).catch(() => {});
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Notification Worker
+// Persists notifications to DB and pushes via Socket.IO
+// ═══════════════════════════════════════════════════════════════════════════
+async function processNotification(data: {
+    userId: string;
+    type: string;
+    title: string;
+    message: string;
+    data?: Record<string, unknown>;
+}): Promise<void> {
+    const [notification] = await db.insert(notifications).values({
+        userId: data.userId,
+        type: data.type,
+        title: data.title,
+        message: data.message,
+        data: data.data || null,
+    }).returning();
+
+    SocketEventEmitter.emitToUser(data.userId, 'notification:new', {
+        id: notification.id,
+        type: data.type,
+        title: data.title,
+        message: data.message,
+        data: data.data,
+        createdAt: notification.createdAt,
+    });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -128,7 +154,8 @@ export function startWorkers(): void {
 
     consume(QUEUES.STOCK_MOVEMENT, processStockMovement);
     consume(QUEUES.ACTIVITY_LOG, processActivityLog);
+    consume(QUEUES.NOTIFICATION, processNotification);
     subscribeCacheInvalidation(handleCacheInvalidation);
 
-    console.log('✅ Queue workers started: stock-movement, activity-log, cache-invalidation');
+    console.log('✅ Queue workers started: stock-movement, activity-log, notification, cache-invalidation');
 }

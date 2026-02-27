@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1772126493939,
+      "tag": "0000_milky_overlord",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1772133227507,
+      "tag": "0001_jazzy_metal_master",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1772136627663,
+      "tag": "0002_certain_malice",
+      "breakpoints": true
+    }
+  ]
+}

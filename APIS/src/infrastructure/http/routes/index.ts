@@ -26,9 +26,15 @@ import { restaurantRoutes } from '@/modules/restaurant/presentation/routes';
 import { paymentRoutes } from '@/modules/payments/presentation/routes';
 import { adminRoutes } from '@/modules/admin/presentation/routes';
 import { documentRoutes } from '@/modules/documents/presentation/routes';
+import { uploadRoutes } from '@/infrastructure/services/upload.routes';
+import { notificationRoutes } from '@/infrastructure/services/notification.routes';
 
 export function setupRoutes(app: Application): void {
     const apiRouter = Router();
+
+    // Infrastructure routes
+    apiRouter.use('/upload', uploadRoutes);
+    apiRouter.use('/notifications', notificationRoutes);
 
     // Mount module routes
     apiRouter.use('/auth', authRoutes);

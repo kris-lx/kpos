@@ -1,10 +1,12 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// Staff Module - Routes
+// Staff Module - Routes (Drizzle ORM + PostgreSQL)
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, branchFilter, applyScopeFilter, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
-import { prisma } from '@/config/database.config';
+import { authenticate, authorize, branchFilter, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { db } from '@/config/database.config';
+import { users, userStores, roles, branches } from '@/db/schema/tables';
+import { eq, and, or, ilike, inArray, notInArray, desc, asc, count } from 'drizzle-orm';
 import argon2 from 'argon2';
 
 export const staffRoutes = Router();
@@ -16,78 +18,71 @@ staffRoutes.get('/', authenticate, authorize('staff:read'), branchFilter(), asyn
         const skip = (Number(page) - 1) * Number(limit);
         const filter = (req as any).branchFilter;
 
-        const where: Record<string, unknown> = {};
         const authUser = (req as any).authUser;
         const isSuperAdmin = authUser?.isSuperAdmin;
 
-        // Super admins see all; others scoped to their store
+        const conditions: any[] = [];
+        let scopedUserIds: string[] | null = null;
+
         if (!isSuperAdmin) {
-            // Scope by storeId first (store-level isolation)
             const activeStoreId = authUser?.activeStoreId;
             if (activeStoreId) {
-                where.storeId = activeStoreId;
+                const usList = await db.query.userStores.findMany({
+                    where: eq(userStores.storeId, activeStoreId),
+                    columns: { userId: true },
+                });
+                scopedUserIds = usList.map(us => us.userId);
             } else if (filter?.branchIds?.length) {
-                // Fall back to branch-level filter
                 if (branchId && !filter.branchIds.includes(String(branchId))) {
-                    return res.status(403).json({
-                        success: false,
-                        error: { code: 'FORBIDDEN', message: 'No access to this branch' }
-                    });
+                    return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
                 }
-                where.branchId = branchId ? String(branchId) : { in: filter.branchIds };
+                const targetBranchIds = branchId ? [String(branchId)] : filter.branchIds;
+                const usList = await db.query.userStores.findMany({
+                    where: inArray(userStores.branchId, targetBranchIds),
+                    columns: { userId: true },
+                });
+                scopedUserIds = usList.map(us => us.userId);
             } else if (branchId) {
-                where.branchId = String(branchId);
+                conditions.push(eq(users.branchId, String(branchId)));
             }
-            // Exclude super admins from non-superadmin views
-            where.isSuperAdmin = false;
+            conditions.push(eq(users.isSuperAdmin, false));
+            conditions.push(notInArray(users.role, ['super_admin', 'admin']));
         } else if (branchId) {
-            where.branchId = String(branchId);
+            conditions.push(eq(users.branchId, String(branchId)));
         }
-        
-        if (search) {
-            where.OR = [
-                { name: { contains: String(search), mode: 'insensitive' } },
-                { email: { contains: String(search), mode: 'insensitive' } },
-                { phone: { contains: String(search) } },
-            ];
-        }
-        if (role) where.role = String(role);
-        if (status === 'active') where.isActive = true;
-        if (status === 'inactive') where.isActive = false;
 
-        const [staff, total] = await Promise.all([
-            prisma.user.findMany({
-                where,
-                skip,
-                take: Number(limit),
-                select: {
-                    id: true,
-                    email: true,
-                    name: true,
-                    phone: true,
-                    avatar: true,
-                    role: true,
-                    branchId: true,
-                    isActive: true,
-                    lastLoginAt: true,
-                    createdAt: true,
-                    branch: { select: { name: true } },
-                    roleRelation: { select: { name: true, displayName: true } },
-                },
-                orderBy: { createdAt: 'desc' },
+        if (scopedUserIds !== null) {
+            if (scopedUserIds.length === 0) {
+                return res.json({ success: true, data: [], meta: { page: Number(page), limit: Number(limit), total: 0, totalPages: 0 } });
+            }
+            conditions.push(inArray(users.id, scopedUserIds));
+        }
+
+        if (search) {
+            const s = String(search);
+            conditions.push(or(ilike(users.name, `%${s}%`), ilike(users.email, `%${s}%`), ilike(users.phone, `%${s}%`)));
+        }
+        if (role) conditions.push(eq(users.role, String(role)));
+        if (status === 'active') conditions.push(eq(users.isActive, true));
+        if (status === 'inactive') conditions.push(eq(users.isActive, false));
+
+        const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+        const [staffRows, [{ value: total }]] = await Promise.all([
+            db.query.users.findMany({
+                where: whereClause,
+                offset: skip,
+                limit: Number(limit),
+                orderBy: desc(users.createdAt),
+                with: { branch: true, roleRelation: true },
             }),
-            prisma.user.count({ where }),
+            db.select({ value: count() }).from(users).where(whereClause),
         ]);
 
         res.json({
             success: true,
-            data: staff,
-            meta: {
-                page: Number(page),
-                limit: Number(limit),
-                total,
-                totalPages: Math.ceil(total / Number(limit)),
-            },
+            data: staffRows,
+            meta: { page: Number(page), limit: Number(limit), total, totalPages: Math.ceil(total / Number(limit)) },
         });
     } catch (error) {
         next(error);
@@ -99,16 +94,32 @@ staffRoutes.get('/', authenticate, authorize('staff:read'), branchFilter(), asyn
 staffRoutes.get('/roles/list', authenticate, async (req, res, next) => {
     try {
         const user = (req as any).authUser || req.user!;
-        const isAdmin = user.isSuperAdmin || user.role === 'admin';
-        // Non-admin users (store_owner, branch_admin, etc.) cannot assign system-level roles
-        const where: Record<string, unknown> = isAdmin
-            ? {}
-            : { name: { notIn: ['super_admin', 'admin', 'store_owner'] }, isSystem: false };
-        const roles = await prisma.role.findMany({
-            where,
-            orderBy: { name: 'asc' },
-        });
-        res.json({ success: true, data: roles });
+        const isSuperAdmin = user.isSuperAdmin;
+        const isAdmin = isSuperAdmin || user.role === 'admin';
+        const isStoreOwner = user.role === 'store_owner';
+
+        let roleRows;
+        if (isSuperAdmin || isAdmin) {
+            // Super admin / admin sees all roles
+            roleRows = await db.query.roles.findMany({ orderBy: asc(roles.name) });
+        } else if (isStoreOwner) {
+            // Store owner can assign staff-level system roles (cashier, manager, staff, etc.)
+            // but NOT super_admin, admin, or store_owner
+            roleRows = await db.query.roles.findMany({
+                where: notInArray(roles.name, ['super_admin', 'admin', 'store_owner']),
+                orderBy: asc(roles.name),
+            });
+        } else {
+            // Other roles: only non-system, non-privileged
+            roleRows = await db.query.roles.findMany({
+                where: and(
+                    notInArray(roles.name, ['super_admin', 'admin', 'store_owner']),
+                    eq(roles.isSystem, false),
+                ),
+                orderBy: asc(roles.name),
+            });
+        }
+        res.json({ success: true, data: roleRows });
     } catch (error) {
         next(error);
     }
@@ -120,17 +131,17 @@ staffRoutes.get('/branches/list', authenticate, async (req, res, next) => {
     try {
         const user = req.user!;
         const isAdmin = user.isSuperAdmin || user.role === 'admin';
-        const where: Record<string, unknown> = { isActive: true };
-        // Non-admin users only see their accessible branches
+
+        const conditions = [eq(branches.isActive, true)];
         if (!isAdmin && req.authUser?.accessibleBranchIds?.length) {
-            where.id = { in: req.authUser.accessibleBranchIds };
+            conditions.push(inArray(branches.id, req.authUser.accessibleBranchIds));
         }
-        const branches = await prisma.branch.findMany({
-            where,
-            select: { id: true, name: true, code: true },
-            orderBy: { name: 'asc' },
+
+        const branchRows = await db.query.branches.findMany({
+            where: and(...conditions),
+            orderBy: asc(branches.name),
         });
-        res.json({ success: true, data: branches });
+        res.json({ success: true, data: branchRows });
     } catch (error) {
         next(error);
     }
@@ -139,22 +150,12 @@ staffRoutes.get('/branches/list', authenticate, async (req, res, next) => {
 // Get staff by ID
 staffRoutes.get('/:id', authenticate, authorize('staff:read'), async (req, res, next) => {
     try {
-        const staff = await prisma.user.findUnique({
-            where: { id: req.params.id },
-            select: {
-                id: true,
-                email: true,
-                name: true,
-                phone: true,
-                avatar: true,
-                role: true,
-                branchId: true,
-                isActive: true,
-                lastLoginAt: true,
-                createdAt: true,
-                branch: { select: { id: true, name: true } },
-                roleRelation: { select: { id: true, name: true, displayName: true, permissions: true } },
-            },
+        const authUser = (req as any).authUser;
+        const isSuperAdmin = authUser?.isSuperAdmin;
+
+        const staff = await db.query.users.findFirst({
+            where: eq(users.id, req.params.id),
+            with: { branch: true, roleRelation: true },
         });
 
         if (!staff) {
@@ -162,7 +163,26 @@ staffRoutes.get('/:id', authenticate, authorize('staff:read'), async (req, res, 
             return;
         }
 
-        res.json({ success: true, data: staff });
+        // Non-superadmins cannot view super_admin or admin users
+        if (!isSuperAdmin && (staff.isSuperAdmin || staff.role === 'super_admin' || staff.role === 'admin')) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot view this user' } });
+            return;
+        }
+
+        // Non-superadmins can only view users in their own store
+        if (!isSuperAdmin && authUser?.activeStoreId) {
+            const hasAccess = await db.query.userStores.findFirst({
+                where: and(eq(userStores.userId, staff.id), eq(userStores.storeId, authUser.activeStoreId)),
+            });
+            if (!hasAccess) {
+                res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'User not in your store' } });
+                return;
+            }
+        }
+
+        // Strip isSuperAdmin from response
+        const { isSuperAdmin: _isSA, ...staffData } = staff;
+        res.json({ success: true, data: staffData });
     } catch (error) {
         next(error);
     }
@@ -171,7 +191,9 @@ staffRoutes.get('/:id', authenticate, authorize('staff:read'), async (req, res, 
 // Create staff
 staffRoutes.post('/', authenticate, authorize('staff:create'), async (req, res, next) => {
     try {
-        const { email, password, name, phone, role, branchId, roleId, isActive, permissions } = req.body;
+        const { email, password, name, phone, role, branchId, storeId, roleId, isActive, permissions } = req.body;
+        const authUser = (req as any).authUser;
+        const creatorStoreId = storeId || authUser?.activeStoreId || undefined;
 
         if (!email || !password || !name) {
             res.status(400).json({ success: false, error: { code: 'VAL_001', message: 'Email, password, and name are required' } });
@@ -179,42 +201,48 @@ staffRoutes.post('/', authenticate, authorize('staff:create'), async (req, res, 
         }
 
         // Check if email exists
-        const existing = await prisma.user.findUnique({ where: { email } });
+        const existing = await db.query.users.findFirst({ where: eq(users.email, email) });
         if (existing) {
             res.status(400).json({ success: false, error: { code: 'VAL_002', message: 'Email already exists' } });
             return;
         }
 
-        // Hash password
         const hashedPassword = await argon2.hash(password);
 
-        // Sanitize ObjectID fields - empty strings cause Malformed ObjectID
         const sanitizedBranchId = branchId && branchId.trim() !== '' ? branchId : (req.user as any)?.branchId || undefined;
         const sanitizedRoleId = roleId && roleId.trim() !== '' ? roleId : undefined;
+        const sanitizedStoreId = creatorStoreId && creatorStoreId.trim() !== '' ? creatorStoreId : undefined;
 
-        const staff = await prisma.user.create({
-            data: {
-                email,
-                password: hashedPassword,
-                name,
-                phone: phone || undefined,
-                role: role || 'staff',
-                branchId: sanitizedBranchId,
-                roleId: sanitizedRoleId,
-                isActive: isActive !== undefined ? isActive : true,
-                permissions: Array.isArray(permissions) ? permissions : undefined,
-            },
-            select: {
-                id: true,
-                email: true,
-                name: true,
-                phone: true,
-                role: true,
-                branchId: true,
-                isActive: true,
-                createdAt: true,
-            },
-        });
+        const [staff] = await db.insert(users).values({
+            email,
+            password: hashedPassword,
+            name,
+            phone: phone || null,
+            role: role || 'staff',
+            branchId: sanitizedBranchId,
+            roleId: sanitizedRoleId,
+            isActive: isActive !== undefined ? isActive : true,
+            permissions: Array.isArray(permissions) ? permissions : [],
+        }).returning();
+
+        // Auto-create UserStore record so staff is scoped to the store
+        if (sanitizedStoreId && sanitizedBranchId) {
+            const existingUs = await db.query.userStores.findFirst({
+                where: and(eq(userStores.userId, staff.id), eq(userStores.storeId, sanitizedStoreId)),
+            });
+            if (!existingUs) {
+                await db.insert(userStores).values({
+                    userId: staff.id,
+                    storeId: sanitizedStoreId,
+                    branchId: sanitizedBranchId,
+                    canRead: true,
+                    canWrite: true,
+                    canDelete: false,
+                    canManage: false,
+                    isDefault: true,
+                });
+            }
+        }
 
         res.status(201).json({ success: true, data: staff });
     } catch (error) {
@@ -227,30 +255,21 @@ staffRoutes.put('/:id', authenticate, authorize('staff:update'), async (req, res
     try {
         const { password, id, _id, createdAt, updatedAt, ...updateData } = req.body;
 
-        // If password is being updated, hash it
         if (password) {
             updateData.password = await argon2.hash(password);
         }
 
-        // Remove empty string ObjectID fields to prevent Malformed ObjectID error
+        // Remove empty string fields
         if (updateData.roleId === '' || updateData.roleId === null) delete updateData.roleId;
         if (updateData.branchId === '' || updateData.branchId === null) delete updateData.branchId;
         if (updateData.storeId === '' || updateData.storeId === null) delete updateData.storeId;
 
-        const staff = await prisma.user.update({
-            where: { id: req.params.id },
-            data: updateData,
-            select: {
-                id: true,
-                email: true,
-                name: true,
-                phone: true,
-                role: true,
-                branchId: true,
-                isActive: true,
-                createdAt: true,
-            },
-        });
+        updateData.updatedAt = new Date();
+
+        const [staff] = await db.update(users)
+            .set(updateData)
+            .where(eq(users.id, req.params.id))
+            .returning();
 
         res.json({ success: true, data: staff });
     } catch (error) {
@@ -261,10 +280,9 @@ staffRoutes.put('/:id', authenticate, authorize('staff:update'), async (req, res
 // Delete staff (soft delete)
 staffRoutes.delete('/:id', authenticate, authorize('staff:delete'), async (req, res, next) => {
     try {
-        await prisma.user.update({
-            where: { id: req.params.id },
-            data: { isActive: false },
-        });
+        await db.update(users)
+            .set({ isActive: false, updatedAt: new Date() })
+            .where(eq(users.id, req.params.id));
 
         res.json({ success: true, message: 'Staff deactivated successfully' });
     } catch (error) {
@@ -275,23 +293,9 @@ staffRoutes.delete('/:id', authenticate, authorize('staff:delete'), async (req, 
 // Get staff member permissions (uses staff:read instead of users:read)
 staffRoutes.get('/:id/permissions', authenticate, authorize('staff:read'), async (req, res, next) => {
     try {
-        const user = await prisma.user.findUnique({
-            where: { id: req.params.id },
-            select: {
-                id: true,
-                name: true,
-                email: true,
-                permissions: true,
-                isSuperAdmin: true,
-                roleRelation: {
-                    select: {
-                        id: true,
-                        name: true,
-                        displayName: true,
-                        permissions: true,
-                    }
-                }
-            }
+        const user = await db.query.users.findFirst({
+            where: eq(users.id, req.params.id),
+            with: { roleRelation: true },
         });
 
         if (!user) {
@@ -374,19 +378,10 @@ staffRoutes.put('/:id/permissions', authenticate, authorize('staff:update'), asy
 
         const validPermissions = permissions.filter((p: unknown) => typeof p === 'string');
 
-        const user = await prisma.user.update({
-            where: { id: req.params.id },
-            data: { permissions: validPermissions },
-            select: {
-                id: true,
-                name: true,
-                email: true,
-                permissions: true,
-                roleRelation: {
-                    select: { id: true, name: true, displayName: true, permissions: true }
-                }
-            }
-        });
+        const [user] = await db.update(users)
+            .set({ permissions: validPermissions, updatedAt: new Date() })
+            .where(eq(users.id, req.params.id))
+            .returning();
 
         res.json({ success: true, data: user, message: 'Staff permissions updated successfully' });
     } catch (error) {

@@ -3,8 +3,10 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize } from '@/infrastructure/http/middleware/auth.middleware';
-import { prisma } from '@/config/database.config';
+import { authenticate, authorize, branchFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { db } from '@/config/database.config';
+import { users, userStores, branches, transactions, menuPermissions, rules, roleRules } from '@/db/schema/tables';
+import { eq, and, or, ilike, inArray, notInArray, desc, asc, count } from 'drizzle-orm';
 import argon2 from 'argon2';
 
 export const userRoutes = Router();
@@ -12,55 +14,62 @@ export const userRoutes = Router();
 // ═══════════════════════════════════════════════════════════════════════════
 // GET ALL USERS
 // ═══════════════════════════════════════════════════════════════════════════
-userRoutes.get('/', authenticate, authorize('users:read'), async (req, res) => {
+userRoutes.get('/', authenticate, authorize('users:read'), branchFilter(), async (req, res) => {
     try {
         const { page = '1', limit = '50', search, branchId, role, isActive } = req.query;
         const skip = (parseInt(page as string) - 1) * parseInt(limit as string);
+        const authUser = (req as any).authUser;
+        const isSuperAdmin = authUser?.isSuperAdmin;
 
-        const where: Record<string, unknown> = {};
-
-        if (search) {
-            where.OR = [
-                { name: { contains: search as string, mode: 'insensitive' } },
-                { email: { contains: search as string, mode: 'insensitive' } },
-                { phone: { contains: search as string, mode: 'insensitive' } },
-            ];
+        // Non-superadmins: scope to their store and hide system admins
+        const conditions: any[] = [];
+        let scopedUserIds: string[] | null = null;
+        if (!isSuperAdmin) {
+            const activeStoreId = authUser?.activeStoreId;
+            if (activeStoreId) {
+                const usList = await db.query.userStores.findMany({ where: eq(userStores.storeId, activeStoreId), columns: { userId: true } });
+                scopedUserIds = usList.map(us => us.userId);
+            } else {
+                const filter = (req as any).branchFilter;
+                if (filter?.branchIds?.length) {
+                    const usList = await db.query.userStores.findMany({ where: inArray(userStores.branchId, filter.branchIds), columns: { userId: true } });
+                    scopedUserIds = usList.map(us => us.userId);
+                }
+            }
+            conditions.push(eq(users.isSuperAdmin, false));
+            conditions.push(notInArray(users.role, ['super_admin', 'admin']));
         }
 
-        if (branchId) where.branchId = branchId;
-        if (role) where.role = role;
-        if (isActive !== undefined) where.isActive = isActive === 'true';
+        if (scopedUserIds !== null) {
+            if (scopedUserIds.length === 0) return res.json({ success: true, data: [], meta: { total: 0, page: parseInt(page as string), limit: parseInt(limit as string), totalPages: 0 } });
+            conditions.push(inArray(users.id, scopedUserIds));
+        }
 
-        const [users, total] = await Promise.all([
-            prisma.user.findMany({
-                where,
-                skip,
-                take: parseInt(limit as string),
-                orderBy: { createdAt: 'desc' },
-                select: {
-                    id: true,
-                    email: true,
-                    name: true,
-                    phone: true,
-                    avatar: true,
-                    role: true,
-                    isActive: true,
-                    lastLoginAt: true,
-                    createdAt: true,
-                    branch: {
-                        select: { id: true, name: true }
-                    },
-                    roleRelation: {
-                        select: { id: true, name: true, displayName: true }
-                    }
-                }
+        if (search) {
+            const s = String(search);
+            conditions.push(or(ilike(users.name, `%${s}%`), ilike(users.email, `%${s}%`), ilike(users.phone, `%${s}%`)));
+        }
+
+        if (branchId) conditions.push(eq(users.branchId, String(branchId)));
+        if (role) conditions.push(eq(users.role, String(role)));
+        if (isActive !== undefined) conditions.push(eq(users.isActive, isActive === 'true'));
+
+        const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+        const [userRows, [{ value: total }]] = await Promise.all([
+            db.query.users.findMany({
+                where: whereClause,
+                offset: skip,
+                limit: parseInt(limit as string),
+                orderBy: desc(users.createdAt),
+                with: { branch: true, roleRelation: true },
             }),
-            prisma.user.count({ where })
+            db.select({ value: count() }).from(users).where(whereClause),
         ]);
 
         res.json({
             success: true,
-            data: users,
+            data: userRows,
             meta: {
                 total,
                 page: parseInt(page as string),
@@ -82,28 +91,9 @@ userRoutes.get('/', authenticate, authorize('users:read'), async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 userRoutes.get('/:id', authenticate, authorize('users:read'), async (req, res) => {
     try {
-        const user = await prisma.user.findUnique({
-            where: { id: req.params.id },
-            select: {
-                id: true,
-                email: true,
-                name: true,
-                phone: true,
-                avatar: true,
-                role: true,
-                isActive: true,
-                emailVerified: true,
-                twoFAEnabled: true,
-                lastLoginAt: true,
-                createdAt: true,
-                updatedAt: true,
-                branch: {
-                    select: { id: true, name: true, code: true }
-                },
-                roleRelation: {
-                    select: { id: true, name: true, displayName: true, permissions: true }
-                }
-            }
+        const user = await db.query.users.findFirst({
+            where: eq(users.id, req.params.id),
+            with: { branch: true, roleRelation: true },
         });
 
         if (!user) {
@@ -139,7 +129,7 @@ userRoutes.post('/', authenticate, authorize('users:create'), async (req, res) =
         }
 
         // Check if email exists
-        const existing = await prisma.user.findUnique({ where: { email } });
+        const existing = await db.query.users.findFirst({ where: eq(users.email, email) });
         if (existing) {
             return res.status(400).json({
                 success: false,
@@ -148,7 +138,7 @@ userRoutes.post('/', authenticate, authorize('users:create'), async (req, res) =
         }
 
         // Check if branch exists
-        const branch = await prisma.branch.findUnique({ where: { id: branchId } });
+        const branch = await db.query.branches.findFirst({ where: eq(branches.id, branchId) });
         if (!branch) {
             return res.status(400).json({
                 success: false,
@@ -159,29 +149,17 @@ userRoutes.post('/', authenticate, authorize('users:create'), async (req, res) =
         // Hash password
         const hashedPassword = await argon2.hash(password);
 
-        const user = await prisma.user.create({
-            data: {
-                email,
-                password: hashedPassword,
-                name,
-                phone,
-                avatar,
-                role: role || 'staff',
-                roleId,
-                branchId,
-                isActive
-            },
-            select: {
-                id: true,
-                email: true,
-                name: true,
-                phone: true,
-                role: true,
-                isActive: true,
-                createdAt: true,
-                branch: { select: { id: true, name: true } }
-            }
-        });
+        const [user] = await db.insert(users).values({
+            email,
+            password: hashedPassword,
+            name,
+            phone,
+            avatar,
+            role: role || 'staff',
+            roleId,
+            branchId,
+            isActive,
+        }).returning();
 
         res.status(201).json({ success: true, data: user });
     } catch (error) {
@@ -202,7 +180,7 @@ userRoutes.put('/:id', authenticate, authorize('users:update'), async (req, res)
         const { email, password, name, phone, avatar, role, roleId, branchId, isActive } = req.body;
 
         // Check if user exists
-        const existing = await prisma.user.findUnique({ where: { id } });
+        const existing = await db.query.users.findFirst({ where: eq(users.id, id) });
         if (!existing) {
             return res.status(404).json({
                 success: false,
@@ -212,7 +190,7 @@ userRoutes.put('/:id', authenticate, authorize('users:update'), async (req, res)
 
         // Check if new email conflicts
         if (email && email !== existing.email) {
-            const emailExists = await prisma.user.findUnique({ where: { email } });
+            const emailExists = await db.query.users.findFirst({ where: eq(users.email, email) });
             if (emailExists) {
                 return res.status(400).json({
                     success: false,
@@ -222,7 +200,7 @@ userRoutes.put('/:id', authenticate, authorize('users:update'), async (req, res)
         }
 
         // Build update data
-        const updateData: Record<string, unknown> = {};
+        const updateData: Record<string, unknown> = { updatedAt: new Date() };
         if (email) updateData.email = email;
         if (name) updateData.name = name;
         if (phone !== undefined) updateData.phone = phone;
@@ -232,27 +210,14 @@ userRoutes.put('/:id', authenticate, authorize('users:update'), async (req, res)
         if (branchId) updateData.branchId = branchId;
         if (isActive !== undefined) updateData.isActive = isActive;
 
-        // Hash new password if provided
         if (password) {
             updateData.password = await argon2.hash(password);
         }
 
-        const user = await prisma.user.update({
-            where: { id },
-            data: updateData,
-            select: {
-                id: true,
-                email: true,
-                name: true,
-                phone: true,
-                avatar: true,
-                role: true,
-                isActive: true,
-                updatedAt: true,
-                branch: { select: { id: true, name: true } },
-                roleRelation: { select: { id: true, name: true, displayName: true } }
-            }
-        });
+        const [user] = await db.update(users)
+            .set(updateData as any)
+            .where(eq(users.id, id))
+            .returning();
 
         res.json({ success: true, data: user });
     } catch (error) {
@@ -272,7 +237,7 @@ userRoutes.delete('/:id', authenticate, authorize('users:delete'), async (req, r
         const { id } = req.params;
 
         // Check if user exists
-        const existing = await prisma.user.findUnique({ where: { id } });
+        const existing = await db.query.users.findFirst({ where: eq(users.id, id) });
         if (!existing) {
             return res.status(404).json({
                 success: false,
@@ -290,26 +255,15 @@ userRoutes.delete('/:id', authenticate, authorize('users:delete'), async (req, r
         }
 
         // Check for related transactions
-        const transactionCount = await prisma.transaction.count({
-            where: { userId: id }
-        });
+        const [{ value: transactionCount }] = await db.select({ value: count() }).from(transactions).where(eq(transactions.userId, id));
 
         if (transactionCount > 0) {
-            // Soft delete by deactivating
-            await prisma.user.update({
-                where: { id },
-                data: { isActive: false }
-            });
-
-            return res.json({
-                success: true,
-                message: 'User deactivated (has related transactions)',
-                deactivated: true
-            });
+            await db.update(users).set({ isActive: false, updatedAt: new Date() }).where(eq(users.id, id));
+            return res.json({ success: true, message: 'User deactivated (has related transactions)', deactivated: true });
         }
 
         // Hard delete if no transactions
-        await prisma.user.delete({ where: { id } });
+        await db.delete(users).where(eq(users.id, id));
 
         res.json({ success: true, message: 'User deleted successfully' });
     } catch (error) {
@@ -328,7 +282,7 @@ userRoutes.patch('/:id/toggle-active', authenticate, authorize('users:update'), 
     try {
         const { id } = req.params;
 
-        const existing = await prisma.user.findUnique({ where: { id } });
+        const existing = await db.query.users.findFirst({ where: eq(users.id, id) });
         if (!existing) {
             return res.status(404).json({
                 success: false,
@@ -336,16 +290,10 @@ userRoutes.patch('/:id/toggle-active', authenticate, authorize('users:update'), 
             });
         }
 
-        const user = await prisma.user.update({
-            where: { id },
-            data: { isActive: !existing.isActive },
-            select: {
-                id: true,
-                name: true,
-                email: true,
-                isActive: true
-            }
-        });
+        const [user] = await db.update(users)
+            .set({ isActive: !existing.isActive, updatedAt: new Date() })
+            .where(eq(users.id, id))
+            .returning();
 
         res.json({ success: true, data: user });
     } catch (error) {
@@ -362,23 +310,9 @@ userRoutes.patch('/:id/toggle-active', authenticate, authorize('users:update'), 
 // ═══════════════════════════════════════════════════════════════════════════
 userRoutes.get('/:id/permissions', authenticate, authorize('users:read'), async (req, res) => {
     try {
-        const user = await prisma.user.findUnique({
-            where: { id: req.params.id },
-            select: {
-                id: true,
-                name: true,
-                email: true,
-                permissions: true,
-                isSuperAdmin: true,
-                roleRelation: {
-                    select: {
-                        id: true,
-                        name: true,
-                        displayName: true,
-                        permissions: true
-                    }
-                }
-            }
+        const user = await db.query.users.findFirst({
+            where: eq(users.id, req.params.id),
+            with: { roleRelation: true },
         });
 
         if (!user) {
@@ -465,24 +399,10 @@ userRoutes.put('/:id/permissions', authenticate, authorize('users:update'), asyn
         // Validate that all permissions are strings
         const validPermissions = permissions.filter(p => typeof p === 'string');
 
-        const user = await prisma.user.update({
-            where: { id: req.params.id },
-            data: { permissions: validPermissions },
-            select: {
-                id: true,
-                name: true,
-                email: true,
-                permissions: true,
-                roleRelation: {
-                    select: {
-                        id: true,
-                        name: true,
-                        displayName: true,
-                        permissions: true
-                    }
-                }
-            }
-        });
+        const [user] = await db.update(users)
+            .set({ permissions: validPermissions, updatedAt: new Date() })
+            .where(eq(users.id, req.params.id))
+            .returning();
 
         res.json({
             success: true,
@@ -681,16 +601,13 @@ userRoutes.get('/me/menu', authenticate, async (req, res) => {
         }
 
         // Try to load from DB
-        let menus = await prisma.menuPermission.findMany({
-            where: { isActive: true, parentId: null },
-            orderBy: { order: 'asc' },
-            include: {
-                children: {
-                    where: { isActive: true },
-                    orderBy: { order: 'asc' }
-                }
-            }
+        let menus = await db.query.menuPermissions.findMany({
+            where: and(eq(menuPermissions.isActive, true), eq(menuPermissions.parentId, null as any)),
+            orderBy: asc(menuPermissions.order),
+            with: { children: true },
         });
+        // Filter children to only active
+        menus = menus.map(m => ({ ...m, children: (m.children || []).filter((c: any) => c.isActive).sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0)) }));
 
         if (menus.length === 0) {
             // No DB data — return empty (admin must seed first)
@@ -725,9 +642,9 @@ userRoutes.get('/me/rules', authenticate, async (req, res) => {
 
         // Super Admin gets all rules with full CRUD
         if (authUser.isSuperAdmin) {
-            const allRules = await prisma.rule.findMany({
-                where: { isActive: true },
-                orderBy: { order: 'asc' },
+            const allRules = await db.query.rules.findMany({
+                where: eq(rules.isActive, true),
+                orderBy: asc(rules.order),
             });
             const data = allRules.map(rule => ({
                 name: rule.name,
@@ -742,9 +659,9 @@ userRoutes.get('/me/rules', authenticate, async (req, res) => {
         }
 
         // Load user's role
-        const user = await prisma.user.findUnique({
-            where: { id: authUser.userId },
-            select: { roleId: true },
+        const user = await db.query.users.findFirst({
+            where: eq(users.id, authUser.userId),
+            columns: { roleId: true },
         });
 
         if (!user?.roleId) {
@@ -752,23 +669,21 @@ userRoutes.get('/me/rules', authenticate, async (req, res) => {
         }
 
         // Load role's rules with CRUD flags
-        const roleRules = await prisma.roleRule.findMany({
-            where: { roleId: user.roleId },
-            include: {
-                rule: { select: { name: true, displayName: true, module: true, icon: true, routes: true, permissions: true, order: true, isActive: true } },
-            },
+        const rrRows = await db.query.roleRules.findMany({
+            where: eq(roleRules.roleId, user.roleId),
+            with: { rule: true },
         });
 
-        const data = roleRules
-            .filter(rr => rr.rule.isActive)
-            .sort((a, b) => (a.rule.order ?? 0) - (b.rule.order ?? 0))
+        const data = rrRows
+            .filter(rr => rr.rule?.isActive)
+            .sort((a, b) => (a.rule?.order ?? 0) - (b.rule?.order ?? 0))
             .map(rr => ({
-                name: rr.rule.name,
-                displayName: rr.rule.displayName,
-                module: rr.rule.module,
-                icon: rr.rule.icon,
-                routes: rr.rule.routes,
-                permissions: rr.rule.permissions,
+                name: rr.rule!.name,
+                displayName: rr.rule!.displayName,
+                module: rr.rule!.module,
+                icon: rr.rule!.icon,
+                routes: rr.rule!.routes,
+                permissions: rr.rule!.permissions,
                 crud: {
                     read: rr.canRead,
                     create: rr.canCreate,
@@ -789,31 +704,11 @@ userRoutes.get('/me/rules', authenticate, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 userRoutes.get('/me/profile', authenticate, async (req, res) => {
     try {
-        const currentUser = (req as any).user;
+        const currentUser = req.authUser!;
 
-        const user = await prisma.user.findUnique({
-            where: { id: currentUser.id },
-            select: {
-                id: true,
-                email: true,
-                name: true,
-                phone: true,
-                avatar: true,
-                role: true,
-                isActive: true,
-                twoFAEnabled: true,
-                lastLoginAt: true,
-                createdAt: true,
-                branch: { select: { id: true, name: true, code: true } },
-                roleRelation: {
-                    select: {
-                        id: true,
-                        name: true,
-                        displayName: true,
-                        permissions: true
-                    }
-                }
-            }
+        const user = await db.query.users.findFirst({
+            where: eq(users.id, currentUser.userId),
+            with: { branch: true, roleRelation: true },
         });
 
         if (!user) {
@@ -838,7 +733,7 @@ userRoutes.get('/me/profile', authenticate, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 userRoutes.put('/me/profile', authenticate, async (req, res) => {
     try {
-        const currentUser = (req as any).user;
+        const currentUser = req.authUser!;
         const { name, phone, avatar } = req.body;
 
         const updateData: Record<string, unknown> = {};
@@ -846,19 +741,10 @@ userRoutes.put('/me/profile', authenticate, async (req, res) => {
         if (phone !== undefined) updateData.phone = phone;
         if (avatar !== undefined) updateData.avatar = avatar;
 
-        const user = await prisma.user.update({
-            where: { id: currentUser.userId },
-            data: updateData,
-            select: {
-                id: true,
-                email: true,
-                name: true,
-                phone: true,
-                avatar: true,
-                role: true,
-                updatedAt: true,
-            }
-        });
+        const [user] = await db.update(users)
+            .set({ ...updateData, updatedAt: new Date() } as any)
+            .where(eq(users.id, currentUser.userId))
+            .returning();
 
         res.json({ success: true, data: user });
     } catch (error) {
@@ -875,7 +761,7 @@ userRoutes.put('/me/profile', authenticate, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 userRoutes.put('/me/password', authenticate, async (req, res) => {
     try {
-        const currentUser = (req as any).user;
+        const currentUser = req.authUser!;
         const { currentPassword, newPassword } = req.body;
 
         if (!currentPassword || !newPassword) {
@@ -892,9 +778,9 @@ userRoutes.put('/me/password', authenticate, async (req, res) => {
             });
         }
 
-        const user = await prisma.user.findUnique({
-            where: { id: currentUser.userId },
-            select: { id: true, password: true }
+        const user = await db.query.users.findFirst({
+            where: eq(users.id, currentUser.userId),
+            columns: { id: true, password: true },
         });
 
         if (!user) {
@@ -913,10 +799,9 @@ userRoutes.put('/me/password', authenticate, async (req, res) => {
         }
 
         const hashedPassword = await argon2.hash(newPassword);
-        await prisma.user.update({
-            where: { id: currentUser.userId },
-            data: { password: hashedPassword }
-        });
+        await db.update(users)
+            .set({ password: hashedPassword, updatedAt: new Date() })
+            .where(eq(users.id, currentUser.userId));
 
         res.json({ success: true, data: { message: 'Password changed successfully' } });
     } catch (error) {
@@ -933,24 +818,22 @@ userRoutes.put('/me/password', authenticate, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 userRoutes.post('/me/avatar', authenticate, async (req, res) => {
     try {
-        const currentUser = (req as any).user;
-        // For now, accept avatar as a base64 string or URL
-        const { avatar } = req.body;
+        const currentUser = req.authUser!;
+        const { url } = req.body;
 
-        if (!avatar) {
+        if (!url) {
             return res.status(400).json({
                 success: false,
-                error: { code: 'VALIDATION_ERROR', message: 'Avatar data is required' }
+                error: { code: 'VALIDATION_ERROR', message: 'Avatar URL is required' }
             });
         }
 
-        const user = await prisma.user.update({
-            where: { id: currentUser.userId },
-            data: { avatar },
-            select: { id: true, avatar: true }
-        });
+        const [user] = await db.update(users)
+            .set({ avatar: url, updatedAt: new Date() })
+            .where(eq(users.id, currentUser.userId))
+            .returning();
 
-        res.json({ success: true, data: user });
+        res.json({ success: true, data: { url: user.avatar } });
     } catch (error) {
         console.error('Update avatar error:', error);
         res.status(500).json({

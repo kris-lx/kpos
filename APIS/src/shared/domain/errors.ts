@@ -9,7 +9,7 @@ export class DatabaseConnectionError extends Error {
     }
 }
 
-export function isPrismaConnectionError(error: unknown): boolean {
+export function isConnectionError(error: unknown): boolean {
     if (error instanceof Error) {
         const msg = error.message.toLowerCase();
         return msg.includes('server selection timeout') ||

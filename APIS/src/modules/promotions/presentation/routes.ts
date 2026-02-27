@@ -3,8 +3,10 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, branchFilter, applyScopeFilter, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
-import { prisma } from '@/config/database.config';
+import { authenticate, authorize, branchFilter, applyScopeFilter, ensureScopeAccess, invalidateQueryCache, buildScopeCondition, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { db } from '@/config/database.config';
+import { coupons, discounts, promotions } from '@/db/schema/tables';
+import { eq, and, or, ilike, isNull, lte, gte, gt, lt, desc, asc, count } from 'drizzle-orm';
 
 export const promotionRoutes = Router();
 
@@ -20,44 +22,39 @@ promotionRoutes.get('/coupons/list', authenticate, branchFilter(), async (req, r
         const now = new Date();
         const filter = (req as any).branchFilter;
 
-        const where: Record<string, unknown> = {};
-        
-        // Apply store scope filter
-        applyScopeFilter(where, filter, 'storeId');
+        const conditions: any[] = [];
+        const scopeCond = buildScopeCondition(filter, { storeId: coupons.storeId }, 'storeId');
+        if (scopeCond) conditions.push(scopeCond);
 
         if (search) {
-            where.OR = [
-                { code: { contains: String(search), mode: 'insensitive' } },
-                { name: { contains: String(search), mode: 'insensitive' } },
-            ];
+            const s = String(search);
+            conditions.push(or(ilike(coupons.code, `%${s}%`), ilike(coupons.name, `%${s}%`)));
         }
 
         if (status === 'active') {
-            where.isActive = true;
-            where.startDate = { lte: now };
-            where.OR = [
-                { endDate: null },
-                { endDate: { gte: now } },
-            ];
+            conditions.push(eq(coupons.isActive, true), lte(coupons.startDate, now));
+            conditions.push(or(isNull(coupons.endDate), gte(coupons.endDate, now)));
         } else if (status === 'expired') {
-            where.endDate = { lt: now };
+            conditions.push(lt(coupons.endDate, now));
         } else if (status === 'paused') {
-            where.isActive = false;
+            conditions.push(eq(coupons.isActive, false));
         }
 
-        const [coupons, total] = await Promise.all([
-            prisma.coupon.findMany({
-                where,
-                skip,
-                take: Number(limit),
-                orderBy: { createdAt: 'desc' },
+        const couponWhere = conditions.length > 0 ? and(...conditions) : undefined;
+
+        const [couponRows, [{ value: total }]] = await Promise.all([
+            db.query.coupons.findMany({
+                where: couponWhere,
+                offset: skip,
+                limit: Number(limit),
+                orderBy: desc(coupons.createdAt),
             }),
-            prisma.coupon.count({ where }),
+            db.select({ value: count() }).from(coupons).where(couponWhere),
         ]);
 
         res.json({
             success: true,
-            data: coupons,
+            data: couponRows,
             meta: {
                 page: Number(page),
                 limit: Number(limit),
@@ -76,8 +73,8 @@ promotionRoutes.post('/coupons/validate', authenticate, async (req, res, next) =
         const { code, subtotal, memberId } = req.body;
         const now = new Date();
 
-        const coupon = await prisma.coupon.findUnique({
-            where: { code },
+        const coupon = await db.query.coupons.findFirst({
+            where: eq(coupons.code, code),
         });
 
         if (!coupon) {
@@ -137,25 +134,18 @@ promotionRoutes.post('/coupons/validate', authenticate, async (req, res, next) =
 promotionRoutes.post('/coupons', authenticate, authorize('promotions:create'), async (req, res, next) => {
     try {
         // Check if code exists
-        const existing = await prisma.coupon.findUnique({ where: { code: req.body.code } });
+        const existing = await db.query.coupons.findFirst({ where: eq(coupons.code, req.body.code) });
         if (existing) {
             res.status(400).json({ success: false, error: { code: 'VAL_002', message: 'Coupon code already exists' } });
             return;
         }
 
-        // Convert date strings to Date objects
         const data = { ...req.body };
         if (data.startDate) data.startDate = new Date(data.startDate);
         if (data.endDate) data.endDate = data.endDate ? new Date(data.endDate) : null;
+        if (req.authUser?.activeStoreId) data.storeId = req.authUser.activeStoreId;
 
-        // Attach storeId from active store
-        if (req.authUser?.activeStoreId) {
-            data.storeId = req.authUser.activeStoreId;
-        }
-
-        const coupon = await prisma.coupon.create({
-            data,
-        });
+        const [coupon] = await db.insert(coupons).values(data).returning();
 
         await invalidateQueryCache('promotions*');
         res.status(201).json({ success: true, data: coupon });
@@ -164,18 +154,18 @@ promotionRoutes.post('/coupons', authenticate, authorize('promotions:create'), a
     }
 });
 
-// Update coupon
+// Update coupon (scope-checked)
 promotionRoutes.put('/coupons/:id', authenticate, authorize('promotions:update'), async (req, res, next) => {
     try {
-        // Convert date strings to Date objects
-        const data = { ...req.body };
+        const existing = await db.query.coupons.findFirst({ where: eq(coupons.id, req.params.id) });
+        if (!existing) return res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Coupon not found' } });
+        if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
+
+        const data = { ...req.body, updatedAt: new Date() };
         if (data.startDate) data.startDate = new Date(data.startDate);
         if (data.endDate !== undefined) data.endDate = data.endDate ? new Date(data.endDate) : null;
 
-        const coupon = await prisma.coupon.update({
-            where: { id: req.params.id },
-            data,
-        });
+        const [coupon] = await db.update(coupons).set(data).where(eq(coupons.id, req.params.id)).returning();
 
         await invalidateQueryCache('promotions*');
         res.json({ success: true, data: coupon });
@@ -184,12 +174,14 @@ promotionRoutes.put('/coupons/:id', authenticate, authorize('promotions:update')
     }
 });
 
-// Delete coupon
+// Delete coupon (scope-checked)
 promotionRoutes.delete('/coupons/:id', authenticate, authorize('promotions:delete'), async (req, res, next) => {
     try {
-        await prisma.coupon.delete({
-            where: { id: req.params.id },
-        });
+        const existing = await db.query.coupons.findFirst({ where: eq(coupons.id, req.params.id) });
+        if (!existing) return res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Coupon not found' } });
+        if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
+
+        await db.delete(coupons).where(eq(coupons.id, req.params.id));
 
         await invalidateQueryCache('promotions*');
         res.json({ success: true, message: 'Coupon deleted successfully' });
@@ -209,30 +201,30 @@ promotionRoutes.get('/discounts', authenticate, branchFilter(), async (req, res,
         const skip = (Number(page) - 1) * Number(limit);
         const filter = (req as any).branchFilter;
         
-        const where: Record<string, unknown> = {};
-        applyScopeFilter(where, filter, 'storeId');
+        const dConditions: any[] = [];
+        const dScopeCond = buildScopeCondition(filter, { storeId: discounts.storeId }, 'storeId');
+        if (dScopeCond) dConditions.push(dScopeCond);
         
         if (search) {
-            where.OR = [
-                { name: { contains: String(search), mode: 'insensitive' } },
-                { description: { contains: String(search), mode: 'insensitive' } },
-            ];
+            const s = String(search);
+            dConditions.push(or(ilike(discounts.name, `%${s}%`), ilike(discounts.description, `%${s}%`)));
         }
-        if (isActive !== undefined) where.isActive = isActive === 'true';
-        if (applyTo) where.applyTo = String(applyTo);
+        if (isActive !== undefined) dConditions.push(eq(discounts.isActive, isActive === 'true'));
+        if (applyTo) dConditions.push(eq(discounts.applyTo, String(applyTo)));
 
-        const [discounts, total] = await Promise.all([
-            prisma.discount.findMany({
-                where,
-                skip,
-                take: Number(limit),
-                orderBy: { createdAt: 'desc' },
+        const dWhere = dConditions.length > 0 ? and(...dConditions) : undefined;
+
+        const [discountRows, [{ value: total }]] = await Promise.all([
+            db.query.discounts.findMany({
+                where: dWhere,
+                offset: skip,
+                limit: Number(limit),
+                orderBy: desc(discounts.createdAt),
             }),
-            prisma.discount.count({ where }),
+            db.select({ value: count() }).from(discounts).where(dWhere),
         ]);
 
-        // Map Prisma fields to frontend expected fields
-        const mappedDiscounts = discounts.map(d => ({
+        const mappedDiscounts = discountRows.map(d => ({
             ...d,
             type: d.discountType,
             value: d.discountValue,
@@ -287,9 +279,7 @@ promotionRoutes.post('/discounts', authenticate, authorize('promotions:create'),
             discountData.storeId = req.authUser.activeStoreId;
         }
 
-        const discount = await prisma.discount.create({
-            data: discountData as any,
-        });
+        const [discount] = await db.insert(discounts).values(discountData as any).returning();
 
         await invalidateQueryCache('promotions*');
         res.status(201).json({ success: true, data: discount });
@@ -299,17 +289,20 @@ promotionRoutes.post('/discounts', authenticate, authorize('promotions:create'),
     }
 });
 
-// Update discount
+// Update discount (scope-checked)
 promotionRoutes.put('/discounts/:id', authenticate, authorize('promotions:update'), async (req, res, next) => {
     try {
-        // Map frontend fields to Prisma model fields - only include known fields
+        const existing = await db.query.discounts.findFirst({ where: eq(discounts.id, req.params.id) });
+        if (!existing) return res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Discount not found' } });
+        if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
+
         const { 
             type, value, startDate, endDate, 
             code, usageLimit, minPurchase, maxDiscount,
             name, description, applyTo, isActive, minQuantity, productIds, categoryIds
         } = req.body;
         
-        const discountData: Record<string, unknown> = {};
+        const discountData: Record<string, unknown> = { updatedAt: new Date() };
         
         if (name !== undefined) discountData.name = name;
         if (description !== undefined) discountData.description = description;
@@ -326,10 +319,7 @@ promotionRoutes.put('/discounts/:id', authenticate, authorize('promotions:update
         if (endDate !== undefined) discountData.endDate = endDate ? new Date(endDate) : null;
         if (usageLimit !== undefined) discountData.usageLimit = usageLimit || null;
         
-        const discount = await prisma.discount.update({
-            where: { id: req.params.id },
-            data: discountData as any,
-        });
+        const [discount] = await db.update(discounts).set(discountData as any).where(eq(discounts.id, req.params.id)).returning();
 
         await invalidateQueryCache('promotions*');
         res.json({ success: true, data: discount });
@@ -339,12 +329,14 @@ promotionRoutes.put('/discounts/:id', authenticate, authorize('promotions:update
     }
 });
 
-// Delete discount
+// Delete discount (scope-checked)
 promotionRoutes.delete('/discounts/:id', authenticate, authorize('promotions:delete'), async (req, res, next) => {
     try {
-        await prisma.discount.delete({
-            where: { id: req.params.id },
-        });
+        const existing = await db.query.discounts.findFirst({ where: eq(discounts.id, req.params.id) });
+        if (!existing) return res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Discount not found' } });
+        if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
+
+        await db.delete(discounts).where(eq(discounts.id, req.params.id));
 
         await invalidateQueryCache('promotions*');
         res.json({ success: true, message: 'Discount deleted successfully' });
@@ -365,45 +357,40 @@ promotionRoutes.get('/', authenticate, branchFilter(), async (req, res, next) =>
         const now = new Date();
         const filter = (req as any).branchFilter;
 
-        const where: Record<string, unknown> = {};
-        applyScopeFilter(where, filter, 'storeId');
+        const pConditions: any[] = [];
+        const pScopeCond = buildScopeCondition(filter, { storeId: promotions.storeId }, 'storeId');
+        if (pScopeCond) pConditions.push(pScopeCond);
         if (search) {
-            where.OR = [
-                { name: { contains: String(search), mode: 'insensitive' } },
-                { description: { contains: String(search), mode: 'insensitive' } },
-            ];
+            const s = String(search);
+            pConditions.push(or(ilike(promotions.name, `%${s}%`), ilike(promotions.description, `%${s}%`)));
         }
 
-        // Filter by status
         if (status === 'active') {
-            where.isActive = true;
-            where.startDate = { lte: now };
-            where.OR = [
-                { endDate: null },
-                { endDate: { gte: now } },
-            ];
+            pConditions.push(eq(promotions.isActive, true), lte(promotions.startDate, now));
+            pConditions.push(or(isNull(promotions.endDate), gte(promotions.endDate, now)));
         } else if (status === 'scheduled') {
-            where.isActive = true;
-            where.startDate = { gt: now };
+            pConditions.push(eq(promotions.isActive, true), gt(promotions.startDate, now));
         } else if (status === 'expired') {
-            where.endDate = { lt: now };
+            pConditions.push(lt(promotions.endDate, now));
         } else if (status === 'paused') {
-            where.isActive = false;
+            pConditions.push(eq(promotions.isActive, false));
         }
 
-        const [promotions, total] = await Promise.all([
-            prisma.promotion.findMany({
-                where,
-                skip,
-                take: Number(limit),
-                orderBy: { createdAt: 'desc' },
+        const pWhere = pConditions.length > 0 ? and(...pConditions) : undefined;
+
+        const [promoRows, [{ value: total }]] = await Promise.all([
+            db.query.promotions.findMany({
+                where: pWhere,
+                offset: skip,
+                limit: Number(limit),
+                orderBy: desc(promotions.createdAt),
             }),
-            prisma.promotion.count({ where }),
+            db.select({ value: count() }).from(promotions).where(pWhere),
         ]);
 
         res.json({
             success: true,
-            data: promotions,
+            data: promoRows,
             meta: {
                 page: Number(page),
                 limit: Number(limit),
@@ -416,16 +403,20 @@ promotionRoutes.get('/', authenticate, branchFilter(), async (req, res, next) =>
     }
 });
 
-// Get promotion by ID
+// Get promotion by ID (scope-checked)
 promotionRoutes.get('/:id', authenticate, async (req, res, next) => {
     try {
-        const promotion = await prisma.promotion.findUnique({
-            where: { id: req.params.id },
+        const promotion = await db.query.promotions.findFirst({
+            where: eq(promotions.id, req.params.id),
         });
 
         if (!promotion) {
             res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Promotion not found' } });
             return;
+        }
+
+        if (!ensureScopeAccess(promotion, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
         }
 
         res.json({ success: true, data: promotion });
@@ -459,9 +450,7 @@ promotionRoutes.post('/', authenticate, authorize('promotions:create'), async (r
             data.storeId = req.authUser.activeStoreId;
         }
 
-        const promotion = await prisma.promotion.create({
-            data,
-        });
+        const [promotion] = await db.insert(promotions).values(data as any).returning();
 
         await invalidateQueryCache('promotions*');
         res.status(201).json({ success: true, data: promotion });
@@ -470,12 +459,15 @@ promotionRoutes.post('/', authenticate, authorize('promotions:create'), async (r
     }
 });
 
-// Update promotion
+// Update promotion (scope-checked)
 promotionRoutes.put('/:id', authenticate, authorize('promotions:update'), async (req, res, next) => {
     try {
-        // Convert date strings to Date objects and sanitize
+        const existing = await db.query.promotions.findFirst({ where: eq(promotions.id, req.params.id) });
+        if (!existing) return res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Promotion not found' } });
+        if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
+
         const { id, _id, createdAt, updatedAt, ...body } = req.body;
-        const data: Record<string, unknown> = {};
+        const data: Record<string, unknown> = { updatedAt: new Date() };
         if (body.name !== undefined) data.name = body.name;
         if (body.type !== undefined) data.type = body.type;
         if (body.value !== undefined) data.value = Number(body.value);
@@ -489,10 +481,7 @@ promotionRoutes.put('/:id', authenticate, authorize('promotions:update'), async 
         if (body.usageLimit !== undefined) data.usageLimit = body.usageLimit ? Number(body.usageLimit) : null;
         if (body.memberOnly !== undefined) data.memberOnly = body.memberOnly;
 
-        const promotion = await prisma.promotion.update({
-            where: { id: req.params.id },
-            data,
-        });
+        const [promotion] = await db.update(promotions).set(data as any).where(eq(promotions.id, req.params.id)).returning();
 
         await invalidateQueryCache('promotions*');
         res.json({ success: true, data: promotion });
@@ -501,12 +490,14 @@ promotionRoutes.put('/:id', authenticate, authorize('promotions:update'), async 
     }
 });
 
-// Delete promotion
+// Delete promotion (scope-checked)
 promotionRoutes.delete('/:id', authenticate, authorize('promotions:delete'), async (req, res, next) => {
     try {
-        await prisma.promotion.delete({
-            where: { id: req.params.id },
-        });
+        const existing = await db.query.promotions.findFirst({ where: eq(promotions.id, req.params.id) });
+        if (!existing) return res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Promotion not found' } });
+        if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
+
+        await db.delete(promotions).where(eq(promotions.id, req.params.id));
 
         await invalidateQueryCache('promotions*');
         res.json({ success: true, message: 'Promotion deleted successfully' });

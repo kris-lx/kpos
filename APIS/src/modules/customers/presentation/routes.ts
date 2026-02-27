@@ -1,10 +1,12 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// Customers Module - Routes
+// Customers Module - Routes (Drizzle ORM + PostgreSQL)
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, branchFilter, applyScopeFilter, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
-import { prisma } from '@/config/database.config';
+import { authenticate, authorize, branchFilter, buildScopeCondition, ensureScopeAccess, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { db } from '@/config/database.config';
+import { customers, membershipTiers, settings, pointsHistory } from '@/db/schema/tables';
+import { eq, and, or, ilike, desc, asc, count, sql } from 'drizzle-orm';
 
 export const customerRoutes = Router();
 
@@ -15,14 +17,15 @@ customerRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => 
         const skip = (Number(page) - 1) * Number(limit);
         const filter = (req as any).branchFilter as ScopeFilter | undefined;
 
-        const where: Record<string, unknown> = { isActive: true };
-        
+        const conditions = [eq(customers.isActive, true)];
+
         // Apply store-level or branch-level scope
-        applyScopeFilter(where, filter, 'storeId');
+        const scopeWhere = buildScopeCondition(filter, { storeId: customers.storeId, branchId: customers.branchId }, 'storeId');
+        if (scopeWhere) conditions.push(scopeWhere);
 
         // Override with explicit query params
         if (storeId) {
-            where.storeId = String(storeId);
+            conditions.push(eq(customers.storeId, String(storeId)));
         }
         if (branchId) {
             if (filter && !filter.branchIds.includes(String(branchId))) {
@@ -31,30 +34,33 @@ customerRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => 
                     error: { code: 'FORBIDDEN', message: 'No access to this branch' }
                 });
             }
-            where.branchId = String(branchId);
+            conditions.push(eq(customers.branchId, String(branchId)));
         }
         if (search) {
-            where.OR = [
-                { name: { contains: String(search), mode: 'insensitive' } },
-                { phone: { contains: String(search) } },
-                { email: { contains: String(search), mode: 'insensitive' } },
-                { memberCode: { contains: String(search) } },
-            ];
+            const s = String(search);
+            conditions.push(or(
+                ilike(customers.name, `%${s}%`),
+                ilike(customers.phone, `%${s}%`),
+                ilike(customers.email, `%${s}%`),
+                ilike(customers.memberCode, `%${s}%`),
+            )!);
         }
 
-        const [customers, total] = await Promise.all([
-            prisma.customer.findMany({
-                where,
-                skip,
-                take: Number(limit),
-                orderBy: { createdAt: 'desc' },
+        const whereClause = and(...conditions);
+
+        const [rows, [{ value: total }]] = await Promise.all([
+            db.query.customers.findMany({
+                where: whereClause,
+                offset: skip,
+                limit: Number(limit),
+                orderBy: desc(customers.createdAt),
             }),
-            prisma.customer.count({ where }),
+            db.select({ value: count() }).from(customers).where(whereClause),
         ]);
 
         res.json({
             success: true,
-            data: customers,
+            data: rows,
             meta: { page: Number(page), limit: Number(limit), total, totalPages: Math.ceil(total / Number(limit)) },
         });
     } catch (error) {
@@ -74,15 +80,15 @@ customerRoutes.get('/loyalty', authenticate, async (req, res, next) => {
         const limitNum = Math.min(100, Math.max(1, parseInt(String(limit), 10) || 20));
         const skip = (pageNum - 1) * limitNum;
 
-        const [tiers, total, settings] = await Promise.all([
-            prisma.membershipTier.findMany({
-                where: { isActive: true },
-                orderBy: { sortOrder: 'asc' },
-                skip,
-                take: limitNum,
+        const [tiers, [{ value: total }], settingsRow] = await Promise.all([
+            db.query.membershipTiers.findMany({
+                where: eq(membershipTiers.isActive, true),
+                orderBy: asc(membershipTiers.sortOrder),
+                offset: skip,
+                limit: limitNum,
             }),
-            prisma.membershipTier.count({ where: { isActive: true } }),
-            prisma.settings.findFirst({ where: { category: 'loyalty', key: 'program_settings' } }),
+            db.select({ value: count() }).from(membershipTiers).where(eq(membershipTiers.isActive, true)),
+            db.query.settings.findFirst({ where: and(eq(settings.category, 'loyalty'), eq(settings.key, 'program_settings')) }),
         ]);
 
         // Transform tiers to match frontend expected format
@@ -114,7 +120,7 @@ customerRoutes.get('/loyalty', authenticate, async (req, res, next) => {
             success: true,
             data: {
                 tiers: transformedTiers,
-                settings: settings?.value || defaultSettings,
+                settings: settingsRow?.value || defaultSettings,
                 pagination: {
                     page: pageNum,
                     limit: limitNum,
@@ -134,22 +140,19 @@ customerRoutes.post('/loyalty/tiers', authenticate, authorize('customers:create'
         const { name, minPoints, discountPercent, pointsMultiplier, benefits, color } = req.body;
 
         // Get max sort order
-        const maxOrder = await prisma.membershipTier.findFirst({
-            orderBy: { sortOrder: 'desc' },
-            select: { sortOrder: true },
+        const maxOrder = await db.query.membershipTiers.findFirst({
+            orderBy: desc(membershipTiers.sortOrder),
         });
 
-        const tier = await prisma.membershipTier.create({
-            data: {
-                name,
-                minPoints: minPoints || 0,
-                discountPercent: discountPercent || 0,
-                pointMultiplier: pointsMultiplier || 1,
-                benefits: benefits || [],
-                color: color || '#6B7280',
-                sortOrder: (maxOrder?.sortOrder || 0) + 1,
-            },
-        });
+        const [tier] = await db.insert(membershipTiers).values({
+            name,
+            minPoints: minPoints || 0,
+            discountPercent: discountPercent || 0,
+            pointMultiplier: pointsMultiplier || 1,
+            benefits: benefits || [],
+            color: color || '#6B7280',
+            sortOrder: (maxOrder?.sortOrder || 0) + 1,
+        }).returning();
 
         res.status(201).json({
             success: true,
@@ -174,18 +177,19 @@ customerRoutes.put('/loyalty/tiers/:id', authenticate, authorize('customers:upda
     try {
         const { name, minPoints, discountPercent, pointsMultiplier, benefits, color, sortOrder } = req.body;
 
-        const tier = await prisma.membershipTier.update({
-            where: { id: req.params.id },
-            data: {
-                name,
-                minPoints: minPoints ?? undefined,
-                discountPercent: discountPercent ?? undefined,
-                pointMultiplier: pointsMultiplier ?? undefined,
-                benefits: benefits ?? undefined,
-                color: color ?? undefined,
-                sortOrder: sortOrder ?? undefined,
-            },
-        });
+        const updateData: Record<string, unknown> = { updatedAt: new Date() };
+        if (name !== undefined) updateData.name = name;
+        if (minPoints !== undefined) updateData.minPoints = minPoints;
+        if (discountPercent !== undefined) updateData.discountPercent = discountPercent;
+        if (pointsMultiplier !== undefined) updateData.pointMultiplier = pointsMultiplier;
+        if (benefits !== undefined) updateData.benefits = benefits;
+        if (color !== undefined) updateData.color = color;
+        if (sortOrder !== undefined) updateData.sortOrder = sortOrder;
+
+        const [tier] = await db.update(membershipTiers)
+            .set(updateData as any)
+            .where(eq(membershipTiers.id, req.params.id))
+            .returning();
 
         res.json({
             success: true,
@@ -208,10 +212,9 @@ customerRoutes.put('/loyalty/tiers/:id', authenticate, authorize('customers:upda
 // Delete loyalty tier (soft delete)
 customerRoutes.delete('/loyalty/tiers/:id', authenticate, authorize('customers:delete'), async (req, res, next) => {
     try {
-        await prisma.membershipTier.update({
-            where: { id: req.params.id },
-            data: { isActive: false },
-        });
+        await db.update(membershipTiers)
+            .set({ isActive: false, updatedAt: new Date() })
+            .where(eq(membershipTiers.id, req.params.id));
 
         res.json({ success: true, data: { message: 'Tier deleted' } });
     } catch (error) {
@@ -222,8 +225,8 @@ customerRoutes.delete('/loyalty/tiers/:id', authenticate, authorize('customers:d
 // Get loyalty settings
 customerRoutes.get('/loyalty/settings', authenticate, async (req, res, next) => {
     try {
-        const setting = await prisma.settings.findFirst({
-            where: { category: 'loyalty', key: 'program_settings' },
+        const setting = await db.query.settings.findFirst({
+            where: and(eq(settings.category, 'loyalty'), eq(settings.key, 'program_settings')),
         });
 
         const defaults = {
@@ -247,25 +250,25 @@ customerRoutes.get('/loyalty/settings', authenticate, async (req, res, next) => 
 // Save loyalty settings
 customerRoutes.put('/loyalty/settings', authenticate, authorize('settings:update'), async (req, res, next) => {
     try {
-        const settings = await prisma.settings.upsert({
-            where: { 
-                category_key_branchId: {
-                    category: 'loyalty',
-                    key: 'program_settings',
-                    branchId: null as any,
-                }
-            },
-            create: {
+        const existing = await db.query.settings.findFirst({
+            where: and(eq(settings.category, 'loyalty'), eq(settings.key, 'program_settings')),
+        });
+
+        let result;
+        if (existing) {
+            [result] = await db.update(settings)
+                .set({ value: req.body, updatedAt: new Date() })
+                .where(eq(settings.id, existing.id))
+                .returning();
+        } else {
+            [result] = await db.insert(settings).values({
                 category: 'loyalty',
                 key: 'program_settings',
                 value: req.body,
-            },
-            update: {
-                value: req.body,
-            },
-        });
+            }).returning();
+        }
 
-        res.json({ success: true, data: settings.value });
+        res.json({ success: true, data: result.value });
     } catch (error) {
         next(error);
     }
@@ -275,11 +278,11 @@ customerRoutes.put('/loyalty/settings', authenticate, authorize('settings:update
 // MUST be before /:id to prevent Express matching 'lookup' as :id
 customerRoutes.get('/lookup/:code', authenticate, async (req, res, next) => {
     try {
-        const customer = await prisma.customer.findFirst({
-            where: {
-                OR: [{ phone: req.params.code }, { memberCode: req.params.code }],
-                isActive: true,
-            },
+        const customer = await db.query.customers.findFirst({
+            where: and(
+                eq(customers.isActive, true),
+                or(eq(customers.phone, req.params.code), eq(customers.memberCode, req.params.code)),
+            ),
         });
 
         if (!customer) {
@@ -297,19 +300,23 @@ customerRoutes.get('/lookup/:code', authenticate, async (req, res, next) => {
 // CUSTOMER DETAIL ROUTES (/:id must be after all named routes like /lookup, /loyalty)
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Get customer by ID
+// Get customer by ID (scope-checked)
 customerRoutes.get('/:id', authenticate, async (req, res, next) => {
     try {
-        const customer = await prisma.customer.findUnique({
-            where: { id: req.params.id },
-            include: {
-                transactions: { take: 10, orderBy: { createdAt: 'desc' } },
+        const customer = await db.query.customers.findFirst({
+            where: eq(customers.id, req.params.id),
+            with: {
+                transactions: { limit: 10, orderBy: (t: any, { desc: d }: any) => [d(t.createdAt)] },
             },
         });
 
         if (!customer) {
             res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Customer not found' } });
             return;
+        }
+
+        if (!ensureScopeAccess(customer, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this customer' } });
         }
 
         res.json({ success: true, data: customer });
@@ -333,25 +340,23 @@ customerRoutes.post('/', authenticate, authorize('customers:create'), async (req
         }
 
         // Generate member code
-        const count = await prisma.customer.count({ where: { branchId } });
-        const memberCode = `MEM${branchId.slice(-4)}${String(count + 1).padStart(6, '0')}`;
+        const [{ value: custCount }] = await db.select({ value: count() }).from(customers).where(eq(customers.branchId, branchId));
+        const memberCode = `MEM${branchId.slice(-4)}${String(custCount + 1).padStart(6, '0')}`;
 
-        const customer = await prisma.customer.create({
-            data: {
-                name: name.trim(),
-                email: email?.trim() || null,
-                phone: phone?.trim() || null,
-                address: address?.trim() || null,
-                taxId: taxId?.trim() || null,
-                birthDate: birthDate ? new Date(birthDate) : null,
-                gender: gender || null,
-                notes: notes?.trim() || null,
-                points: points || 0,
-                branchId,
-                storeId: storeId || authUser?.activeStoreId || null,
-                memberCode,
-            },
-        });
+        const [customer] = await db.insert(customers).values({
+            name: name.trim(),
+            email: email?.trim() || null,
+            phone: phone?.trim() || null,
+            address: address?.trim() || null,
+            taxId: taxId?.trim() || null,
+            birthDate: birthDate ? new Date(birthDate) : null,
+            gender: gender || null,
+            notes: notes?.trim() || null,
+            points: points || 0,
+            branchId,
+            storeId: storeId || authUser?.activeStoreId || null,
+            memberCode,
+        }).returning();
 
         await invalidateQueryCache('customers*');
         res.status(201).json({ success: true, data: customer });
@@ -368,13 +373,13 @@ customerRoutes.put('/:id', authenticate, authorize('customers:update'), async (r
 
         // Verify ownership: customer must belong to user's store (unless super admin)
         if (!authUser?.isSuperAdmin && authUser?.activeStoreId) {
-            const existing = await prisma.customer.findUnique({ where: { id: req.params.id }, select: { storeId: true } });
+            const existing = await db.query.customers.findFirst({ where: eq(customers.id, req.params.id) });
             if (existing?.storeId && existing.storeId !== authUser.activeStoreId) {
                 return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot modify customer from another store' } });
             }
         }
 
-        const updateData: Record<string, unknown> = {};
+        const updateData: Record<string, unknown> = { updatedAt: new Date() };
         if (storeId !== undefined) updateData.storeId = storeId || null;
         if (name !== undefined) updateData.name = name.trim();
         if (email !== undefined) updateData.email = email?.trim() || null;
@@ -388,10 +393,10 @@ customerRoutes.put('/:id', authenticate, authorize('customers:update'), async (r
         if (totalSpent !== undefined) updateData.totalSpent = Number(totalSpent) || 0;
         if (isActive !== undefined) updateData.isActive = Boolean(isActive);
 
-        const customer = await prisma.customer.update({
-            where: { id: req.params.id },
-            data: updateData,
-        });
+        const [customer] = await db.update(customers)
+            .set(updateData as any)
+            .where(eq(customers.id, req.params.id))
+            .returning();
         await invalidateQueryCache('customers*');
 
         res.json({ success: true, data: customer });
@@ -407,16 +412,15 @@ customerRoutes.delete('/:id', authenticate, authorize('customers:delete'), async
 
         // Verify ownership
         if (!authUser?.isSuperAdmin && authUser?.activeStoreId) {
-            const existing = await prisma.customer.findUnique({ where: { id: req.params.id }, select: { storeId: true } });
+            const existing = await db.query.customers.findFirst({ where: eq(customers.id, req.params.id) });
             if (existing?.storeId && existing.storeId !== authUser.activeStoreId) {
                 return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot delete customer from another store' } });
             }
         }
 
-        await prisma.customer.update({
-            where: { id: req.params.id },
-            data: { isActive: false },
-        });
+        await db.update(customers)
+            .set({ isActive: false, updatedAt: new Date() })
+            .where(eq(customers.id, req.params.id));
         await invalidateQueryCache('customers*');
 
         res.json({ success: true, data: { message: 'Customer deleted' } });
@@ -430,12 +434,10 @@ customerRoutes.post('/:id/points', authenticate, authorize('customers:update'), 
     try {
         const { points } = req.body;
 
-        const customer = await prisma.customer.update({
-            where: { id: req.params.id },
-            data: {
-                points: { increment: points },
-            },
-        });
+        const [customer] = await db.update(customers)
+            .set({ points: sql`${customers.points} + ${points}`, updatedAt: new Date() })
+            .where(eq(customers.id, req.params.id))
+            .returning();
 
         res.json({ success: true, data: customer });
     } catch (error) {
@@ -449,14 +451,15 @@ customerRoutes.get('/:id/points/history', authenticate, async (req, res, next) =
         const { page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
 
-        const [history, total] = await Promise.all([
-            prisma.pointsHistory.findMany({
-                where: { customerId: req.params.id },
-                orderBy: { createdAt: 'desc' },
-                skip,
-                take: Number(limit),
+        const phWhere = eq(pointsHistory.customerId, req.params.id);
+        const [history, [{ value: total }]] = await Promise.all([
+            db.query.pointsHistory.findMany({
+                where: phWhere,
+                orderBy: desc(pointsHistory.createdAt),
+                offset: skip,
+                limit: Number(limit),
             }),
-            prisma.pointsHistory.count({ where: { customerId: req.params.id } }),
+            db.select({ value: count() }).from(pointsHistory).where(phWhere),
         ]);
 
         res.json({
@@ -477,8 +480,8 @@ customerRoutes.post('/:id/points/adjust', authenticate, authorize('customers:upd
         const userId = req.user!.id;
 
         // Get current customer
-        const customer = await prisma.customer.findUnique({
-            where: { id: customerId },
+        const customer = await db.query.customers.findFirst({
+            where: eq(customers.id, customerId),
         });
 
         if (!customer) {
@@ -486,24 +489,23 @@ customerRoutes.post('/:id/points/adjust', authenticate, authorize('customers:upd
             return;
         }
 
-        // Update customer points and create history record
-        const [updatedCustomer, historyRecord] = await prisma.$transaction([
-            prisma.customer.update({
-                where: { id: customerId },
-                data: {
-                    points: { increment: points },
-                },
-            }),
-            prisma.pointsHistory.create({
-                data: {
-                    customerId,
-                    points,
-                    type: points > 0 ? 'ADJUST' : 'ADJUST',
-                    reason: reason || (points > 0 ? 'Manual points addition' : 'Manual points deduction'),
-                    createdBy: userId,
-                },
-            }),
-        ]);
+        // Update customer points and create history record in a transaction
+        const { updatedCustomer, historyRecord } = await db.transaction(async (tx) => {
+            const [updatedCustomer] = await tx.update(customers)
+                .set({ points: sql`${customers.points} + ${points}`, updatedAt: new Date() })
+                .where(eq(customers.id, customerId))
+                .returning();
+
+            const [historyRecord] = await tx.insert(pointsHistory).values({
+                customerId,
+                points,
+                type: 'ADJUST',
+                reason: reason || (points > 0 ? 'Manual points addition' : 'Manual points deduction'),
+                createdBy: userId,
+            }).returning();
+
+            return { updatedCustomer, historyRecord };
+        });
 
         res.json({ success: true, data: { customer: updatedCustomer, history: historyRecord } });
     } catch (error) {
