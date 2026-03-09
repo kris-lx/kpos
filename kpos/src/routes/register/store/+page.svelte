@@ -11,7 +11,7 @@
         ShieldCheck, CheckCircle2, X
     } from "lucide-svelte";
     import { toast } from "svelte-sonner";
-    import { cn } from "$utils";
+    import { cn, enforcePhoneInput, isValidLaoPhone } from "$utils";
 
     // Steps: 1=Account, 2=Business, 3=KYC, 4=Review
     let currentStep = $state(1);
@@ -89,12 +89,14 @@
             if (form.password.length < 8) { error = "ລະຫັດຜ່ານຕ້ອງມີຢ່າງໜ້ອຍ 8 ຕົວ"; return false; }
             if (form.password !== form.confirmPassword) { error = "ລະຫັດຜ່ານບໍ່ຕົງກັນ"; return false; }
             if (!form.phone.trim()) { error = "ກະລຸນາໃສ່ເບີໂທ"; return false; }
+            if (!isValidLaoPhone(form.phone)) { error = "ເບີໂທບໍ່ຖືກຕ້ອງ (ຮູບແບບ: 20xxxxxxxx, 10 ຕົວເລກ)"; return false; }
         }
         if (currentStep === 2) {
             if (!form.storeName.trim()) { error = "ກະລຸນາໃສ່ຊື່ຮ້ານ"; return false; }
             if (!form.storeCode.trim()) { error = "ກະລຸນາໃສ່ລະຫັດຮ້ານ"; return false; }
             if (!form.storeAddress.trim()) { error = "ກະລຸນາໃສ່ທີ່ຢູ່"; return false; }
             if (!form.storePhone.trim()) { error = "ກະລຸນາໃສ່ເບີໂທຮ້ານ"; return false; }
+            if (!isValidLaoPhone(form.storePhone)) { error = "ເບີໂທຮ້ານບໍ່ຖືກຕ້ອງ (ຮູບແບບ: 20xxxxxxxx, 10 ຕົວເລກ)"; return false; }
         }
         if (currentStep === 3) {
             if (!form.ownerIdNumber.trim()) { error = "ກະລຸນາໃສ່ເລກທີ່ບັດ/ໜັງສືຜ່ານແດນ"; return false; }
@@ -107,15 +109,41 @@
 
     function handleFileUpload(e: Event) {
         const t = e.target as HTMLInputElement;
-        if (t.files) form.documents = [...form.documents, ...Array.from(t.files)];
+        if (t.files) {
+            const maxSize = 5 * 1024 * 1024; // 5MB
+            const validFiles = Array.from(t.files).filter(f => {
+                if (f.size > maxSize) {
+                    toast.error(`${f.name} ມີຂະໜາດໃຫຍ່ເກີນ (ສູງສຸດ 5MB)`);
+                    return false;
+                }
+                return true;
+            });
+            form.documents = [...form.documents, ...validFiles];
+        }
     }
     function removeFile(i: number) { form.documents = form.documents.filter((_, idx) => idx !== i); }
+
+    function fileToBase64(file: File): Promise<string> {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result as string);
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
+        });
+    }
 
     async function handleSubmit() {
         if (!validateStep()) return;
         isLoading = true;
         error = "";
         try {
+            // Convert uploaded files to base64
+            const docBase64: { name: string; data: string; type: string }[] = [];
+            for (const file of form.documents) {
+                const base64 = await fileToBase64(file);
+                docBase64.push({ name: file.name, data: base64, type: file.type });
+            }
+
             const res = await api.post("admin/register-and-apply", {
                 json: {
                     name: form.name,
@@ -135,7 +163,7 @@
                     businessLicenseNo: form.businessLicenseNo,
                     taxCertificateNo: form.taxCertificateNo,
                     reason: form.reason,
-                    documents: [],
+                    documents: docBase64,
                 }
             }).json<any>();
 
@@ -259,7 +287,8 @@
                         <label for="s1-phone" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ເບີໂທ *</label>
                         <div class="relative">
                             <Phone class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                            <input id="s1-phone" type="tel" bind:value={form.phone} placeholder="020 xxxxxxxx" class="w-full pl-10 pr-4 py-3 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors" />
+                            <input id="s1-phone" type="tel" bind:value={form.phone} oninput={(e) => { form.phone = enforcePhoneInput(e.currentTarget.value); }} placeholder="20xxxxxxxx" maxlength="10" class="w-full pl-10 pr-4 py-3 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors" />
+                            <span class="text-xs text-gray-400 mt-1 block">ຮູບແບບ: 20xxxxxxxx (10 ຕົວເລກ)</span>
                         </div>
                     </div>
                     <div>
@@ -319,7 +348,8 @@
                             <label for="s2-sphone" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ເບີໂທຮ້ານ *</label>
                             <div class="relative">
                                 <Phone class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                                <input id="s2-sphone" type="tel" bind:value={form.storePhone} placeholder="020 xxxxxxxx" class="w-full pl-10 pr-4 py-3 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors" />
+                                <input id="s2-sphone" type="tel" bind:value={form.storePhone} oninput={(e) => { form.storePhone = enforcePhoneInput(e.currentTarget.value); }} placeholder="20xxxxxxxx" maxlength="10" class="w-full pl-10 pr-4 py-3 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors" />
+                                <span class="text-xs text-gray-400 mt-1 block">ຮູບແບບ: 20xxxxxxxx</span>
                             </div>
                         </div>
                         <div>
@@ -378,10 +408,17 @@
                         </div>
                     </div>
                     <div>
-                        <label for="doc-upload" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ເອກະສານປະກອບ (PDF, JPG, PNG)</label>
+                        <label for="doc-upload" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ອັບໂຫລດເອກະສານ (PDF, JPG, PNG - ສູງສຸດ 5MB ຕໍ່ໄຟລ໌)</label>
+                        <div class="mb-2 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg text-xs text-blue-700 dark:text-blue-300">
+                            <p class="font-medium mb-1">ເອກະສານທີ່ຕ້ອງອັບໂຫລດ:</p>
+                            <ul class="list-disc list-inside space-y-0.5">
+                                <li>ໃບທະບຽນວິສາຫະກິດ (ຖ້າມີ)</li>
+                                <li>ບັດປະຈຳຕົວ ຫຼື ໜັງສືຜ່ານແດນ (ພັດສະປອດ)</li>
+                            </ul>
+                        </div>
                         <div class="border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-xl p-5 text-center">
                             <Upload class="w-8 h-8 mx-auto text-gray-400 mb-2" />
-                            <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">ອັບໂຫລດໄອດີ, ໃບທະບຽນ, ໃບອະນຸຍາດ</p>
+                            <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">ລາກໄຟລ໌ມາວາງ ຫຼື ກົດເລືອກໄຟລ໌</p>
                             <input type="file" id="doc-upload" multiple accept=".pdf,.jpg,.jpeg,.png" onchange={handleFileUpload} class="hidden" />
                             <label for="doc-upload" class="inline-block px-4 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg text-sm font-medium text-gray-700 dark:text-gray-300 cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">ເລືອກໄຟລ໌</label>
                         </div>

@@ -302,9 +302,11 @@
                 {@const counts = countModulePermissions(module)}
                 <div class={cn(i > 0 && "border-t border-gray-200 dark:border-gray-700")}>
                     <!-- Module Header -->
-                    <button
+                    <!-- svelte-ignore a11y_no_static_element_interactions -->
+                    <!-- svelte-ignore a11y_click_events_have_key_events -->
+                    <div
                         onclick={() => toggleModule(module.module)}
-                        class="w-full flex items-center justify-between px-6 py-4 hover:bg-gray-50 dark:hover:bg-gray-750 transition-colors"
+                        class="w-full flex items-center justify-between px-6 py-4 hover:bg-gray-50 dark:hover:bg-gray-750 transition-colors cursor-pointer"
                     >
                         <div class="flex items-center gap-3">
                             {#if expandedModules.has(module.module)}
@@ -321,19 +323,19 @@
                         </div>
                         <div class="flex items-center gap-2">
                             <button
-                                onclick|stopPropagation={() => selectAllInModule(module)}
+                                onclick={(e) => { e.stopPropagation(); selectAllInModule(module); }}
                                 class="px-2 py-1 text-xs font-medium text-green-600 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-900/20 rounded transition-colors"
                             >
-                                {t("common.selectAll")}
+                                ເລືອກທັງໝົດ
                             </button>
                             <button
-                                onclick|stopPropagation={() => deselectAllInModule(module)}
+                                onclick={(e) => { e.stopPropagation(); deselectAllInModule(module); }}
                                 class="px-2 py-1 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors"
                             >
                                 {t("common.unselectAll")}
                             </button>
                         </div>
-                    </button>
+                    </div>
 
                     <!-- Module Permissions -->
                     {#if expandedModules.has(module.module)}

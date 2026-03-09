@@ -3,11 +3,11 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, requireSuperAdmin, requireAdmin, isSuperAdmin, isAdmin, invalidateRoleRulesCache, invalidateAllUserStoreCache } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, requireSuperAdmin, requireAdmin, isSuperAdmin, isAdmin, invalidateRoleRulesCache, invalidateAllUserStoreCache, invalidateUserStoreCache, branchFilter, buildTenantCondition } from '@/infrastructure/http/middleware/auth.middleware';
 import { db } from '@/config/database.config';
 import { publish, QUEUES, isRabbitMQConnected } from '@/config/rabbitmq.config';
 import argon2 from 'argon2';
-import { users, sessions, roles, rules, roleRules, permissionGroups, permissions, menuPermissions, stores, userStores, productStores, storeRequests, branches, activityLogs, transactions, transactionItems, transactionPayments, heldSales, orders, orderItems, reservations, tables, cashMovements, shifts, cashRegisters, stockTransferItems, stockTransfers, stockMovements, stockCounts, stockCountItems, inventory, purchaseOrderItems, purchaseOrders, vendors, billOfMaterials, productPriceLevels, skuVariants, products, categories, priceLevels, pointsHistory, customers, pointHistory, members, membershipTiers, pointSettings, promotions, coupons, paymentMethods, discounts, systemEnums } from '@/db/schema/tables';
+import { tenants, users, sessions, roles, rules, roleRules, permissionGroups, permissions, menuPermissions, stores, userStores, productStores, storeRequests, branches, activityLogs, transactions, transactionItems, transactionPayments, heldSales, orders, orderItems, reservations, tables, cashMovements, shifts, cashRegisters, stockTransferItems, stockTransfers, stockMovements, stockCounts, stockCountItems, inventory, purchaseOrderItems, purchaseOrders, vendors, billOfMaterials, productPriceLevels, skuVariants, products, categories, priceLevels, pointsHistory, customers, pointHistory, members, membershipTiers, pointSettings, promotions, coupons, paymentMethods, discounts, systemEnums } from '@/db/schema/tables';
 import { eq, and, or, ne, ilike, inArray, notInArray, gte, lte, desc, asc, count, sql, isNull, isNotNull } from 'drizzle-orm';
 import { ENUM_SEED_DATA } from '@/modules/settings/presentation/routes';
 
@@ -44,6 +44,26 @@ adminRoutes.post('/register-and-apply', async (req, res, next) => {
                 success: false,
                 error: { code: 'VALIDATION_ERROR', message: 'name, email, password, storeName, storeCode are required' }
             });
+        }
+
+        // Upload documents (base64) to cloud storage if provided
+        let documentUrls: string[] = [];
+        if (Array.isArray(documents) && documents.length > 0) {
+            try {
+                const { uploadService } = await import('@/infrastructure/services/upload.service');
+                for (const doc of documents) {
+                    const base64Data = typeof doc === 'string' ? doc : doc?.data;
+                    if (base64Data) {
+                        const result = await uploadService.uploadSingle(base64Data, {
+                            folder: 'kpos/kyc-documents',
+                            resourceType: 'auto',
+                        });
+                        if (result?.url) documentUrls.push(result.url);
+                    }
+                }
+            } catch (uploadErr) {
+                console.warn('[Register] Document upload failed (non-blocking):', uploadErr instanceof Error ? uploadErr.message : uploadErr);
+            }
         }
 
         if (password.length < 8) {
@@ -86,7 +106,7 @@ adminRoutes.post('/register-and-apply', async (req, res, next) => {
                 storePhone: storePhone ? String(storePhone) : undefined,
                 storeEmail: storeEmail ? String(storeEmail) : undefined,
                 reason: reason ? String(reason) : undefined,
-                documents: Array.isArray(documents) ? documents : [],
+                documents: documentUrls.length > 0 ? documentUrls : (Array.isArray(documents) ? documents.map((d: any) => typeof d === 'string' ? d : d?.name || 'document').filter(Boolean) : []),
                 metadata: {
                     businessType: businessType || 'retail',
                     ownerIdType: ownerIdType || 'national_id',
@@ -125,9 +145,12 @@ adminRoutes.post('/register-and-apply', async (req, res, next) => {
  * GET /admin/requests/count - Get count of pending requests (for notification badge)
  * Must be before /requests/:id to avoid route conflict
  */
-adminRoutes.get('/requests/count', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.get('/requests/count', authenticate, requireAdmin(), branchFilter(), async (req, res, next) => {
     try {
-        const [{ value: pending }] = await db.select({ value: count() }).from(storeRequests).where(eq(storeRequests.status, 'pending'));
+        const countConds: any[] = [eq(storeRequests.status, 'pending')];
+        const tenantScope = buildTenantCondition(req.branchFilter, storeRequests.tenantId);
+        if (tenantScope) countConds.push(tenantScope);
+        const [{ value: pending }] = await db.select({ value: count() }).from(storeRequests).where(and(...countConds));
         res.json({ success: true, data: { pending } });
     } catch (error) {
         next(error);
@@ -137,17 +160,34 @@ adminRoutes.get('/requests/count', authenticate, requireAdmin(), async (req, res
 /**
  * GET /admin/requests - Get all store/branch requests (Super Admin only)
  */
-adminRoutes.get('/requests', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.get('/requests', authenticate, requireAdmin(), branchFilter(), async (req, res, next) => {
     try {
-        const { status, type, page = 1, limit = 20 } = req.query;
+        const { status, type, search, page = 1, limit = 20 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
 
-        const reqConds: any[] = [];
+        // Base tenant scope conditions (reused for stats)
+        const tenantConds: any[] = [];
+        const tenantScope = buildTenantCondition(req.branchFilter, storeRequests.tenantId);
+        if (tenantScope) tenantConds.push(tenantScope);
+
+        const reqConds: any[] = [...tenantConds];
         if (status) reqConds.push(eq(storeRequests.status, String(status)));
         if (type) reqConds.push(eq(storeRequests.type, String(type)));
+        if (search) {
+            const s = `%${String(search)}%`;
+            reqConds.push(or(
+                ilike(storeRequests.storeName, s),
+                ilike(storeRequests.storeCode, s),
+                ilike(storeRequests.branchName, s),
+                ilike(storeRequests.branchCode, s),
+                ilike(storeRequests.storeEmail, s),
+                ilike(storeRequests.storePhone, s),
+            ));
+        }
         const reqWhere = reqConds.length > 0 ? and(...reqConds) : undefined;
+        const tenantWhere = tenantConds.length > 0 ? and(...tenantConds) : undefined;
 
-        const [requests, [{ value: total }]] = await Promise.all([
+        const [requests, [{ value: total }], statsCounts] = await Promise.all([
             db.query.storeRequests.findMany({
                 where: reqWhere,
                 offset: skip,
@@ -160,11 +200,21 @@ adminRoutes.get('/requests', authenticate, requireAdmin(), async (req, res, next
                 orderBy: [desc(storeRequests.priority), desc(storeRequests.createdAt)],
             }),
             db.select({ value: count() }).from(storeRequests).where(reqWhere),
+            Promise.all([
+                db.select({ value: count() }).from(storeRequests).where(tenantWhere ? and(tenantWhere, eq(storeRequests.status, 'pending')) : eq(storeRequests.status, 'pending')),
+                db.select({ value: count() }).from(storeRequests).where(tenantWhere ? and(tenantWhere, eq(storeRequests.status, 'approved')) : eq(storeRequests.status, 'approved')),
+                db.select({ value: count() }).from(storeRequests).where(tenantWhere ? and(tenantWhere, eq(storeRequests.status, 'rejected')) : eq(storeRequests.status, 'rejected')),
+            ]),
         ]);
 
         res.json({
             success: true,
             data: requests,
+            stats: {
+                pending: statsCounts[0][0].value,
+                approved: statsCounts[1][0].value,
+                rejected: statsCounts[2][0].value,
+            },
             meta: {
                 page: Number(page),
                 limit: Number(limit),
@@ -233,37 +283,88 @@ adminRoutes.post('/requests/:id/approve', authenticate, requireAdmin(), async (r
 
         // Process based on request type
         let createdEntity: any = null;
+        let createdTenant: any = null;
 
         if (request.type === 'new_branch' && request.branchName && request.branchCode) {
+            // new_branch: add branch under the EXISTING tenant of the approving admin
+            let tenantId: string | null = req.authUser?.tenantId || req.user?.tenantId || null;
+            if (tenantId === '') tenantId = null;
+            // If the request already has a tenantId (e.g. existing merchant adding a branch), use that
+            if (request.tenantId) tenantId = request.tenantId;
+
             const [br] = await db.insert(branches).values({
+                tenantId,
                 name: request.branchName, code: request.branchCode,
                 address: request.branchAddress, phone: request.branchPhone, email: request.branchEmail, isActive: true,
             }).returning();
             createdEntity = br;
-        } else if (request.type === 'new_store' && request.storeName && request.storeCode) {
+
+        } else if ((request.type === 'new_store' || request.type === 'new_tenant') && request.storeName && request.storeCode) {
+            // ═══════════════════════════════════════════════════════════════
+            // G13 FIX: Auto-create a NEW Tenant for every new_store approval
+            // Each merchant gets their own isolated tenant.
+            // ═══════════════════════════════════════════════════════════════
+            const meta = (request.metadata || {}) as Record<string, any>;
+            const tenantCode = `T-${request.storeCode}-${Date.now().toString(36)}`.toUpperCase();
+
+            const [newTenant] = await db.insert(tenants).values({
+                name: request.storeName || 'New Merchant',
+                code: tenantCode,
+                businessType: meta.businessType || 'retail',
+                taxId: meta.taxCertificateNo || null,
+                phone: request.storePhone || null,
+                email: request.storeEmail || null,
+                address: request.storeAddress || null,
+                plan: 'free',
+                isActive: true,
+                status: 'active',
+                settings: {
+                    ownerName: meta.ownerName || null,
+                    ownerPhone: meta.ownerPhone || null,
+                    ownerIdType: meta.ownerIdType || null,
+                    ownerIdNumber: meta.ownerIdNumber || null,
+                    ownerNationality: meta.ownerNationality || null,
+                    businessLicenseNo: meta.businessLicenseNo || null,
+                },
+            }).returning();
+            createdTenant = newTenant;
+            const tenantId = newTenant.id;
+
+            // Create default branch under the new tenant
             let targetBranchId = request.branchId;
-            if (!targetBranchId) {
+            if (!targetBranchId || targetBranchId === '') {
                 const [defaultBranch] = await db.insert(branches).values({
+                    tenantId,
                     name: `${request.storeName} - ສາຂາຫຼັກ`, code: `BR-${request.storeCode}`,
-                    address: request.storeAddress, phone: request.storePhone, email: request.storeEmail, isActive: true,
+                    address: request.storeAddress, phone: request.storePhone, email: request.storeEmail,
+                    isActive: true, isMain: true,
                 }).returning();
                 targetBranchId = defaultBranch.id;
             }
 
+            // Create the store
             const [store] = await db.insert(stores).values({
+                tenantId,
                 name: request.storeName, code: request.storeCode, branchId: targetBranchId,
-                address: request.storeAddress, phone: request.storePhone, email: request.storeEmail, isActive: true,
+                address: request.storeAddress, phone: request.storePhone, email: request.storeEmail,
+                isActive: true, isDefault: true,
             }).returning();
             createdEntity = store;
 
+            // Link requester to the new store with full access
             await db.insert(userStores).values([{
-                userId: request.requesterId as string, storeId: createdEntity.id as string, branchId: targetBranchId as string,
+                tenantId,
+                userId: request.requesterId as string, storeId: store.id as string, branchId: targetBranchId as string,
                 canRead: true, canWrite: true, canDelete: true, canManage: true, isDefault: true, assignedBy: reviewerId as string,
             }]);
 
-            let storeOwnerRole = await db.query.roles.findFirst({ where: eq(roles.name, 'store_owner') });
+            // Find or create store_owner role SCOPED to the new tenant
+            let storeOwnerRole = await db.query.roles.findFirst({
+                where: and(eq(roles.name, 'store_owner'), eq(roles.tenantId, tenantId)),
+            });
             if (!storeOwnerRole) {
                 const [created] = await db.insert(roles).values({
+                    tenantId,
                     name: 'store_owner', displayName: 'Store Owner',
                     description: 'ເຈົ້າຂອງຮ້ານ - ສິດຄວບຄຸມຮ້ານທັງໝົດ',
                     permissions: DEFAULT_ROLES.find(r => r.name === 'store_owner')?.permissions || [],
@@ -271,10 +372,24 @@ adminRoutes.post('/requests/:id/approve', authenticate, requireAdmin(), async (r
                 }).returning();
                 storeOwnerRole = created;
             }
-            await db.update(users).set({ roleId: storeOwnerRole.id, role: 'store_owner', branchId: targetBranchId }).where(eq(users.id, request.requesterId));
+
+            // Activate user + assign to new tenant + role + branch
+            await db.update(users).set({
+                isActive: true,
+                tenantId,
+                roleId: storeOwnerRole.id,
+                role: 'store_owner',
+                branchId: targetBranchId,
+            }).where(eq(users.id, request.requesterId));
+
+            // Update the storeRequest itself with the new tenantId
+            await db.update(storeRequests).set({ tenantId }).where(eq(storeRequests.id, id));
+
+            // Invalidate cached auth data so fresh user data is loaded on next login
+            await invalidateUserStoreCache(request.requesterId as string).catch(() => {});
         }
 
-        await db.update(storeRequests).set({ status: 'approved', reviewerId, reviewNote: note, reviewedAt: new Date() }).where(eq(storeRequests.id, id));
+        await db.update(storeRequests).set({ status: 'approved', reviewerId: reviewerId || null, reviewNote: note || null, reviewedAt: new Date() }).where(eq(storeRequests.id, id));
         const updatedRequest = await db.query.storeRequests.findFirst({
             where: eq(storeRequests.id, id),
             with: {
@@ -286,7 +401,8 @@ adminRoutes.post('/requests/:id/approve', authenticate, requireAdmin(), async (r
         res.json({
             success: true,
             data: updatedRequest,
-            createdEntity
+            createdEntity,
+            createdTenant,
         });
     } catch (error) {
         next(error);
@@ -318,7 +434,7 @@ adminRoutes.post('/requests/:id/reject', authenticate, requireAdmin(), async (re
             });
         }
 
-        await db.update(storeRequests).set({ status: 'rejected', reviewerId, reviewNote: note || 'ຄຳຂໍຖືກປະຕິເສດ', reviewedAt: new Date() }).where(eq(storeRequests.id, id));
+        await db.update(storeRequests).set({ status: 'rejected', reviewerId: reviewerId || null, reviewNote: note || 'ຄຳຂໍຖືກປະຕິເສດ', reviewedAt: new Date() }).where(eq(storeRequests.id, id));
         const updatedRequest = await db.query.storeRequests.findFirst({
             where: eq(storeRequests.id, id),
             with: {
@@ -340,30 +456,14 @@ adminRoutes.post('/requests/:id/reject', authenticate, requireAdmin(), async (re
 /**
  * GET /admin/branches - Get all branches with full details
  */
-adminRoutes.get('/branches', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.get('/branches', authenticate, requireAdmin(), branchFilter(), async (req, res, next) => {
     try {
         const { search, isActive, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
-        const authUser = (req as any).authUser;
-
-        // Non-super-admins only see branches linked to their accessible stores
-        let allowedBranchIds: string[] | null = null;
-        if (!authUser?.isSuperAdmin) {
-            const activeStoreId = authUser?.activeStoreId;
-            if (activeStoreId) {
-                const storeRow = await db.query.stores.findFirst({ where: eq(stores.id, activeStoreId), columns: { branchId: true } });
-                allowedBranchIds = storeRow ? [storeRow.branchId] : [];
-            } else {
-                const usRows = await db.query.userStores.findMany({ where: eq(userStores.userId, authUser.userId), columns: { branchId: true } });
-                allowedBranchIds = [...new Set(usRows.map(r => r.branchId))];
-            }
-        }
 
         const brConds: any[] = [];
-        if (allowedBranchIds !== null) {
-            if (allowedBranchIds.length === 0) brConds.push(eq(branches.id, 'no-access'));
-            else brConds.push(inArray(branches.id, allowedBranchIds));
-        }
+        const tenantScope = buildTenantCondition(req.branchFilter, branches.tenantId);
+        if (tenantScope) brConds.push(tenantScope);
         if (isActive !== undefined) brConds.push(eq(branches.isActive, isActive === 'true'));
         if (search) {
             const s = String(search);
@@ -417,7 +517,9 @@ adminRoutes.post('/branches', authenticate, requireAdmin(), async (req, res, nex
             await db.update(branches).set({ isMain: false }).where(eq(branches.isMain, true));
         }
 
+        const tenantId = req.authUser?.tenantId || req.user?.tenantId;
         const [branch] = await db.insert(branches).values({
+            tenantId,
             name: String(name).trim(), code: String(code).trim(),
             address: address || undefined, phone: phone || undefined, email: email || undefined,
             taxId: taxId || undefined, logo: logo || undefined,
@@ -506,12 +608,14 @@ adminRoutes.delete('/branches/:id', authenticate, requireAdmin(), async (req, re
 /**
  * GET /admin/stores - Get all stores
  */
-adminRoutes.get('/stores', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.get('/stores', authenticate, requireAdmin(), branchFilter(), async (req, res, next) => {
     try {
         const { search, branchId, isActive, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
 
         const stConds: any[] = [];
+        const tenantScope = buildTenantCondition(req.branchFilter, stores.tenantId);
+        if (tenantScope) stConds.push(tenantScope);
         if (isActive !== undefined) stConds.push(eq(stores.isActive, isActive === 'true'));
         if (branchId) stConds.push(eq(stores.branchId, String(branchId)));
         if (search) {
@@ -555,7 +659,8 @@ adminRoutes.post('/stores', authenticate, requireAdmin(), async (req, res, next)
             });
         }
 
-        const [store] = await db.insert(stores).values({ name, code, branchId, address, phone, email, settings: settings || {}, isActive: true }).returning();
+        const storeTenantId = req.authUser?.tenantId || req.user?.tenantId;
+        const [store] = await db.insert(stores).values({ tenantId: storeTenantId, name, code, branchId, address, phone, email, settings: settings || {}, isActive: true }).returning();
         const storeWithBranch = await db.query.stores.findFirst({ where: eq(stores.id, store.id), with: { branch: { columns: { id: true, name: true } } } });
 
         res.status(201).json({ success: true, data: storeWithBranch });
@@ -749,10 +854,21 @@ adminRoutes.put('/stores/:id/update', authenticate, async (req, res, next) => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * GET /admin/dashboard - System overview statistics
+ * GET /admin/dashboard - System overview statistics (scoped to tenant)
  */
-adminRoutes.get('/dashboard', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.get('/dashboard', authenticate, requireAdmin(), branchFilter(), async (req, res, next) => {
     try {
+        // Build tenant-scoped conditions for each table via centralized scope helper
+        const branchTenant = buildTenantCondition(req.branchFilter, branches.tenantId);
+        const storeTenant = buildTenantCondition(req.branchFilter, stores.tenantId);
+        const userTenant = buildTenantCondition(req.branchFilter, users.tenantId);
+        const txTenant = buildTenantCondition(req.branchFilter, transactions.tenantId);
+        const reqTenantCond = buildTenantCondition(req.branchFilter, storeRequests.tenantId);
+        const branchConds = branchTenant ? [branchTenant] : [];
+        const storeConds = storeTenant ? [storeTenant] : [];
+        const userConds = userTenant ? [userTenant] : [];
+        const txConds = txTenant ? [txTenant] : [];
+
         const [
             [{ value: totalBranches }],
             [{ value: activeBranches }],
@@ -764,20 +880,20 @@ adminRoutes.get('/dashboard', authenticate, requireAdmin(), async (req, res, nex
             recentRequests,
             [{ value: todayTransactions }]
         ] = await Promise.all([
-            db.select({ value: count() }).from(branches),
-            db.select({ value: count() }).from(branches).where(eq(branches.isActive, true)),
-            db.select({ value: count() }).from(stores),
-            db.select({ value: count() }).from(stores).where(eq(stores.isActive, true)),
-            db.select({ value: count() }).from(users),
-            db.select({ value: count() }).from(users).where(eq(users.isActive, true)),
-            db.select({ value: count() }).from(storeRequests).where(eq(storeRequests.status, 'pending')),
+            db.select({ value: count() }).from(branches).where(branchConds.length ? and(...branchConds) : undefined),
+            db.select({ value: count() }).from(branches).where(and(eq(branches.isActive, true), ...branchConds)),
+            db.select({ value: count() }).from(stores).where(storeConds.length ? and(...storeConds) : undefined),
+            db.select({ value: count() }).from(stores).where(and(eq(stores.isActive, true), ...storeConds)),
+            db.select({ value: count() }).from(users).where(userConds.length ? and(...userConds) : undefined),
+            db.select({ value: count() }).from(users).where(and(eq(users.isActive, true), ...userConds)),
+            db.select({ value: count() }).from(storeRequests).where(reqTenantCond ? and(eq(storeRequests.status, 'pending'), reqTenantCond) : eq(storeRequests.status, 'pending')),
             db.query.storeRequests.findMany({
-                where: eq(storeRequests.status, 'pending'),
+                where: reqTenantCond ? and(eq(storeRequests.status, 'pending'), reqTenantCond) : eq(storeRequests.status, 'pending'),
                 limit: 5,
                 orderBy: desc(storeRequests.createdAt),
                 with: { requester: { columns: { name: true, email: true } } },
             }),
-            db.select({ value: count() }).from(transactions).where(gte(transactions.createdAt, new Date(new Date().setHours(0, 0, 0, 0)))),
+            db.select({ value: count() }).from(transactions).where(and(gte(transactions.createdAt, new Date(new Date().setHours(0, 0, 0, 0))), ...txConds)),
         ]);
 
         res.json({
@@ -796,14 +912,151 @@ adminRoutes.get('/dashboard', authenticate, requireAdmin(), async (req, res, nex
 });
 
 /**
+ * GET /admin/dashboard/chart-data - Chart data for Pie, Column, Line charts
+ */
+adminRoutes.get('/dashboard/chart-data', authenticate, requireAdmin(), branchFilter(), async (req, res, next) => {
+    try {
+        const tenantCond = buildTenantCondition(req.branchFilter, users.tenantId);
+        const storeTenantCond = buildTenantCondition(req.branchFilter, stores.tenantId);
+        const txTenantCond = buildTenantCondition(req.branchFilter, transactions.tenantId);
+        const branchTenantCond = buildTenantCondition(req.branchFilter, branches.tenantId);
+
+        // 1. PIE: Users by role
+        const usersByRoleRaw = await db.select({
+            role: users.role,
+            count: count(),
+        }).from(users)
+        .where(tenantCond ?? undefined)
+        .groupBy(users.role)
+        .orderBy(desc(count()));
+
+        // 2. COLUMN: Stores per branch
+        const storesByBranchRaw = await db.select({
+            branchId: stores.branchId,
+            count: count(),
+        }).from(stores)
+        .where(storeTenantCond ?? undefined)
+        .groupBy(stores.branchId);
+
+        // Get branch names
+        const branchIds = storesByBranchRaw.map(r => r.branchId).filter(Boolean) as string[];
+        const branchNames: Record<string, string> = {};
+        if (branchIds.length > 0) {
+            const branchRows = await db.select({ id: branches.id, name: branches.name })
+                .from(branches)
+                .where(and(inArray(branches.id, branchIds), branchTenantCond ?? undefined));
+            branchRows.forEach(b => { branchNames[b.id] = b.name; });
+        }
+
+        // 3. LINE: Transactions last 7 days
+        const sevenDaysAgo = new Date();
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
+        sevenDaysAgo.setHours(0, 0, 0, 0);
+
+        const txTrend = await db.select({
+            day: sql<string>`DATE(${transactions.createdAt})`,
+            count: count(),
+            revenue: sql<number>`COALESCE(SUM(${transactions.total}), 0)`,
+        }).from(transactions)
+        .where(and(gte(transactions.createdAt, sevenDaysAgo), txTenantCond ?? undefined))
+        .groupBy(sql`DATE(${transactions.createdAt})`)
+        .orderBy(sql`DATE(${transactions.createdAt})`);
+
+        // Fill missing days with 0
+        const trendMap: Record<string, { count: number; revenue: number }> = {};
+        txTrend.forEach(r => { trendMap[r.day] = { count: Number(r.count), revenue: Number(r.revenue) }; });
+        const transactionsTrend = [];
+        for (let i = 6; i >= 0; i--) {
+            const d = new Date();
+            d.setDate(d.getDate() - i);
+            const key = d.toISOString().slice(0, 10);
+            transactionsTrend.push({ date: key, count: trendMap[key]?.count || 0, revenue: trendMap[key]?.revenue || 0 });
+        }
+
+        res.json({
+            success: true,
+            data: {
+                usersByRole: usersByRoleRaw.map(r => ({ role: r.role || 'unknown', count: Number(r.count) })),
+                storesByBranch: storesByBranchRaw.map(r => ({
+                    branch: r.branchId ? (branchNames[r.branchId] || r.branchId.slice(0, 8)) : 'N/A',
+                    count: Number(r.count),
+                })),
+                transactionsTrend,
+            }
+        });
+    } catch (error) {
+        next(error);
+    }
+});
+
+/**
+ * POST /admin/users - Create a new user (Super Admin / Admin)
+ */
+adminRoutes.post('/users', authenticate, requireAdmin(), async (req, res, next) => {
+    try {
+        const { email, password, name, phone, avatar, role, roleId, branchId, permissions, isActive = true } = req.body;
+
+        // Validate required fields
+        if (!email || !password || !name) {
+            return res.status(400).json({
+                success: false,
+                error: { code: 'VALIDATION_ERROR', message: 'Email, password, and name are required' }
+            });
+        }
+
+        // Check if email exists
+        const existing = await db.query.users.findFirst({ where: eq(users.email, email) });
+        if (existing) {
+            return res.status(400).json({
+                success: false,
+                error: { code: 'DUPLICATE', message: 'Email already exists' }
+            });
+        }
+
+        let roleName = role || 'staff';
+        if (roleId) {
+            const selectedRole = await db.query.roles.findFirst({ where: eq(roles.id, roleId) });
+            if (selectedRole) roleName = selectedRole.name;
+        }
+
+        // Hash password
+        const hashedPassword = await argon2.hash(password);
+
+        const tenantId = req.authUser?.tenantId || req.user?.tenantId;
+        const [user] = await db.insert(users).values({
+            tenantId,
+            email,
+            password: hashedPassword,
+            name,
+            phone,
+            avatar,
+            role: roleName,
+            roleId,
+            branchId,
+            permissions: permissions || [],
+            isActive,
+        }).returning();
+
+        // Log activity
+        await logActivity(req.authUser!.userId, 'user_created', `ສ້າງຜູ້ໃຊ້ໃໝ່: ${name}`, { targetUserId: user.id }, req);
+
+        res.status(201).json({ success: true, data: user });
+    } catch (error) {
+        next(error);
+    }
+});
+
+/**
  * GET /admin/users - List all users (Super Admin)
  */
-adminRoutes.get('/users', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.get('/users', authenticate, requireAdmin(), branchFilter(), async (req, res, next) => {
     try {
         const { search, branchId, isActive, isSuperAdmin, page = 1, limit = 20 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
 
         const uConds: any[] = [];
+        const tenantScope = buildTenantCondition(req.branchFilter, users.tenantId);
+        if (tenantScope) uConds.push(tenantScope);
         if (isActive !== undefined) uConds.push(eq(users.isActive, isActive === 'true'));
         if (isSuperAdmin !== undefined) uConds.push(eq(users.isSuperAdmin, isSuperAdmin === 'true'));
         if (branchId) uConds.push(eq(users.branchId, String(branchId)));
@@ -883,11 +1136,12 @@ adminRoutes.post('/requests', authenticate, async (req, res, next) => {
             branchName, branchCode, branchAddress, branchPhone, branchEmail,
             reason,
             documents,
+            metadata,
             priority
         } = req.body;
 
         // Validate type
-        if (!['new_store', 'new_branch', 'branch_update'].includes(type)) {
+        if (!['new_store', 'new_branch', 'branch_update', 'new_tenant'].includes(type)) {
             return res.status(400).json({
                 success: false,
                 error: { code: 'INVALID_TYPE', message: 'Invalid request type' }
@@ -910,10 +1164,34 @@ adminRoutes.post('/requests', authenticate, async (req, res, next) => {
             });
         }
 
+        const reqTenantId = req.authUser?.tenantId || req.user?.tenantId;
+
+        // Upload documents (base64) to cloud storage if provided
+        let documentUrls: string[] = [];
+        if (Array.isArray(documents) && documents.length > 0) {
+            try {
+                const { uploadService } = await import('@/infrastructure/services/upload.service');
+                for (const doc of documents) {
+                    const base64Data = typeof doc === 'string' ? doc : doc?.data;
+                    if (base64Data) {
+                        const result = await uploadService.uploadSingle(base64Data, {
+                            folder: 'kpos/store-requests',
+                            resourceType: 'auto',
+                        });
+                        if (result?.url) documentUrls.push(result.url);
+                    }
+                }
+            } catch (uploadErr) {
+                console.warn('[AdminRequest] Document upload failed:', uploadErr instanceof Error ? uploadErr.message : uploadErr);
+            }
+        }
+
         const [created] = await db.insert(storeRequests).values({
-            requesterId, type, branchId, storeName, storeCode, storeAddress, storePhone, storeEmail,
+            tenantId: reqTenantId === '' ? null : reqTenantId,
+            requesterId, type, branchId: branchId === '' ? null : branchId, storeName, storeCode, storeAddress, storePhone, storeEmail,
             branchName, branchCode, branchAddress, branchPhone, branchEmail, reason,
-            documents: documents || [], priority: priority || 'normal', status: 'pending',
+            documents: documentUrls.length > 0 ? documentUrls : (Array.isArray(documents) ? documents.map((d: any) => typeof d === 'string' ? d : d?.name || 'document').filter(Boolean) : []),
+            metadata: metadata || {}, priority: priority || 'normal', status: 'pending',
         }).returning();
         const request = await db.query.storeRequests.findFirst({ where: eq(storeRequests.id, created.id), with: { requester: { columns: { name: true, email: true } } } });
 
@@ -1133,7 +1411,8 @@ adminRoutes.post('/roles', authenticate, requireAdmin(), async (req, res, next) 
             });
         }
 
-        const [role] = await db.insert(roles).values({ name, displayName, description, permissions: permissions || [], isSystem: false }).returning();
+        const roleTenantId = req.authUser?.tenantId || req.user?.tenantId;
+        const [role] = await db.insert(roles).values({ tenantId: roleTenantId, name, displayName, description, permissions: permissions || [], isSystem: false }).returning();
 
         // Log activity
         await logActivity(req.authUser!.userId, 'role_created', `ສ້າງບົດບາດ: ${displayName}`, { roleId: role.id }, req);
@@ -1254,9 +1533,11 @@ async function logActivity(
         };
 
         // Try async queue first; fall back to synchronous DB write
-        const queued = isRabbitMQConnected() && publish(QUEUES.ACTIVITY_LOG, payload as Record<string, unknown>);
+        const tenantId = req?.authUser?.tenantId || req?.user?.tenantId || undefined;
+        const queued = isRabbitMQConnected() && publish(QUEUES.ACTIVITY_LOG, { ...payload, tenantId } as Record<string, unknown>);
         if (!queued) {
             await db.insert(activityLogs).values({
+                tenantId,
                 userId,
                 action,
                 description,
@@ -1273,11 +1554,15 @@ async function logActivity(
 /**
  * GET /admin/activity - Get recent activity (for dashboard)
  */
-adminRoutes.get('/activity', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.get('/activity', authenticate, requireAdmin(), branchFilter(), async (req, res, next) => {
     try {
         const { limit = 10 } = req.query;
 
+        const actConds: any[] = [];
+        const tenantScope = buildTenantCondition(req.branchFilter, activityLogs.tenantId);
+        if (tenantScope) actConds.push(tenantScope);
         const activities = await db.query.activityLogs.findMany({
+            where: actConds.length > 0 ? and(...actConds) : undefined,
             limit: Number(limit),
             orderBy: desc(activityLogs.createdAt),
             with: { user: { columns: { id: true, name: true, email: true } } },
@@ -1292,12 +1577,14 @@ adminRoutes.get('/activity', authenticate, requireAdmin(), async (req, res, next
 /**
  * GET /admin/audit - Get audit logs with filtering
  */
-adminRoutes.get('/audit', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.get('/audit', authenticate, requireAdmin(), branchFilter(), async (req, res, next) => {
     try {
         const { search, action, userId, dateFrom, dateTo, page = 1, limit = 20 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
 
         const aConds: any[] = [];
+        const tenantScope = buildTenantCondition(req.branchFilter, activityLogs.tenantId);
+        if (tenantScope) aConds.push(tenantScope);
         if (action) aConds.push(eq(activityLogs.action, String(action)));
         if (userId) aConds.push(eq(activityLogs.userId, String(userId)));
         if (dateFrom) aConds.push(gte(activityLogs.createdAt, new Date(String(dateFrom))));
@@ -1346,11 +1633,13 @@ adminRoutes.get('/audit', authenticate, requireAdmin(), async (req, res, next) =
 /**
  * GET /admin/audit/export - Export audit logs as CSV
  */
-adminRoutes.get('/audit/export', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.get('/audit/export', authenticate, requireAdmin(), branchFilter(), async (req, res, next) => {
     try {
         const { action, userId, dateFrom, dateTo } = req.query;
 
         const eConds: any[] = [];
+        const tenantScope = buildTenantCondition(req.branchFilter, activityLogs.tenantId);
+        if (tenantScope) eConds.push(tenantScope);
         if (action) eConds.push(eq(activityLogs.action, String(action)));
         if (userId) eConds.push(eq(activityLogs.userId, String(userId)));
         if (dateFrom) eConds.push(gte(activityLogs.createdAt, new Date(String(dateFrom))));
@@ -1450,13 +1739,13 @@ adminRoutes.get('/users/:id', authenticate, requireAdmin(), async (req, res, nex
     try {
         const { id } = req.params;
 
+        // First query: basic user data with branch and role
         const user = await db.query.users.findFirst({
             where: eq(users.id, id),
             columns: { id: true, email: true, name: true, phone: true, role: true, roleId: true, branchId: true, permissions: true, isActive: true, isSuperAdmin: true, lastLoginAt: true, createdAt: true, updatedAt: true },
             with: {
                 branch: { columns: { id: true, name: true, code: true } },
                 roleRelation: { columns: { id: true, name: true, displayName: true, permissions: true } },
-                accessibleStores: { with: { store: { columns: { id: true, name: true, code: true } } } },
             },
         });
 
@@ -1467,8 +1756,21 @@ adminRoutes.get('/users/:id', authenticate, requireAdmin(), async (req, res, nex
             });
         }
 
-        res.json({ success: true, data: user });
+        // Second query: fetch accessible stores separately to avoid nested relation issues
+        let accessibleStores: any[] = [];
+        try {
+            const storeAssignments = await db.query.userStores.findMany({
+                where: eq(userStores.userId, id),
+                with: { store: { columns: { id: true, name: true, code: true } } },
+            });
+            accessibleStores = storeAssignments;
+        } catch (storeErr) {
+            console.error('[Admin] Failed to load accessible stores for user:', id, storeErr);
+        }
+
+        res.json({ success: true, data: { ...user, accessibleStores } });
     } catch (error) {
+        console.error('[Admin] GET /users/:id error:', error);
         next(error);
     }
 });
@@ -1505,14 +1807,27 @@ adminRoutes.patch('/users/:id', authenticate, requireAdmin(), async (req, res, n
             if (role) roleName = role.name;
         }
 
+        // Tenant scoping: System Admins can only update users within their own tenant
+        if (!req.authUser!.isSuperAdmin && req.authUser!.tenantId) {
+            if (existing.tenantId && existing.tenantId !== req.authUser!.tenantId) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot modify user from another tenant' } });
+            }
+        }
+
         const updateData: Record<string, unknown> = {};
         if (name !== undefined) updateData.name = name;
         if (email !== undefined) updateData.email = email;
         if (phone !== undefined) updateData.phone = phone;
         if (roleId !== undefined) { updateData.roleId = roleId; updateData.role = roleName; }
         if (branchId !== undefined) updateData.branchId = branchId;
-        if (permissions !== undefined) updateData.permissions = permissions;
+        if (permissions !== undefined && Array.isArray(permissions)) {
+            updateData.permissions = permissions.filter((p: unknown) => typeof p === 'string');
+        }
         if (isActive !== undefined) updateData.isActive = isActive;
+
+        if (Object.keys(updateData).length === 0) {
+            return res.status(400).json({ success: false, error: { code: 'NO_CHANGES', message: 'No fields to update' } });
+        }
 
         await db.update(users).set(updateData).where(eq(users.id, id));
         const user = await db.query.users.findFirst({
@@ -1521,11 +1836,16 @@ adminRoutes.patch('/users/:id', authenticate, requireAdmin(), async (req, res, n
             with: { branch: { columns: { id: true, name: true } }, roleRelation: { columns: { id: true, name: true, displayName: true } } },
         });
 
+        if (!user) {
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'User not found after update' } });
+        }
+
         // Log activity
-        await logActivity(req.authUser!.userId, 'user_updated', `ແກ້ໄຂຜູ້ໃຊ້: ${user.name}`, { targetUserId: id }, req);
+        await logActivity(req.authUser!.userId, 'user_updated', `ແກ້ໄຂຜູ້ໃຊ້: ${user.name}`, { targetUserId: id }, req).catch(() => {});
 
         res.json({ success: true, data: user });
     } catch (error) {
+        console.error('[Admin] PATCH /users/:id error:', error);
         next(error);
     }
 });
@@ -2960,7 +3280,9 @@ adminRoutes.post('/reset-database', authenticate, requireSuperAdmin(), async (re
         await db.delete(menuPermissions);
         
         // Create default branch for Super Admins
+        const resetTenantId = req.authUser?.tenantId || req.user?.tenantId;
         const [defaultBranch] = await (db.insert(branches) as any).values({
+            tenantId: resetTenantId,
             name: 'ສຳນັກງານໃຫຍ່', code: 'HQ', isMain: true,
         }).returning();
         

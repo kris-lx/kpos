@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, branchFilter, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, branchFilter, ensureScopeAccess, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { db } from '@/config/database.config';
 import { branches, stores, users } from '@/db/schema/tables';
 import { eq, and, inArray, ne, asc, count } from 'drizzle-orm';
@@ -13,11 +13,14 @@ export const branchRoutes = Router();
 // Get all branches — scoped for non-admin users
 branchRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
     try {
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const filter = req.branchFilter;
         const conditions = [eq(branches.isActive, true)];
 
         if (filter?.branchIds?.length) {
             conditions.push(inArray(branches.id, filter.branchIds));
+        } else if (filter?.tenantId) {
+            // System Admins: scope to their tenant
+            conditions.push(eq(branches.tenantId, filter.tenantId));
         }
 
         const rows = await db.query.branches.findMany({
@@ -34,13 +37,24 @@ branchRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
 // Get branch by ID
 branchRoutes.get('/:id', authenticate, async (req, res, next) => {
     try {
+        // BE-72: Tenant-scoped branch lookup
+        const tenantId = req.authUser?.tenantId;
+        const getConds: any[] = [eq(branches.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            getConds.push(eq(branches.tenantId, tenantId));
+        }
+
         const branch = await db.query.branches.findFirst({
-            where: eq(branches.id, req.params.id),
+            where: and(...getConds),
         });
 
         if (!branch) {
-            res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Branch not found' } });
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Branch not found or no access' } });
             return;
+        }
+
+        if (!ensureScopeAccess(branch, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
         }
 
         res.json({ success: true, data: branch });
@@ -61,7 +75,10 @@ branchRoutes.post('/', authenticate, authorize('branches:create'), async (req, r
             });
         }
 
-        const existing = await db.query.branches.findFirst({ where: eq(branches.code, code) });
+        // BE-72: Tenant-scoped duplicate check
+        const dupConds: any[] = [eq(branches.code, code)];
+        if (tenantId) dupConds.push(eq(branches.tenantId, tenantId));
+        const existing = await db.query.branches.findFirst({ where: and(...dupConds) });
         if (existing) {
             return res.status(400).json({
                 success: false,
@@ -73,7 +90,9 @@ branchRoutes.post('/', authenticate, authorize('branches:create'), async (req, r
             await db.update(branches).set({ isMain: false }).where(eq(branches.isMain, true));
         }
 
+        const tenantId = req.authUser?.tenantId || req.user?.tenantId;
         const [branch] = await db.insert(branches).values({
+            tenantId,
             name, code, address, phone, email, taxId, logo,
             isMain: isMain || false, isActive: isActive !== false, settings: settings || {},
         }).returning();
@@ -86,6 +105,14 @@ branchRoutes.post('/', authenticate, authorize('branches:create'), async (req, r
 // Update branch
 branchRoutes.put('/:id', authenticate, authorize('branches:update'), async (req, res, next) => {
     try {
+        // BE-72: Tenant-scoped update
+        const tenantId = req.authUser?.tenantId;
+        const updConds: any[] = [eq(branches.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) updConds.push(eq(branches.tenantId, tenantId));
+        const existing = await db.query.branches.findFirst({ where: and(...updConds) });
+        if (!existing) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Branch not found or no access' } });
+        if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+
         const { name, code, address, phone, email, taxId, logo, isMain, isActive, settings } = req.body;
         const data: Record<string, unknown> = { updatedAt: new Date() };
         if (name !== undefined) data.name = name;
@@ -103,9 +130,10 @@ branchRoutes.put('/:id', authenticate, authorize('branches:update'), async (req,
             await db.update(branches).set({ isMain: false }).where(and(eq(branches.isMain, true), ne(branches.id, req.params.id)));
         }
 
+        delete data.tenantId;
         const [branch] = await db.update(branches)
             .set(data as any)
-            .where(eq(branches.id, req.params.id))
+            .where(and(...updConds))
             .returning();
         res.json({ success: true, data: branch });
     } catch (error) {
@@ -117,6 +145,14 @@ branchRoutes.put('/:id', authenticate, authorize('branches:update'), async (req,
 branchRoutes.delete('/:id', authenticate, authorize('branches:delete'), async (req, res, next) => {
     try {
         const { id } = req.params;
+
+        // BE-72: Tenant-scoped delete
+        const tenantId = req.authUser?.tenantId;
+        const delConds: any[] = [eq(branches.id, id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) delConds.push(eq(branches.tenantId, tenantId));
+        const existing = await db.query.branches.findFirst({ where: and(...delConds) });
+        if (!existing) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Branch not found or no access' } });
+        if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
 
         // Check if branch has any stores
         const [{ value: storeCount }] = await db.select({ value: count() }).from(stores)
@@ -148,7 +184,7 @@ branchRoutes.delete('/:id', authenticate, authorize('branches:delete'), async (r
 
         await db.update(branches)
             .set({ isActive: false, updatedAt: new Date() })
-            .where(eq(branches.id, id));
+            .where(and(...delConds));
         res.json({ success: true, data: { message: 'Branch deleted' } });
     } catch (error) {
         next(error);

@@ -54,8 +54,10 @@ export async function ensureDefaultTenant(): Promise<void> {
             'members', 'membership_tiers', 'point_settings',
             'promotions', 'coupons', 'discounts', 'settlements',
             'vendors', 'purchase_orders', 'stock_transfers', 'stock_counts',
+            'price_levels', 'product_price_levels', 'sku_variants',
             'documents', 'document_templates', 'settings',
             'notifications', 'activity_logs', 'store_requests',
+            'system_enums', 'role_rules', 'menu_permissions',
         ];
 
         for (const table of tablesToPatch) {
@@ -67,6 +69,45 @@ export async function ensureDefaultTenant(): Promise<void> {
                 // Column may already exist — ignore
             }
         }
+
+        // G3: Add tenant_id to product_stores
+        try {
+            await db.execute(sql.raw(`ALTER TABLE "product_stores" ADD COLUMN IF NOT EXISTS tenant_id UUID`));
+        } catch { /* ignore */ }
+
+        // G4: Add tenant_id to product_price_levels
+        try {
+            await db.execute(sql.raw(`ALTER TABLE "product_price_levels" ADD COLUMN IF NOT EXISTS tenant_id UUID`));
+        } catch { /* ignore */ }
+
+        // G8/G9/G10: Add store-level config columns to stores
+        for (const col of ['logo TEXT', 'theme JSONB', 'merchant_id TEXT', 'payment_gateway TEXT']) {
+            try {
+                await db.execute(sql.raw(`ALTER TABLE "stores" ADD COLUMN IF NOT EXISTS ${col}`));
+            } catch { /* ignore */ }
+        }
+
+        // G11: Add branchId/storeId to settlements
+        try {
+            await db.execute(sql.raw(`ALTER TABLE "settlements" ADD COLUMN IF NOT EXISTS branch_id UUID`));
+            await db.execute(sql.raw(`ALTER TABLE "settlements" ADD COLUMN IF NOT EXISTS store_id UUID`));
+        } catch { /* ignore */ }
+
+        // G17: Add storeId to cash_registers
+        try {
+            await db.execute(sql.raw(`ALTER TABLE "cash_registers" ADD COLUMN IF NOT EXISTS store_id UUID`));
+        } catch { /* ignore */ }
+
+        // G8: Add storeId to settings
+        try {
+            await db.execute(sql.raw(`ALTER TABLE "settings" ADD COLUMN IF NOT EXISTS store_id UUID`));
+        } catch { /* ignore */ }
+
+        // G2: Migrate settings unique index to include tenantId+storeId
+        try {
+            await db.execute(sql.raw(`DROP INDEX IF EXISTS "settings_category_key_branch_idx"`));
+            await db.execute(sql.raw(`CREATE UNIQUE INDEX IF NOT EXISTS "settings_tenant_cat_key_branch_store_idx" ON "settings" (tenant_id, category, key, branch_id, store_id)`));
+        } catch { /* ignore */ }
 
         // Also add receipt_settings to branches
         try {

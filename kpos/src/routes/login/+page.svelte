@@ -25,7 +25,7 @@
                 toast.success(t("auth.loginSuccess"));
                 goto("/pos");
             } else if (result === 'SERVICE_UNAVAILABLE') {
-                error = "Database is not available. Please ensure MongoDB is running.";
+                error = "Database is not available. Please ensure PostgreSQL is running.";
             } else {
                 error = t("auth.loginFailed");
             }

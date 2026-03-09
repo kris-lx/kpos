@@ -63,6 +63,7 @@
     // Data
     let products = $state<any[]>([]);
     let categories = $state<any[]>([]);
+    let vendors = $state<any[]>([]);
     let skuVariants = $state<any[]>([]);
     
     // SKU/Barcode dropdown states
@@ -80,15 +81,16 @@
         name: "",
         sku: "",
         barcode: "",
-        price: 0,
-        cost: 0,
         categoryId: "",
-        description: "",
-        stock: 0,
-        minStock: 5,
+        vendorId: "",
+        price: "",
+        cost: "",
         unit: "ຊິ້ນ",
         isActive: true,
         image: "",
+        description: "",
+        stock: 0,
+        minStock: 10,
     });
 
     // Stats
@@ -137,19 +139,22 @@
     async function loadData() {
         isLoading = true;
         try {
-            const [prodRes, catRes, skuRes] = await Promise.all([
+            const [prodRes, catRes, skuRes, vendorRes] = await Promise.all([
                 api.get("products").json<any>(),
                 api.get("categories").json<any>(),
                 api.get("products/skus?limit=1000").json<any>(),
+                api.get("inventory/vendors").json<any>(),
             ]);
             products = prodRes.data || [];
             categories = catRes.data || [];
             skuVariants = skuRes.data || [];
+            vendors = vendorRes.data || [];
         } catch (e) {
             console.error("Failed to load:", e);
             products = [];
             categories = [];
             skuVariants = [];
+            vendors = [];
         } finally {
             isLoading = false;
         }
@@ -210,6 +215,7 @@
             if (formData.sku && formData.sku.trim() !== '') data.sku = formData.sku.trim();
             if (formData.barcode && formData.barcode.trim() !== '') data.barcode = formData.barcode.trim();
             if (formData.categoryId && formData.categoryId !== '') data.categoryId = formData.categoryId;
+            if (formData.vendorId && formData.vendorId !== '') data.vendorId = formData.vendorId;
             if (formData.description && formData.description.trim() !== '') data.description = formData.description.trim();
             if (formData.image && formData.image.trim() !== '') data.image = formData.image;
             if (formData.stock !== undefined && formData.stock > 0) data.stock = Number(formData.stock);
@@ -271,6 +277,7 @@
             price: product.price || 0,
             cost: product.cost || 0,
             categoryId: product.categoryId || "",
+            vendorId: product.vendorId || "",
             description: product.description || "",
             stock: product.stock || 0,
             minStock: product.minStock || 5,
@@ -297,6 +304,7 @@
             price: 0,
             cost: 0,
             categoryId: "",
+            vendorId: "",
             description: "",
             stock: 0,
             minStock: 5,
@@ -1011,6 +1019,21 @@
                         <option value="">ເລືອກໝວດໝູ່</option>
                         {#each categories as category (category.id)}
                             <option value={category.id}>{category.name}</option>
+                        {/each}
+                    </select>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                        ເຈົ້າຂອງສິນຄ້າ (Vendor)
+                    </label>
+                    <select
+                        bind:value={formData.vendorId}
+                        class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    >
+                        <option value="">ເລືອກເຈົ້າຂອງສິນຄ້າ (ບໍ່ບັງຄັບ)</option>
+                        {#each vendors as vendor (vendor.id)}
+                            <option value={vendor.id}>{vendor.name}</option>
                         {/each}
                     </select>
                 </div>

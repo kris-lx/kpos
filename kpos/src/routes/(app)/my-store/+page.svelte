@@ -18,48 +18,59 @@
     const user = auth.user;
 
     // Get store details
-    const storeQuery = createQuery($derived({
-        queryKey: ["my-store", auth.activeStoreId],
+    const storeQuery = createQuery({
+        queryKey: ["my-store"],
         queryFn: async () => {
             if (!auth.activeStoreId) return null;
             const response = await api.get(`admin/stores/${auth.activeStoreId}/details`).json<any>();
             return response.data;
         },
         enabled: !!auth.activeStoreId
-    }));
+    });
 
     // Get store stats
-    const statsQuery = createQuery($derived({
-        queryKey: ["my-store-stats", auth.activeStoreId],
+    const statsQuery = createQuery({
+        queryKey: ["my-store-stats"],
         queryFn: async () => {
             if (!auth.activeStoreId) return null;
             const response = await api.get(`admin/stores/${auth.activeStoreId}/stats`).json<any>();
             return response.data;
         },
         enabled: !!auth.activeStoreId
-    }));
+    });
 
     // Get store branches
-    const branchesQuery = createQuery($derived({
-        queryKey: ["my-store-branches", auth.activeStoreId],
+    const branchesQuery = createQuery({
+        queryKey: ["my-store-branches"],
         queryFn: async () => {
             if (!auth.activeStoreId) return [];
             const response = await api.get(`admin/stores/${auth.activeStoreId}/branches`).json<any>();
             return response.data || [];
         },
         enabled: !!auth.activeStoreId
-    }));
+    });
 
     // Get store users
-    const usersQuery = createQuery($derived({
-        queryKey: ["my-store-users", auth.activeStoreId],
+    const usersQuery = createQuery({
+        queryKey: ["my-store-users"],
         queryFn: async () => {
             if (!auth.activeStoreId) return [];
             const response = await api.get(`admin/stores/${auth.activeStoreId}/users`).json<any>();
             return response.data || [];
         },
         enabled: !!auth.activeStoreId
-    }));
+    });
+
+    // Refetch all when active store changes
+    $effect(() => {
+        void auth.activeStoreId;
+        if (auth.activeStoreId) {
+            $storeQuery.refetch();
+            $statsQuery.refetch();
+            $branchesQuery.refetch();
+            $usersQuery.refetch();
+        }
+    });
 
     const storeId = $derived(auth.activeStoreId);
 
@@ -342,7 +353,7 @@
                     {#if activeTab === "overview"}
                         <!-- Stats Grid -->
                         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-                            <div class="bg-gradient-to-br from-blue-500 to-blue-600 rounded-xl p-5 text-white">
+                            <div class="bg-linear-to-br from-blue-500 to-blue-600 rounded-xl p-5 text-white">
                                 <div class="flex items-center justify-between">
                                     <div>
                                         <p class="text-blue-100 text-sm">ຍອດຂາຍມື້ນີ້</p>
@@ -353,7 +364,7 @@
                                     <ShoppingCart class="w-10 h-10 text-blue-200" />
                                 </div>
                             </div>
-                            <div class="bg-gradient-to-br from-emerald-500 to-emerald-600 rounded-xl p-5 text-white">
+                            <div class="bg-linear-to-br from-emerald-500 to-emerald-600 rounded-xl p-5 text-white">
                                 <div class="flex items-center justify-between">
                                     <div>
                                         <p class="text-emerald-100 text-sm">ອໍເດີມື້ນີ້</p>
@@ -364,7 +375,7 @@
                                     <Package class="w-10 h-10 text-emerald-200" />
                                 </div>
                             </div>
-                            <div class="bg-gradient-to-br from-purple-500 to-purple-600 rounded-xl p-5 text-white">
+                            <div class="bg-linear-to-br from-purple-500 to-purple-600 rounded-xl p-5 text-white">
                                 <div class="flex items-center justify-between">
                                     <div>
                                         <p class="text-purple-100 text-sm">ສິນຄ້າທັງໝົດ</p>
@@ -375,7 +386,7 @@
                                     <Package class="w-10 h-10 text-purple-200" />
                                 </div>
                             </div>
-                            <div class="bg-gradient-to-br from-orange-500 to-orange-600 rounded-xl p-5 text-white">
+                            <div class="bg-linear-to-br from-orange-500 to-orange-600 rounded-xl p-5 text-white">
                                 <div class="flex items-center justify-between">
                                     <div>
                                         <p class="text-orange-100 text-sm">ພະນັກງານ</p>

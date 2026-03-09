@@ -35,6 +35,11 @@
     let searchTimeout: ReturnType<typeof setTimeout>;
     let isSaving = $state(false);
 
+    // CRUD permission gating — hasPermission checks user.permissions directly
+    const canCreate = $derived(auth.hasPermission('inventory:create'));
+    const canUpdate = $derived(auth.hasPermission('inventory:update'));
+    const canDelete = $derived(auth.hasPermission('inventory:delete'));
+
     // Data
     let vendors = $state<any[]>([]);
 
@@ -50,6 +55,7 @@
         paymentTerms: 30,
         notes: "",
         isActive: true,
+        isStarred: false,
     });
 
     // Stats
@@ -109,6 +115,15 @@
         }
     }
 
+    async function toggleStar(vendor: any) {
+        try {
+            await api.put(`inventory/vendors/${vendor.id}`, { json: { isStarred: !vendor.isStarred } }).json();
+            loadData();
+        } catch (e) {
+            console.error("Failed to toggle star:", e);
+        }
+    }
+
     async function handleDelete(vendor: any) {
         if (!confirm("ຕ້ອງການລຶບ?")) return;
         try {
@@ -135,13 +150,14 @@
             paymentTerms: vendor.paymentTerms ?? 30,
             notes: vendor.notes || "",
             isActive: vendor.isActive !== false,
+            isStarred: vendor.isStarred === true,
         };
         showModal = true;
     }
 
     function resetForm() {
         editingVendor = null;
-        formData = { name: "", code: "", contactName: "", phone: "", email: "", address: "", taxId: "", paymentTerms: 30, notes: "", isActive: true };
+        formData = { name: "", code: "", contactName: "", phone: "", email: "", address: "", taxId: "", paymentTerms: 30, notes: "", isActive: true, isStarred: false };
     }
 
     let totalPages = $derived(Math.ceil(totalItems / itemsPerPage));
@@ -183,6 +199,7 @@
                 <Download class="w-4 h-4" />
                 ສົ່ງອອກ
             </button>
+            {#if canCreate}
             <button
                 onclick={() => { resetForm(); showModal = true; }}
                 class="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-amber-500 to-orange-600 text-white rounded-xl text-sm font-semibold shadow-lg"
@@ -190,6 +207,7 @@
                 <Plus class="w-5 h-5" />
                 ເພີ່ມຜູ້ສະໜອງ
             </button>
+            {/if}
         </div>
     </div>
 
@@ -280,13 +298,22 @@
                             </div>
                         {/if}
                     </div>
-                    <div class="px-4 py-3 border-t border-gray-200 dark:border-gray-700 flex justify-end gap-2">
-                        <button onclick={() => openEdit(vendor)} class="p-2 text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/30 rounded-lg">
-                            <Edit class="w-4 h-4" />
+                    <div class="px-4 py-3 border-t border-gray-200 dark:border-gray-700 flex items-center justify-between">
+                        <button onclick={() => toggleStar(vendor)} class="p-2 rounded-lg transition-colors {vendor.isStarred ? 'text-yellow-500 hover:bg-yellow-50 dark:hover:bg-yellow-900/30' : 'text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'}" title="{vendor.isStarred ? 'ຍົກເລີກຕິດດາວ' : 'ຕິດດາວ'}">
+                            <Star class="w-4 h-4 {vendor.isStarred ? 'fill-yellow-500' : ''}" />
                         </button>
-                        <button onclick={() => handleDelete(vendor)} class="p-2 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg">
-                            <Trash2 class="w-4 h-4" />
-                        </button>
+                        <div class="flex gap-2">
+                            {#if canUpdate}
+                            <button onclick={() => openEdit(vendor)} class="p-2 text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/30 rounded-lg">
+                                <Edit class="w-4 h-4" />
+                            </button>
+                            {/if}
+                            {#if canDelete}
+                            <button onclick={() => handleDelete(vendor)} class="p-2 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg">
+                                <Trash2 class="w-4 h-4" />
+                            </button>
+                            {/if}
+                        </div>
                     </div>
                 </div>
             {/each}
@@ -382,11 +409,16 @@
                     <textarea bind:value={formData.notes} rows="2" class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white resize-none"></textarea>
                 </div>
 
-                <div class="flex items-center gap-3">
-                    <label class="relative inline-flex items-center cursor-pointer">
-                        <input type="checkbox" bind:checked={formData.isActive} class="sr-only peer" />
-                        <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-amber-300 dark:peer-focus:ring-amber-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-amber-600"></div>
-                        <span class="ml-3 text-sm font-medium text-gray-700 dark:text-gray-300">ໃຊ້ງານຢູ່</span>
+                <div class="flex items-center gap-6">
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" bind:checked={formData.isActive} class="w-4 h-4 rounded border-gray-300 text-amber-500 focus:ring-amber-400" />
+                        <span class="text-sm font-medium text-gray-700 dark:text-gray-300">ໃຊ້ງານຢູ່</span>
+                    </label>
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" bind:checked={formData.isStarred} class="w-4 h-4 rounded border-gray-300 text-yellow-500 focus:ring-yellow-400" />
+                        <span class="text-sm font-medium text-gray-700 dark:text-gray-300 flex items-center gap-1">
+                            <Star class="w-4 h-4 text-yellow-500" /> ຕິດດາວ
+                        </span>
                     </label>
                 </div>
 

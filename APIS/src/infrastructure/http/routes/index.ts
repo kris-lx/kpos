@@ -5,6 +5,8 @@
 import type { Application } from 'express';
 import { Router } from 'express';
 import { appConfig } from '@/config/app.config';
+import { tenantRateLimiter } from '@/infrastructure/http/middleware/rateLimit.middleware';
+import { merchantStatusMiddleware, platformScopeGuard } from '@/infrastructure/http/middleware/auth.middleware';
 
 // Import module routes
 import { authRoutes } from '@/modules/auth/presentation/routes';
@@ -36,8 +38,14 @@ export function setupRoutes(app: Application): void {
     apiRouter.use('/upload', uploadRoutes);
     apiRouter.use('/notifications', notificationRoutes);
 
-    // Mount module routes
+    // Auth routes (no tenant rate limit — uses IP-based authRateLimiter)
     apiRouter.use('/auth', authRoutes);
+
+    // ── Business routes: tenantRateLimiter + merchantStatus + platformScope (BE-21, G5) ──
+    apiRouter.use(tenantRateLimiter);
+    apiRouter.use(merchantStatusMiddleware);
+    apiRouter.use(platformScopeGuard());
+
     apiRouter.use('/users', userRoutes);
     apiRouter.use('/roles', roleRoutes);
     apiRouter.use('/products', productRoutes);

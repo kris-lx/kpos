@@ -10,9 +10,10 @@ import {
     productPriceLevels, inventory, stockMovements, customers, pointsHistory,
     transactions, transactionItems, transactionPayments, heldSales, paymentMethods,
     shifts, cashRegisters, cashMovements, tables, orders, orderItems,
-    members, membershipTiers, pointHistory, documents, activityLogs,
+    members, membershipTiers, pointHistory, documents, activityLogs, settings,
     vendors, purchaseOrders, purchaseOrderItems, stockTransfers, stockTransferItems,
     stockCounts, stockCountItems, promotions, coupons, discounts, notifications,
+    settlements, platformAuditLogs, userRoleAssignments,
 } from './tables';
 
 // ─── Tenant Relations ────────────────────────────────────────────────────
@@ -55,6 +56,7 @@ export const usersRelations = relations(users, ({ one, many }) => ({
     activityLogs: many(activityLogs),
     sessions: many(sessions),
     accessibleStores: many(userStores),
+    roleAssignments: many(userRoleAssignments),
     storeRequests: many(storeRequests, { relationName: 'requestedBy' }),
     reviewedRequests: many(storeRequests, { relationName: 'reviewedBy' }),
 }));
@@ -66,6 +68,7 @@ export const sessionsRelations = relations(sessions, ({ one }) => ({
 export const rolesRelations = relations(roles, ({ many }) => ({
     users: many(users),
     roleRules: many(roleRules),
+    roleAssignments: many(userRoleAssignments),
 }));
 
 export const rulesRelations = relations(rules, ({ many }) => ({
@@ -139,6 +142,7 @@ export const categoriesRelations = relations(categories, ({ one, many }) => ({
 export const productsRelations = relations(products, ({ one, many }) => ({
     tenant: one(tenants, { fields: [products.tenantId], references: [tenants.id] }),
     category: one(categories, { fields: [products.categoryId], references: [categories.id] }),
+    vendor: one(vendors, { fields: [products.vendorId], references: [vendors.id] }),
     branch: one(branches, { fields: [products.branchId], references: [branches.id] }),
     inventory: many(inventory),
     transactionItems: many(transactionItems),
@@ -237,6 +241,7 @@ export const shiftsRelations = relations(shifts, ({ one, many }) => ({
 
 export const cashRegistersRelations = relations(cashRegisters, ({ one, many }) => ({
     branch: one(branches, { fields: [cashRegisters.branchId], references: [branches.id] }),
+    store: one(stores, { fields: [cashRegisters.storeId], references: [stores.id] }),
     shifts: many(shifts),
 }));
 
@@ -323,6 +328,20 @@ export const discountsRelations = relations(discounts, ({ one }) => ({
     store: one(stores, { fields: [discounts.storeId], references: [stores.id] }),
 }));
 
+// ─── Settlement Relations ────────────────────────────────────────────────
+
+export const settlementsRelations = relations(settlements, ({ one }) => ({
+    branch: one(branches, { fields: [settlements.branchId], references: [branches.id] }),
+    store: one(stores, { fields: [settlements.storeId], references: [stores.id] }),
+}));
+
+// ─── Settings Relations ─────────────────────────────────────────────────
+
+export const settingsRelations = relations(settings, ({ one }) => ({
+    branch: one(branches, { fields: [settings.branchId], references: [branches.id] }),
+    store: one(stores, { fields: [settings.storeId], references: [stores.id] }),
+}));
+
 // ─── Document Relations ──────────────────────────────────────────────────
 
 export const documentsRelations = relations(documents, ({ one }) => ({
@@ -340,4 +359,13 @@ export const activityLogsRelations = relations(activityLogs, ({ one }) => ({
 
 export const notificationsRelations = relations(notifications, ({ one }) => ({
     user: one(users, { fields: [notifications.userId], references: [users.id] }),
+}));
+
+// ─── User Role Assignments Relations ────────────────────────────────────
+
+export const userRoleAssignmentsRelations = relations(userRoleAssignments, ({ one }) => ({
+    user: one(users, { fields: [userRoleAssignments.userId], references: [users.id] }),
+    role: one(roles, { fields: [userRoleAssignments.roleId], references: [roles.id] }),
+    tenant: one(tenants, { fields: [userRoleAssignments.tenantId], references: [tenants.id] }),
+    store: one(stores, { fields: [userRoleAssignments.storeId], references: [stores.id] }),
 }));

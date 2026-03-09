@@ -1,5 +1,6 @@
 <script lang="ts">
-    import { useQuery, useMutation, useQueryClient } from '@tanstack/svelte-query';
+    import { createQuery, createMutation, useQueryClient } from '@tanstack/svelte-query';
+    import { get } from 'svelte/store';
     import { api } from '$lib/api';
     import { toast } from 'svelte-sonner';
     import { Plus, Pencil, Trash2, ToggleLeft, ToggleRight, RefreshCw, ChevronDown, ChevronRight, Tag, Loader2, X, Check, Shield } from 'lucide-svelte';
@@ -18,7 +19,7 @@
     let editForm = $state({ label: '', labelLao: '', order: 0, isActive: true });
 
     // ── Queries ────────────────────────────────────────────────────────────────
-    const enumsQuery = useQuery({
+    const enumsQuery = createQuery({
         queryKey: ['admin-enums'],
         queryFn: () => api.get('admin/enums').json<any>(),
     });
@@ -29,36 +30,33 @@
     let grouped = $derived<Record<string,any[]>>(data?.grouped ?? {});
 
     // ── Mutations ──────────────────────────────────────────────────────────────
-    const createMutation = useMutation({
+    const addMutation = createMutation({
         mutationFn: (body: any) => api.post('admin/enums', { json: body }).json<any>(),
         onSuccess: () => {
             toast.success('ເພີ່ມສຳເລັດ');
-            queryClient.invalidateQueries({ queryKey: ['admin-enums'] });
-            queryClient.invalidateQueries({ queryKey: ['enums'] });
+            get(enumsQuery).refetch();
             showAddModal = false;
             addForm = { type: '', value: '', label: '', labelLao: '', order: 0 };
         },
         onError: (e: any) => toast.error(e?.message ?? 'ເກີດຂໍ້ຜິດພາດ'),
     });
 
-    const updateMutation = useMutation({
+    const updateMutation = createMutation({
         mutationFn: ({ id, body }: { id: string; body: any }) =>
             api.put(`admin/enums/${id}`, { json: body }).json<any>(),
         onSuccess: () => {
             toast.success('ບັນທຶກສຳເລັດ');
-            queryClient.invalidateQueries({ queryKey: ['admin-enums'] });
-            queryClient.invalidateQueries({ queryKey: ['enums'] });
+            get(enumsQuery).refetch();
             showEditModal = false;
         },
         onError: (e: any) => toast.error(e?.message ?? 'ເກີດຂໍ້ຜິດພາດ'),
     });
 
-    const deleteMutation = useMutation({
+    const deleteMutation = createMutation({
         mutationFn: (id: string) => api.delete(`admin/enums/${id}`).json<any>(),
         onSuccess: () => {
             toast.success('ລຶບສຳເລັດ');
-            queryClient.invalidateQueries({ queryKey: ['admin-enums'] });
-            queryClient.invalidateQueries({ queryKey: ['enums'] });
+            get(enumsQuery).refetch();
         },
         onError: (e: any) => toast.error(e?.message ?? 'ລຶບບໍ່ໄດ້: ' + (e?.message ?? '')),
     });
@@ -184,8 +182,10 @@
                 {@const items = grouped[type] ?? []}
                 <div class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
                     <!-- Type header -->
-                    <button onclick={() => toggle(type)}
-                        class="w-full flex items-center justify-between px-5 py-4 hover:bg-gray-50 dark:hover:bg-gray-750 transition-colors">
+                    <!-- svelte-ignore a11y_no_static_element_interactions -->
+                    <!-- svelte-ignore a11y_click_events_have_key_events -->
+                    <div onclick={() => toggle(type)}
+                        class="w-full flex items-center justify-between px-5 py-4 hover:bg-gray-50 dark:hover:bg-gray-750 transition-colors cursor-pointer">
                         <div class="flex items-center gap-3">
                             {#if expandedTypes.has(type)}
                                 <ChevronDown class="w-4 h-4 text-gray-400" />
@@ -204,7 +204,7 @@
                                 <Plus class="w-3.5 h-3.5" />ເພີ່ມ
                             </button>
                         </div>
-                    </button>
+                    </div>
 
                     <!-- Items -->
                     {#if expandedTypes.has(type)}
@@ -272,7 +272,7 @@
                     list="type-list"
                     class="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary-500" />
                 <datalist id="type-list">
-                    {#each types as t}<option value={t}>{/each}
+                    {#each types as tp}<option value={tp}></option>{/each}
                 </datalist>
             </div>
             <div class="grid grid-cols-2 gap-3">
@@ -300,9 +300,9 @@
         </div>
         <div class="p-5 border-t border-gray-200 dark:border-gray-700 flex justify-end gap-3">
             <button onclick={() => showAddModal = false} class="px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-xl text-sm hover:bg-gray-50 dark:hover:bg-gray-700">ຍົກເລີກ</button>
-            <button onclick={() => $createMutation.mutate(addForm)} disabled={$createMutation.isPending || !addForm.type || !addForm.value || !addForm.label}
+            <button onclick={() => $addMutation.mutate(addForm)} disabled={$addMutation.isPending || !addForm.type || !addForm.value || !addForm.label}
                 class="flex items-center gap-2 px-5 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-xl text-sm font-medium disabled:opacity-50">
-                {#if $createMutation.isPending}<Loader2 class="w-4 h-4 animate-spin" />{:else}<Check class="w-4 h-4" />{/if}
+                {#if $addMutation.isPending}<Loader2 class="w-4 h-4 animate-spin" />{:else}<Check class="w-4 h-4" />{/if}
                 ບັນທຶກ
             </button>
         </div>

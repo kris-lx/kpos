@@ -219,6 +219,61 @@
         }).format(new Date(date));
     }
 
+    // Export functions
+    let showExportMenu = $state(false);
+
+    function downloadFile(content: string, filename: string, type: string) {
+        const blob = new Blob([content], { type });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
+    function exportToCSV() {
+        let csv = '\ufeff';
+        csv += 'ວັນທີ,ລະຫັດ,ລູກຄ້າ,ວິທີຊຳລະ,ຍອດເງິນ,ສະຖານະ\n';
+        for (const tx of filteredTransactions) {
+            csv += `"${formatDate(tx.createdAt)}","${tx.transactionNo}","${tx.customer}","${tx.methodName}","${tx.amount}","${tx.status}"\n`;
+        }
+        downloadFile(csv, `payments-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
+        toast.success('ສົ່ງອອກ CSV ສຳເລັດ');
+    }
+
+    function exportToPDF() {
+        const rows = filteredTransactions.map(tx =>
+            `<tr><td>${formatDate(tx.createdAt)}</td><td>${tx.transactionNo}</td><td>${tx.customer}</td><td>${tx.methodName}</td><td style="text-align:right">${formatCurrency(tx.amount)}</td><td>${tx.status}</td></tr>`
+        ).join('');
+        const total = filteredTransactions.reduce((s, tx) => s + (tx.amount || 0), 0);
+        const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>ລາຍງານການຊຳລະ</title>
+<style>body{font-family:'Noto Sans Lao',sans-serif;padding:20px}h1{text-align:center}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ddd;padding:8px;font-size:12px}th{background:#f5f5f5}tfoot td{font-weight:bold;background:#f9f9f9}</style></head>
+<body><h1>ລາຍງານການຊຳລະ</h1><p style="text-align:center">${new Date().toLocaleDateString('lo-LA')}</p>
+<table><thead><tr><th>ວັນທີ</th><th>ລະຫັດ</th><th>ລູກຄ້າ</th><th>ວິທີຊຳລະ</th><th>ຍອດເງິນ</th><th>ສະຖານະ</th></tr></thead><tbody>${rows}</tbody>
+<tfoot><tr><td colspan="4">ລວມ</td><td style="text-align:right">${formatCurrency(total)}</td><td>${filteredTransactions.length} ລາຍການ</td></tr></tfoot></table></body></html>`;
+        const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const w = window.open(url, '_blank');
+        if (w) w.onload = () => w.print();
+        toast.success('ສົ່ງອອກ PDF ສຳເລັດ');
+    }
+
+    function exportToWord() {
+        const rows = filteredTransactions.map(tx =>
+            `<tr><td>${formatDate(tx.createdAt)}</td><td>${tx.transactionNo}</td><td>${tx.customer}</td><td>${tx.methodName}</td><td>${formatCurrency(tx.amount)}</td><td>${tx.status}</td></tr>`
+        ).join('');
+        const total = filteredTransactions.reduce((s, tx) => s + (tx.amount || 0), 0);
+        const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office"><head><meta charset="utf-8"><style>table{width:100%;border-collapse:collapse}th,td{border:1px solid #000;padding:8px}th{background:#f0f0f0}tfoot td{font-weight:bold}</style></head>
+<body><h1 style="text-align:center">ລາຍງານການຊຳລະ</h1><p style="text-align:center">${new Date().toLocaleDateString('lo-LA')}</p>
+<table><thead><tr><th>ວັນທີ</th><th>ລະຫັດ</th><th>ລູກຄ້າ</th><th>ວິທີຊຳລະ</th><th>ຍອດເງິນ</th><th>ສະຖານະ</th></tr></thead><tbody>${rows}</tbody>
+<tfoot><tr><td colspan="4">ລວມ</td><td>${formatCurrency(total)}</td><td>${filteredTransactions.length} ລາຍການ</td></tr></tfoot></table></body></html>`;
+        downloadFile(html, `payments-${new Date().toISOString().split('T')[0]}.doc`, 'application/msword');
+        toast.success('ສົ່ງອອກ Word ສຳເລັດ');
+    }
+
     // Filtered transactions
     let filteredTransactions = $derived.by(() => {
         return transactions.filter((t) => {
@@ -272,12 +327,28 @@
                 <RefreshCw class="w-4 h-4" />
                 {t("common.refresh")}
             </button>
-            <button
-                class="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-emerald-500 to-green-600 text-white rounded-xl text-sm font-semibold shadow-lg hover:from-emerald-600 hover:to-green-700 transition-all"
-            >
-                <Download class="w-4 h-4" />
-                {t("payments.exportReport")}
-            </button>
+            <div class="relative">
+                <button
+                    onclick={() => showExportMenu = !showExportMenu}
+                    class="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-emerald-500 to-green-600 text-white rounded-xl text-sm font-semibold shadow-lg hover:from-emerald-600 hover:to-green-700 transition-all"
+                >
+                    <Download class="w-4 h-4" />
+                    {t("payments.exportReport")}
+                </button>
+                {#if showExportMenu}
+                    <div class="absolute right-0 mt-2 w-48 bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 z-50 overflow-hidden">
+                        <button onclick={() => { exportToCSV(); showExportMenu = false; }} class="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 text-sm">
+                            📊 Excel (CSV)
+                        </button>
+                        <button onclick={() => { exportToPDF(); showExportMenu = false; }} class="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 text-sm">
+                            📄 PDF
+                        </button>
+                        <button onclick={() => { exportToWord(); showExportMenu = false; }} class="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 text-sm">
+                            📝 Word
+                        </button>
+                    </div>
+                {/if}
+            </div>
         </div>
     </div>
 

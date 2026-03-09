@@ -1,9 +1,20 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// KPOS - Image Upload Service (Cloudinary)
+// KPOS - Image Upload Service (Cloudinary SDK v2)
 // Supports single & multi file uploads via base64 or buffer
 // ═══════════════════════════════════════════════════════════════════════════
 
+import { v2 as cloudinary } from 'cloudinary';
 import { cloudinaryConfig } from '@/config/cloudinary.config';
+
+// Configure Cloudinary SDK
+if (cloudinaryConfig.isConfigured) {
+    cloudinary.config({
+        cloud_name: cloudinaryConfig.cloudName,
+        api_key: cloudinaryConfig.apiKey,
+        api_secret: cloudinaryConfig.apiSecret,
+        secure: true,
+    });
+}
 
 export interface UploadResult {
     url: string;
@@ -20,30 +31,49 @@ export interface UploadOptions {
     maxWidth?: number;
     maxHeight?: number;
     quality?: number;
-}
-
-const CLOUDINARY_API_URL = `https://api.cloudinary.com/v1_1/${cloudinaryConfig.cloudName}/image/upload`;
-
-function buildTransformation(opts: UploadOptions): string {
-    const parts: string[] = [];
-    if (opts.maxWidth) parts.push(`w_${opts.maxWidth}`);
-    if (opts.maxHeight) parts.push(`h_${opts.maxHeight}`);
-    if (parts.length > 0) parts.push('c_limit');
-    parts.push(`q_${opts.quality || 80}`);
-    parts.push('f_auto');
-    return parts.join(',');
-}
-
-function generateSignature(params: Record<string, string>, apiSecret: string): string {
-    const sorted = Object.keys(params).sort().map(k => `${k}=${params[k]}`).join('&');
-    // Use Node.js crypto for SHA-1
-    const crypto = require('crypto');
-    return crypto.createHash('sha1').update(sorted + apiSecret).digest('hex');
+    resourceType?: 'image' | 'video' | 'raw' | 'auto';
 }
 
 class UploadService {
     private isConfigured(): boolean {
         return cloudinaryConfig.isConfigured;
+    }
+
+    /**
+     * Detect MIME type from a base64 data URI prefix.
+     * Returns a sensible default if detection fails.
+     */
+    private detectMimeType(data: string): string {
+        if (data.startsWith('data:')) {
+            const match = data.match(/^data:([^;]+);/);
+            if (match) return match[1];
+        }
+        return 'application/octet-stream';
+    }
+
+    /**
+     * Determine the Cloudinary resource_type from a MIME type.
+     */
+    private resolveResourceType(mime: string): 'image' | 'video' | 'raw' {
+        if (mime.startsWith('image/')) return 'image';
+        if (mime.startsWith('video/') || mime.startsWith('audio/')) return 'video';
+        return 'raw'; // PDF, Word, Excel, etc.
+    }
+
+    /**
+     * Infer a data URI prefix from the file extension hint or raw base64.
+     */
+    private inferDataUri(base64: string): string {
+        // Try to detect common base64 magic bytes
+        const head = base64.slice(0, 20);
+        if (head.startsWith('JVBERi0')) return 'data:application/pdf;base64,';
+        if (head.startsWith('/9j/'))    return 'data:image/jpeg;base64,';
+        if (head.startsWith('iVBORw'))  return 'data:image/png;base64,';
+        if (head.startsWith('R0lGOD')) return 'data:image/gif;base64,';
+        if (head.startsWith('UklGR'))  return 'data:image/webp;base64,';
+        if (head.startsWith('AAAA'))   return 'data:video/mp4;base64,';
+        if (head.startsWith('UEsDB'))  return 'data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,';
+        return 'data:application/octet-stream;base64,';
     }
 
     async uploadSingle(
@@ -55,57 +85,49 @@ class UploadService {
         }
 
         const folder = options.folder || cloudinaryConfig.folder;
-        const timestamp = Math.floor(Date.now() / 1000).toString();
-        const transformation = buildTransformation(options);
 
-        const params: Record<string, string> = {
-            folder: folder!,
-            timestamp,
-            transformation,
-        };
-
-        const signature = generateSignature(params, cloudinaryConfig.apiSecret!);
-
-        // Build form data
-        const formData = new FormData();
-
+        // Prepare the file string for Cloudinary
+        let file: string;
         if (typeof fileData === 'string') {
-            // Base64 string (with or without data URI prefix)
-            const base64 = fileData.startsWith('data:')
-                ? fileData
-                : `data:image/png;base64,${fileData}`;
-            formData.append('file', base64);
+            file = fileData.startsWith('data:') ? fileData : `${this.inferDataUri(fileData)}${fileData}`;
         } else {
-            // Buffer — convert to base64
-            const base64 = `data:image/png;base64,${fileData.toString('base64')}`;
-            formData.append('file', base64);
+            file = `${this.inferDataUri(fileData.toString('base64').slice(0, 20))}${fileData.toString('base64')}`;
         }
 
-        formData.append('api_key', cloudinaryConfig.apiKey!);
-        formData.append('timestamp', timestamp);
-        formData.append('signature', signature);
-        formData.append('folder', folder!);
-        formData.append('transformation', transformation);
+        // Detect mime and resolve resource type
+        const mime = this.detectMimeType(file);
+        const resourceType = options.resourceType || this.resolveResourceType(mime);
+        const isImageType = resourceType === 'image';
 
-        const response = await fetch(CLOUDINARY_API_URL, {
-            method: 'POST',
-            body: formData,
-        });
-
-        if (!response.ok) {
-            const errorBody = await response.text();
-            throw new Error(`Cloudinary upload failed: ${response.status} ${errorBody}`);
+        // Build transformation (only for images)
+        const transformation: Record<string, unknown>[] = [];
+        if (isImageType) {
+            if (options.maxWidth || options.maxHeight) {
+                transformation.push({
+                    width: options.maxWidth,
+                    height: options.maxHeight,
+                    crop: 'limit',
+                });
+            }
+            transformation.push({
+                quality: options.quality || 'auto',
+                fetch_format: 'auto',
+            });
         }
 
-        const data = await response.json() as any;
+        const result = (await cloudinary.uploader.upload(file, {
+            folder,
+            ...(isImageType && transformation.length > 0 ? { transformation } : {}),
+            resource_type: resourceType,
+        })) as any;
 
         return {
-            url: data.secure_url,
-            publicId: data.public_id,
-            width: data.width,
-            height: data.height,
-            format: data.format,
-            bytes: data.bytes,
+            url: result.secure_url,
+            publicId: result.public_id,
+            width: result.width || 0,
+            height: result.height || 0,
+            format: result.format,
+            bytes: result.bytes,
         };
     }
 
@@ -127,28 +149,25 @@ class UploadService {
     async deleteImage(publicId: string): Promise<boolean> {
         if (!this.isConfigured()) return false;
 
-        const timestamp = Math.floor(Date.now() / 1000).toString();
-        const params: Record<string, string> = {
-            public_id: publicId,
-            timestamp,
-        };
+        try {
+            const result = await cloudinary.uploader.destroy(publicId);
+            return result.result === 'ok';
+        } catch {
+            return false;
+        }
+    }
 
-        const signature = generateSignature(params, cloudinaryConfig.apiSecret!);
-
-        const DESTROY_URL = `https://api.cloudinary.com/v1_1/${cloudinaryConfig.cloudName}/image/destroy`;
-
-        const formData = new FormData();
-        formData.append('public_id', publicId);
-        formData.append('api_key', cloudinaryConfig.apiKey!);
-        formData.append('timestamp', timestamp);
-        formData.append('signature', signature);
-
-        const response = await fetch(DESTROY_URL, { method: 'POST', body: formData });
-        if (!response.ok) return false;
-
-        const data = await response.json() as any;
-        return data.result === 'ok';
+    generateUrl(publicId: string, options: { width?: number; height?: number; crop?: string; quality?: number } = {}): string {
+        return cloudinary.url(publicId, {
+            secure: true,
+            width: options.width,
+            height: options.height,
+            crop: options.crop || 'fill',
+            quality: options.quality || 'auto',
+            fetch_format: 'auto',
+        });
     }
 }
 
 export const uploadService = new UploadService();
+export { cloudinary };

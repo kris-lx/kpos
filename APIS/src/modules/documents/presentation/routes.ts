@@ -21,9 +21,14 @@ documentRoutes.get('/invoices', authenticate, branchFilter(), async (req, res, n
         const pageNum = Math.max(1, parseInt(String(page), 10) || 1);
         const limitNum = Math.min(100, Math.max(1, parseInt(String(limit), 10) || 20));
         const skip = (pageNum - 1) * limitNum;
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const filter = req.branchFilter;
 
         const conditions: any[] = [eq(documents.type, 'INVOICE')];
+        // BE-74: Tenant isolation
+        const tenantId = req.authUser?.tenantId;
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            conditions.push(eq(documents.tenantId, tenantId));
+        }
         const scopeCond = buildScopeCondition(filter, { storeId: documents.storeId }, 'storeId');
         if (scopeCond) conditions.push(scopeCond);
 
@@ -83,12 +88,19 @@ documentRoutes.get('/invoices', authenticate, branchFilter(), async (req, res, n
 // Get invoice by ID (scope-checked)
 documentRoutes.get('/invoices/:id', authenticate, async (req, res, next) => {
     try {
+        // BE-74: Tenant-scoped invoice lookup
+        const tenantId = req.authUser?.tenantId;
+        const getConds: any[] = [eq(documents.id, req.params.id), eq(documents.type, 'INVOICE')];
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            getConds.push(eq(documents.tenantId, tenantId));
+        }
+
         const invoice = await db.query.documents.findFirst({
-            where: and(eq(documents.id, req.params.id), eq(documents.type, 'INVOICE')),
+            where: and(...getConds),
         });
 
         if (!invoice) {
-            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Invoice not found' } });
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Invoice not found or no access' } });
         }
 
         if (!ensureScopeAccess(invoice, req)) {
@@ -121,7 +133,7 @@ documentRoutes.get('/invoices/:id', authenticate, async (req, res, next) => {
 });
 
 // Create invoice
-documentRoutes.post('/invoices', authenticate, authorize('documents:create'), async (req, res, next) => {
+documentRoutes.post('/invoices', authenticate, branchFilter(), authorize('documents:create'), async (req, res, next) => {
     try {
         const {
             customerId,
@@ -140,14 +152,16 @@ documentRoutes.post('/invoices', authenticate, authorize('documents:create'), as
         const [{ value: invCount }] = await db.select({ value: count() }).from(documents).where(eq(documents.type, 'INVOICE'));
         const invoiceNo = `INV-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(invCount + 1).padStart(5, '0')}`;
 
+        const docTenantId = req.authUser?.tenantId || req.user?.tenantId;
         const [invoice] = await db.insert(documents).values({
+            tenantId: docTenantId,
             type: 'INVOICE',
             documentNo: invoiceNo,
             referenceId: req.user!.userId,
             referenceType: 'USER',
             status: 'PENDING',
-            branchId: (req as any).authUser?.activeBranchId || null,
-            storeId: (req as any).authUser?.activeStoreId || null,
+            branchId: req.authUser?.activeBranchId || null,
+            storeId: req.authUser?.activeStoreId || null,
             data: {
                 customerId,
                 customer: { name: customerName, email: customerEmail, phone: customerPhone, address: customerAddress },
@@ -177,12 +191,14 @@ documentRoutes.post('/invoices', authenticate, authorize('documents:create'), as
 // Update invoice
 documentRoutes.put('/invoices/:id', authenticate, authorize('documents:update'), async (req, res, next) => {
     try {
-        const existing = await db.query.documents.findFirst({
-            where: and(eq(documents.id, req.params.id), eq(documents.type, 'INVOICE')),
-        });
+        // BE-74: Tenant-scoped invoice update
+        const tenantId = req.authUser?.tenantId;
+        const updConds: any[] = [eq(documents.id, req.params.id), eq(documents.type, 'INVOICE')];
+        if (tenantId && !req.authUser?.isSuperAdmin) updConds.push(eq(documents.tenantId, tenantId));
+        const existing = await db.query.documents.findFirst({ where: and(...updConds) });
 
         if (!existing) {
-            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Invoice not found' } });
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Invoice not found or no access' } });
         }
 
         const { customerId, customerName, customerEmail, customerPhone, customerAddress, items, subtotal, tax, total, dueDate, notes } = req.body;
@@ -201,7 +217,7 @@ documentRoutes.put('/invoices/:id', authenticate, authorize('documents:update'),
                 updatedBy: req.user!.userId,
             },
             updatedAt: new Date(),
-        }).where(eq(documents.id, req.params.id)).returning();
+        }).where(and(...updConds)).returning();
 
         res.json({ success: true, data: { id: invoice.id } });
     } catch (error) {
@@ -212,15 +228,17 @@ documentRoutes.put('/invoices/:id', authenticate, authorize('documents:update'),
 // Delete invoice
 documentRoutes.delete('/invoices/:id', authenticate, authorize('documents:delete'), async (req, res, next) => {
     try {
-        const existing = await db.query.documents.findFirst({
-            where: and(eq(documents.id, req.params.id), eq(documents.type, 'INVOICE')),
-        });
+        // BE-74: Tenant-scoped invoice delete
+        const tenantId = req.authUser?.tenantId;
+        const delConds: any[] = [eq(documents.id, req.params.id), eq(documents.type, 'INVOICE')];
+        if (tenantId && !req.authUser?.isSuperAdmin) delConds.push(eq(documents.tenantId, tenantId));
+        const existing = await db.query.documents.findFirst({ where: and(...delConds) });
 
         if (!existing) {
-            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Invoice not found' } });
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Invoice not found or no access' } });
         }
 
-        await db.delete(documents).where(eq(documents.id, req.params.id));
+        await db.delete(documents).where(and(...delConds));
 
         res.json({ success: true, message: 'Invoice deleted' });
     } catch (error) {
@@ -263,9 +281,14 @@ documentRoutes.get('/tax-invoices', authenticate, branchFilter(), async (req, re
         const pageNum = Math.max(1, parseInt(String(page), 10) || 1);
         const limitNum = Math.min(100, Math.max(1, parseInt(String(limit), 10) || 20));
         const skip = (pageNum - 1) * limitNum;
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const filter = req.branchFilter;
 
         const tConditions: any[] = [eq(documents.type, 'TAX_INVOICE')];
+        // BE-74: Tenant isolation on tax invoices
+        const tenantId = req.authUser?.tenantId;
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            tConditions.push(eq(documents.tenantId, tenantId));
+        }
         const tScopeCond = buildScopeCondition(filter, { storeId: documents.storeId }, 'storeId');
         if (tScopeCond) tConditions.push(tScopeCond);
 
@@ -324,12 +347,17 @@ documentRoutes.get('/tax-invoices', authenticate, branchFilter(), async (req, re
 // Get tax invoice by ID (scope-checked)
 documentRoutes.get('/tax-invoices/:id', authenticate, async (req, res, next) => {
     try {
+        // BE-74: Tenant-scoped tax invoice lookup
+        const tenantId = req.authUser?.tenantId;
+        const getConds: any[] = [eq(documents.id, req.params.id), eq(documents.type, 'TAX_INVOICE')];
+        if (tenantId && !req.authUser?.isSuperAdmin) getConds.push(eq(documents.tenantId, tenantId));
+
         const invoice = await db.query.documents.findFirst({
-            where: and(eq(documents.id, req.params.id), eq(documents.type, 'TAX_INVOICE')),
+            where: and(...getConds),
         });
 
         if (!invoice) {
-            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Tax invoice not found' } });
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Tax invoice not found or no access' } });
         }
 
         if (!ensureScopeAccess(invoice, req)) {
@@ -360,7 +388,7 @@ documentRoutes.get('/tax-invoices/:id', authenticate, async (req, res, next) => 
 });
 
 // Create tax invoice
-documentRoutes.post('/tax-invoices', authenticate, authorize('documents:create'), async (req, res, next) => {
+documentRoutes.post('/tax-invoices', authenticate, branchFilter(), authorize('documents:create'), async (req, res, next) => {
     try {
         const { customerName, taxId, orderId, subtotal, taxAmount, total } = req.body;
 
@@ -368,14 +396,16 @@ documentRoutes.post('/tax-invoices', authenticate, authorize('documents:create')
         const [{ value: txiCount }] = await db.select({ value: count() }).from(documents).where(eq(documents.type, 'TAX_INVOICE'));
         const invoiceNumber = `TXI-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(txiCount + 1).padStart(5, '0')}`;
 
+        const taxDocTenantId = req.authUser?.tenantId || req.user?.tenantId;
         const [invoice] = await db.insert(documents).values({
+            tenantId: taxDocTenantId,
             type: 'TAX_INVOICE',
             documentNo: invoiceNumber,
             referenceId: req.user!.userId,
             referenceType: 'USER',
             status: 'PENDING',
-            branchId: (req as any).authUser?.activeBranchId || null,
-            storeId: (req as any).authUser?.activeStoreId || null,
+            branchId: req.authUser?.activeBranchId || null,
+            storeId: req.authUser?.activeStoreId || null,
             data: { customerName, taxId, orderId, subtotal: subtotal || 0, taxAmount: taxAmount || 0, total: total || 0, createdBy: req.user!.userId },
         }).returning();
 
@@ -395,12 +425,14 @@ documentRoutes.post('/tax-invoices', authenticate, authorize('documents:create')
 // Update tax invoice (scope-checked)
 documentRoutes.put('/tax-invoices/:id', authenticate, authorize('documents:update'), async (req, res, next) => {
     try {
-        const existing = await db.query.documents.findFirst({
-            where: and(eq(documents.id, req.params.id), eq(documents.type, 'TAX_INVOICE')),
-        });
+        // BE-74: Tenant-scoped tax invoice update
+        const tenantId = req.authUser?.tenantId;
+        const updConds: any[] = [eq(documents.id, req.params.id), eq(documents.type, 'TAX_INVOICE')];
+        if (tenantId && !req.authUser?.isSuperAdmin) updConds.push(eq(documents.tenantId, tenantId));
+        const existing = await db.query.documents.findFirst({ where: and(...updConds) });
 
         if (!existing) {
-            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Tax invoice not found' } });
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Tax invoice not found or no access' } });
         }
 
         if (!ensureScopeAccess(existing, req)) {
@@ -413,7 +445,7 @@ documentRoutes.put('/tax-invoices/:id', authenticate, authorize('documents:updat
         const [invoice] = await db.update(documents).set({
             data: { ...existingData, customerName, taxId, orderId, subtotal: subtotal ?? existingData.subtotal, taxAmount: taxAmount ?? existingData.taxAmount, total: total ?? existingData.total, updatedBy: req.user!.userId },
             updatedAt: new Date(),
-        }).where(eq(documents.id, req.params.id)).returning();
+        }).where(and(...updConds)).returning();
 
         res.json({ success: true, data: { id: invoice.id } });
     } catch (error) {
@@ -424,19 +456,21 @@ documentRoutes.put('/tax-invoices/:id', authenticate, authorize('documents:updat
 // Delete tax invoice (scope-checked)
 documentRoutes.delete('/tax-invoices/:id', authenticate, authorize('documents:delete'), async (req, res, next) => {
     try {
-        const existing = await db.query.documents.findFirst({
-            where: and(eq(documents.id, req.params.id), eq(documents.type, 'TAX_INVOICE')),
-        });
+        // BE-74: Tenant-scoped tax invoice delete
+        const tenantId = req.authUser?.tenantId;
+        const delConds: any[] = [eq(documents.id, req.params.id), eq(documents.type, 'TAX_INVOICE')];
+        if (tenantId && !req.authUser?.isSuperAdmin) delConds.push(eq(documents.tenantId, tenantId));
+        const existing = await db.query.documents.findFirst({ where: and(...delConds) });
 
         if (!existing) {
-            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Tax invoice not found' } });
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Tax invoice not found or no access' } });
         }
 
         if (!ensureScopeAccess(existing, req)) {
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
         }
 
-        await db.delete(documents).where(eq(documents.id, req.params.id));
+        await db.delete(documents).where(and(...delConds));
 
         res.json({ success: true, message: 'Tax invoice deleted' });
     } catch (error) {
@@ -447,12 +481,14 @@ documentRoutes.delete('/tax-invoices/:id', authenticate, authorize('documents:de
 // Issue tax invoice (scope-checked)
 documentRoutes.put('/tax-invoices/:id/issue', authenticate, authorize('documents:update'), async (req, res, next) => {
     try {
-        const existing = await db.query.documents.findFirst({
-            where: and(eq(documents.id, req.params.id), eq(documents.type, 'TAX_INVOICE')),
-        });
+        // BE-74: Tenant-scoped tax invoice issue
+        const tenantId = req.authUser?.tenantId;
+        const issConds: any[] = [eq(documents.id, req.params.id), eq(documents.type, 'TAX_INVOICE')];
+        if (tenantId && !req.authUser?.isSuperAdmin) issConds.push(eq(documents.tenantId, tenantId));
+        const existing = await db.query.documents.findFirst({ where: and(...issConds) });
 
         if (!existing) {
-            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Tax invoice not found' } });
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Tax invoice not found or no access' } });
         }
 
         if (!ensureScopeAccess(existing, req)) {
@@ -465,7 +501,7 @@ documentRoutes.put('/tax-invoices/:id/issue', authenticate, authorize('documents
             status: 'ISSUED',
             data: { ...existingData, issuedAt: new Date().toISOString(), issuedBy: req.user!.userId },
             updatedAt: new Date(),
-        }).where(eq(documents.id, req.params.id)).returning();
+        }).where(and(...issConds)).returning();
 
         res.json({ success: true, data: { id: invoice.id, status: 'issued' } });
     } catch (error) {
@@ -476,12 +512,14 @@ documentRoutes.put('/tax-invoices/:id/issue', authenticate, authorize('documents
 // Cancel tax invoice (scope-checked)
 documentRoutes.put('/tax-invoices/:id/cancel', authenticate, authorize('documents:update'), async (req, res, next) => {
     try {
-        const existing = await db.query.documents.findFirst({
-            where: and(eq(documents.id, req.params.id), eq(documents.type, 'TAX_INVOICE')),
-        });
+        // BE-74: Tenant-scoped tax invoice cancel
+        const tenantId = req.authUser?.tenantId;
+        const canConds: any[] = [eq(documents.id, req.params.id), eq(documents.type, 'TAX_INVOICE')];
+        if (tenantId && !req.authUser?.isSuperAdmin) canConds.push(eq(documents.tenantId, tenantId));
+        const existing = await db.query.documents.findFirst({ where: and(...canConds) });
 
         if (!existing) {
-            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Tax invoice not found' } });
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Tax invoice not found or no access' } });
         }
 
         if (!ensureScopeAccess(existing, req)) {
@@ -494,7 +532,7 @@ documentRoutes.put('/tax-invoices/:id/cancel', authenticate, authorize('document
             status: 'CANCELLED',
             data: { ...existingData, cancelledAt: new Date().toISOString(), cancelledBy: req.user!.userId },
             updatedAt: new Date(),
-        }).where(eq(documents.id, req.params.id)).returning();
+        }).where(and(...canConds)).returning();
 
         res.json({ success: true, data: { id: invoice.id, status: 'cancelled' } });
     } catch (error) {
@@ -505,19 +543,24 @@ documentRoutes.put('/tax-invoices/:id/cancel', authenticate, authorize('document
 // Print tax invoice (scope-checked)
 documentRoutes.get('/tax-invoices/:id/print', authenticate, async (req, res, next) => {
     try {
+        // BE-74: Tenant-scoped tax invoice print
+        const tenantId = req.authUser?.tenantId;
+        const prtConds: any[] = [eq(documents.id, req.params.id), eq(documents.type, 'TAX_INVOICE')];
+        if (tenantId && !req.authUser?.isSuperAdmin) prtConds.push(eq(documents.tenantId, tenantId));
+
         const invoice = await db.query.documents.findFirst({
-            where: and(eq(documents.id, req.params.id), eq(documents.type, 'TAX_INVOICE')),
+            where: and(...prtConds),
         });
 
         if (!invoice) {
-            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Tax invoice not found' } });
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Tax invoice not found or no access' } });
         }
 
         if (!ensureScopeAccess(invoice, req)) {
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
         }
 
-        await db.update(documents).set({ printCount: sql`${documents.printCount} + 1` }).where(eq(documents.id, req.params.id));
+        await db.update(documents).set({ printCount: sql`${documents.printCount} + 1` }).where(and(...prtConds));
 
         const storeSetting = await db.query.settings.findFirst({
             where: and(eq(settings.category, 'store'), eq(settings.key, 'info')),

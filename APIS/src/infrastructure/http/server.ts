@@ -3,6 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import express, { type Application } from 'express';
+import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import helmet from 'helmet';
 import { createServer, type Server as HttpServer } from 'http';
@@ -50,9 +51,10 @@ export class AppServer {
         // Rate limiting
         this.app.use(rateLimiter);
 
-        // Body parsing
-        this.app.use(express.json({ limit: '10mb' }));
-        this.app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+        // Body parsing + cookies
+        this.app.use(express.json({ limit: '50mb' }));
+        this.app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+        this.app.use(cookieParser());
 
         // Security: input sanitization + no-cache API headers
         this.app.use(inputSanitizer);

@@ -45,6 +45,13 @@ function containsXSS(value: string): boolean {
 // ─── Deep Sanitize Object ────────────────────────────────────────────────
 
 function deepSanitize(obj: unknown, path = ''): unknown {
+    // Skip base64 image strings which can false-positive SQLi detectors
+    if (path.endsWith('.image') || path.endsWith('.images') || path.endsWith('.avatar') || path.endsWith('.photo')) {
+        if (typeof obj === 'string' && obj.startsWith('data:image/')) {
+            return obj; // Let it through
+        }
+    }
+
     if (typeof obj === 'string') {
         // Check for SQL injection attempts
         if (containsSQLInjection(obj)) {

@@ -29,6 +29,34 @@
       "when": 1772156393057,
       "tag": "0003_spooky_squirrel_girl",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1772374795474,
+      "tag": "0004_fair_nuke",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1772719870682,
+      "tag": "0005_furry_vargas",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1772824543326,
+      "tag": "0006_open_colleen_wing",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1773044128200,
+      "tag": "0007_superb_scrambler",
+      "breakpoints": true
     }
   ]
 }

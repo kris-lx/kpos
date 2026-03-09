@@ -22,10 +22,11 @@
         RefreshCw,
     } from "lucide-svelte";
 
-    // CRUD permission gating
-    const canCreate = $derived(auth.canCreate('management.roles'));
-    const canUpdate = $derived(auth.canUpdate('management.roles'));
-    const canDelete = $derived(auth.canDelete('management.roles'));
+    // CRUD permission gating — use hasPermission directly since rule-based check
+    // has management.roles.create=false for store_owner but the permission roles:create is granted
+    const canCreate = $derived(auth.hasPermission('roles:create'));
+    const canUpdate = $derived(auth.hasPermission('roles:update'));
+    const canDelete = $derived(auth.hasPermission('roles:delete'));
 
     // State
     let roles = $state<any[]>([]);
@@ -366,7 +367,7 @@
                                     <ChevronRight class="w-5 h-5" />
                                 {/if}
                             </button>
-                            {#if canUpdate}
+                            {#if canUpdate && !role.isSystem}
                             <button
                                 onclick={() => openModal(role)}
                                 class="p-2 text-gray-500 hover:text-primary-600 dark:text-gray-400 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"

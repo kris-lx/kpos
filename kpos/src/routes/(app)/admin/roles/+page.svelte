@@ -1,5 +1,6 @@
 <script lang="ts">
     import { createQuery, createMutation, useQueryClient } from "@tanstack/svelte-query";
+    import { get } from "svelte/store";
     import { api } from "$lib/api";
     import { goto } from "$app/navigation";
     import { onMount } from "svelte";
@@ -109,7 +110,7 @@
             return api.post("admin/roles/seed").json();
         },
         onSuccess: () => {
-            toast.success("ສ້າງບົດບາດເລີ່ມຕົ້ນສຳເລັດ");
+            toast.success("ສ້າງບົດບາດເລີ່ມຕ້ນສຳເລັດ");
             queryClient.invalidateQueries({ queryKey: ["admin-roles"] });
         },
         onError: () => toast.error("ເກີດຂໍ້ຜິດພາດ")
@@ -121,7 +122,7 @@
         },
         onSuccess: () => {
             toast.success("ສ້າງບົດບາດສຳເລັດ");
-            queryClient.invalidateQueries({ queryKey: ["admin-roles"] });
+            get(rolesQuery).refetch();
             showFormModal = false;
             resetForm();
         },
@@ -134,7 +135,7 @@
         },
         onSuccess: () => {
             toast.success("ອັບເດດບົດບາດສຳເລັດ");
-            queryClient.invalidateQueries({ queryKey: ["admin-roles"] });
+            get(rolesQuery).refetch();
             showFormModal = false;
             resetForm();
         },
@@ -147,7 +148,7 @@
         },
         onSuccess: () => {
             toast.success("ລຶບບົດບາດສຳເລັດ");
-            queryClient.invalidateQueries({ queryKey: ["admin-roles"] });
+            get(rolesQuery).refetch();
             showDeleteModal = false;
             selectedRole = null;
         },

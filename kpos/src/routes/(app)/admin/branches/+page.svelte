@@ -1,5 +1,6 @@
 <script lang="ts">
     import { createQuery, createMutation, useQueryClient } from "@tanstack/svelte-query";
+    import { get } from "svelte/store";
     import { api } from "$lib/api";
     import { goto } from "$app/navigation";
     import { onMount } from "svelte";
@@ -78,10 +79,7 @@
         },
     });
 
-    $effect(() => {
-        currentPage; pageSize; searchQuery;
-        $branchesQuery.refetch();
-    });
+    $effect(() => { void searchQuery; void currentPage; void pageSize; $branchesQuery.refetch(); });
 
     const createMutationFn = createMutation({
         mutationFn: async (data: any) => {
@@ -89,7 +87,7 @@
         },
         onSuccess: () => {
             toast.success("ສ້າງສາຂາສຳເລັດ");
-            queryClient.invalidateQueries({ queryKey: ["admin-branches"] });
+            get(branchesQuery).refetch();
             showFormModal = false;
         },
         onError: () => toast.error("ເກີດຂໍ້ຜິດພາດ")
@@ -101,7 +99,7 @@
         },
         onSuccess: () => {
             toast.success("ອັບເດດສາຂາສຳເລັດ");
-            queryClient.invalidateQueries({ queryKey: ["admin-branches"] });
+            get(branchesQuery).refetch();
             showFormModal = false;
         },
         onError: () => toast.error("ເກີດຂໍ້ຜິດພາດ")
@@ -113,7 +111,7 @@
         },
         onSuccess: () => {
             toast.success("ລຶບສາຂາສຳເລັດ");
-            queryClient.invalidateQueries({ queryKey: ["admin-branches"] });
+            get(branchesQuery).refetch();
             showDeleteModal = false;
         },
         onError: () => toast.error("ເກີດຂໍ້ຜິດພາດ")

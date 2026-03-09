@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, branchFilter, applyScopeFilter, ensureScopeAccess, buildScopeCondition, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, branchFilter, applyScopeFilter, ensureScopeAccess, buildScopeCondition, tenantScope, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { publish, QUEUES } from '@/config/rabbitmq.config';
 import { db } from '@/config/database.config';
 import { transactions, transactionItems, transactionPayments, products, inventory, stockMovements, paymentMethods, shifts, cashRegisters, cashMovements, heldSales } from '@/db/schema/tables';
@@ -30,17 +30,28 @@ salesRoutes.post('/', authenticate, async (req, res, next) => {
             orderType = 'WALKIN',
         } = req.body;
 
-        const branchId = req.user!.branchId;
-        const userId = req.user!.userId;
+        const branchId = req.authUser?.activeBranchId || req.user?.branchId;
+        const userId = req.authUser?.userId || req.user?.userId;
         const storeId = req.authUser?.activeStoreId || undefined;
+
+        if (!branchId || !userId) {
+            return res.status(400).json({ success: false, error: { code: 'AUTH_001', message: 'User or branch not resolved' } });
+        }
+
+        // BE-51: CRITICAL — tenant-scoped product lookup prevents cross-tenant purchases
+        const saleTenantId = req.authUser?.tenantId || req.user?.tenantId;
 
         // Calculate totals
         let subtotal = 0;
         const txItems = [];
 
         for (const item of items) {
+            const productConds: any[] = [eq(products.id, item.productId)];
+            if (saleTenantId && !req.authUser?.isSuperAdmin) {
+                productConds.push(eq(products.tenantId, saleTenantId));
+            }
             const product = await db.query.products.findFirst({
-                where: eq(products.id, item.productId),
+                where: and(...productConds),
                 columns: { id: true, name: true, sku: true, barcode: true, price: true, cost: true },
             });
 
@@ -104,15 +115,16 @@ salesRoutes.post('/', authenticate, async (req, res, next) => {
             if (method) { methodId = method.id; methodName = method.name; }
         }
 
-        // Create transaction
+        // BE-52: Create transaction with tenantId
         const [transaction] = await db.insert(transactions).values({
+            tenantId: saleTenantId,
             transactionNo, type: 'SALE', status: 'COMPLETED', branchId, storeId, userId, customerId, memberId, orderType,
             subtotal, discountType, discountValue, discountAmount, taxAmount, total: totalAmount, received: totalAmount, change: 0, note: notes,
         }).returning();
 
-        // Create items
+        // BE-53: Create items with tenantId
         if (txItems.length > 0) {
-            await db.insert(transactionItems).values(txItems.map(ti => ({ ...ti, transactionId: transaction.id })));
+            await db.insert(transactionItems).values(txItems.map(ti => ({ ...ti, transactionId: transaction.id, tenantId: saleTenantId })));
         }
 
         // Create payment
@@ -176,19 +188,25 @@ salesRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
         const { page = 1, limit = 50, startDate, endDate, status, type, branchId } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
         const userPermissions = req.authUser?.permissions || [];
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const filter = req.branchFilter;
 
         const txConds: any[] = [eq(transactions.type, 'SALE')];
 
+        // BE-79: Tenant isolation
+        const tenantId = req.authUser?.tenantId;
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            txConds.push(eq(transactions.tenantId, tenantId));
+        }
+
         const canViewAllSales = userPermissions.includes('sales:view') || userPermissions.includes('*');
         const canViewOwnSales = userPermissions.includes('sales:view-own');
-        if (!canViewAllSales && canViewOwnSales) txConds.push(eq(transactions.userId, req.user!.userId));
+        if (!canViewAllSales && canViewOwnSales) txConds.push(eq(transactions.userId, req.authUser?.userId || req.user?.userId || ''));
 
         const scopeCond = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
         if (scopeCond) txConds.push(scopeCond);
 
         if (branchId) txConds.push(eq(transactions.branchId, String(branchId)));
-        else if (!filter) txConds.push(eq(transactions.branchId, req.user!.branchId));
+        else if (!filter) txConds.push(eq(transactions.branchId, req.authUser?.activeBranchId || req.user?.branchId || ''));
 
         if (status) txConds.push(eq(transactions.status, String(status)));
         if (type) txConds.push(eq(transactions.type, String(type)));
@@ -224,15 +242,22 @@ salesRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
 // ═══════════════════════════════════════════════════════════════════════════
 salesRoutes.get('/:id([a-fA-F0-9]{24})', authenticate, async (req, res, next) => {
     try {
+        // BE-54: Tenant-scoped transaction lookup
+        const tenantId = req.authUser?.tenantId;
+        const txConds: any[] = [eq(transactions.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            txConds.push(eq(transactions.tenantId, tenantId));
+        }
+
         const transaction = await db.query.transactions.findFirst({
-            where: eq(transactions.id, req.params.id),
+            where: and(...txConds),
             with: { items: { with: { product: true } }, customer: true, member: true, payments: true, user: { columns: { id: true, name: true } } },
         });
 
         if (!transaction) {
-            return res.status(404).json({
+            return res.status(403).json({
                 success: false,
-                error: { code: 'NOT_FOUND', message: 'Transaction not found' }
+                error: { code: 'FORBIDDEN', message: 'Transaction not found or no access' }
             });
         }
 
@@ -253,13 +278,24 @@ salesRoutes.post('/:id([a-fA-F0-9]{24})/void', authenticate, authorize('sales:de
     try {
         const { reason } = req.body;
 
+        // BE-55: Tenant-scoped void
+        const tenantId = req.authUser?.tenantId;
+        const voidConds: any[] = [eq(transactions.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            voidConds.push(eq(transactions.tenantId, tenantId));
+        }
+
         const transaction = await db.query.transactions.findFirst({
-            where: eq(transactions.id, req.params.id),
+            where: and(...voidConds),
             with: { items: true },
         });
 
         if (!transaction) {
-            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Transaction not found' } });
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Transaction not found or no access' } });
+        }
+
+        if (!ensureScopeAccess(transaction, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this transaction' } });
         }
 
         if (transaction.status === 'VOIDED') {
@@ -277,7 +313,7 @@ salesRoutes.post('/:id([a-fA-F0-9]{24})/void', authenticate, authorize('sales:de
                 await db.insert(stockMovements).values({
                     productId: item.productId, branchId: transaction.branchId, type: 'IN',
                     quantity: item.quantity, previousQty, newQty,
-                    reason: `Void: ${reason || 'No reason provided'}`, reference: transaction.id, referenceType: 'VOID', userId: req.user!.userId,
+                    reason: `Void: ${reason || 'No reason provided'}`, reference: transaction.id, referenceType: 'VOID', userId: req.authUser?.userId || req.user?.userId || '',
                 });
             }
         }
@@ -287,7 +323,7 @@ salesRoutes.post('/:id([a-fA-F0-9]{24})/void', authenticate, authorize('sales:de
         invalidateQueryCache('inventory*').catch(() => {});
 
         // Log activity async
-        queueActivityLog(req.user!.userId, 'sale_voided', 'sales', `ຍົກເລີກການຂາຍ ${req.params.id}`, { transactionId: req.params.id }, req).catch(() => {});
+        queueActivityLog(req.authUser?.userId || req.user?.userId || '', 'sale_voided', 'sales', `ຍົກເລີກການຂາຍ ${req.params.id}`, { transactionId: req.params.id }, req).catch(() => {});
 
         res.json({ success: true, message: 'Transaction voided successfully' });
     } catch (error) {
@@ -302,14 +338,26 @@ salesRoutes.post('/:id([a-fA-F0-9]{24})/refund', authenticate, authorize('sales:
     try {
         const { reason, items: refundItems } = req.body;
 
+        // BE-55: Tenant-scoped refund
+        const tenantId = req.authUser?.tenantId;
+        const refConds: any[] = [eq(transactions.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            refConds.push(eq(transactions.tenantId, tenantId));
+        }
+
         const transaction = await db.query.transactions.findFirst({
-            where: eq(transactions.id, req.params.id),
+            where: and(...refConds),
             with: { items: true },
         });
 
         if (!transaction) {
-            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Transaction not found' } });
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Transaction not found or no access' } });
         }
+
+        if (!ensureScopeAccess(transaction, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this transaction' } });
+        }
+
         if (transaction.status !== 'COMPLETED') {
             return res.status(400).json({ success: false, error: { code: 'INVALID_STATUS', message: 'Can only refund completed transactions' } });
         }
@@ -322,9 +370,11 @@ salesRoutes.post('/:id([a-fA-F0-9]{24})/refund', authenticate, authorize('sales:
         const [{ value: refCnt }] = await db.select({ value: count() }).from(transactions).where(and(eq(transactions.type, 'REFUND'), gte(transactions.createdAt, new Date(new Date().setHours(0, 0, 0, 0)))));
         const transactionNo = `REF-${transaction.branchId.slice(-4)}-${today}-${String(refCnt + 1).padStart(4, '0')}`;
 
+        const refundTenantId = req.authUser?.tenantId || req.user?.tenantId;
         const [refund] = await db.insert(transactions).values({
+            tenantId: refundTenantId,
             transactionNo, type: 'REFUND', status: 'COMPLETED', branchId: transaction.branchId,
-            userId: req.user!.userId, customerId: transaction.customerId, memberId: transaction.memberId,
+            userId: req.authUser?.userId || req.user?.userId || '', customerId: transaction.customerId, memberId: transaction.memberId,
             orderType: transaction.orderType, subtotal: -refundAmount, discountAmount: 0, taxAmount: 0,
             total: -refundAmount, received: 0, change: refundAmount, refundReason: reason, parentId: transaction.id,
         }).returning();
@@ -344,7 +394,7 @@ salesRoutes.post('/:id([a-fA-F0-9]{24})/refund', authenticate, authorize('sales:
                 await db.insert(stockMovements).values({
                     productId: item.productId, branchId: transaction.branchId, type: 'IN',
                     quantity: item.quantity, previousQty, newQty,
-                    reason: `Refund: ${reason || 'No reason provided'}`, reference: refund.id, referenceType: 'REFUND', userId: req.user!.userId,
+                    reason: `Refund: ${reason || 'No reason provided'}`, reference: refund.id, referenceType: 'REFUND', userId: req.authUser?.userId || req.user?.userId || '',
                 });
             }
         }
@@ -370,10 +420,13 @@ salesRoutes.get('/summary/daily', authenticate, branchFilter(), async (req, res,
         const endOfDay = new Date(targetDate);
         endOfDay.setHours(23, 59, 59, 999);
 
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
-        const branchId = filter?.branchIds?.[0] || req.user!.branchId;
+        const filter = req.branchFilter;
+        const branchId = filter?.branchIds?.[0] || req.authUser?.activeBranchId || req.user?.branchId;
 
         const baseConds: any[] = [gte(transactions.createdAt, startOfDay), lte(transactions.createdAt, endOfDay)];
+        // BE-79: Tenant isolation
+        const tenantId = req.authUser?.tenantId;
+        if (tenantId && !req.authUser?.isSuperAdmin) baseConds.push(eq(transactions.tenantId, tenantId));
         const dayScopeCond = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
         if (dayScopeCond) baseConds.push(dayScopeCond);
         if (!filter) baseConds.push(eq(transactions.branchId, branchId));
@@ -410,11 +463,14 @@ salesRoutes.get('/shifts', authenticate, branchFilter(), async (req, res, next) 
     try {
         const { branchId, userId, status, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
-        const filter = (req as any).branchFilter;
-        const authUser = (req as any).authUser;
+        const filter = req.branchFilter;
+        const authUser = req.authUser;
         const isSuperAdmin = authUser?.isSuperAdmin;
 
         const shiftConds: any[] = [];
+        // G6: Tenant isolation for shifts
+        const tc = tenantScope(req, shifts.tenantId);
+        if (tc) shiftConds.push(tc);
         if (!isSuperAdmin) {
             const activeStoreId = authUser?.activeStoreId;
             if (activeStoreId) shiftConds.push(eq(shifts.storeId, activeStoreId));
@@ -450,7 +506,7 @@ salesRoutes.get('/shifts', authenticate, branchFilter(), async (req, res, next) 
 salesRoutes.get('/shifts/current', authenticate, async (req, res, next) => {
     try {
         const shift = await db.query.shifts.findFirst({
-            where: and(eq(shifts.userId, req.user!.userId), eq(shifts.status, 'OPEN')),
+            where: and(eq(shifts.userId, req.authUser?.userId || req.user?.userId || ''), eq(shifts.status, 'OPEN')),
             with: { user: { columns: { name: true } }, register: true },
         });
 
@@ -488,8 +544,12 @@ salesRoutes.get('/shifts/:id', authenticate, async (req, res, next) => {
 salesRoutes.post('/shifts/open', authenticate, async (req, res, next) => {
     try {
         const { openingBalance, registerId, notes } = req.body;
-        const userId = req.user!.userId;
-        const branchId = req.user!.branchId;
+        const userId = req.authUser?.userId || req.user?.userId;
+        const branchId = req.authUser?.activeBranchId || req.user?.branchId;
+
+        if (!userId || !branchId) {
+            return res.status(400).json({ success: false, error: { code: 'AUTH_001', message: 'User or branch not found' } });
+        }
 
         // Check if user already has an open shift
         const existingShift = await db.query.shifts.findFirst({ where: and(eq(shifts.userId, userId), eq(shifts.status, 'OPEN')) });
@@ -503,7 +563,9 @@ salesRoutes.post('/shifts/open', authenticate, async (req, res, next) => {
         const [{ value: shiftCount }] = await db.select({ value: count() }).from(shifts).where(gte(shifts.createdAt, new Date(new Date().setHours(0, 0, 0, 0))));
         const shiftNo = `SFT-${today}-${String(shiftCount + 1).padStart(3, '0')}`;
 
+        const shiftTenantId = req.authUser?.tenantId || req.user?.tenantId;
         const [newShift] = await db.insert(shifts).values({
+            tenantId: shiftTenantId,
             shiftNo, branchId, userId, registerId, openingBalance: openingBalance || 0, notes,
             storeId: req.authUser?.activeStoreId || undefined,
         }).returning();
@@ -561,7 +623,7 @@ salesRoutes.post('/shifts/:id/close', authenticate, async (req, res, next) => {
 salesRoutes.post('/shifts/:id/cash-movement', authenticate, async (req, res, next) => {
     try {
         const { type, amount, reason } = req.body;
-        const userId = req.user!.userId;
+        const userId = req.authUser?.userId || req.user?.userId || '';
 
         const [movement] = await db.insert(cashMovements).values({ shiftId: req.params.id, type, amount, reason, userId }).returning();
 
@@ -579,9 +641,12 @@ salesRoutes.post('/shifts/:id/cash-movement', authenticate, async (req, res, nex
 salesRoutes.get('/registers', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { branchId, isActive } = req.query;
-        const filter = (req as any).branchFilter;
+        const filter = req.branchFilter;
 
         const regConds: any[] = [];
+        // G6: Tenant isolation for registers
+        const regTc = tenantScope(req, cashRegisters.tenantId);
+        if (regTc) regConds.push(regTc);
         if (filter?.branchIds?.length) {
             if (branchId && filter.branchIds.includes(String(branchId))) regConds.push(eq(cashRegisters.branchId, String(branchId)));
             else regConds.push(inArray(cashRegisters.branchId, filter.branchIds));
@@ -605,8 +670,11 @@ salesRoutes.get('/registers', authenticate, branchFilter(), async (req, res, nex
 // Get register by ID
 salesRoutes.get('/registers/:id', authenticate, async (req, res, next) => {
     try {
+        const regIdConds: any[] = [eq(cashRegisters.id, req.params.id)];
+        const regIdTc = tenantScope(req, cashRegisters.tenantId);
+        if (regIdTc) regIdConds.push(regIdTc);
         const register = await db.query.cashRegisters.findFirst({
-            where: eq(cashRegisters.id, req.params.id),
+            where: and(...regIdConds),
             with: { branch: true, shifts: { orderBy: desc(shifts.openedAt), limit: 10 } },
         });
 
@@ -628,7 +696,9 @@ salesRoutes.post('/registers', authenticate, authorize('settings:update'), async
         if (!name || !branchId) {
             return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'name and branchId are required' } });
         }
-        const [register] = await db.insert(cashRegisters).values({ name, branchId, isActive: isActive !== undefined ? isActive : true }).returning();
+        const regTenantId = req.authUser?.tenantId || req.user?.tenantId;
+        const regStoreId = req.authUser?.activeStoreId || undefined;
+        const [register] = await db.insert(cashRegisters).values({ tenantId: regTenantId, name, branchId, storeId: regStoreId, isActive: isActive !== undefined ? isActive : true }).returning();
 
         res.status(201).json({ success: true, data: register });
     } catch (error) {
@@ -641,7 +711,11 @@ salesRoutes.put('/registers/:id', authenticate, authorize('settings:update'), as
     try {
         const { id, _id, createdAt, updatedAt, branch, shifts, ...updateData } = req.body;
         if (updateData.branchId === '' || updateData.branchId === null) delete updateData.branchId;
-        const [register] = await db.update(cashRegisters).set(updateData).where(eq(cashRegisters.id, req.params.id)).returning();
+        // G6: Tenant-scoped update
+        const updConds: any[] = [eq(cashRegisters.id, req.params.id)];
+        const updTc = tenantScope(req, cashRegisters.tenantId);
+        if (updTc) updConds.push(updTc);
+        const [register] = await db.update(cashRegisters).set(updateData).where(and(...updConds)).returning();
 
         res.json({ success: true, data: register });
     } catch (error) {
@@ -652,7 +726,11 @@ salesRoutes.put('/registers/:id', authenticate, authorize('settings:update'), as
 // Delete cash register (soft delete)
 salesRoutes.delete('/registers/:id', authenticate, authorize('settings:update'), async (req, res, next) => {
     try {
-        await db.update(cashRegisters).set({ isActive: false }).where(eq(cashRegisters.id, req.params.id));
+        // G6: Tenant-scoped delete
+        const delConds: any[] = [eq(cashRegisters.id, req.params.id)];
+        const delTc = tenantScope(req, cashRegisters.tenantId);
+        if (delTc) delConds.push(delTc);
+        await db.update(cashRegisters).set({ isActive: false }).where(and(...delConds));
 
         res.json({ success: true, data: { message: 'Register deleted' } });
     } catch (error) {
@@ -667,12 +745,15 @@ salesRoutes.delete('/registers/:id', authenticate, authorize('settings:update'),
 // Get all held sales
 salesRoutes.get('/held', authenticate, branchFilter(), async (req, res, next) => {
     try {
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const filter = req.branchFilter;
 
         const heldConds: any[] = [];
+        // BE-79: Tenant isolation
+        const tenantId = req.authUser?.tenantId;
+        if (tenantId && !req.authUser?.isSuperAdmin) heldConds.push(eq(heldSales.tenantId, tenantId));
         const heldScope = buildScopeCondition(filter, { storeId: heldSales.storeId }, 'storeId');
         if (heldScope) heldConds.push(heldScope);
-        if (!filter) heldConds.push(eq(heldSales.branchId, req.user!.branchId));
+        if (!filter) heldConds.push(eq(heldSales.branchId, req.authUser?.activeBranchId || req.user?.branchId || ''));
 
         const heldRows = await db.query.heldSales.findMany({
             where: heldConds.length > 0 ? and(...heldConds) : undefined,
@@ -695,6 +776,10 @@ salesRoutes.get('/held/:id', authenticate, async (req, res, next) => {
             return;
         }
 
+        if (!ensureScopeAccess(heldSale, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this held sale' } });
+        }
+
         res.json({ success: true, data: heldSale });
     } catch (error) {
         next(error);
@@ -704,11 +789,13 @@ salesRoutes.get('/held/:id', authenticate, async (req, res, next) => {
 // Create held sale
 salesRoutes.post('/held', authenticate, async (req, res, next) => {
     try {
-        const userId = req.user!.userId;
-        const branchId = req.user!.branchId;
+        const userId = req.authUser?.userId || req.user?.userId;
+        const branchId = req.authUser?.activeBranchId || req.user?.branchId;
 
+        const heldTenantId = req.authUser?.tenantId || req.user?.tenantId;
         const [heldSale] = await db.insert(heldSales).values({
             ...req.body,
+            tenantId: heldTenantId,
             userId,
             branchId,
             storeId: req.authUser?.activeStoreId || undefined,
@@ -723,6 +810,10 @@ salesRoutes.post('/held', authenticate, async (req, res, next) => {
 // Delete held sale (when recalled or completed)
 salesRoutes.delete('/held/:id', authenticate, async (req, res, next) => {
     try {
+        const existing = await db.query.heldSales.findFirst({ where: eq(heldSales.id, req.params.id) });
+        if (!existing) return res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Held sale not found' } });
+        if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
+
         await db.delete(heldSales).where(eq(heldSales.id, req.params.id));
 
         res.json({ success: true, data: { message: 'Held sale deleted' } });
@@ -738,12 +829,15 @@ salesRoutes.delete('/held/:id', authenticate, async (req, res, next) => {
 // Get all credit sales
 salesRoutes.get('/credit', authenticate, branchFilter(), async (req, res, next) => {
     try {
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
-        const branchId = filter?.branchIds?.[0] || req.user!.branchId;
+        const filter = req.branchFilter;
+        const branchId = filter?.branchIds?.[0] || req.authUser?.activeBranchId || req.user?.branchId;
         const { status, customerId, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
 
         const creditConds: any[] = [eq(transactions.isCredit, true), eq(transactions.type, 'SALE'), eq(transactions.status, 'COMPLETED')];
+        // BE-79: Tenant isolation
+        const tenantId = req.authUser?.tenantId;
+        if (tenantId && !req.authUser?.isSuperAdmin) creditConds.push(eq(transactions.tenantId, tenantId));
         const creditScope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
         if (creditScope) creditConds.push(creditScope);
         if (!filter) creditConds.push(eq(transactions.branchId, branchId));
@@ -802,8 +896,8 @@ salesRoutes.post('/credit', authenticate, async (req, res, next) => {
             initialPayment = 0,
         } = req.body;
 
-        const branchId = req.user!.branchId;
-        const userId = req.user!.userId;
+        const branchId = req.authUser?.activeBranchId || req.user?.branchId;
+        const userId = req.authUser?.userId || req.user?.userId;
         const creditStoreId = req.authUser?.activeStoreId || undefined;
 
         if (!customerId) {
@@ -876,7 +970,9 @@ salesRoutes.post('/credit', authenticate, async (req, res, next) => {
         if (initialPayment >= totalAmount) creditStatus = 'PAID';
         else if (initialPayment > 0) creditStatus = 'PARTIAL';
 
+        const creditTenantId = req.authUser?.tenantId || req.user?.tenantId;
         const [txn] = await db.insert(transactions).values({
+            tenantId: creditTenantId,
             transactionNo, type: 'SALE', status: 'COMPLETED', branchId, storeId: creditStoreId, userId, customerId, memberId,
             orderType: 'CREDIT', subtotal, discountType, discountValue, discountAmount, taxAmount,
             total: totalAmount, received: initialPayment, change: 0, note: notes,
@@ -920,6 +1016,7 @@ salesRoutes.post('/credit/:id/payment', authenticate, async (req, res, next) => 
         const transaction = await db.query.transactions.findFirst({ where: eq(transactions.id, transactionId) });
 
         if (!transaction) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Transaction not found' } });
+        if (!ensureScopeAccess(transaction, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this transaction' } });
         if (!transaction.isCredit) return res.status(400).json({ success: false, error: { code: 'NOT_CREDIT', message: 'Transaction is not a credit sale' } });
 
         const remaining = transaction.total - transaction.paidAmount;
@@ -975,6 +1072,10 @@ salesRoutes.get('/credit/:id', authenticate, async (req, res, next) => {
                 success: false,
                 error: { code: 'NOT_FOUND', message: 'Credit sale not found' }
             });
+        }
+
+        if (!ensureScopeAccess(transaction, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
         }
 
         res.json({

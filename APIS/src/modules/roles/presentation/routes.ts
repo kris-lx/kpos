@@ -6,7 +6,7 @@ import { Router } from 'express';
 import { authenticate, authorize } from '@/infrastructure/http/middleware/auth.middleware';
 import { db } from '@/config/database.config';
 import { roles, users } from '@/db/schema/tables';
-import { eq, and, or, ilike, notInArray, desc, count } from 'drizzle-orm';
+import { eq, and, or, ilike, notInArray, isNull, desc, count } from 'drizzle-orm';
 
 export const roleRoutes = Router();
 
@@ -199,9 +199,16 @@ roleRoutes.get('/', authenticate, authorize('roles:read'), async (req, res) => {
         const isAdmin = isSuperAdmin || authUser.role === 'admin';
         const isStoreOwner = authUser.role === 'store_owner';
 
-        const conditions = [];
+        const conditions: any[] = [];
+        // BE-60: Tenant-scoped role list
+        const tenantId = req.authUser?.tenantId;
+        if (!isSuperAdmin && tenantId) {
+            // Show own tenant roles + platform template roles (tenantId=null)
+            conditions.push(or(eq(roles.tenantId, tenantId), isNull(roles.tenantId)));
+        }
+
         if (isSuperAdmin || isAdmin) {
-            // See all roles
+            // See all roles (within tenant scope above)
         } else if (isStoreOwner) {
             // Store owner sees all non-privileged roles (including system roles like cashier, manager)
             conditions.push(notInArray(roles.name, ['super_admin', 'admin', 'store_owner']));
@@ -295,9 +302,20 @@ roleRoutes.post('/', authenticate, authorize('roles:create'), async (req, res) =
             });
         }
 
-        // Check if role name already exists
+        // BE-61: Inject tenantId on create, block null by non-platform users
+        const tenantId = req.authUser?.tenantId;
+        if (!tenantId && !req.authUser?.isSuperAdmin) {
+            return res.status(403).json({
+                success: false,
+                error: { code: 'FORBIDDEN', message: 'Cannot create platform-level roles' }
+            });
+        }
+
+        // Check if role name already exists within tenant
+        const dupConds: any[] = [or(eq(roles.name, name), eq(roles.displayName, displayName || name))];
+        if (tenantId) dupConds.push(eq(roles.tenantId, tenantId));
         const existing = await db.query.roles.findFirst({
-            where: or(eq(roles.name, name), eq(roles.displayName, displayName || name)),
+            where: and(...dupConds),
         });
         if (existing) {
             return res.status(400).json({
@@ -319,6 +337,7 @@ roleRoutes.post('/', authenticate, authorize('roles:create'), async (req, res) =
         }
 
         const [role] = await db.insert(roles).values({
+            tenantId: tenantId || null,
             name,
             displayName: displayName || name,
             description,
@@ -344,12 +363,18 @@ roleRoutes.put('/:id', authenticate, authorize('roles:update'), async (req, res)
         const { id } = req.params;
         const { name, displayName, description, permissions } = req.body;
 
-        // Check if role exists
-        const existing = await db.query.roles.findFirst({ where: eq(roles.id, id) });
+        // BE-60: Tenant-scoped role update
+        const tenantId = req.authUser?.tenantId;
+        const roleConds: any[] = [eq(roles.id, id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            roleConds.push(eq(roles.tenantId, tenantId));
+        }
+
+        const existing = await db.query.roles.findFirst({ where: and(...roleConds) });
         if (!existing) {
-            return res.status(404).json({
+            return res.status(403).json({
                 success: false,
-                error: { code: 'NOT_FOUND', message: 'Role not found' }
+                error: { code: 'FORBIDDEN', message: 'Role not found or no access' }
             });
         }
 
@@ -414,13 +439,19 @@ roleRoutes.delete('/:id', authenticate, authorize('roles:delete'), async (req, r
     try {
         const { id } = req.params;
 
-        // Check if role exists
-        const existing = await db.query.roles.findFirst({ where: eq(roles.id, id) });
+        // BE-60: Tenant-scoped role delete
+        const tenantId = req.authUser?.tenantId;
+        const delConds: any[] = [eq(roles.id, id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            delConds.push(eq(roles.tenantId, tenantId));
+        }
+
+        const existing = await db.query.roles.findFirst({ where: and(...delConds) });
 
         if (!existing) {
-            return res.status(404).json({
+            return res.status(403).json({
                 success: false,
-                error: { code: 'NOT_FOUND', message: 'Role not found' }
+                error: { code: 'FORBIDDEN', message: 'Role not found or no access' }
             });
         }
 
@@ -444,7 +475,7 @@ roleRoutes.delete('/:id', authenticate, authorize('roles:delete'), async (req, r
             });
         }
 
-        await db.delete(roles).where(eq(roles.id, id));
+        await db.delete(roles).where(and(...delConds));
 
         res.json({ success: true, message: 'Role deleted successfully' });
     } catch (error) {
@@ -471,17 +502,35 @@ roleRoutes.post('/:id/assign', authenticate, authorize('roles:update'), async (r
             });
         }
 
-        // Check if role exists
-        const role = await db.query.roles.findFirst({ where: eq(roles.id, id) });
+        // BE-64: Tenant-scoped role assignment
+        const tenantId = req.authUser?.tenantId;
+        const assignConds: any[] = [eq(roles.id, id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            assignConds.push(or(eq(roles.tenantId, tenantId), isNull(roles.tenantId)));
+        }
+
+        const role = await db.query.roles.findFirst({ where: and(...assignConds) });
         if (!role) {
-            return res.status(404).json({
+            return res.status(403).json({
                 success: false,
-                error: { code: 'NOT_FOUND', message: 'Role not found' }
+                error: { code: 'FORBIDDEN', message: 'Role not found or no access' }
             });
         }
 
-        // Check if user exists
-        const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
+        // BE-64: Block assigning platform-scope roles via tenant API
+        if (!req.authUser?.isSuperAdmin && role.tenantId === null && role.isSystem) {
+            return res.status(403).json({
+                success: false,
+                error: { code: 'FORBIDDEN', message: 'Cannot assign platform-scope roles' }
+            });
+        }
+
+        // Check if user exists (tenant-scoped)
+        const userConds: any[] = [eq(users.id, userId)];
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            userConds.push(eq(users.tenantId, tenantId));
+        }
+        const user = await db.query.users.findFirst({ where: and(...userConds) });
         if (!user) {
             return res.status(404).json({
                 success: false,

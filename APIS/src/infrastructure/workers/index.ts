@@ -144,6 +144,46 @@ async function processNotification(data: {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Asset Cleanup Worker
+// Deletes orphaned Cloudinary assets when images are updated or entities deleted
+// ═══════════════════════════════════════════════════════════════════════════
+async function processAssetCleanup(data: {
+    publicIds: string[];
+    reason?: string;
+}): Promise<void> {
+    if (!data.publicIds?.length) return;
+
+    try {
+        const { uploadService } = await import('@/infrastructure/services/upload.service');
+        for (const publicId of data.publicIds) {
+            const deleted = await uploadService.deleteImage(publicId);
+            if (!deleted) {
+                console.warn(`[AssetCleanup] Failed to delete: ${publicId}`);
+            }
+        }
+    } catch (err) {
+        console.error('[AssetCleanup] Error:', err instanceof Error ? err.message : err);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Helper: queue asset cleanup from any route (fire-and-forget)
+// Usage: import { queueAssetCleanup } from '@/infrastructure/workers';
+//        queueAssetCleanup(['kpos/products/abc123']);
+// ═══════════════════════════════════════════════════════════════════════════
+export async function queueAssetCleanup(publicIds: string[], reason?: string): Promise<void> {
+    if (!publicIds.length) return;
+
+    const { publish, isRabbitMQConnected: isConnected } = await import('@/config/rabbitmq.config');
+    if (isConnected()) {
+        publish(QUEUES.ASSET_CLEANUP, { publicIds, reason });
+    } else {
+        // Sync fallback — delete immediately
+        processAssetCleanup({ publicIds, reason }).catch(() => {});
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Start all workers
 // ═══════════════════════════════════════════════════════════════════════════
 export function startWorkers(): void {
@@ -155,7 +195,8 @@ export function startWorkers(): void {
     consume(QUEUES.STOCK_MOVEMENT, processStockMovement);
     consume(QUEUES.ACTIVITY_LOG, processActivityLog);
     consume(QUEUES.NOTIFICATION, processNotification);
+    consume(QUEUES.ASSET_CLEANUP, processAssetCleanup);
     subscribeCacheInvalidation(handleCacheInvalidation);
 
-    console.log('✅ Queue workers started: stock-movement, activity-log, notification, cache-invalidation');
+    console.log('✅ Queue workers started: stock-movement, activity-log, notification, asset-cleanup, cache-invalidation');
 }

@@ -17,10 +17,16 @@ storeRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { branchId, search, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const filter = req.branchFilter;
         
         const conditions: any[] = [eq(stores.isActive, true)];
         
+        // BE-75: Tenant isolation
+        const tenantId = req.authUser?.tenantId;
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            conditions.push(eq(stores.tenantId, tenantId));
+        }
+
         // Apply scope
         const scopeCond = buildScopeCondition(filter, { id: stores.id, branchId: stores.branchId }, 'store');
         if (scopeCond) conditions.push(scopeCond);
@@ -163,6 +169,7 @@ storeRoutes.post('/requests', authenticate, async (req, res, next) => {
             branchEmail,
             reason,
             branchId,
+            documents,
             priority
         } = req.body;
 
@@ -203,7 +210,30 @@ storeRoutes.post('/requests', authenticate, async (req, res, next) => {
             }
         }
 
+        const reqTenantId = req.authUser?.tenantId || req.user?.tenantId;
+
+        // Upload documents (base64) to cloud storage if provided
+        let documentUrls: string[] = [];
+        if (Array.isArray(documents) && documents.length > 0) {
+            try {
+                const { uploadService } = await import('@/infrastructure/services/upload.service');
+                for (const doc of documents) {
+                    const base64Data = typeof doc === 'string' ? doc : doc?.data;
+                    if (base64Data) {
+                        const result = await uploadService.uploadSingle(base64Data, {
+                            folder: 'kpos/store-requests',
+                            resourceType: 'auto',
+                        });
+                        if (result?.url) documentUrls.push(result.url);
+                    }
+                }
+            } catch (uploadErr) {
+                console.warn('[StoreRequest] Document upload failed:', uploadErr instanceof Error ? uploadErr.message : uploadErr);
+            }
+        }
+
         const [request] = await db.insert(storeRequests).values({
+            tenantId: reqTenantId,
             requesterId: userId,
             type,
             storeName: storeName || null,
@@ -218,6 +248,7 @@ storeRoutes.post('/requests', authenticate, async (req, res, next) => {
             branchEmail: branchEmail || null,
             reason: reason || null,
             branchId: branchId || null,
+            documents: documentUrls.length > 0 ? documentUrls : (Array.isArray(documents) ? documents.map((d: any) => typeof d === 'string' ? d : d?.name || 'document').filter(Boolean) : []),
             priority: priority || 'normal',
             status: 'pending',
         }).returning();
@@ -303,17 +334,24 @@ storeRoutes.delete('/requests/:id', authenticate, async (req, res, next) => {
 // ═══════════════════════════════════════════════════════════════════════════
 storeRoutes.get('/:id', authenticate, branchFilter(), async (req, res, next) => {
     try {
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const filter = req.branchFilter;
         
+        // BE-75: Tenant-scoped store lookup
+        const tenantId = req.authUser?.tenantId;
+        const getConds: any[] = [eq(stores.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            getConds.push(eq(stores.tenantId, tenantId));
+        }
+
         const store = await db.query.stores.findFirst({
-            where: eq(stores.id, req.params.id),
+            where: and(...getConds),
             with: { branch: true, userAccess: { with: { user: true } } },
         });
 
         if (!store) {
-            return res.status(404).json({
+            return res.status(403).json({
                 success: false,
-                error: { code: 'NOT_FOUND', message: 'Store not found' }
+                error: { code: 'FORBIDDEN', message: 'Store not found or no access' }
             });
         }
 
@@ -365,7 +403,9 @@ storeRoutes.post('/', authenticate, authorize('stores:create', 'branches:create'
             await db.update(stores).set({ isDefault: false, updatedAt: new Date() }).where(and(eq(stores.branchId, branchId), eq(stores.isDefault, true)));
         }
 
+        const tenantId = req.authUser?.tenantId || req.user?.tenantId;
         const [store] = await db.insert(stores).values({
+            tenantId,
             name, code, branchId, address, phone, email, description,
             isDefault: isDefault || false,
             settings,
@@ -377,7 +417,7 @@ storeRoutes.post('/', authenticate, authorize('stores:create', 'branches:create'
             if (existingUs) {
                 await db.update(userStores).set({ canRead: true, canWrite: true, canDelete: true, canManage: true, isDefault: isDefault || false }).where(eq(userStores.id, existingUs.id));
             } else {
-                await db.insert(userStores).values({ userId: creatorId, storeId: store.id, branchId, canRead: true, canWrite: true, canDelete: true, canManage: true, isDefault: isDefault || false });
+                await db.insert(userStores).values({ tenantId, userId: creatorId, storeId: store.id, branchId, canRead: true, canWrite: true, canDelete: true, canManage: true, isDefault: isDefault || false });
             }
             await invalidateUserStoreCache(creatorId);
         }
@@ -396,9 +436,13 @@ storeRoutes.put('/:id', authenticate, authorize('stores:update', 'branches:updat
         const { id } = req.params;
         const { name, code, address, phone, email, description, isActive, isDefault, settings } = req.body;
 
-        const existing = await db.query.stores.findFirst({ where: eq(stores.id, id) });
+        // BE-75: Tenant-scoped store update
+        const tenantId = req.authUser?.tenantId;
+        const updConds: any[] = [eq(stores.id, id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) updConds.push(eq(stores.tenantId, tenantId));
+        const existing = await db.query.stores.findFirst({ where: and(...updConds) });
         if (!existing) {
-            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Store not found' } });
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Store not found or no access' } });
         }
 
         if (code && code !== existing.code) {
@@ -423,7 +467,8 @@ storeRoutes.put('/:id', authenticate, authorize('stores:update', 'branches:updat
         if (isDefault !== undefined) updateData.isDefault = isDefault;
         if (settings) updateData.settings = settings;
 
-        const [store] = await db.update(stores).set(updateData).where(eq(stores.id, id)).returning();
+        delete updateData.tenantId;
+        const [store] = await db.update(stores).set(updateData).where(and(...updConds)).returning();
 
         res.json({ success: true, data: store });
     } catch (error) {
@@ -446,16 +491,23 @@ storeRoutes.put('/:id/transfer', authenticate, authorize('stores:update', 'branc
             });
         }
 
-        const store = await db.query.stores.findFirst({ where: eq(stores.id, id), with: { branch: true } });
+        // BE-75: Tenant-scoped store transfer
+        const tenantId = req.authUser?.tenantId;
+        const trConds: any[] = [eq(stores.id, id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) trConds.push(eq(stores.tenantId, tenantId));
+        const store = await db.query.stores.findFirst({ where: and(...trConds), with: { branch: true } });
         if (!store) {
-            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Store not found' } });
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Store not found or no access' } });
         }
 
         if (store.branchId === toBranchId) {
             return res.status(400).json({ success: false, error: { code: 'SAME_BRANCH', message: 'ຮ້ານຢູ່ສາຂານີ້ຢູ່ແລ້ວ' } });
         }
 
-        const targetBranch = await db.query.branches.findFirst({ where: eq(branches.id, toBranchId) });
+        // Verify target branch belongs to same tenant
+        const brConds: any[] = [eq(branches.id, toBranchId)];
+        if (tenantId && !req.authUser?.isSuperAdmin) brConds.push(eq(branches.tenantId, tenantId));
+        const targetBranch = await db.query.branches.findFirst({ where: and(...brConds) });
         if (!targetBranch) {
             return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Target branch not found' } });
         }
@@ -480,7 +532,11 @@ storeRoutes.put('/:id/transfer', authenticate, authorize('stores:update', 'branc
 // ═══════════════════════════════════════════════════════════════════════════
 storeRoutes.delete('/:id', authenticate, authorize('stores:delete', 'branches:delete'), async (req, res, next) => {
     try {
-        await db.update(stores).set({ isActive: false, updatedAt: new Date() }).where(eq(stores.id, req.params.id));
+        // BE-75: Tenant-scoped store delete
+        const tenantId = req.authUser?.tenantId;
+        const delConds: any[] = [eq(stores.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) delConds.push(eq(stores.tenantId, tenantId));
+        await db.update(stores).set({ isActive: false, updatedAt: new Date() }).where(and(...delConds));
 
         res.json({ success: true, data: { message: 'Store deleted' } });
     } catch (error) {
@@ -563,7 +619,7 @@ storeRoutes.delete('/:id/users/:userId', authenticate, authorize('staff:update')
 storeRoutes.get('/:id/users', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { id: storeId } = req.params;
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const filter = req.branchFilter;
 
         const store = await db.query.stores.findFirst({ where: eq(stores.id, storeId) });
         if (!store) {

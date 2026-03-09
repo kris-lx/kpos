@@ -39,6 +39,7 @@ export interface OrderFilters {
     tableId?: string;
     status?: OrderStatus | OrderStatus[];
     type?: OrderType;
+    tenantId?: string;
 }
 
 export class OrderService {
@@ -51,6 +52,7 @@ export class OrderService {
 
     async findAll(filters: OrderFilters = {}): Promise<Order[]> {
         const conds: any[] = [];
+        if (filters.tenantId) conds.push(eq(orders.tenantId, filters.tenantId));
         if (filters.branchId) conds.push(eq(orders.branchId, filters.branchId));
         if (filters.tableId) conds.push(eq(orders.tableId, filters.tableId));
         if (filters.type) conds.push(eq(orders.type, filters.type));
@@ -75,9 +77,11 @@ export class OrderService {
         } as any));
     }
 
-    async findById(id: string): Promise<Order | null> {
+    async findById(id: string, tenantId?: string): Promise<Order | null> {
+        const conds: any[] = [eq(orders.id, id)];
+        if (tenantId) conds.push(eq(orders.tenantId, tenantId));
         const order = await db.query.orders.findFirst({
-            where: eq(orders.id, id),
+            where: and(...conds),
             with: { table: true, items: true },
         });
 
@@ -105,6 +109,7 @@ export class OrderService {
         const subtotal = itemsData.reduce((sum, item) => sum + item.total, 0);
 
         const [order] = await db.insert(orders).values({
+            tenantId: (data as any).tenantId || undefined,
             orderNo, branchId: data.branchId, tableId: data.tableId,
             type: data.type || OrderType.DINE_IN, guestCount: data.guestCount || 1,
             note: data.note, kitchenNote: data.kitchenNote, subtotal, total: subtotal,
@@ -128,15 +133,17 @@ export class OrderService {
         } as any);
     }
 
-    async update(id: string, data: UpdateOrderDTO): Promise<Order> {
+    async update(id: string, data: UpdateOrderDTO, tenantId?: string): Promise<Order> {
         const now = new Date();
         const updateData: Record<string, unknown> = { ...data };
 
         if (data.status === OrderStatus.SERVED) updateData.servedAt = now;
         if (data.status === OrderStatus.COMPLETED) updateData.completedAt = now;
 
-        await db.update(orders).set(updateData).where(eq(orders.id, id));
-        const order = await db.query.orders.findFirst({ where: eq(orders.id, id), with: { table: true, items: true } });
+        const updConds: any[] = [eq(orders.id, id)];
+        if (tenantId) updConds.push(eq(orders.tenantId, tenantId));
+        await db.update(orders).set(updateData).where(and(...updConds));
+        const order = await db.query.orders.findFirst({ where: and(...updConds), with: { table: true, items: true } });
 
         if (data.status === OrderStatus.COMPLETED && order?.tableId) {
             await db.update(tables).set({ status: TableStatus.CLEANING }).where(eq(tables.id, order.tableId));
@@ -202,8 +209,9 @@ export class OrderService {
         return new OrderItem(item as any);
     }
 
-    async getKitchenOrders(branchId?: string): Promise<Order[]> {
+    async getKitchenOrders(branchId?: string, tenantId?: string): Promise<Order[]> {
         const conds: any[] = [inArray(orders.status, [OrderStatus.PENDING, OrderStatus.PREPARING])];
+        if (tenantId) conds.push(eq(orders.tenantId, tenantId));
         if (branchId) conds.push(eq(orders.branchId, branchId));
 
         const rows = await db.query.orders.findMany({
@@ -218,7 +226,7 @@ export class OrderService {
         } as any));
     }
 
-    async getStats(branchId: string): Promise<{
+    async getStats(branchId: string, tenantId?: string): Promise<{
         total: number;
         pending: number;
         preparing: number;
@@ -228,7 +236,9 @@ export class OrderService {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
-        const branchCond = eq(orders.branchId, branchId);
+        const baseConds: any[] = [eq(orders.branchId, branchId)];
+        if (tenantId) baseConds.push(eq(orders.tenantId, tenantId));
+        const branchCond = and(...baseConds);
         const [[{ value: total }], [{ value: pending }], [{ value: preparing }], [{ value: ready }], [{ value: completed }]] = await Promise.all([
             db.select({ value: count() }).from(orders).where(and(branchCond, gte(orders.createdAt, today))),
             db.select({ value: count() }).from(orders).where(and(branchCond, eq(orders.status, OrderStatus.PENDING))),

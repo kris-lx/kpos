@@ -6,7 +6,7 @@ import { Router } from 'express';
 import { authenticate, authorize, branchFilter, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { db } from '@/config/database.config';
 import { users, userStores, roles, branches } from '@/db/schema/tables';
-import { eq, and, or, ilike, inArray, notInArray, desc, asc, count } from 'drizzle-orm';
+import { eq, and, or, ilike, inArray, notInArray, isNull, desc, asc, count } from 'drizzle-orm';
 import argon2 from 'argon2';
 
 export const staffRoutes = Router();
@@ -16,13 +16,19 @@ staffRoutes.get('/', authenticate, authorize('staff:read'), branchFilter(), asyn
     try {
         const { page = 1, limit = 20, search, branchId, role, status } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
-        const filter = (req as any).branchFilter;
+        const filter = req.branchFilter;
 
-        const authUser = (req as any).authUser;
+        const authUser = req.authUser;
         const isSuperAdmin = authUser?.isSuperAdmin;
 
         const conditions: any[] = [];
         let scopedUserIds: string[] | null = null;
+
+        // Tenant isolation for staff list
+        const tenantId = req.authUser?.tenantId;
+        if (tenantId && !isSuperAdmin) {
+            conditions.push(eq(users.tenantId, tenantId));
+        }
 
         if (!isSuperAdmin) {
             const activeStoreId = authUser?.activeStoreId;
@@ -93,29 +99,35 @@ staffRoutes.get('/', authenticate, authorize('staff:read'), branchFilter(), asyn
 // MUST be before /:id to prevent Express matching /roles/list as /:id
 staffRoutes.get('/roles/list', authenticate, async (req, res, next) => {
     try {
-        const user = (req as any).authUser || req.user!;
+        const user = req.authUser || req.user!;
         const isSuperAdmin = user.isSuperAdmin;
         const isAdmin = isSuperAdmin || user.role === 'admin';
         const isStoreOwner = user.role === 'store_owner';
 
+        // BE-78: Tenant isolation on roles list
+        const tenantId = req.authUser?.tenantId;
+        const baseConds: any[] = [];
+        if (!isSuperAdmin && tenantId) {
+            baseConds.push(or(eq(roles.tenantId, tenantId), isNull(roles.tenantId)));
+        }
+
         let roleRows;
-        if (isSuperAdmin || isAdmin) {
-            // Super admin / admin sees all roles
+        if (isSuperAdmin) {
             roleRows = await db.query.roles.findMany({ orderBy: asc(roles.name) });
-        } else if (isStoreOwner) {
-            // Store owner can assign staff-level system roles (cashier, manager, staff, etc.)
-            // but NOT super_admin, admin, or store_owner
+        } else if (isAdmin) {
+            // Tenant admin sees roles within their tenant + platform templates
             roleRows = await db.query.roles.findMany({
-                where: notInArray(roles.name, ['super_admin', 'admin', 'store_owner']),
+                where: baseConds.length > 0 ? and(...baseConds) : undefined,
+                orderBy: asc(roles.name),
+            });
+        } else if (isStoreOwner) {
+            roleRows = await db.query.roles.findMany({
+                where: and(...baseConds, notInArray(roles.name, ['super_admin', 'admin', 'store_owner'])),
                 orderBy: asc(roles.name),
             });
         } else {
-            // Other roles: only non-system, non-privileged
             roleRows = await db.query.roles.findMany({
-                where: and(
-                    notInArray(roles.name, ['super_admin', 'admin', 'store_owner']),
-                    eq(roles.isSystem, false),
-                ),
+                where: and(...baseConds, notInArray(roles.name, ['super_admin', 'admin', 'store_owner']), eq(roles.isSystem, false)),
                 orderBy: asc(roles.name),
             });
         }
@@ -129,12 +141,19 @@ staffRoutes.get('/roles/list', authenticate, async (req, res, next) => {
 // MUST be before /:id to prevent Express matching /branches/list as /:id
 staffRoutes.get('/branches/list', authenticate, async (req, res, next) => {
     try {
-        const user = req.user!;
-        const isAdmin = user.isSuperAdmin || user.role === 'admin';
+        const authUser = req.authUser!;
+        const isSuperAdmin = authUser.isSuperAdmin;
+        const isAdmin = isSuperAdmin || authUser.role === 'admin';
 
-        const conditions = [eq(branches.isActive, true)];
-        if (!isAdmin && req.authUser?.accessibleBranchIds?.length) {
-            conditions.push(inArray(branches.id, req.authUser.accessibleBranchIds));
+        const conditions: any[] = [eq(branches.isActive, true)];
+
+        // BE-78: Tenant isolation on branches list
+        if (!isSuperAdmin && authUser.tenantId) {
+            conditions.push(eq(branches.tenantId, authUser.tenantId));
+        }
+
+        if (!isAdmin && authUser.accessibleBranchIds?.length) {
+            conditions.push(inArray(branches.id, authUser.accessibleBranchIds));
         }
 
         const branchRows = await db.query.branches.findMany({
@@ -150,16 +169,23 @@ staffRoutes.get('/branches/list', authenticate, async (req, res, next) => {
 // Get staff by ID
 staffRoutes.get('/:id', authenticate, authorize('staff:read'), async (req, res, next) => {
     try {
-        const authUser = (req as any).authUser;
+        const authUser = req.authUser;
         const isSuperAdmin = authUser?.isSuperAdmin;
 
+        // Tenant-scoped staff lookup
+        const tenantId = req.authUser?.tenantId;
+        const staffConds: any[] = [eq(users.id, req.params.id)];
+        if (tenantId && !isSuperAdmin) {
+            staffConds.push(eq(users.tenantId, tenantId));
+        }
+
         const staff = await db.query.users.findFirst({
-            where: eq(users.id, req.params.id),
+            where: and(...staffConds),
             with: { branch: true, roleRelation: true },
         });
 
         if (!staff) {
-            res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Staff not found' } });
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Staff not found or no access' } });
             return;
         }
 
@@ -192,7 +218,7 @@ staffRoutes.get('/:id', authenticate, authorize('staff:read'), async (req, res, 
 staffRoutes.post('/', authenticate, authorize('staff:create'), async (req, res, next) => {
     try {
         const { email, password, name, phone, role, branchId, storeId, roleId, isActive, permissions } = req.body;
-        const authUser = (req as any).authUser;
+        const authUser = req.authUser;
         const creatorStoreId = storeId || authUser?.activeStoreId || undefined;
 
         if (!email || !password || !name) {
@@ -200,8 +226,11 @@ staffRoutes.post('/', authenticate, authorize('staff:create'), async (req, res, 
             return;
         }
 
-        // Check if email exists
-        const existing = await db.query.users.findFirst({ where: eq(users.email, email) });
+        // Check if email exists (tenant-scoped for multi-tenancy)
+        const tenantId = req.authUser?.tenantId || req.user?.tenantId;
+        const emailConds: any[] = [eq(users.email, email)];
+        if (tenantId) emailConds.push(eq(users.tenantId, tenantId));
+        const existing = await db.query.users.findFirst({ where: and(...emailConds) });
         if (existing) {
             res.status(400).json({ success: false, error: { code: 'VAL_002', message: 'Email already exists' } });
             return;
@@ -214,6 +243,7 @@ staffRoutes.post('/', authenticate, authorize('staff:create'), async (req, res, 
         const sanitizedStoreId = creatorStoreId && creatorStoreId.trim() !== '' ? creatorStoreId : undefined;
 
         const [staff] = await db.insert(users).values({
+            tenantId,
             email,
             password: hashedPassword,
             name,
@@ -232,6 +262,7 @@ staffRoutes.post('/', authenticate, authorize('staff:create'), async (req, res, 
             });
             if (!existingUs) {
                 await db.insert(userStores).values({
+                    tenantId,
                     userId: staff.id,
                     storeId: sanitizedStoreId,
                     branchId: sanitizedBranchId,
@@ -266,9 +297,18 @@ staffRoutes.put('/:id', authenticate, authorize('staff:update'), async (req, res
 
         updateData.updatedAt = new Date();
 
+        // Tenant-scoped update
+        const tenantId = req.authUser?.tenantId;
+        const updConds: any[] = [eq(users.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            updConds.push(eq(users.tenantId, tenantId));
+        }
+        // Never allow changing tenantId
+        delete updateData.tenantId;
+
         const [staff] = await db.update(users)
             .set(updateData)
-            .where(eq(users.id, req.params.id))
+            .where(and(...updConds))
             .returning();
 
         res.json({ success: true, data: staff });
@@ -280,9 +320,16 @@ staffRoutes.put('/:id', authenticate, authorize('staff:update'), async (req, res
 // Delete staff (soft delete)
 staffRoutes.delete('/:id', authenticate, authorize('staff:delete'), async (req, res, next) => {
     try {
+        // Tenant-scoped delete
+        const tenantId = req.authUser?.tenantId;
+        const delConds: any[] = [eq(users.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            delConds.push(eq(users.tenantId, tenantId));
+        }
+
         await db.update(users)
             .set({ isActive: false, updatedAt: new Date() })
-            .where(eq(users.id, req.params.id));
+            .where(and(...delConds));
 
         res.json({ success: true, message: 'Staff deactivated successfully' });
     } catch (error) {

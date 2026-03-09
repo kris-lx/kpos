@@ -3,6 +3,7 @@
      ═══════════════════════════════════════════════════════════════════════════ -->
 <script lang="ts">
     import { createQuery, createMutation, useQueryClient } from "@tanstack/svelte-query";
+    import { get } from "svelte/store";
     import { api } from "$api";
     import { auth } from "$stores";
     import { t } from "$lib/i18n/index.svelte";
@@ -75,9 +76,9 @@
         },
     });
 
-    // Fetch stores - use getter for reactive query key
+    // Fetch stores
     const storesQuery = createQuery({
-        queryKey: ["stores", debouncedSearch, selectedBranchId],
+        queryKey: ["stores"],
         queryFn: async () => {
             const params = new URLSearchParams();
             if (debouncedSearch) params.append("search", debouncedSearch);
@@ -87,10 +88,11 @@
         },
     });
 
-    // Invalidate all stores queries (handles dynamic key)
-    function invalidateStores() {
-        queryClient.invalidateQueries({ predicate: (q) => q.queryKey[0] === 'stores' });
-    }
+    // Refetch stores when search/filter changes
+    $effect(() => { void debouncedSearch; void selectedBranchId; get(storesQuery).refetch(); });
+
+    // Refetch stores after mutations
+    function invalidateStores() { get(storesQuery).refetch(); }
 
     // Create store mutation
     const createStoreMutation = createMutation({

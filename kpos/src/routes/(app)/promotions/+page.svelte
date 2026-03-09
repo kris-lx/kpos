@@ -225,11 +225,34 @@
             const endpoint = activeTab === "coupons" ? "promotions/coupons" : 
                              activeTab === "discounts" ? "promotions/discounts" : "promotions";
             
+            // Build payload with only relevant fields per tab
+            let payload: Record<string, any> = {
+                name: formData.name,
+                description: formData.description || null,
+                type: formData.type,
+                value: Number(formData.value),
+                startDate: formData.startDate || undefined,
+                endDate: formData.endDate || null,
+                isActive: formData.isActive,
+            };
+
+            if (activeTab === "coupons") {
+                payload.code = formData.code;
+                payload.minPurchase = Number(formData.minPurchase) || 0;
+                payload.maxDiscount = Number(formData.maxDiscount) || 0;
+                payload.usageLimit = Number(formData.usageLimit) || null;
+            } else if (activeTab === "discounts") {
+                payload.minPurchase = Number(formData.minPurchase) || 0;
+                payload.maxDiscount = Number(formData.maxDiscount) || 0;
+            } else {
+                payload.usageLimit = Number(formData.usageLimit) || null;
+            }
+
             if (editingItem) {
-                await api.put(`${endpoint}/${editingItem.id}`, { json: formData }).json();
+                await api.put(`${endpoint}/${editingItem.id}`, { json: payload }).json();
                 toast.success(t("common.success"));
             } else {
-                await api.post(endpoint, { json: formData }).json();
+                await api.post(endpoint, { json: payload }).json();
                 toast.success(t("common.success"));
             }
             showModal = false;

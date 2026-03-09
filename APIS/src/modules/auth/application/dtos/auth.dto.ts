@@ -19,7 +19,7 @@ export const RegisterDto = z.object({
 });
 
 export const RefreshTokenDto = z.object({
-    refreshToken: z.string().min(1, 'Refresh token is required'),
+    refreshToken: z.string().optional(),
 });
 
 export const ChangePasswordDto = z.object({

@@ -6,7 +6,7 @@ import { Router } from 'express';
 import { authenticate, authorize, branchFilter, applyScopeFilter, ensureScopeAccess, buildScopeCondition, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { db } from '@/config/database.config';
 import { transactions, transactionPayments, paymentMethods, settlements } from '@/db/schema/tables';
-import { eq, and, or, ilike, inArray, gte, lte, lt, desc, asc, count, sum, sql } from 'drizzle-orm';
+import { eq, and, or, ilike, inArray, gte, lte, lt, desc, asc, count, sum, sql, isNull } from 'drizzle-orm';
 
 export const paymentRoutes = Router();
 
@@ -27,9 +27,14 @@ paymentRoutes.get('/transactions', authenticate, branchFilter(), async (req, res
             search
         } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const filter = req.branchFilter;
 
         const conditions: any[] = [];
+        // BE-73: Tenant isolation
+        const tenantId = req.authUser?.tenantId;
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            conditions.push(eq(transactions.tenantId, tenantId));
+        }
         const scopeCond = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
         if (scopeCond) conditions.push(scopeCond);
         if (branchId) conditions.push(eq(transactions.branchId, String(branchId)));
@@ -69,13 +74,20 @@ paymentRoutes.get('/transactions', authenticate, branchFilter(), async (req, res
 // Get transaction by ID (scope-checked)
 paymentRoutes.get('/transactions/:id', authenticate, async (req, res, next) => {
     try {
+        // BE-73: Tenant-scoped transaction lookup
+        const tenantId = req.authUser?.tenantId;
+        const getConds: any[] = [eq(transactions.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            getConds.push(eq(transactions.tenantId, tenantId));
+        }
+
         const transaction = await db.query.transactions.findFirst({
-            where: eq(transactions.id, req.params.id),
+            where: and(...getConds),
             with: { customer: true, user: true, items: true, payments: { with: { paymentMethod: true } } },
         });
 
         if (!transaction) {
-            res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Transaction not found' } });
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Transaction not found or no access' } });
             return;
         }
 
@@ -101,6 +113,9 @@ paymentRoutes.get('/summary', authenticate, async (req, res, next) => {
         tomorrow.setDate(tomorrow.getDate() + 1);
 
         const sumConditions: any[] = [eq(transactions.status, 'COMPLETED'), eq(transactions.type, 'SALE')];
+        // BE-73: Tenant isolation
+        const tenantId = req.authUser?.tenantId;
+        if (tenantId && !req.authUser?.isSuperAdmin) sumConditions.push(eq(transactions.tenantId, tenantId));
         if (branchId) sumConditions.push(eq(transactions.branchId, String(branchId)));
         if (dateFrom) sumConditions.push(gte(transactions.createdAt, new Date(String(dateFrom))));
         if (dateTo) sumConditions.push(lte(transactions.createdAt, new Date(String(dateTo))));
@@ -145,7 +160,12 @@ paymentRoutes.get('/methods', authenticate, async (req, res, next) => {
     try {
         const { activeOnly } = req.query;
 
-        const mWhere = activeOnly === 'true' ? eq(paymentMethods.isActive, true) : undefined;
+        // BE-73: Tenant isolation on payment methods
+        const tenantId = req.authUser?.tenantId;
+        const mConds: any[] = [];
+        if (activeOnly === 'true') mConds.push(eq(paymentMethods.isActive, true));
+        if (tenantId && !req.authUser?.isSuperAdmin) mConds.push(or(isNull(paymentMethods.tenantId), eq(paymentMethods.tenantId, tenantId)));
+        const mWhere = mConds.length > 0 ? and(...mConds) : undefined;
 
         const methods = await db.query.paymentMethods.findMany({
             where: mWhere,
@@ -161,12 +181,16 @@ paymentRoutes.get('/methods', authenticate, async (req, res, next) => {
 // Get payment method by ID
 paymentRoutes.get('/methods/:id', authenticate, async (req, res, next) => {
     try {
+        // BE-73: Tenant-scoped payment method lookup
+        const tenantId = req.authUser?.tenantId;
+        const pmConds: any[] = [eq(paymentMethods.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) pmConds.push(or(isNull(paymentMethods.tenantId), eq(paymentMethods.tenantId, tenantId)));
         const method = await db.query.paymentMethods.findFirst({
-            where: eq(paymentMethods.id, req.params.id),
+            where: and(...pmConds),
         });
 
         if (!method) {
-            res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Payment method not found' } });
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Payment method not found or no access' } });
             return;
         }
 
@@ -179,7 +203,8 @@ paymentRoutes.get('/methods/:id', authenticate, async (req, res, next) => {
 // Create payment method
 paymentRoutes.post('/methods', authenticate, authorize('payments:manage'), async (req, res, next) => {
     try {
-        const [method] = await db.insert(paymentMethods).values(req.body).returning();
+        const pmTenantId = req.authUser?.tenantId || req.user?.tenantId;
+        const [method] = await db.insert(paymentMethods).values({ ...req.body, tenantId: pmTenantId }).returning();
 
         res.status(201).json({ success: true, data: method });
     } catch (error) {
@@ -190,7 +215,13 @@ paymentRoutes.post('/methods', authenticate, authorize('payments:manage'), async
 // Update payment method
 paymentRoutes.put('/methods/:id', authenticate, authorize('payments:manage'), async (req, res, next) => {
     try {
-        const [method] = await db.update(paymentMethods).set({ ...req.body, updatedAt: new Date() }).where(eq(paymentMethods.id, req.params.id)).returning();
+        // BE-73: Tenant-scoped payment method update
+        const tenantId = req.authUser?.tenantId;
+        const updConds: any[] = [eq(paymentMethods.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) updConds.push(eq(paymentMethods.tenantId, tenantId));
+        const updateData = { ...req.body, updatedAt: new Date() };
+        delete updateData.tenantId;
+        const [method] = await db.update(paymentMethods).set(updateData).where(and(...updConds)).returning();
 
         res.json({ success: true, data: method });
     } catch (error) {
@@ -201,14 +232,18 @@ paymentRoutes.put('/methods/:id', authenticate, authorize('payments:manage'), as
 // Toggle payment method status
 paymentRoutes.patch('/methods/:id/toggle', authenticate, authorize('payments:manage'), async (req, res, next) => {
     try {
-        const current = await db.query.paymentMethods.findFirst({ where: eq(paymentMethods.id, req.params.id) });
+        // BE-73: Tenant-scoped payment method toggle
+        const tenantId = req.authUser?.tenantId;
+        const togConds: any[] = [eq(paymentMethods.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) togConds.push(eq(paymentMethods.tenantId, tenantId));
+        const current = await db.query.paymentMethods.findFirst({ where: and(...togConds) });
 
         if (!current) {
-            res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Payment method not found' } });
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Payment method not found or no access' } });
             return;
         }
 
-        const [method] = await db.update(paymentMethods).set({ isActive: !current.isActive, updatedAt: new Date() }).where(eq(paymentMethods.id, req.params.id)).returning();
+        const [method] = await db.update(paymentMethods).set({ isActive: !current.isActive, updatedAt: new Date() }).where(and(...togConds)).returning();
 
         res.json({ success: true, data: method });
     } catch (error) {
@@ -219,7 +254,11 @@ paymentRoutes.patch('/methods/:id/toggle', authenticate, authorize('payments:man
 // Delete payment method
 paymentRoutes.delete('/methods/:id', authenticate, authorize('payments:manage'), async (req, res, next) => {
     try {
-        await db.update(paymentMethods).set({ isActive: false, updatedAt: new Date() }).where(eq(paymentMethods.id, req.params.id));
+        // BE-73: Tenant-scoped payment method delete
+        const tenantId = req.authUser?.tenantId;
+        const delConds: any[] = [eq(paymentMethods.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) delConds.push(eq(paymentMethods.tenantId, tenantId));
+        await db.update(paymentMethods).set({ isActive: false, updatedAt: new Date() }).where(and(...delConds));
 
         res.json({ success: true, message: 'Payment method deactivated successfully' });
     } catch (error) {
@@ -237,14 +276,17 @@ paymentRoutes.post('/refunds', authenticate, authorize('payments:refund'), async
         const { transactionId, amount, reason, items } = req.body;
         const user = (req as unknown as { user: { id: string; branchId: string } }).user;
 
-        // Get original transaction
+        // BE-73: Tenant-scoped refund
+        const tenantId = req.authUser?.tenantId;
+        const refConds: any[] = [eq(transactions.id, transactionId)];
+        if (tenantId && !req.authUser?.isSuperAdmin) refConds.push(eq(transactions.tenantId, tenantId));
         const originalTx = await db.query.transactions.findFirst({
-            where: eq(transactions.id, transactionId),
+            where: and(...refConds),
             with: { items: true, payments: true },
         });
 
         if (!originalTx) {
-            res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Transaction not found' } });
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Transaction not found or no access' } });
             return;
         }
 
@@ -257,7 +299,9 @@ paymentRoutes.post('/refunds', authenticate, authorize('payments:refund'), async
         const refundNo = `REF-${Date.now()}`;
 
         // Create refund transaction
+        const refTenantId = req.authUser?.tenantId || req.user?.tenantId;
         const [refund] = await db.insert(transactions).values({
+            tenantId: refTenantId,
             transactionNo: refundNo,
             type: 'REFUND',
             status: 'COMPLETED',
@@ -287,10 +331,14 @@ paymentRoutes.post('/void/:id', authenticate, authorize('payments:void'), async 
     try {
         const { reason } = req.body;
 
-        const transaction = await db.query.transactions.findFirst({ where: eq(transactions.id, req.params.id) });
+        // BE-73: Tenant-scoped void
+        const tenantId = req.authUser?.tenantId;
+        const voidConds: any[] = [eq(transactions.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) voidConds.push(eq(transactions.tenantId, tenantId));
+        const transaction = await db.query.transactions.findFirst({ where: and(...voidConds) });
 
         if (!transaction) {
-            res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Transaction not found' } });
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Transaction not found or no access' } });
             return;
         }
 
@@ -301,7 +349,7 @@ paymentRoutes.post('/void/:id', authenticate, authorize('payments:void'), async 
 
         const [voided] = await db.update(transactions)
             .set({ status: 'VOIDED', voidReason: reason, updatedAt: new Date() })
-            .where(eq(transactions.id, req.params.id))
+            .where(and(...voidConds))
             .returning();
 
         res.json({ success: true, data: voided });
@@ -319,11 +367,13 @@ paymentRoutes.get('/settlements', authenticate, branchFilter(), async (req, res,
     try {
         const { page = 1, limit = 20, status, dateFrom, dateTo } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
-        const branchId = filter?.branchIds?.[0] || req.user!.branchId;
+        const filter = req.branchFilter;
+        const branchId = filter?.branchIds?.[0] || req.authUser?.activeBranchId || req.user?.branchId;
 
         const sConditions: any[] = [];
         if (branchId) sConditions.push(eq(settlements.branchId, branchId));
+        if (filter?.tenantId) sConditions.push(eq(settlements.tenantId, filter.tenantId));
+        if (filter?.storeIds?.length) sConditions.push(inArray(settlements.storeId, filter.storeIds));
         if (status) sConditions.push(eq(settlements.status, String(status)));
         if (dateFrom) sConditions.push(gte(settlements.settlementDate, new Date(String(dateFrom))));
         if (dateTo) sConditions.push(lte(settlements.settlementDate, new Date(String(dateTo))));
@@ -353,8 +403,8 @@ paymentRoutes.get('/settlements', authenticate, branchFilter(), async (req, res,
 paymentRoutes.post('/settlements', authenticate, authorize('payments:settle'), async (req, res, next) => {
     try {
         const { date } = req.body;
-        const userId = req.user!.userId;
-        const branchId = req.user!.branchId;
+        const userId = req.authUser?.userId || req.user?.userId;
+        const branchId = req.authUser?.activeBranchId || req.user?.branchId;
         const settlementDate = new Date(date);
         
         // Get totals for the date
@@ -383,7 +433,13 @@ paymentRoutes.post('/settlements', authenticate, authorize('payments:settle'), a
             }
         }
 
+        const stlTenantId = req.authUser?.tenantId || req.user?.tenantId;
+        const stlBranchId = req.authUser?.activeBranchId || req.user?.branchId || (branchId ? String(branchId) : undefined);
+        const stlStoreId = req.authUser?.activeStoreId || undefined;
         const [settlement] = await db.insert(settlements).values({
+            tenantId: stlTenantId,
+            branchId: stlBranchId,
+            storeId: stlStoreId,
             settlementDate,
             totalAmount,
             cashAmount: totalCash,

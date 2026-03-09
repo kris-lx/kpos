@@ -1,5 +1,6 @@
 <script lang="ts">
     import { createQuery, createMutation, useQueryClient } from "@tanstack/svelte-query";
+    import { get } from "svelte/store";
     import { api } from "$api";
     import { auth } from "$stores";
     import { cn, formatPhone } from "$utils";
@@ -36,7 +37,7 @@
     });
 
     const branchesQuery = createQuery({
-        queryKey: ["branches", searchQuery],
+        queryKey: ["branches"],
         queryFn: async () => {
             const params = new URLSearchParams();
             if (searchQuery) params.append("search", searchQuery);
@@ -44,6 +45,8 @@
             return response.data || [];
         },
     });
+
+    $effect(() => { void searchQuery; $branchesQuery.refetch(); });
     
     // Create mutation
     const createMut = createMutation({
@@ -53,7 +56,7 @@
         },
         onSuccess: () => {
             toast.success("ເພີ່ມສາຂາສຳເລັດ");
-            queryClient.invalidateQueries({ queryKey: ["branches"] });
+            get(branchesQuery).refetch();
             closeModal();
         },
         onError: (error: any) => {
@@ -69,7 +72,7 @@
         },
         onSuccess: () => {
             toast.success("ແກ້ໄຂສາຂາສຳເລັດ");
-            queryClient.invalidateQueries({ queryKey: ["branches"] });
+            get(branchesQuery).refetch();
             closeModal();
         },
         onError: (error: any) => {
@@ -85,7 +88,7 @@
         },
         onSuccess: () => {
             toast.success("ລົບສາຂາສຳເລັດ");
-            queryClient.invalidateQueries({ queryKey: ["branches"] });
+            get(branchesQuery).refetch();
             closeDeleteModal();
         },
         onError: (error: any) => {

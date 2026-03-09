@@ -11,7 +11,8 @@ import { eq } from 'drizzle-orm';
 import argon2 from 'argon2';
 import * as schema from './schema';
 import {
-    branches, users, roles, rules, roleRules, menuPermissions, stores, userStores,
+    tenants, branches, users, roles, rules, roleRules, menuPermissions, stores, userStores,
+    paymentMethods, systemEnums,
 } from './schema/tables';
 
 // ─── Config ──────────────────────────────────────────────────────────────
@@ -97,33 +98,57 @@ const DEFAULT_ROLE_RULES: Record<string, Record<string, { r: boolean; c: boolean
 async function seed(): Promise<void> {
     console.log('🌱 Starting KPOS seed...\n');
 
-    // 1. Create default branch
-    console.log('1️⃣  Creating default branch...');
+    // 1. Create default tenant
+    console.log('1️⃣  Creating default tenant...');
+    let defaultTenant = await db.query.tenants.findFirst({ where: eq(tenants.code, 'DEFAULT') });
+    if (!defaultTenant) {
+        [defaultTenant] = await db.insert(tenants).values({
+            name: 'Default Organization', code: 'DEFAULT', plan: 'free',
+            isActive: true, status: 'active',
+        }).returning();
+        console.log(`   ✅ Created tenant: ${defaultTenant.name} (${defaultTenant.code})`);
+    } else {
+        console.log(`   ⏭️  Tenant exists: ${defaultTenant.name}`);
+    }
+
+    // 2. Create default branch (linked to tenant)
+    console.log('2️⃣  Creating default branch...');
     let defaultBranch = await db.query.branches.findFirst({ where: eq(branches.isMain, true) });
     if (!defaultBranch) {
         [defaultBranch] = await db.insert(branches).values({
+            tenantId: defaultTenant.id,
             name: 'Headquarters', code: 'HQ', isMain: true, isActive: true,
         }).returning();
         console.log(`   ✅ Created branch: ${defaultBranch.name} (${defaultBranch.code})`);
     } else {
+        // Backfill tenantId if missing
+        if (!defaultBranch.tenantId) {
+            await db.update(branches).set({ tenantId: defaultTenant.id }).where(eq(branches.id, defaultBranch.id));
+            defaultBranch = { ...defaultBranch, tenantId: defaultTenant.id };
+        }
         console.log(`   ⏭️  Branch exists: ${defaultBranch.name}`);
     }
 
-    // 2. Create default store
-    console.log('2️⃣  Creating default store...');
+    // 3. Create default store (linked to tenant)
+    console.log('3️⃣  Creating default store...');
     let defaultStore = await db.query.stores.findFirst({ where: eq(stores.branchId, defaultBranch.id) });
     if (!defaultStore) {
         [defaultStore] = await db.insert(stores).values({
+            tenantId: defaultTenant.id,
             name: 'Main Store', code: 'MAIN', branchId: defaultBranch.id,
             isActive: true, isDefault: true,
         }).returning();
         console.log(`   ✅ Created store: ${defaultStore.name}`);
     } else {
+        if (!defaultStore.tenantId) {
+            await db.update(stores).set({ tenantId: defaultTenant.id }).where(eq(stores.id, defaultStore.id));
+            defaultStore = { ...defaultStore, tenantId: defaultTenant.id };
+        }
         console.log(`   ⏭️  Store exists: ${defaultStore.name}`);
     }
 
-    // 3. Seed roles
-    console.log('3️⃣  Seeding roles...');
+    // 4. Seed roles
+    console.log('4️⃣  Seeding roles...');
     const roleMap: Record<string, string> = {};
     for (const roleDef of DEFAULT_ROLES) {
         let role = await db.query.roles.findFirst({ where: eq(roles.name, roleDef.name) });
@@ -136,8 +161,8 @@ async function seed(): Promise<void> {
         roleMap[roleDef.name] = role.id;
     }
 
-    // 4. Seed rules
-    console.log('4️⃣  Seeding rules...');
+    // 5. Seed rules
+    console.log('5️⃣  Seeding rules...');
     const ruleMap: Record<string, string> = {};
     for (const ruleDef of DEFAULT_RULES) {
         let rule = await db.query.rules.findFirst({ where: eq(rules.name, ruleDef.name) });
@@ -152,8 +177,8 @@ async function seed(): Promise<void> {
         ruleMap[ruleDef.name] = rule.id;
     }
 
-    // 5. Seed role-rules CRUD mappings
-    console.log('5️⃣  Seeding role-rule CRUD mappings...');
+    // 6. Seed role-rules CRUD mappings
+    console.log('6️⃣  Seeding role-rule CRUD mappings...');
     let rrCount = 0;
     for (const [roleName, ruleEntries] of Object.entries(DEFAULT_ROLE_RULES)) {
         const roleId = roleMap[roleName];
@@ -175,12 +200,13 @@ async function seed(): Promise<void> {
     }
     console.log(`   ✅ Created ${rrCount} role-rule mappings`);
 
-    // 6. Create super admin user
-    console.log('6️⃣  Creating super admin user...');
+    // 7. Create super admin user (linked to tenant)
+    console.log('7️⃣  Creating super admin user...');
     let adminUser = await db.query.users.findFirst({ where: eq(users.email, SUPER_ADMIN_EMAIL) });
     if (!adminUser) {
         const hashedPassword = await argon2.hash(SUPER_ADMIN_PASSWORD);
         [adminUser] = await db.insert(users).values({
+            tenantId: defaultTenant.id,
             email: SUPER_ADMIN_EMAIL,
             password: hashedPassword,
             name: SUPER_ADMIN_NAME,
@@ -195,6 +221,7 @@ async function seed(): Promise<void> {
 
         // Create UserStore access
         await db.insert(userStores).values({
+            tenantId: defaultTenant.id,
             userId: adminUser.id,
             storeId: defaultStore.id,
             branchId: defaultBranch.id,
@@ -204,11 +231,63 @@ async function seed(): Promise<void> {
         console.log(`   ✅ Created super admin: ${SUPER_ADMIN_EMAIL}`);
         console.log(`   🔑 Password: ${SUPER_ADMIN_PASSWORD}`);
     } else {
+        // Backfill tenantId if missing
+        if (!adminUser.tenantId) {
+            await db.update(users).set({ tenantId: defaultTenant.id }).where(eq(users.id, adminUser.id));
+        }
         console.log(`   ⏭️  Super admin exists: ${adminUser.email}`);
     }
 
-    // 7. Seed menu permissions
-    console.log('7️⃣  Seeding menu permissions...');
+    // 8. Seed default payment methods
+    console.log('8️⃣  Seeding default payment methods...');
+    const DEFAULT_PAYMENT_METHODS = [
+        { name: 'Cash', code: 'CASH', type: 'cash', icon: 'Banknote', isDefault: true, sortOrder: 0 },
+        { name: 'Card', code: 'CARD', type: 'card', icon: 'CreditCard', sortOrder: 1 },
+        { name: 'QR / Bank Transfer', code: 'TRANSFER', type: 'transfer', icon: 'QrCode', sortOrder: 2 },
+    ];
+    let pmCount = 0;
+    for (const pm of DEFAULT_PAYMENT_METHODS) {
+        const existing = await db.query.paymentMethods.findFirst({
+            where: (t, { and, eq: e }) => and(e(t.code, pm.code), e(t.tenantId, defaultTenant.id)),
+        });
+        if (!existing) {
+            await db.insert(paymentMethods).values({ ...pm, tenantId: defaultTenant.id, isActive: true });
+            pmCount++;
+        }
+    }
+    console.log(`   ✅ Created ${pmCount} payment methods`);
+
+    // 9. Seed system enums
+    console.log('9️⃣  Seeding system enums...');
+    const DEFAULT_ENUMS = [
+        { type: 'business_type', value: 'retail', label: 'Retail', labelLao: 'ຂາຍຍ່ອຍ', order: 0, isSystem: true },
+        { type: 'business_type', value: 'restaurant', label: 'Restaurant', labelLao: 'ຮ້ານອາຫານ', order: 1, isSystem: true },
+        { type: 'business_type', value: 'cafe', label: 'Café', labelLao: 'ຮ້ານກາເຟ', order: 2, isSystem: true },
+        { type: 'business_type', value: 'wholesale', label: 'Wholesale', labelLao: 'ຂາຍສົ່ງ', order: 3, isSystem: true },
+        { type: 'business_type', value: 'service', label: 'Service', labelLao: 'ບໍລິການ', order: 4, isSystem: true },
+        { type: 'stockout_reason', value: 'damaged', label: 'Damaged', labelLao: 'ເສຍຫາຍ', order: 0, isSystem: true },
+        { type: 'stockout_reason', value: 'expired', label: 'Expired', labelLao: 'ໝົດອາຍຸ', order: 1, isSystem: true },
+        { type: 'stockout_reason', value: 'lost', label: 'Lost', labelLao: 'ສູນເສຍ', order: 2, isSystem: true },
+        { type: 'stockout_reason', value: 'returned', label: 'Returned to Supplier', labelLao: 'ສົ່ງຄືນຜູ້ສະໜອງ', order: 3, isSystem: true },
+        { type: 'stockin_reason', value: 'purchase', label: 'Purchase', labelLao: 'ຊື້ເຂົ້າ', order: 0, isSystem: true },
+        { type: 'stockin_reason', value: 'transfer', label: 'Transfer In', labelLao: 'ໂອນເຂົ້າ', order: 1, isSystem: true },
+        { type: 'stockin_reason', value: 'return', label: 'Customer Return', labelLao: 'ລູກຄ້າສົ່ງຄືນ', order: 2, isSystem: true },
+        { type: 'stockin_reason', value: 'adjustment', label: 'Adjustment', labelLao: 'ປັບປຸງ', order: 3, isSystem: true },
+    ];
+    let enumCount = 0;
+    for (const e of DEFAULT_ENUMS) {
+        const existing = await db.query.systemEnums.findFirst({
+            where: (t, { and, eq: eq2 }) => and(eq2(t.type, e.type), eq2(t.value, e.value)),
+        });
+        if (!existing) {
+            await db.insert(systemEnums).values(e);
+            enumCount++;
+        }
+    }
+    console.log(`   ✅ Created ${enumCount} system enums`);
+
+    // 10. Seed menu permissions
+    console.log('🔟  Seeding menu permissions...');
     const existingMenus = await db.query.menuPermissions.findMany();
     if (existingMenus.length === 0) {
         const MENU_STRUCTURE = [
@@ -267,6 +346,7 @@ async function seed(): Promise<void> {
 
     console.log('\n✅ Seed completed successfully!\n');
     console.log('📋 Summary:');
+    console.log(`   Tenant:     ${defaultTenant.name} (${defaultTenant.code})`);
     console.log(`   Branch:     ${defaultBranch.name} (${defaultBranch.code})`);
     console.log(`   Store:      ${defaultStore.name}`);
     console.log(`   Roles:      ${DEFAULT_ROLES.length}`);

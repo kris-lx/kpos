@@ -25,6 +25,7 @@
         Monitor,
         X,
         Clock,
+        Pause,
     } from "lucide-svelte";
 
     let { children } = $props();
@@ -41,6 +42,7 @@
     let notifications = $state<Array<{id: string; title: string; message: string; time: string; read: boolean; type: string}>>([]);
     let unreadCount = $state(0);
     let pendingRequestsCount = $state(0);
+    let heldSalesCount = $state(0);
 
     // Shift enforcement
     const SHIFT_REQUIRED_ROLES = ['cashier', 'store_manager', 'branch_admin', 'inventory_staff', 'waiter', 'kitchen_staff'];
@@ -97,6 +99,15 @@
         }
     }
 
+    async function loadHeldSalesCount() {
+        try {
+            const res = await api.get('sales/held?limit=1').json<any>();
+            heldSalesCount = res.pagination?.total || res.data?.length || 0;
+        } catch {
+            // non-critical
+        }
+    }
+
     async function loadPendingRequests() {
         const user = auth.user;
         if (!user) return;
@@ -132,11 +143,18 @@
             return;
         }
 
+        // Ensure rules are loaded (safety net for first login or cleared localStorage cache)
+        if (auth.userRules.length === 0) {
+            auth.loadRules();
+        }
+
         // Load notifications from API
         loadNotifications();
         loadPendingRequests();
-        // Auto-refresh notifications every 60 seconds
+        loadHeldSalesCount();
+        // Auto-refresh notifications every 60 seconds, held sales every 15s
         const notifInterval = setInterval(() => { loadNotifications(); loadPendingRequests(); }, 60 * 1000);
+        const heldInterval = setInterval(loadHeldSalesCount, 15 * 1000);
 
         // Check if user needs to clock in
         checkActiveShift();
@@ -160,7 +178,7 @@
             }
         });
 
-        return () => clearInterval(notifInterval);
+        return () => { clearInterval(notifInterval); clearInterval(heldInterval); };
     });
 
     function handleLogout() {
@@ -305,6 +323,42 @@
                 <!-- Store Selector -->
                 {#if auth.accessibleStores.length > 0}
                     <StoreSelector />
+                {/if}
+
+                <!-- Held Sales Badge -->
+                {#if heldSalesCount > 0}
+                    <a
+                        href="/pos/held"
+                        class="hidden md:flex items-center gap-2 px-3 py-1.5 bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 rounded-lg hover:bg-orange-100 dark:hover:bg-orange-900/40 transition-colors"
+                        title="{heldSalesCount} ບິນຄ້າງ"
+                    >
+                        <Pause class="w-3.5 h-3.5 text-orange-600 dark:text-orange-400" />
+                        <span class="text-xs font-medium text-orange-700 dark:text-orange-400">ບິນຄ້າງ</span>
+                        <span class="min-w-5 h-5 px-1 bg-orange-500 text-white text-xs font-bold rounded-full flex items-center justify-center">
+                            {heldSalesCount}
+                        </span>
+                    </a>
+                {/if}
+
+                <!-- Shift Status Indicator -->
+                {#if shiftCheckDone && SHIFT_REQUIRED_ROLES.includes(auth.user?.role || '')}
+                    {#if currentShift}
+                        <div class="hidden md:flex items-center gap-2 px-3 py-1.5 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg">
+                            <span class="relative flex h-2.5 w-2.5">
+                                <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                                <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-green-500"></span>
+                            </span>
+                            <span class="text-xs font-medium text-green-700 dark:text-green-400">ກຳລັງເຮັດວຽກ</span>
+                        </div>
+                    {:else}
+                        <button
+                            onclick={clockIn}
+                            class="hidden md:flex items-center gap-2 px-3 py-1.5 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg hover:bg-amber-100 dark:hover:bg-amber-900/40 transition-colors"
+                        >
+                            <Clock class="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                            <span class="text-xs font-medium text-amber-700 dark:text-amber-400">ເຂົ້າກະ</span>
+                        </button>
+                    {/if}
                 {/if}
             </div>
 

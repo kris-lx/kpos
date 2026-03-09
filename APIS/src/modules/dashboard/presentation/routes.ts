@@ -5,7 +5,7 @@
 import { Router } from 'express';
 import { authenticate, branchFilter, buildScopeCondition, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { queryCache } from '@/infrastructure/http/middleware/cache.middleware';
-import { db } from '@/config/database.config';
+import { db, dbRead } from '@/config/database.config';
 import { transactions, products, customers, inventory, transactionItems } from '@/db/schema/tables';
 import { eq, and, gte, lt, lte, inArray, asc, desc, count, sum, sql } from 'drizzle-orm';
 
@@ -24,7 +24,7 @@ function branchAccessCheck(filter: ScopeFilter | undefined, branchIdParam: strin
 dashboardRoutes.get('/stats', authenticate, branchFilter(), queryCache(30, 'dashboard'), async (req, res, next) => {
     try {
         const { branchId } = req.query;
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const filter = req.branchFilter;
         const today = new Date();
         today.setHours(0, 0, 0, 0);
         const tomorrow = new Date(today);
@@ -33,25 +33,31 @@ dashboardRoutes.get('/stats', authenticate, branchFilter(), queryCache(30, 'dash
         const check = branchAccessCheck(filter, branchId as string, res);
         if (!check.ok) return;
 
+        // BE-76: Tenant isolation
+        const tenantId = req.authUser?.tenantId;
+
         // Transaction conditions
-        const txConds = [
+        const txConds: any[] = [
             gte(transactions.createdAt, today),
             lt(transactions.createdAt, tomorrow),
             eq(transactions.status, 'COMPLETED'),
             eq(transactions.type, 'SALE'),
         ];
+        if (tenantId && !req.authUser?.isSuperAdmin) txConds.push(eq(transactions.tenantId, tenantId));
         const txScope = buildScopeCondition(filter, { storeId: transactions.storeId, branchId: transactions.branchId }, 'storeId');
         if (txScope) txConds.push(txScope);
         if (branchId) txConds.push(eq(transactions.branchId, String(branchId)));
         const txWhere = and(...txConds);
 
         // Product conditions
-        const prodConds = [eq(products.isActive, true)];
+        const prodConds: any[] = [eq(products.isActive, true)];
+        if (tenantId && !req.authUser?.isSuperAdmin) prodConds.push(eq(products.tenantId, tenantId));
         const prodScope = buildScopeCondition(filter, { branchId: products.branchId }, 'branchId');
         if (prodScope) prodConds.push(prodScope);
 
         // Customer conditions
-        const custConds = [eq(customers.isActive, true)];
+        const custConds: any[] = [eq(customers.isActive, true)];
+        if (tenantId && !req.authUser?.isSuperAdmin) custConds.push(eq(customers.tenantId, tenantId));
         const custScope = buildScopeCondition(filter, { storeId: customers.storeId, branchId: customers.branchId }, 'storeId');
         if (custScope) custConds.push(custScope);
 
@@ -66,10 +72,10 @@ dashboardRoutes.get('/stats', authenticate, branchFilter(), queryCache(30, 'dash
             [{ value: totalCustomers }],
             [{ value: lowStockCount }],
         ] = await Promise.all([
-            db.select({ salesSum: sum(transactions.total), orderCount: count() }).from(transactions).where(txWhere),
-            db.select({ value: count() }).from(products).where(and(...prodConds)),
-            db.select({ value: count() }).from(customers).where(and(...custConds)),
-            db.select({ value: count() }).from(inventory).where(and(...invConds)),
+            dbRead.select({ salesSum: sum(transactions.total), orderCount: count() }).from(transactions).where(txWhere),
+            dbRead.select({ value: count() }).from(products).where(and(...prodConds)),
+            dbRead.select({ value: count() }).from(customers).where(and(...custConds)),
+            dbRead.select({ value: count() }).from(inventory).where(and(...invConds)),
         ]);
 
         const todaySalesNum = Number(salesSum) || 0;
@@ -96,7 +102,7 @@ dashboardRoutes.get('/stats', authenticate, branchFilter(), queryCache(30, 'dash
 dashboardRoutes.get('/low-stock', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { branchId } = req.query;
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const filter = req.branchFilter;
 
         const check = branchAccessCheck(filter, branchId as string, res);
         if (!check.ok) return;
@@ -107,11 +113,11 @@ dashboardRoutes.get('/low-stock', authenticate, branchFilter(), async (req, res,
         if (branchId) {
             conditions.push(eq(inventory.branchId, String(branchId)));
         } else if (!filter) {
-            const authUser = (req as any).authUser;
+            const authUser = req.authUser;
             if (authUser?.activeBranchId) conditions.push(eq(inventory.branchId, authUser.activeBranchId));
         }
 
-        const lowStockItems = await db.query.inventory.findMany({
+        const lowStockItems = await dbRead.query.inventory.findMany({
             where: and(...conditions),
             with: { product: true },
             limit: 10,
@@ -137,7 +143,7 @@ dashboardRoutes.get('/low-stock', authenticate, branchFilter(), async (req, res,
 dashboardRoutes.get('/sales-chart', authenticate, branchFilter(), queryCache(60, 'dashboard'), async (req, res, next) => {
     try {
         const { branchId, period = '7days' } = req.query;
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const filter = req.branchFilter;
 
         let startDate = new Date();
         switch (period) {
@@ -150,16 +156,19 @@ dashboardRoutes.get('/sales-chart', authenticate, branchFilter(), queryCache(60,
         const check = branchAccessCheck(filter, branchId as string, res);
         if (!check.ok) return;
 
-        const conditions = [
+        const conditions: any[] = [
             gte(transactions.createdAt, startDate),
             eq(transactions.status, 'COMPLETED'),
             eq(transactions.type, 'SALE'),
         ];
+        // BE-76: Tenant isolation
+        const tenantId = req.authUser?.tenantId;
+        if (tenantId && !req.authUser?.isSuperAdmin) conditions.push(eq(transactions.tenantId, tenantId));
         const scope = buildScopeCondition(filter, { storeId: transactions.storeId, branchId: transactions.branchId }, 'storeId');
         if (scope) conditions.push(scope);
         if (branchId) conditions.push(eq(transactions.branchId, String(branchId)));
 
-        const rows = await db.query.transactions.findMany({
+        const rows = await dbRead.query.transactions.findMany({
             where: and(...conditions),
             orderBy: asc(transactions.createdAt),
         });
@@ -183,17 +192,20 @@ dashboardRoutes.get('/sales-chart', authenticate, branchFilter(), queryCache(60,
 dashboardRoutes.get('/recent-transactions', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { branchId, limit = 10 } = req.query;
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const filter = req.branchFilter;
 
         const check = branchAccessCheck(filter, branchId as string, res);
         if (!check.ok) return;
 
         const conditions: any[] = [];
+        // BE-76: Tenant isolation
+        const tenantId = req.authUser?.tenantId;
+        if (tenantId && !req.authUser?.isSuperAdmin) conditions.push(eq(transactions.tenantId, tenantId));
         const scope = buildScopeCondition(filter, { storeId: transactions.storeId, branchId: transactions.branchId }, 'storeId');
         if (scope) conditions.push(scope);
         if (branchId) conditions.push(eq(transactions.branchId, String(branchId)));
 
-        const rows = await db.query.transactions.findMany({
+        const rows = await dbRead.query.transactions.findMany({
             where: conditions.length > 0 ? and(...conditions) : undefined,
             limit: Number(limit),
             orderBy: desc(transactions.createdAt),
@@ -213,23 +225,26 @@ dashboardRoutes.get('/recent-transactions', authenticate, branchFilter(), async 
 dashboardRoutes.get('/top-products', authenticate, branchFilter(), queryCache(60, 'dashboard'), async (req, res, next) => {
     try {
         const { branchId, limit = 5 } = req.query;
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const filter = req.branchFilter;
         const thirtyDaysAgo = new Date();
         thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
         const check = branchAccessCheck(filter, branchId as string, res);
         if (!check.ok) return;
 
-        const conditions = [
+        const conditions: any[] = [
             gte(transactions.createdAt, thirtyDaysAgo),
             eq(transactions.status, 'COMPLETED'),
             eq(transactions.type, 'SALE'),
         ];
+        // BE-76: Tenant isolation
+        const tenantId = req.authUser?.tenantId;
+        if (tenantId && !req.authUser?.isSuperAdmin) conditions.push(eq(transactions.tenantId, tenantId));
         const scope = buildScopeCondition(filter, { storeId: transactions.storeId, branchId: transactions.branchId }, 'storeId');
         if (scope) conditions.push(scope);
         if (branchId) conditions.push(eq(transactions.branchId, String(branchId)));
 
-        const txRows = await db.query.transactions.findMany({
+        const txRows = await dbRead.query.transactions.findMany({
             where: and(...conditions),
             columns: { id: true },
         });
@@ -239,7 +254,7 @@ dashboardRoutes.get('/top-products', authenticate, branchFilter(), queryCache(60
             return res.json({ success: true, data: [] });
         }
 
-        const items = await db.query.transactionItems.findMany({
+        const items = await dbRead.query.transactionItems.findMany({
             where: inArray(transactionItems.transactionId, transactionIds),
         });
 

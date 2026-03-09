@@ -212,12 +212,15 @@
         loadMenuFromApi();
         loadHeldOrdersCount();
         loadPendingCreditCount();
-        // Refresh count every 30 seconds
+        // Refresh count every 10 seconds for near-realtime badges
         const interval = setInterval(() => {
             loadHeldOrdersCount();
             loadPendingCreditCount();
-        }, 30000);
-        return () => clearInterval(interval);
+        }, 10000);
+        // Also refresh on tab focus
+        const onFocus = () => { loadHeldOrdersCount(); loadPendingCreditCount(); };
+        document.addEventListener('visibilitychange', () => { if (!document.hidden) onFocus(); });
+        return () => { clearInterval(interval); };
     });
 
     let menuItems = $state<MenuItem[]>([
@@ -730,7 +733,7 @@
             icon: Building2,
             permission: "staff:view",
             children: [
-                {
+                ...(auth.user?.isSuperAdmin || auth.user?.role === 'admin' ? [{
                     id: "branches",
                     name: "ສາຂາ",
                     nameKey: "nav.branches",
@@ -744,8 +747,8 @@
                     nameKey: "nav.stores",
                     href: "/management/stores",
                     icon: Store,
-                    permission: "branches:view",
-                },
+                    permission: "stores:view",
+                }] : []),
                 {
                     id: "staff",
                     name: "ພະນັກງານ",

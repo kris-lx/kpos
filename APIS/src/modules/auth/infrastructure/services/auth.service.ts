@@ -2,24 +2,42 @@
 // Auth Module - Auth Service (Infrastructure Layer)
 // ═══════════════════════════════════════════════════════════════════════════
 
+import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import argon2 from 'argon2';
 import { db } from '@/config/database.config';
-import { jwtConfig } from '@/config/app.config';
+import { jwtConfig, appConfig } from '@/config/app.config';
 import { cache } from '@/config/redis.config';
 import { DatabaseConnectionError } from '@/shared/domain/errors';
-import { users, storeRequests, roles, branches } from '@/db/schema/tables';
+import { users, storeRequests, roles, branches, sessions } from '@/db/schema/tables';
 import { eq, and } from 'drizzle-orm';
 import type { RegisterInput } from '../../application/dtos/auth.dto';
+import type { Response } from 'express';
 
 export { DatabaseConnectionError } from '@/shared/domain/errors';
+
+// ─── Interfaces ──────────────────────────────────────────────────────────
+
+/** Identity-only JWT payload — no role/permissions (BE-02) */
+export interface IdentityJwtPayload {
+    sub: string;   // userId
+    tid: string;   // tenantId
+    bid: string;   // branchId
+    scope: string; // 'tenant' | 'platform'
+    jti: string;   // unique token id for revocation
+    iat: number;
+    exp: number;
+}
 
 export interface TokenPair {
     accessToken: string;
     refreshToken: string;
+    jti: string;
 }
 
-export interface LoginResponse extends TokenPair {
+/** Login response — NO permissions[], NO refreshToken in body (BE-03, BE-04) */
+export interface LoginResponse {
+    accessToken: string;
     user: {
         id: string;
         email: string;
@@ -28,7 +46,6 @@ export interface LoginResponse extends TokenPair {
         branchId: string;
         tenantId: string;
         isSuperAdmin: boolean;
-        permissions: string[];
     };
 }
 
@@ -39,8 +56,54 @@ export interface RegisterResponse {
     role: string;
 }
 
+// ─── Cookie helpers ──────────────────────────────────────────────────────
+
+const REFRESH_COOKIE_NAME = 'kpos_refresh_token';
+const REFRESH_COOKIE_MAX_AGE = 7 * 24 * 60 * 60 * 1000; // 7 days in ms
+
+/** Set refresh token as HttpOnly cookie (BE-04) */
+function setRefreshCookie(res: Response, refreshToken: string): void {
+    res.cookie(REFRESH_COOKIE_NAME, refreshToken, {
+        httpOnly: true,
+        secure: appConfig.isProduction,
+        sameSite: 'strict',
+        path: '/api/v1/auth',
+        maxAge: REFRESH_COOKIE_MAX_AGE,
+    });
+}
+
+/** Clear refresh cookie on logout */
+function clearRefreshCookie(res: Response): void {
+    res.clearCookie(REFRESH_COOKIE_NAME, {
+        httpOnly: true,
+        secure: appConfig.isProduction,
+        sameSite: 'strict',
+        path: '/api/v1/auth',
+    });
+}
+
+// ─── Helper: parse remaining TTL from a JWT exp ─────────────────────────
+
+function remainingTTL(token: string): number {
+    try {
+        const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString());
+        return Math.max(0, payload.exp - Math.floor(Date.now() / 1000));
+    } catch {
+        return 900; // fallback 15min
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Auth Service
+// ═══════════════════════════════════════════════════════════════════════════
+
 export class AuthService {
-    async login(email: string, password: string): Promise<LoginResponse> {
+
+    /**
+     * Login: authenticate, issue identity-only JWT, set refresh cookie (BE-02..04)
+     * @param res - Express Response for setting HttpOnly cookie
+     */
+    async login(email: string, password: string, res?: Response): Promise<LoginResponse> {
         console.log(`[Auth] Login attempt for: ${email.toLowerCase()}`);
 
         let user;
@@ -99,46 +162,47 @@ export class AuthService {
             console.warn('[Auth] Failed to update lastLoginAt:', error instanceof Error ? error.message : error);
         }
 
-        const tokens = this.generateTokens(user.id, user.email, user.role, user.branchId!, user.tenantId || '');
+        const scope = user.isSuperAdmin ? 'platform' : 'tenant';
+        const tokens = this.generateTokens(user.id, user.branchId || '', user.tenantId || '', scope);
 
-        // Store refresh token in Redis
-        await this.storeRefreshToken(user.id, tokens.refreshToken);
+        // Store refresh jti → userId mapping in Redis (BE-05)
+        await this.storeRefreshJti(tokens.jti, user.id);
 
-        // Combine role permissions with user-specific permissions
-        const rolePermissions = user.roleRelation?.permissions || [];
-        const userPermissions = user.permissions || [];
-        const combinedPermissions = [...new Set([...rolePermissions, ...userPermissions])];
+        // Persist session in DB with jti
+        try {
+            await db.insert(sessions).values({
+                userId: user.id,
+                jti: tokens.jti,
+                token: tokens.accessToken,
+                refreshToken: tokens.refreshToken,
+                expiresAt: new Date(Date.now() + REFRESH_COOKIE_MAX_AGE),
+            });
+        } catch (error) {
+            console.warn('[Auth] Failed to persist session:', error instanceof Error ? error.message : error);
+        }
 
+        // Set refresh token as HttpOnly cookie (BE-04)
+        if (res) {
+            setRefreshCookie(res, tokens.refreshToken);
+        }
+
+        // BE-03: No permissions in response, no refreshToken in body
         return {
-            ...tokens,
+            accessToken: tokens.accessToken,
             user: {
                 id: user.id,
                 email: user.email,
                 name: user.name,
                 role: user.role,
-                branchId: user.branchId!,
+                branchId: user.branchId || '',
                 tenantId: user.tenantId || '',
                 isSuperAdmin: user.isSuperAdmin || false,
-                permissions: combinedPermissions,
             },
         };
     }
 
+    /** Register with tenant-scoped email uniqueness (BE-09) */
     async register(input: RegisterInput): Promise<RegisterResponse> {
-        const existingUser = await db.query.users.findFirst({
-            where: eq(users.email, input.email.toLowerCase()),
-        });
-
-        if (existingUser) {
-            throw new Error('Email already registered');
-        }
-
-        const hashedPassword = await argon2.hash(input.password);
-
-        // Look up the Role record to link roleId
-        const roleName = input.role || 'store_owner';
-        const roleRecord = await db.query.roles.findFirst({ where: eq(roles.name, roleName) });
-
         // Resolve branchId: use provided or fallback to default main branch
         let branchId = input.branchId;
         if (!branchId) {
@@ -149,7 +213,35 @@ export class AuthService {
             branchId = mainBranch.id;
         }
 
+        // Resolve tenantId from branch
+        const branchRecord = await db.query.branches.findFirst({ where: eq(branches.id, branchId), columns: { tenantId: true } });
+        const tenantId = branchRecord?.tenantId || null;
+
+        // BE-09: Check UNIQUE(tenantId, email) not global email unique
+        if (tenantId) {
+            const existingUser = await db.query.users.findFirst({
+                where: and(eq(users.tenantId, tenantId), eq(users.email, input.email.toLowerCase())),
+            });
+            if (existingUser) {
+                throw new Error('Email already registered');
+            }
+        } else {
+            const existingUser = await db.query.users.findFirst({
+                where: eq(users.email, input.email.toLowerCase()),
+            });
+            if (existingUser) {
+                throw new Error('Email already registered');
+            }
+        }
+
+        const hashedPassword = await argon2.hash(input.password);
+
+        // Look up the Role record to link roleId
+        const roleName = input.role || 'store_owner';
+        const roleRecord = await db.query.roles.findFirst({ where: eq(roles.name, roleName) });
+
         const [user] = await db.insert(users).values({
+            tenantId,
             email: input.email.toLowerCase(),
             password: hashedPassword,
             name: input.name,
@@ -168,51 +260,100 @@ export class AuthService {
         };
     }
 
-    async refreshToken(token: string): Promise<TokenPair> {
+    /**
+     * Refresh token: accept from cookie, verify jti in Redis, issue new pair (BE-06)
+     * @param token - refresh token from HttpOnly cookie
+     * @param res - Express Response for setting new HttpOnly cookie
+     */
+    async refreshToken(token: string, res?: Response): Promise<{ accessToken: string }> {
         try {
-            const decoded = jwt.verify(token, jwtConfig.refreshSecret) as {
-                userId: string;
-                email: string;
-                role: string;
-                branchId: string;
-                tenantId: string;
-            };
+            const decoded = jwt.verify(token, jwtConfig.refreshSecret) as IdentityJwtPayload;
 
-            // Verify token exists in cache (Redis or in-memory fallback)
-            const storedToken = await cache.get<string>(`refresh_token:${decoded.userId}`);
-            if (!storedToken || storedToken !== token) {
+            // Verify jti exists in Redis (BE-06)
+            const storedUserId = await cache.get<string>(`refresh_jti:${decoded.jti}`);
+            if (!storedUserId || storedUserId !== decoded.sub) {
                 throw new Error('Invalid refresh token');
             }
 
-            const tokens = this.generateTokens(
-                decoded.userId,
-                decoded.email,
-                decoded.role,
-                decoded.branchId,
-                decoded.tenantId || ''
-            );
+            // Revoke old jti
+            await cache.del(`refresh_jti:${decoded.jti}`);
 
-            // Update refresh token in Redis
-            await this.storeRefreshToken(decoded.userId, tokens.refreshToken);
+            // Issue new pair with new jti
+            const tokens = this.generateTokens(decoded.sub, decoded.bid, decoded.tid, decoded.scope);
 
-            return tokens;
+            // Store new refresh jti
+            await this.storeRefreshJti(tokens.jti, decoded.sub);
+
+            // Update session in DB
+            try {
+                await db.update(sessions)
+                    .set({ token: tokens.accessToken, refreshToken: tokens.refreshToken, jti: tokens.jti })
+                    .where(eq(sessions.jti, decoded.jti));
+            } catch (error) {
+                console.warn('[Auth] Failed to update session:', error instanceof Error ? error.message : error);
+            }
+
+            // Set new refresh cookie
+            if (res) {
+                setRefreshCookie(res, tokens.refreshToken);
+            }
+
+            return { accessToken: tokens.accessToken };
         } catch (error) {
             throw new Error('Invalid refresh token');
         }
     }
 
-    async logout(userId: string): Promise<void> {
+    /**
+     * Logout: revoke access token jti in Redis, clear refresh cookie (BE-07)
+     * @param accessToken - the current access token to extract jti from
+     * @param userId - user ID for backward compat
+     * @param res - Express Response for clearing cookie
+     */
+    async logout(accessToken: string | undefined, userId: string, res?: Response): Promise<void> {
+        // Revoke access token jti (BE-07)
+        if (accessToken) {
+            try {
+                const decoded = jwt.decode(accessToken) as IdentityJwtPayload | null;
+                if (decoded?.jti) {
+                    const ttl = remainingTTL(accessToken);
+                    if (ttl > 0) {
+                        await cache.set(`revoked:${decoded.jti}`, '1', ttl);
+                    }
+                    // Also revoke refresh jti
+                    await cache.del(`refresh_jti:${decoded.jti}`);
+                    // Mark session as revoked in DB
+                    try {
+                        await db.update(sessions)
+                            .set({ revokedAt: new Date() })
+                            .where(eq(sessions.jti, decoded.jti));
+                    } catch { /* non-critical */ }
+                }
+            } catch { /* decode failure is non-critical */ }
+        }
+
+        // Legacy cleanup
         await cache.del(`refresh_token:${userId}`);
+
+        // Clear refresh cookie
+        if (res) {
+            clearRefreshCookie(res);
+        }
     }
 
+    /**
+     * Generate identity-only JWT tokens (BE-02)
+     * Payload: { sub, tid, bid, scope, jti }  — NO email, role, permissions
+     */
     private generateTokens(
         userId: string,
-        email: string,
-        role: string,
         branchId: string,
-        tenantId: string
+        tenantId: string,
+        scope: string,
     ): TokenPair {
-        const payload = { userId, email, role, branchId, tenantId };
+        const jti = crypto.randomUUID();
+
+        const payload = { sub: userId, tid: tenantId, bid: branchId, scope, jti };
 
         const accessToken = jwt.sign(payload, jwtConfig.secret, {
             expiresIn: jwtConfig.expiresIn as jwt.SignOptions['expiresIn'],
@@ -222,13 +363,17 @@ export class AuthService {
             expiresIn: jwtConfig.refreshExpiresIn as jwt.SignOptions['expiresIn'],
         });
 
-        return { accessToken, refreshToken };
+        return { accessToken, refreshToken, jti };
     }
 
-    private async storeRefreshToken(userId: string, token: string): Promise<void> {
+    /** Store refresh jti → userId mapping in Redis (BE-05) */
+    private async storeRefreshJti(jti: string, userId: string): Promise<void> {
         // Store for 7 days (matching refresh token expiry)
-        await cache.set(`refresh_token:${userId}`, token, 7 * 24 * 60 * 60);
+        await cache.set(`refresh_jti:${jti}`, userId, 7 * 24 * 60 * 60);
     }
 }
 
 export const authService = new AuthService();
+
+// Re-export cookie name for use in auth routes
+export { REFRESH_COOKIE_NAME };

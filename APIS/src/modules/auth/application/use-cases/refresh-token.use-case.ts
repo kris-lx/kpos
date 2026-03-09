@@ -4,12 +4,16 @@
 
 import type { IUseCase } from '@/shared/application';
 import { Result } from '@/shared/domain';
-import type { RefreshTokenInput } from '../dtos/auth.dto';
 import { AuthService } from '../../infrastructure/services/auth.service';
+import type { Response } from 'express';
 
 export interface RefreshTokenResult {
     accessToken: string;
+}
+
+export interface RefreshTokenInput {
     refreshToken: string;
+    res?: Response;
 }
 
 export class RefreshTokenUseCase implements IUseCase<RefreshTokenInput, RefreshTokenResult> {
@@ -17,7 +21,7 @@ export class RefreshTokenUseCase implements IUseCase<RefreshTokenInput, RefreshT
 
     async execute(input: RefreshTokenInput): Promise<Result<RefreshTokenResult>> {
         try {
-            const result = await this.authService.refreshToken(input.refreshToken);
+            const result = await this.authService.refreshToken(input.refreshToken, input.res);
             return Result.ok(result);
         } catch (error) {
             const err = error instanceof Error ? error : new Error('Token refresh failed');

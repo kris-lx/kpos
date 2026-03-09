@@ -4,8 +4,8 @@
 
 import { Router } from 'express';
 import { authenticate, authorize, branchFilter, applyScopeFilter, ensureScopeAccess, buildScopeCondition, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
-import { db } from '@/config/database.config';
-import { products, categories, priceLevels, productPriceLevels, skuVariants, inventory } from '@/db/schema/tables';
+import { db, dbRead } from '@/config/database.config';
+import { products, categories, priceLevels, productPriceLevels, skuVariants, inventory, productStores } from '@/db/schema/tables';
 import { eq, and, or, ne, ilike, inArray, isNotNull, isNull, desc, asc, count, sql } from 'drizzle-orm';
 
 export const productRoutes = Router();
@@ -15,15 +15,28 @@ export const productRoutes = Router();
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all price levels
-productRoutes.get('/price-levels', authenticate, async (req, res, next) => {
+productRoutes.get('/price-levels', authenticate, branchFilter(), async (req, res, next) => {
     try {
+        const filter = req.branchFilter;
+        const conditions: any[] = [];
+
+        // Tenant isolation
+        if (filter?.tenantId) {
+            conditions.push(eq(priceLevels.tenantId, filter.tenantId));
+        }
+
         const priceLevelRows = await db.query.priceLevels.findMany({
+            where: conditions.length > 0 ? and(...conditions) : undefined,
             with: { products: { with: { product: { columns: { id: true, name: true, sku: true, price: true } } } } },
             orderBy: [desc(priceLevels.isDefault), asc(priceLevels.createdAt)],
         });
 
         res.json({ success: true, data: priceLevelRows });
-    } catch (error) {
+    } catch (error: any) {
+        // If table doesn't exist yet (schema not pushed), return empty
+        if (error?.message?.includes('relation') && error?.message?.includes('does not exist')) {
+            return res.json({ success: true, data: [] });
+        }
         next(error);
     }
 });
@@ -31,14 +44,21 @@ productRoutes.get('/price-levels', authenticate, async (req, res, next) => {
 // Get price level by ID
 productRoutes.get('/price-levels/:id', authenticate, async (req, res, next) => {
     try {
+        const tenantId = req.authUser?.tenantId;
         const priceLevel = await db.query.priceLevels.findFirst({
-            where: eq(priceLevels.id, req.params.id),
+            where: tenantId
+                ? and(eq(priceLevels.id, req.params.id), eq(priceLevels.tenantId, tenantId))
+                : eq(priceLevels.id, req.params.id),
             with: { products: { with: { product: { columns: { id: true, name: true, sku: true, price: true } } } } },
         });
 
         if (!priceLevel) {
             res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Price level not found' } });
             return;
+        }
+
+        if (!ensureScopeAccess(priceLevel, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this price level' } });
         }
 
         res.json({ success: true, data: priceLevel });
@@ -52,12 +72,16 @@ productRoutes.post('/price-levels', authenticate, authorize('products:create'), 
     try {
         const { name, description, isDefault } = req.body;
 
-        // If setting as default, unset current default first
-        if (isDefault) {
-            await db.update(priceLevels).set({ isDefault: false }).where(eq(priceLevels.isDefault, true));
-        }
+        const plTenantId = req.authUser?.tenantId || req.user?.tenantId;
 
+        // If setting as default, unset current default first (scoped to tenant)
+        if (isDefault) {
+            const unsetConds: any[] = [eq(priceLevels.isDefault, true)];
+            if (plTenantId) unsetConds.push(eq(priceLevels.tenantId, plTenantId));
+            await db.update(priceLevels).set({ isDefault: false }).where(and(...unsetConds));
+        }
         const [priceLevel] = await db.insert(priceLevels).values({
+            tenantId: plTenantId,
             name,
             description: description || null,
             isDefault: isDefault || false,
@@ -79,11 +103,15 @@ productRoutes.put('/price-levels/:id', authenticate, authorize('products:update'
             await db.update(priceLevels).set({ isDefault: false }).where(and(eq(priceLevels.isDefault, true), ne(priceLevels.id, req.params.id)));
         }
 
+        const tenantId = req.authUser?.tenantId;
+        const updateConds: any[] = [eq(priceLevels.id, req.params.id)];
+        if (tenantId) updateConds.push(eq(priceLevels.tenantId, tenantId));
+
         const [priceLevel] = await db.update(priceLevels).set({
             name,
             description: description || null,
             isDefault: isDefault || false,
-        }).where(eq(priceLevels.id, req.params.id)).returning();
+        }).where(and(...updateConds)).returning();
 
         res.json({ success: true, data: priceLevel });
     } catch (error) {
@@ -94,9 +122,14 @@ productRoutes.put('/price-levels/:id', authenticate, authorize('products:update'
 // Set price level as default
 productRoutes.put('/price-levels/:id/set-default', authenticate, authorize('products:update'), async (req, res, next) => {
     try {
-        await db.update(priceLevels).set({ isDefault: false }).where(eq(priceLevels.isDefault, true));
+        const tenantId = req.authUser?.tenantId;
+        const tenantConds: any[] = [eq(priceLevels.isDefault, true)];
+        if (tenantId) tenantConds.push(eq(priceLevels.tenantId, tenantId));
+        await db.update(priceLevels).set({ isDefault: false }).where(and(...tenantConds));
 
-        const [priceLevel] = await db.update(priceLevels).set({ isDefault: true }).where(eq(priceLevels.id, req.params.id)).returning();
+        const setConds: any[] = [eq(priceLevels.id, req.params.id)];
+        if (tenantId) setConds.push(eq(priceLevels.tenantId, tenantId));
+        const [priceLevel] = await db.update(priceLevels).set({ isDefault: true }).where(and(...setConds)).returning();
 
         res.json({ success: true, data: priceLevel });
     } catch (error) {
@@ -107,8 +140,13 @@ productRoutes.put('/price-levels/:id/set-default', authenticate, authorize('prod
 // Delete price level
 productRoutes.delete('/price-levels/:id', authenticate, authorize('products:delete'), async (req, res, next) => {
     try {
-        // Check if it's the default
-        const priceLevel = await db.query.priceLevels.findFirst({ where: eq(priceLevels.id, req.params.id) });
+        // Check if it's the default (tenant-scoped)
+        const tenantId = req.authUser?.tenantId;
+        const priceLevel = await db.query.priceLevels.findFirst({
+            where: tenantId
+                ? and(eq(priceLevels.id, req.params.id), eq(priceLevels.tenantId, tenantId))
+                : eq(priceLevels.id, req.params.id),
+        });
 
         if (priceLevel?.isDefault) {
             res.status(400).json({ success: false, error: { code: 'BUSINESS_001', message: 'Cannot delete default price level' } });
@@ -176,15 +214,50 @@ productRoutes.delete('/price-levels/prices/:id', authenticate, authorize('produc
 // SKU VARIANT ROUTES (Must be before /:id to avoid conflicts)
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Get all SKU variants with pagination
-productRoutes.get('/skus', authenticate, async (req, res, next) => {
+// Get all SKU variants with pagination (scoped to user's branches)
+productRoutes.get('/skus', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { productId, search, status, page = '1', limit = '20' } = req.query;
         const pageNum = Math.max(1, parseInt(String(page), 10) || 1);
         const limitNum = Math.min(100, Math.max(1, parseInt(String(limit), 10) || 20));
         const skip = (pageNum - 1) * limitNum;
+        const filter = req.branchFilter;
         
         const skuConds: any[] = [];
+
+        // Scope SKU variants to user's accessible products
+        if (filter?.scopeByStore && filter.storeIds.length > 0) {
+            // Get product IDs mapped to their stores
+            const storeProds = await db.query.productStores.findMany({
+                where: inArray(productStores.storeId, filter.storeIds),
+                columns: { productId: true }
+            });
+            const scopedProductIds = storeProds.map(sp => sp.productId);
+
+            if (scopedProductIds.length > 0) {
+                skuConds.push(inArray(skuVariants.productId, scopedProductIds));
+            } else {
+                skuConds.push(sql`1 = 0`); // Force empty if no products
+            }
+        } else if (filter) {
+            // Branch scoped users (e.g. branch admins) need to filter by product's branchId
+            if (filter.branchIds.length > 0) {
+                const branchProds = await db.query.products.findMany({
+                    where: inArray(products.branchId, filter.branchIds),
+                    columns: { id: true }
+                });
+                const branchProdIds = branchProds.map(p => p.id);
+                if (branchProdIds.length > 0) {
+                    skuConds.push(inArray(skuVariants.productId, branchProdIds));
+                } else {
+                    skuConds.push(sql`1 = 0`);
+                }
+            } else if (filter.tenantId) {
+                // Tenant fallback
+                skuConds.push(eq(skuVariants.tenantId, filter.tenantId));
+            }
+        }
+
         if (productId) skuConds.push(eq(skuVariants.productId, String(productId)));
         if (status === 'active') skuConds.push(eq(skuVariants.isActive, true));
         if (status === 'inactive') skuConds.push(eq(skuVariants.isActive, false));
@@ -259,6 +332,10 @@ productRoutes.get('/skus/:id', authenticate, async (req, res, next) => {
         if (!skuVariant) {
             res.status(404).json({ success: false, error: { code: 'RES_001', message: 'SKU variant not found' } });
             return;
+        }
+
+        if (!ensureScopeAccess(skuVariant, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this SKU variant' } });
         }
 
         res.json({ success: true, data: skuVariant });
@@ -489,6 +566,11 @@ productRoutes.get('/barcodes', authenticate, async (req, res, next) => {
 productRoutes.get('/lookup/:code', authenticate, async (req, res, next) => {
     try {
         const lookupConds: any[] = [or(eq(products.barcode, req.params.code), eq(products.sku, req.params.code)), eq(products.isActive, true)];
+        // BE-32: Tenant isolation on lookup
+        const tenantId = req.authUser?.tenantId;
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            lookupConds.push(eq(products.tenantId, tenantId));
+        }
         const branchIds = req.authUser?.accessibleBranchIds || [];
         if (branchIds.length > 0 && !req.authUser?.isSuperAdmin && req.authUser?.role !== 'admin') {
             lookupConds.push(inArray(products.branchId, branchIds));
@@ -519,11 +601,32 @@ productRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { page = 1, limit = 20, search, categoryId, branchId, storeId } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const filter = req.branchFilter;
 
         const prodConds: any[] = [eq(products.isActive, true)];
-        const prodScope = buildScopeCondition(filter, { branchId: products.branchId }, 'branchId');
-        if (prodScope) prodConds.push(prodScope);
+        
+        if (filter?.scopeByStore && filter.storeIds.length > 0) {
+            // If user is scoped by store, show ONLY products explicitly mapped to their store
+            const storeProds = await db.query.productStores.findMany({
+                where: inArray(productStores.storeId, filter.storeIds),
+                columns: { productId: true }
+            });
+            const scopedProductIds = storeProds.map(sp => sp.productId);
+            
+            if (scopedProductIds.length > 0) {
+                prodConds.push(inArray(products.id, scopedProductIds));
+            } else {
+                prodConds.push(sql`1 = 0`); // Force empty result if no products mapped to this store
+            }
+        } else if (filter) {
+            // Non-store-scoped but branch-scoped (e.g., branch_admin)
+            if (filter.branchIds.length > 0) {
+                prodConds.push(inArray(products.branchId, filter.branchIds));
+            } else if (filter.tenantId) {
+                // Only fallback to raw tenant isolation if they literally have no branch scope
+                prodConds.push(eq(products.tenantId, filter.tenantId));
+            }
+        }
 
         if (branchId) {
             if (filter && !filter.branchIds.includes(String(branchId))) {
@@ -572,9 +675,18 @@ productRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
 });
 
 // Create product
-productRoutes.post('/', authenticate, authorize('products:create'), async (req, res, next) => {
+productRoutes.post('/', authenticate, branchFilter(), authorize('products:create'), async (req, res, next) => {
     try {
         const { stock, minStock, ...productData } = req.body;
+        
+        // Ensure tenant scoping
+        if (!productData.tenantId) {
+            productData.tenantId = req.authUser?.tenantId || req.user?.tenantId;
+        }
+        
+        // Ensure array columns are always arrays (prevent PgArray value.map error)
+        if (productData.images !== undefined) productData.images = Array.isArray(productData.images) ? productData.images : [];
+        if (productData.tags !== undefined) productData.tags = Array.isArray(productData.tags) ? productData.tags : [];
         
         // Get user's branchId from auth context (NOT from any random branch)
         if (!productData.branchId) {
@@ -594,9 +706,12 @@ productRoutes.post('/', authenticate, authorize('products:create'), async (req, 
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
         }
         
-        // Handle empty categoryId
+        // Handle empty categoryId and vendorId
         if (productData.categoryId === '' || productData.categoryId === null) {
             delete productData.categoryId;
+        }
+        if (productData.vendorId === '' || productData.vendorId === null) {
+            delete productData.vendorId;
         }
         
         // Handle empty sku and barcode - convert to null for unique constraint
@@ -621,6 +736,20 @@ productRoutes.post('/', authenticate, authorize('products:create'), async (req, 
                 branchId: productData.branchId,
                 quantity: stock,
                 available: stock,
+            });
+        }
+
+        // Map product to active store if user is scoped by store
+        const filter = req.branchFilter;
+        const targetStoreId = filter?.activeStoreId || filter?.storeIds?.[0];
+        if (filter?.scopeByStore && targetStoreId) {
+            await db.insert(productStores).values({
+                productId: product.id,
+                storeId: targetStoreId,
+                price: product.price,
+                stock: stock || 0,
+                minStock: product.lowStockThreshold,
+                isActive: true
             });
         }
 
@@ -658,13 +787,20 @@ productRoutes.post('/', authenticate, authorize('products:create'), async (req, 
 // Get product by ID (MUST BE AFTER ALL SPECIFIC ROUTES)
 productRoutes.get('/:id', authenticate, async (req, res, next) => {
     try {
+        // BE-32: Tenant-scoped lookup — prevents cross-tenant ID guessing
+        const tenantId = req.authUser?.tenantId;
+        const getConds: any[] = [eq(products.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            getConds.push(eq(products.tenantId, tenantId));
+        }
+
         const product = await db.query.products.findFirst({
-            where: eq(products.id, req.params.id),
+            where: and(...getConds),
             with: { category: true, inventory: true },
         });
 
         if (!product) {
-            res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Product not found' } });
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Product not found or no access' } });
             return;
         }
 
@@ -685,9 +821,26 @@ productRoutes.get('/:id', authenticate, async (req, res, next) => {
 // Get all products with barcodes (for barcode page listing)
 productRoutes.get('/barcodes', authenticate, branchFilter(), async (req, res, next) => {
     try {
-        const filter = (req as any).branchFilter;
+        const filter = req.branchFilter;
         const conds: any[] = [isNotNull(products.barcode)];
-        if (filter?.branchIds?.length) conds.push(inArray(products.branchId, filter.branchIds));
+        
+        if (filter?.scopeByStore && filter.storeIds.length > 0) {
+            // Get product IDs mapped to their stores
+            const storeProds = await db.query.productStores.findMany({
+                where: inArray(productStores.storeId, filter.storeIds),
+                columns: { productId: true }
+            });
+            const scopedProductIds = storeProds.map(sp => sp.productId);
+
+            if (scopedProductIds.length > 0) {
+                conds.push(inArray(products.id, scopedProductIds));
+            } else {
+                conds.push(sql`1 = 0`); // Force empty if no products
+            }
+        } else if (filter) {
+            if (filter.branchIds.length > 0) conds.push(inArray(products.branchId, filter.branchIds));
+            else if (filter.tenantId) conds.push(eq(products.tenantId, filter.tenantId));
+        }
 
         const rows = await db.query.products.findMany({
             where: and(...conds),
@@ -737,19 +890,32 @@ productRoutes.get('/generate/sku', authenticate, async (req, res, next) => {
 // Update product (scope-checked)
 productRoutes.put('/:id', authenticate, authorize('products:update'), async (req, res, next) => {
     try {
-        const existing = await db.query.products.findFirst({ where: eq(products.id, req.params.id), columns: { branchId: true } });
-        if (!existing) return res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Product not found' } });
+        // BE-34: Tenant-scoped update
+        const tenantId = req.authUser?.tenantId;
+        const updateConds: any[] = [eq(products.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            updateConds.push(eq(products.tenantId, tenantId));
+        }
+
+        const existing = await db.query.products.findFirst({ where: and(...updateConds), columns: { branchId: true } });
+        if (!existing) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Product not found or no access' } });
         if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
 
         const { stock, minStock, ...productData } = req.body;
         
         if (productData.categoryId === '' || productData.categoryId === null) delete productData.categoryId;
+        if (productData.vendorId === '' || productData.vendorId === null) delete productData.vendorId;
         if (productData.sku === '') productData.sku = null;
         if (productData.barcode === '') productData.barcode = null;
         if (minStock !== undefined) productData.lowStockThreshold = minStock;
         if (!productData.branchId) delete productData.branchId;
+        // Ensure array columns are always arrays
+        if (productData.images !== undefined) productData.images = Array.isArray(productData.images) ? productData.images : [];
+        if (productData.tags !== undefined) productData.tags = Array.isArray(productData.tags) ? productData.tags : [];
+        // Never allow changing tenantId
+        delete productData.tenantId;
 
-        const [product] = await db.update(products).set({ ...productData, updatedAt: new Date() }).where(eq(products.id, req.params.id)).returning();
+        const [product] = await db.update(products).set({ ...productData, updatedAt: new Date() }).where(and(...updateConds)).returning();
 
         await invalidateQueryCache('products*');
         res.json({ success: true, data: product });
@@ -761,11 +927,18 @@ productRoutes.put('/:id', authenticate, authorize('products:update'), async (req
 // Delete product (soft delete, scope-checked)
 productRoutes.delete('/:id', authenticate, authorize('products:delete'), async (req, res, next) => {
     try {
-        const existing = await db.query.products.findFirst({ where: eq(products.id, req.params.id), columns: { branchId: true } });
-        if (!existing) return res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Product not found' } });
+        // BE-35: Tenant-scoped delete
+        const tenantId = req.authUser?.tenantId;
+        const delConds: any[] = [eq(products.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            delConds.push(eq(products.tenantId, tenantId));
+        }
+
+        const existing = await db.query.products.findFirst({ where: and(...delConds), columns: { branchId: true } });
+        if (!existing) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Product not found or no access' } });
         if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
 
-        await db.update(products).set({ isActive: false, updatedAt: new Date() }).where(eq(products.id, req.params.id));
+        await db.update(products).set({ isActive: false, updatedAt: new Date() }).where(and(...delConds));
 
         await invalidateQueryCache('products*');
         await invalidateQueryCache('inventory*');

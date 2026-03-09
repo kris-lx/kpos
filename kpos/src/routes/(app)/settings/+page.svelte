@@ -15,12 +15,49 @@
         Globe,
         Save,
         Loader2,
+        Camera,
+        Upload,
+        Image,
     } from "lucide-svelte";
 
     // State
     let activeTab = $state("general");
     let isLoading = $state(true);
     let isSaving = $state(false);
+
+    // Logo upload state
+    let storeLogo = $state<string | null>(null);
+    let isUploadingLogo = $state(false);
+
+    async function handleLogoUpload(event: Event) {
+        const input = event.target as HTMLInputElement;
+        const file = input.files?.[0];
+        if (!file) return;
+        if (file.size > 2 * 1024 * 1024) { toast.error('ຮູບຕ້ອງນ້ອຍກວ່າ 2MB'); return; }
+        isUploadingLogo = true;
+        try {
+            const formData = new FormData();
+            formData.append('file', file);
+            const res = await api.post('uploads/logo', { body: formData }).json<any>();
+            if (res.success && res.data?.url) {
+                storeLogo = res.data.url;
+                toast.success('ອັບໂຫຼດ logo ສຳເລັດ');
+            } else {
+                // Fallback: use local preview
+                const reader = new FileReader();
+                reader.onload = (e) => { storeLogo = e.target?.result as string; };
+                reader.readAsDataURL(file);
+                toast.success('ອັບໂຫຼດ logo ສຳເລັດ (local)');
+            }
+        } catch {
+            // Fallback to local preview on error
+            const reader = new FileReader();
+            reader.onload = (e) => { storeLogo = e.target?.result as string; };
+            reader.readAsDataURL(file);
+        } finally {
+            isUploadingLogo = false;
+        }
+    }
 
     // Settings State
     let settings = $state({
@@ -209,15 +246,43 @@
                 <h2
                     class="text-lg font-semibold text-gray-900 dark:text-white mb-6"
                 >
-                    ข้อมูลร้านค้า
+                    ຂໍ້ມູນຮ້ານຄ້າ
                 </h2>
 
                 <div class="space-y-6">
+                    <!-- Logo Upload -->
+                    <div class="flex items-center gap-6">
+                        <div class="relative group">
+                            <div class="w-24 h-24 rounded-2xl border-2 border-dashed border-gray-300 dark:border-gray-600 flex items-center justify-center overflow-hidden bg-gray-50 dark:bg-gray-800">
+                                {#if storeLogo}
+                                    <img src={storeLogo} alt="Logo" class="w-full h-full object-cover" />
+                                {:else}
+                                    <Store class="w-10 h-10 text-gray-300 dark:text-gray-600" />
+                                {/if}
+                            </div>
+                            <label class="absolute inset-0 flex items-center justify-center bg-black/40 rounded-2xl opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer">
+                                {#if isUploadingLogo}
+                                    <Loader2 class="w-6 h-6 text-white animate-spin" />
+                                {:else}
+                                    <Camera class="w-6 h-6 text-white" />
+                                {/if}
+                                <input type="file" accept="image/*" class="hidden" onchange={handleLogoUpload} />
+                            </label>
+                        </div>
+                        <div>
+                            <p class="font-medium text-gray-900 dark:text-white">ໂລໂກ້ຮ້ານ</p>
+                            <p class="text-sm text-gray-500 dark:text-gray-400">ອັບໂຫຼດຮູບໂລໂກ້ (ສູງສຸດ 2MB)</p>
+                            {#if storeLogo}
+                                <button onclick={() => storeLogo = null} class="text-xs text-red-500 hover:underline mt-1">ລຶບໂລໂກ້</button>
+                            {/if}
+                        </div>
+                    </div>
+
                     <div class="grid grid-cols-2 gap-6">
                         <div>
                             <label
                                 class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2"
-                                >ชื่อร้าน</label
+                                >ຊື່ຮ້ານ</label
                             >
                             <input
                                 type="text"
@@ -228,7 +293,7 @@
                         <div>
                             <label
                                 class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2"
-                                >เลขประจำตัวผู้เสียภาษี</label
+                                >ເລກທີພາສີ (Tax ID)</label
                             >
                             <input
                                 type="text"
@@ -241,7 +306,7 @@
                     <div>
                         <label
                             class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2"
-                            >ที่อยู่</label
+                            >ທີ່ຢູ່</label
                         >
                         <textarea
                             bind:value={settings.storeAddress}
@@ -254,7 +319,7 @@
                         <div>
                             <label
                                 class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2"
-                                >โทรศัพท์</label
+                                >ເບີໂທ</label
                             >
                             <input
                                 type="tel"
@@ -265,7 +330,7 @@
                         <div>
                             <label
                                 class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2"
-                                >อีเมล</label
+                                >ອີເມວ</label
                             >
                             <input
                                 type="email"
@@ -280,7 +345,7 @@
                     <h3
                         class="text-md font-medium text-gray-900 dark:text-white"
                     >
-                        การตั้งค่าภาษี
+                        ຕັ້ງຄ່າພາສີ
                     </h3>
 
                     <div class="flex items-center justify-between">
@@ -288,10 +353,10 @@
                             <p
                                 class="font-medium text-gray-900 dark:text-white"
                             >
-                                เปิดใช้งานภาษี
+                                ເປີດໃຊ້ພາສີ
                             </p>
                             <p class="text-sm text-gray-500 dark:text-gray-400">
-                                คำนวณภาษีมูลค่าเพิ่มอัตโนมัติ
+                                ຄິດໄລ່ພາສີມູນຄ່າເພີ່ມອັດຕະໂນມັດ
                             </p>
                         </div>
                         <label
@@ -312,7 +377,7 @@
                         <div>
                             <label
                                 class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2"
-                                >อัตราภาษี (%)</label
+                                >ອັດຕາພາສີ (%)</label
                             >
                             <input
                                 type="number"
@@ -329,19 +394,19 @@
                 <h2
                     class="text-lg font-semibold text-gray-900 dark:text-white mb-6"
                 >
-                    การตั้งค่าใบเสร็จ
+                    ຕັ້ງຄ່າໃບບິນ
                 </h2>
 
                 <div class="space-y-6">
                     <div>
                         <label
                             class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2"
-                            >ข้อความหัวใบเสร็จ</label
+                            >ຂໍ້ຄວາມຫົວໃບບິນ</label
                         >
                         <textarea
                             bind:value={settings.receiptHeader}
                             rows="2"
-                            placeholder="ข้อความที่แสดงด้านบนใบเสร็จ"
+                            placeholder="ຂໍ້ຄວາມສະແດງຢູ່ດ້ານເທິງໃບບິນ"
                             class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 focus:ring-2 focus:ring-primary-500"
                         ></textarea>
                     </div>
@@ -349,12 +414,12 @@
                     <div>
                         <label
                             class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2"
-                            >ข้อความท้ายใบเสร็จ</label
+                            >ຂໍ້ຄວາມທ້າຍໃບບິນ</label
                         >
                         <textarea
                             bind:value={settings.receiptFooter}
                             rows="2"
-                            placeholder="ข้อความที่แสดงด้านล่างใบเสร็จ"
+                            placeholder="ຂໍ້ຄວາມສະແດງຢູ່ດ້ານລຸ່ມໃບບິນ"
                             class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 focus:ring-2 focus:ring-primary-500"
                         ></textarea>
                     </div>
@@ -364,10 +429,10 @@
                             <p
                                 class="font-medium text-gray-900 dark:text-white"
                             >
-                                แสดงโลโก้
+                                ສະແດງໂລໂກ້
                             </p>
                             <p class="text-sm text-gray-500 dark:text-gray-400">
-                                แสดงโลโก้ร้านค้าบนใบเสร็จ
+                                ສະແດງໂລໂກ້ຮ້ານຄ້າໃນໃບບິນ
                             </p>
                         </div>
                         <label
@@ -389,7 +454,7 @@
                         <h3
                             class="text-md font-medium text-gray-900 dark:text-white mb-4"
                         >
-                            ตัวอย่างใบเสร็จ
+                            ຕົວຢ່າງໃບບິນ
                         </h3>
                         <div
                             class="w-80 mx-auto bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4 font-mono text-sm"
@@ -414,11 +479,11 @@
 
                             <div class="space-y-1">
                                 <div class="flex justify-between">
-                                    <span>สินค้า A x 2</span>
+                                    <span>ສິນຄ້າ A x 2</span>
                                     <span>100.00</span>
                                 </div>
                                 <div class="flex justify-between">
-                                    <span>สินค้า B x 1</span>
+                                    <span>ສິນຄ້າ B x 1</span>
                                     <span>50.00</span>
                                 </div>
                             </div>
@@ -427,14 +492,14 @@
 
                             <div class="space-y-1">
                                 <div class="flex justify-between">
-                                    <span>รวม</span>
+                                    <span>ລວມ</span>
                                     <span>150.00</span>
                                 </div>
                                 {#if settings.enableTax}
                                     <div
                                         class="flex justify-between text-xs text-gray-500 dark:text-gray-400"
                                     >
-                                        <span>ภาษี {settings.taxRate}%</span>
+                                        <span>ພາສີ {settings.taxRate}%</span>
                                         <span
                                             >{(
                                                 (150 * settings.taxRate) /
@@ -444,7 +509,7 @@
                                     </div>
                                 {/if}
                                 <div class="flex justify-between font-bold">
-                                    <span>รวมทั้งสิ้น</span>
+                                    <span>ລວມທັງໝົດ</span>
                                     <span
                                         >{(
                                             150 *
@@ -472,7 +537,7 @@
                 <h2
                     class="text-lg font-semibold text-gray-900 dark:text-white mb-6"
                 >
-                    การแจ้งเตือน
+                    ການແຈ້ງເຕືອນ
                 </h2>
 
                 <div class="space-y-6">
@@ -481,10 +546,10 @@
                             <p
                                 class="font-medium text-gray-900 dark:text-white"
                             >
-                                แจ้งเตือนสินค้าใกล้หมด
+                                ແຈ້ງເຕືອນສິນຄ້າໃກ້ໝົດ
                             </p>
                             <p class="text-sm text-gray-500 dark:text-gray-400">
-                                รับการแจ้งเตือนเมื่อสินค้าใกล้หมดสต็อก
+                                ຮັບການແຈ້ງເຕືອນເມື່ອສິນຄ້າໃກ້ໝົດສະຕ໋ອກ
                             </p>
                         </div>
                         <label
@@ -506,7 +571,7 @@
                             <label
                                 class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2"
                             >
-                                แจ้งเตือนเมื่อสต็อกต่ำกว่า
+                                ແຈ້ງເຕືອນເມື່ອສະຕ໋ອກຕ່ຳກວ່າ
                             </label>
                             <input
                                 type="number"
@@ -514,7 +579,7 @@
                                 min="1"
                                 class="w-32 px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 focus:ring-2 focus:ring-primary-500"
                             />
-                            <span class="ml-2 text-gray-500 dark:text-gray-400">ชิ้น</span>
+                            <span class="ml-2 text-gray-500 dark:text-gray-400">ຊິ້ນ</span>
                         </div>
                     {/if}
 
@@ -523,10 +588,10 @@
                             <p
                                 class="font-medium text-gray-900 dark:text-white"
                             >
-                                แจ้งเตือนทางอีเมล
+                                ແຈ້ງເຕືອນທາງອີເມວ
                             </p>
                             <p class="text-sm text-gray-500 dark:text-gray-400">
-                                รับการแจ้งเตือนผ่านทางอีเมล
+                                ຮັບການແຈ້ງເຕືອນຜ່ານທາງອີເມວ
                             </p>
                         </div>
                         <label
@@ -547,14 +612,14 @@
                 <h2
                     class="text-lg font-semibold text-gray-900 dark:text-white mb-6"
                 >
-                    ธีมและการแสดงผล
+                    ທີມ ແລະ ການສະແດງຜົນ
                 </h2>
 
                 <div class="space-y-6">
                     <div>
                         <label
                             class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-4"
-                            >โหมดสี</label
+                            >ໂໝດສີ</label
                         >
                         <div class="grid grid-cols-3 gap-4">
                             <button
@@ -569,7 +634,7 @@
                                 <div
                                     class="w-full h-20 bg-white rounded-lg mb-2 border"
                                 ></div>
-                                <p class="text-sm font-medium">สว่าง</p>
+                                <p class="text-sm font-medium">ແຈ້ງ</p>
                             </button>
                             <button
                                 onclick={() => (settings.theme = "dark")}
@@ -583,7 +648,7 @@
                                 <div
                                     class="w-full h-20 bg-gray-900 rounded-lg mb-2"
                                 ></div>
-                                <p class="text-sm font-medium">มืด</p>
+                                <p class="text-sm font-medium">ມືດ</p>
                             </button>
                             <button
                                 onclick={() => (settings.theme = "system")}
@@ -597,7 +662,7 @@
                                 <div
                                     class="w-full h-20 bg-gradient-to-r from-white to-gray-900 rounded-lg mb-2 border"
                                 ></div>
-                                <p class="text-sm font-medium">ตามระบบ</p>
+                                <p class="text-sm font-medium">ຕາມລະບົບ</p>
                             </button>
                         </div>
                     </div>
@@ -605,7 +670,7 @@
                     <div>
                         <label
                             class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-4"
-                            >สีหลัก</label
+                            >ສີຫຼັກ</label
                         >
                         <div class="flex gap-3">
                             {#each ["blue", "green", "purple", "red", "orange"] as color (color)}

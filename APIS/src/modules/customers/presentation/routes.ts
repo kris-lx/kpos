@@ -4,7 +4,7 @@
 
 import { Router } from 'express';
 import { authenticate, authorize, branchFilter, buildScopeCondition, ensureScopeAccess, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
-import { db } from '@/config/database.config';
+import { db, dbRead } from '@/config/database.config';
 import { customers, membershipTiers, settings, pointsHistory } from '@/db/schema/tables';
 import { eq, and, or, ilike, desc, asc, count, sql } from 'drizzle-orm';
 
@@ -15,9 +15,15 @@ customerRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => 
     try {
         const { page = 1, limit = 50, search, branchId, storeId } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const filter = req.branchFilter;
 
-        const conditions = [eq(customers.isActive, true)];
+        const conditions: any[] = [eq(customers.isActive, true)];
+
+        // BE-70: Tenant isolation
+        const tenantId = req.authUser?.tenantId;
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            conditions.push(eq(customers.tenantId, tenantId));
+        }
 
         // Apply store-level or branch-level scope
         const scopeWhere = buildScopeCondition(filter, { storeId: customers.storeId, branchId: customers.branchId }, 'storeId');
@@ -144,7 +150,9 @@ customerRoutes.post('/loyalty/tiers', authenticate, authorize('customers:create'
             orderBy: desc(membershipTiers.sortOrder),
         });
 
+        const tierTenantId = req.authUser?.tenantId || req.user?.tenantId;
         const [tier] = await db.insert(membershipTiers).values({
+            tenantId: tierTenantId,
             name,
             minPoints: minPoints || 0,
             discountPercent: discountPercent || 0,
@@ -278,16 +286,27 @@ customerRoutes.put('/loyalty/settings', authenticate, authorize('settings:update
 // MUST be before /:id to prevent Express matching 'lookup' as :id
 customerRoutes.get('/lookup/:code', authenticate, async (req, res, next) => {
     try {
+        // BE-70: Tenant-scoped lookup
+        const tenantId = req.authUser?.tenantId;
+        const lookupConds: any[] = [
+            eq(customers.isActive, true),
+            or(eq(customers.phone, req.params.code), eq(customers.memberCode, req.params.code)),
+        ];
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            lookupConds.push(eq(customers.tenantId, tenantId));
+        }
+
         const customer = await db.query.customers.findFirst({
-            where: and(
-                eq(customers.isActive, true),
-                or(eq(customers.phone, req.params.code), eq(customers.memberCode, req.params.code)),
-            ),
+            where: and(...lookupConds),
         });
 
         if (!customer) {
             res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Customer not found' } });
             return;
+        }
+
+        if (!ensureScopeAccess(customer, req)) {
+            return res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Customer not found' } });
         }
 
         res.json({ success: true, data: customer });
@@ -303,15 +322,22 @@ customerRoutes.get('/lookup/:code', authenticate, async (req, res, next) => {
 // Get customer by ID (scope-checked)
 customerRoutes.get('/:id', authenticate, async (req, res, next) => {
     try {
+        // BE-70: Tenant-scoped customer lookup
+        const tenantId = req.authUser?.tenantId;
+        const getConds: any[] = [eq(customers.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            getConds.push(eq(customers.tenantId, tenantId));
+        }
+
         const customer = await db.query.customers.findFirst({
-            where: eq(customers.id, req.params.id),
+            where: and(...getConds),
             with: {
                 transactions: { limit: 10, orderBy: (t: any, { desc: d }: any) => [d(t.createdAt)] },
             },
         });
 
         if (!customer) {
-            res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Customer not found' } });
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Customer not found or no access' } });
             return;
         }
 
@@ -339,11 +365,19 @@ customerRoutes.post('/', authenticate, authorize('customers:create'), async (req
             });
         }
 
+        // Prevent scope spoofing: enforce user's active store unless they are a super admin
+        let finalStoreId = storeId || null;
+        if (!authUser?.isSuperAdmin && authUser?.activeStoreId) {
+            finalStoreId = authUser.activeStoreId;
+        }
+
         // Generate member code
         const [{ value: custCount }] = await db.select({ value: count() }).from(customers).where(eq(customers.branchId, branchId));
         const memberCode = `MEM${branchId.slice(-4)}${String(custCount + 1).padStart(6, '0')}`;
 
+        const custTenantId = authUser?.tenantId || req.user?.tenantId;
         const [customer] = await db.insert(customers).values({
+            tenantId: custTenantId,
             name: name.trim(),
             email: email?.trim() || null,
             phone: phone?.trim() || null,
@@ -354,7 +388,7 @@ customerRoutes.post('/', authenticate, authorize('customers:create'), async (req
             notes: notes?.trim() || null,
             points: points || 0,
             branchId,
-            storeId: storeId || authUser?.activeStoreId || null,
+            storeId: finalStoreId,
             memberCode,
         }).returning();
 
@@ -371,16 +405,29 @@ customerRoutes.put('/:id', authenticate, authorize('customers:update'), async (r
         const authUser = (req as any).user;
         const { name, email, phone, address, taxId, birthDate, gender, notes, points, totalSpent, isActive, storeId } = req.body;
 
-        // Verify ownership: customer must belong to user's store (unless super admin)
-        if (!authUser?.isSuperAdmin && authUser?.activeStoreId) {
-            const existing = await db.query.customers.findFirst({ where: eq(customers.id, req.params.id) });
-            if (existing?.storeId && existing.storeId !== authUser.activeStoreId) {
+        // BE-70: Tenant-scoped update
+        const tenantId = req.authUser?.tenantId;
+        if (!authUser?.isSuperAdmin && tenantId) {
+            const existing = await db.query.customers.findFirst({ where: and(eq(customers.id, req.params.id), eq(customers.tenantId, tenantId)) });
+            if (!existing) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Customer not found or no access' } });
+            }
+            if (authUser?.activeStoreId && existing?.storeId && existing.storeId !== authUser.activeStoreId) {
                 return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot modify customer from another store' } });
             }
         }
 
         const updateData: Record<string, unknown> = { updatedAt: new Date() };
-        if (storeId !== undefined) updateData.storeId = storeId || null;
+        
+        // Prevent scope spoofing: only allow storeId update if super admin
+        if (storeId !== undefined) {
+             if (authUser?.isSuperAdmin) {
+                 updateData.storeId = storeId || null;
+             } else if (authUser?.activeStoreId) {
+                 updateData.storeId = authUser.activeStoreId;
+             }
+        }
+
         if (name !== undefined) updateData.name = name.trim();
         if (email !== undefined) updateData.email = email?.trim() || null;
         if (phone !== undefined) updateData.phone = phone?.trim() || null;
@@ -393,9 +440,14 @@ customerRoutes.put('/:id', authenticate, authorize('customers:update'), async (r
         if (totalSpent !== undefined) updateData.totalSpent = Number(totalSpent) || 0;
         if (isActive !== undefined) updateData.isActive = Boolean(isActive);
 
+        // Never allow changing tenantId
+        delete updateData.tenantId;
+
+        const updConds: any[] = [eq(customers.id, req.params.id)];
+        if (tenantId && !authUser?.isSuperAdmin) updConds.push(eq(customers.tenantId, tenantId));
         const [customer] = await db.update(customers)
             .set(updateData as any)
-            .where(eq(customers.id, req.params.id))
+            .where(and(...updConds))
             .returning();
         await invalidateQueryCache('customers*');
 
@@ -410,9 +462,15 @@ customerRoutes.delete('/:id', authenticate, authorize('customers:delete'), async
     try {
         const authUser = (req as any).user;
 
-        // Verify ownership
+        // BE-70: Tenant-scoped delete
+        const tenantId = req.authUser?.tenantId;
+        const delConds: any[] = [eq(customers.id, req.params.id)];
+        if (tenantId && !authUser?.isSuperAdmin) {
+            delConds.push(eq(customers.tenantId, tenantId));
+        }
         if (!authUser?.isSuperAdmin && authUser?.activeStoreId) {
-            const existing = await db.query.customers.findFirst({ where: eq(customers.id, req.params.id) });
+            const existing = await db.query.customers.findFirst({ where: and(...delConds) });
+            if (!existing) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Customer not found or no access' } });
             if (existing?.storeId && existing.storeId !== authUser.activeStoreId) {
                 return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot delete customer from another store' } });
             }
@@ -420,7 +478,7 @@ customerRoutes.delete('/:id', authenticate, authorize('customers:delete'), async
 
         await db.update(customers)
             .set({ isActive: false, updatedAt: new Date() })
-            .where(eq(customers.id, req.params.id));
+            .where(and(...delConds));
         await invalidateQueryCache('customers*');
 
         res.json({ success: true, data: { message: 'Customer deleted' } });
@@ -433,6 +491,10 @@ customerRoutes.delete('/:id', authenticate, authorize('customers:delete'), async
 customerRoutes.post('/:id/points', authenticate, authorize('customers:update'), async (req, res, next) => {
     try {
         const { points } = req.body;
+
+        const existing = await db.query.customers.findFirst({ where: eq(customers.id, req.params.id) });
+        if (!existing) return res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Customer not found' } });
+        if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this customer' } });
 
         const [customer] = await db.update(customers)
             .set({ points: sql`${customers.points} + ${points}`, updatedAt: new Date() })
@@ -448,6 +510,10 @@ customerRoutes.post('/:id/points', authenticate, authorize('customers:update'), 
 // Get points history for a customer
 customerRoutes.get('/:id/points/history', authenticate, async (req, res, next) => {
     try {
+        const customer = await db.query.customers.findFirst({ where: eq(customers.id, req.params.id) });
+        if (!customer) return res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Customer not found' } });
+        if (!ensureScopeAccess(customer, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
+
         const { page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
 
@@ -487,6 +553,10 @@ customerRoutes.post('/:id/points/adjust', authenticate, authorize('customers:upd
         if (!customer) {
             res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Customer not found' } });
             return;
+        }
+
+        if (!ensureScopeAccess(customer, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this customer' } });
         }
 
         // Update customer points and create history record in a transaction

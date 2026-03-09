@@ -4,25 +4,58 @@
 
 import { Router } from 'express';
 import { authenticate, authorize, branchFilter, buildScopeCondition, ensureScopeAccess, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
-import { db } from '@/config/database.config';
-import { categories } from '@/db/schema/tables';
-import { eq, and, asc } from 'drizzle-orm';
+import { db, dbRead } from '@/config/database.config';
+import { categories, products } from '@/db/schema/tables';
+import { eq, and, or, asc, isNull, inArray } from 'drizzle-orm';
 
 export const categoryRoutes = Router();
 
 // Get all categories (store-scoped)
 categoryRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
     try {
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
-        const scopeWhere = buildScopeCondition(filter, { storeId: categories.storeId, branchId: categories.storeId }, 'storeId');
+        const filter = req.branchFilter;
+
+        // Build scope: show store-specific categories + global (storeId=NULL) categories
+        const conditions: any[] = [eq(categories.isActive, true)];
+        
+        if (filter?.scopeByStore && filter.storeIds.length > 0) {
+            // Store owner sees their store's categories + shared/global categories within their tenant
+            const scopeConds = [inArray(categories.storeId, filter.storeIds), isNull(categories.storeId)];
+            
+            // Only allow global categories that belong to their tenant
+            if (filter.tenantId) {
+                conditions.push(eq(categories.tenantId, filter.tenantId));
+            }
+            conditions.push(or(...scopeConds));
+        } else if (filter?.tenantId) {
+            // Non-store-scoped user (e.g. branch admin) sees tenant's categories + global (no tenant) categories
+            conditions.push(or(eq(categories.tenantId, filter.tenantId), isNull(categories.tenantId)));
+        } else if (filter && !filter.tenantId) {
+            // If user has no tenantId (e.g., new store admin), still show global categories
+            conditions.push(isNull(categories.storeId));
+        }
+        const catWhere = conditions.length > 0 ? and(...conditions) : undefined;
 
         const rows = await db.query.categories.findMany({
-            where: scopeWhere ? and(eq(categories.isActive, true), scopeWhere) : eq(categories.isActive, true),
-            with: { parent: true },
+            where: catWhere,
+            with: { 
+                parent: true,
+                products: {
+                    where: eq(products.isActive, true),
+                    columns: { id: true }
+                }
+            },
             orderBy: asc(categories.sortOrder),
         });
 
-        res.json({ success: true, data: rows });
+        // Map product count for frontend and omit full products array
+        const categoriesWithCount = rows.map((c: any) => {
+            const productCount = c.products?.length || 0;
+            const { products, ...rest } = c;
+            return { ...rest, productCount };
+        });
+
+        res.json({ success: true, data: categoriesWithCount });
     } catch (error) {
         next(error);
     }
@@ -31,13 +64,20 @@ categoryRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => 
 // Get category by ID (scope-checked)
 categoryRoutes.get('/:id', authenticate, async (req, res, next) => {
     try {
+        // BE-36: Tenant-scoped category lookup
+        const tenantId = req.authUser?.tenantId;
+        const getConds: any[] = [eq(categories.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            getConds.push(eq(categories.tenantId, tenantId));
+        }
+
         const category = await db.query.categories.findFirst({
-            where: eq(categories.id, req.params.id),
+            where: and(...getConds),
             with: { parent: true, children: true, products: { limit: 10 } },
         });
 
         if (!category) {
-            res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Category not found' } });
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Category not found or no access' } });
             return;
         }
 
@@ -52,7 +92,7 @@ categoryRoutes.get('/:id', authenticate, async (req, res, next) => {
 });
 
 // Create category (auto-set storeId)
-categoryRoutes.post('/', authenticate, authorize('categories:create'), async (req, res, next) => {
+categoryRoutes.post('/', authenticate, branchFilter(), authorize('categories:create'), async (req, res, next) => {
     try {
         const { name, description, image, parentId, sortOrder } = req.body;
         
@@ -73,7 +113,9 @@ categoryRoutes.post('/', authenticate, authorize('categories:create'), async (re
         if (parentId) data.parentId = parentId;
         if (sortOrder !== undefined) data.sortOrder = sortOrder;
 
-        // Auto-set storeId from user context
+        // Auto-set tenantId and storeId from user context
+        const catTenantId = req.authUser?.tenantId || req.user?.tenantId;
+        if (catTenantId) data.tenantId = catTenantId;
         if (req.authUser?.activeStoreId) {
             data.storeId = req.authUser.activeStoreId;
         }
@@ -90,14 +132,21 @@ categoryRoutes.post('/', authenticate, authorize('categories:create'), async (re
 // Update category (scope-checked)
 categoryRoutes.put('/:id', authenticate, authorize('categories:update'), async (req, res, next) => {
     try {
-        const existing = await db.query.categories.findFirst({ where: eq(categories.id, req.params.id) });
-        if (!existing) return res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Category not found' } });
+        // BE-36: Tenant-scoped update
+        const tenantId = req.authUser?.tenantId;
+        const updConds: any[] = [eq(categories.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            updConds.push(eq(categories.tenantId, tenantId));
+        }
+
+        const existing = await db.query.categories.findFirst({ where: and(...updConds) });
+        if (!existing) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Category not found or no access' } });
         if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
 
-        const { storeId: _s, id: _id, ...safeData } = req.body;
+        const { storeId: _s, id: _id, tenantId: _t, ...safeData } = req.body;
         const [category] = await db.update(categories)
             .set({ ...safeData, updatedAt: new Date() })
-            .where(eq(categories.id, req.params.id))
+            .where(and(...updConds))
             .returning();
         await invalidateQueryCache('categories*');
         res.json({ success: true, data: category });
@@ -109,13 +158,20 @@ categoryRoutes.put('/:id', authenticate, authorize('categories:update'), async (
 // Delete category (scope-checked)
 categoryRoutes.delete('/:id', authenticate, authorize('categories:delete'), async (req, res, next) => {
     try {
-        const existing = await db.query.categories.findFirst({ where: eq(categories.id, req.params.id) });
-        if (!existing) return res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Category not found' } });
+        // BE-36: Tenant-scoped delete
+        const tenantId = req.authUser?.tenantId;
+        const delConds: any[] = [eq(categories.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            delConds.push(eq(categories.tenantId, tenantId));
+        }
+
+        const existing = await db.query.categories.findFirst({ where: and(...delConds) });
+        if (!existing) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Category not found or no access' } });
         if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
 
         await db.update(categories)
             .set({ isActive: false, updatedAt: new Date() })
-            .where(eq(categories.id, req.params.id));
+            .where(and(...delConds));
         await invalidateQueryCache('categories*');
         await invalidateQueryCache('products*');
         res.json({ success: true, data: { message: 'Category deleted' } });

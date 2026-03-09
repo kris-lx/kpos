@@ -3,7 +3,10 @@
         createQuery,
         createMutation,
         useQueryClient,
+        QueryClient,
+        QueryClientProvider,
     } from "@tanstack/svelte-query";
+    import { get } from "svelte/store";
     import { api } from "$api";
     import { auth } from "$stores";
     import { cn } from "$utils";
@@ -35,13 +38,19 @@
     const activeStoreId = $derived(auth.activeStoreId);
 
     const categoriesQuery = createQuery({
-        queryKey: ["categories", searchQuery, activeStoreId],
+        queryKey: ["categories"],
         queryFn: async () => {
             const params = new URLSearchParams();
             if (searchQuery) params.append("search", searchQuery);
             const response = await api.get(`categories?${params}`).json<any>();
             return response.data || [];
         },
+    });
+
+    // Refetch when search or store changes
+    $effect(() => {
+        void searchQuery; void activeStoreId;
+        $categoriesQuery.refetch();
     });
 
     // Filtered and paginated
@@ -70,7 +79,7 @@
             api.post("categories", { json: data }).json(),
         onSuccess: () => {
             toast.success(t("common.saveSuccess"));
-            queryClient.invalidateQueries({ queryKey: ["categories"] });
+            get(categoriesQuery).refetch();
             closeModal();
         },
         onError: () => {
@@ -83,7 +92,7 @@
             api.put(`categories/${id}`, { json: data }).json(),
         onSuccess: () => {
             toast.success(t("common.updateSuccess"));
-            queryClient.invalidateQueries({ queryKey: ["categories"] });
+            get(categoriesQuery).refetch();
             closeModal();
         },
         onError: () => {
@@ -95,7 +104,7 @@
         mutationFn: (id: string) => api.delete(`categories/${id}`).json(),
         onSuccess: () => {
             toast.success(t("common.deleteSuccess"));
-            queryClient.invalidateQueries({ queryKey: ["categories"] });
+            get(categoriesQuery).refetch();
         },
         onError: () => {
             toast.error(t("common.deleteFailed"));

@@ -41,6 +41,7 @@ export interface ReservationFilters {
     date?: Date | string;
     page?: number;
     limit?: number;
+    tenantId?: string;
 }
 
 export class ReservationService {
@@ -50,6 +51,7 @@ export class ReservationService {
         const skip = (page - 1) * limit;
 
         const conds: any[] = [];
+        if (filters.tenantId) conds.push(eq(reservations.tenantId, filters.tenantId));
         if (filters.branchId) conds.push(eq(reservations.branchId, filters.branchId));
         if (filters.tableId) conds.push(eq(reservations.tableId, filters.tableId));
         if (filters.status) conds.push(eq(reservations.status, filters.status));
@@ -71,14 +73,17 @@ export class ReservationService {
         };
     }
 
-    async findById(id: string): Promise<Reservation | null> {
-        const reservation = await db.query.reservations.findFirst({ where: eq(reservations.id, id) });
+    async findById(id: string, tenantId?: string): Promise<Reservation | null> {
+        const conds: any[] = [eq(reservations.id, id)];
+        if (tenantId) conds.push(eq(reservations.tenantId, tenantId));
+        const reservation = await db.query.reservations.findFirst({ where: and(...conds) });
         if (!reservation) return null;
         return new Reservation(reservation as any);
     }
 
     async create(data: CreateReservationDTO): Promise<Reservation> {
         const [reservation] = await db.insert(reservations).values({
+            tenantId: (data as any).tenantId || undefined,
             branchId: data.branchId, tableId: data.tableId, memberId: data.memberId,
             customerName: data.customerName, phone: data.phone, email: data.email,
             guestCount: data.guestCount, date: new Date(data.date), time: data.time,
@@ -88,11 +93,14 @@ export class ReservationService {
         return new Reservation(reservation as any);
     }
 
-    async update(id: string, data: UpdateReservationDTO): Promise<Reservation> {
+    async update(id: string, data: UpdateReservationDTO, tenantId?: string): Promise<Reservation> {
         const updateData: Record<string, unknown> = { ...data };
         if (data.date) updateData.date = new Date(data.date);
+        delete updateData.tenantId;
 
-        const [reservation] = await db.update(reservations).set(updateData).where(eq(reservations.id, id)).returning();
+        const updConds: any[] = [eq(reservations.id, id)];
+        if (tenantId) updConds.push(eq(reservations.tenantId, tenantId));
+        const [reservation] = await db.update(reservations).set(updateData).where(and(...updConds)).returning();
 
         if (data.status === ReservationStatus.CONFIRMED && reservation.tableId) {
             await db.update(tables).set({ status: TableStatus.RESERVED }).where(eq(tables.id, reservation.tableId));
@@ -107,17 +115,19 @@ export class ReservationService {
         return new Reservation(reservation as any);
     }
 
-    async delete(id: string): Promise<void> {
-        const reservation = await db.query.reservations.findFirst({ where: eq(reservations.id, id) });
+    async delete(id: string, tenantId?: string): Promise<void> {
+        const conds: any[] = [eq(reservations.id, id)];
+        if (tenantId) conds.push(eq(reservations.tenantId, tenantId));
+        const reservation = await db.query.reservations.findFirst({ where: and(...conds) });
 
         if (reservation?.tableId && reservation.status === ReservationStatus.CONFIRMED) {
             await db.update(tables).set({ status: TableStatus.AVAILABLE }).where(eq(tables.id, reservation.tableId));
         }
 
-        await db.delete(reservations).where(eq(reservations.id, id));
+        await db.delete(reservations).where(and(...conds));
     }
 
-    async getStats(branchId: string, date?: Date): Promise<{
+    async getStats(branchId: string, date?: Date, tenantId?: string): Promise<{
         total: number;
         pending: number;
         confirmed: number;
@@ -132,7 +142,9 @@ export class ReservationService {
         const dateEnd = new Date(targetDate);
         dateEnd.setHours(23, 59, 59, 999);
 
-        const base = and(eq(reservations.branchId, branchId), gte(reservations.date, dateStart), lte(reservations.date, dateEnd));
+        const baseConds: any[] = [eq(reservations.branchId, branchId), gte(reservations.date, dateStart), lte(reservations.date, dateEnd)];
+        if (tenantId) baseConds.push(eq(reservations.tenantId, tenantId));
+        const base = and(...baseConds);
 
         const [[{ value: total }], [{ value: pending }], [{ value: confirmed }], [{ value: seated }], [{ value: completed }], [{ value: cancelled }], guestRows] = await Promise.all([
             db.select({ value: count() }).from(reservations).where(base),

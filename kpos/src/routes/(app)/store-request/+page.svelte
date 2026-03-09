@@ -1,5 +1,6 @@
 <script lang="ts">
     import { createQuery, createMutation, useQueryClient } from "@tanstack/svelte-query";
+    import { get } from "svelte/store";
     import { api } from "$lib/api";
     import { toast } from "svelte-sonner";
     import { auth } from "$lib/stores/auth.svelte";
@@ -22,6 +23,15 @@
         }
     });
 
+    // Load branches for selection
+    const branchesQuery = createQuery({
+        queryKey: ["branches-list"],
+        queryFn: async () => {
+            const res = await api.get("branches").json<any>();
+            return res.data || [];
+        }
+    });
+
     // Get user's requests
     const myRequestsQuery = createQuery({
         queryKey: ["my-store-requests"],
@@ -38,7 +48,7 @@
         },
         onSuccess: () => {
             toast.success(t('storeRequest.submitSuccess'));
-            queryClient.invalidateQueries({ queryKey: ["my-store-requests"] });
+            get(myRequestsQuery).refetch();
             showFormModal = false;
             resetForm();
         },
@@ -58,6 +68,7 @@
         storeCode: "",
         businessType: "",
         taxId: "",
+        branchId: "",
         address: "",
         phone: "",
         email: "",
@@ -71,11 +82,60 @@
     let branchForm = $state({
         branchName: "",
         branchCode: "",
+        parentBranchId: "",
         address: "",
         phone: "",
         email: "",
         description: ""
     });
+
+    let uploadedDocuments = $state<{url: string, name: string}[]>([]);
+    let isUploading = $state(false);
+
+    async function handleFileUpload(event: Event) {
+        const input = event.target as HTMLInputElement;
+        if (!input.files?.length) return;
+        
+        isUploading = true;
+        try {
+            for (const file of Array.from(input.files)) {
+                // Check file type and size
+                if (file.size > 5 * 1024 * 1024) {
+                    toast.error(`ໄຟລ໌ ${file.name} ໃຫຍ່ເກີນໄປ (ສູງສຸດ 5MB)`);
+                    continue;
+                }
+                
+                const reader = new FileReader();
+                const base64 = await new Promise<string>((resolve) => {
+                    reader.onload = () => resolve(reader.result as string);
+                    reader.readAsDataURL(file);
+                });
+                
+                const res = await api.post("upload/single", {
+                    json: { 
+                        image: base64, 
+                        folder: "store_requests",
+                        resourceType: "auto"
+                    }
+                }).json<any>();
+                
+                if (res.success) {
+                    uploadedDocuments.push({ url: res.data.url, name: file.name });
+                    toast.success(`ອັບໂຫຼດເອກະສານສຳເລັດ`);
+                }
+            }
+        } catch (error) {
+            console.error("Upload error:", error);
+            toast.error("ເກີດຂໍ້ຜິດພາດໃນການອັບໂຫຼດເອກະສານ");
+        } finally {
+            isUploading = false;
+            input.value = '';
+        }
+    }
+
+    function removeDocument(index: number) {
+        uploadedDocuments.splice(index, 1);
+    }
 
     function resetForm() {
         storeForm = {
@@ -83,6 +143,7 @@
             storeCode: "",
             businessType: "",
             taxId: "",
+            branchId: "",
             address: "",
             phone: "",
             email: "",
@@ -94,11 +155,13 @@
         branchForm = {
             branchName: "",
             branchCode: "",
+            parentBranchId: "",
             address: "",
             phone: "",
             email: "",
             description: ""
         };
+        uploadedDocuments = [];
     }
 
     function openCreateModal(type: "store" | "branch") {
@@ -138,15 +201,19 @@
                 type: 'new_store',
                 storeName: storeForm.storeName,
                 storeCode: storeForm.storeCode,
-                businessType: storeForm.businessType,
-                taxId: storeForm.taxId,
+                branchId: storeForm.branchId || undefined,
                 storeAddress: storeForm.address,
                 storePhone: storeForm.phone,
                 storeEmail: storeForm.email,
-                ownerName: storeForm.ownerName,
-                ownerPhone: storeForm.ownerPhone,
-                ownerEmail: storeForm.ownerEmail,
                 reason: storeForm.description,
+                metadata: {
+                    businessType: storeForm.businessType,
+                    taxId: storeForm.taxId,
+                    ownerName: storeForm.ownerName,
+                    ownerPhone: storeForm.ownerPhone,
+                    ownerEmail: storeForm.ownerEmail,
+                },
+                documents: uploadedDocuments.map(doc => JSON.stringify(doc)),
             });
         } else {
             if (!branchForm.branchName || !branchForm.address || !branchForm.phone) {
@@ -161,10 +228,12 @@
                 type: 'new_branch',
                 branchName: branchForm.branchName,
                 branchCode: branchForm.branchCode,
+                parentBranchId: branchForm.parentBranchId || undefined,
                 branchAddress: branchForm.address,
                 branchPhone: branchForm.phone,
                 branchEmail: branchForm.email,
                 reason: branchForm.description,
+                documents: uploadedDocuments.map(doc => JSON.stringify(doc)),
             });
         }
     }
@@ -318,6 +387,21 @@
                         <input id="store-tax-id" type="text" bind:value={storeForm.taxId} placeholder="0000000000000" class="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent text-sm" />
                     </div>
                 </div>
+                <!-- Branch Selection -->
+                {#if ($branchesQuery.data || []).length > 0}
+                <div>
+                    <label for="store-branch" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        <Building2 class="w-3.5 h-3.5 inline -mt-0.5" /> ສາຂາທີ່ສັງກັດ
+                    </label>
+                    <select id="store-branch" bind:value={storeForm.branchId} class="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 text-sm">
+                        <option value="">ສ້າງສາຂາໃໝ່ (ອັດຕະໂນມັດ)</option>
+                        {#each ($branchesQuery.data || []) as branch (branch.id)}
+                            <option value={branch.id}>{branch.name} {branch.code ? `(${branch.code})` : ''}</option>
+                        {/each}
+                    </select>
+                    <p class="text-xs text-gray-400 mt-1">ເລືອກສາຂາທີ່ຮ້ານນີ້ຈະຂຶ້ນກັບ ຫຼື ປ່ອຍຫວ່າງເພື່ອສ້າງສາຂາໃໝ່</p>
+                </div>
+                {/if}
             </div>
 
             <!-- Section: Contact -->
@@ -370,6 +454,39 @@
                 <label for="store-description" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ລາຍລະອຽດເພີ່ມເຕີມ</label>
                 <textarea id="store-description" bind:value={storeForm.description} rows="2" placeholder="ອະທິບາຍທຸລະກິດ..." class="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 text-sm resize-none"></textarea>
             </div>
+
+            <!-- Documents -->
+            <div class="space-y-3">
+                <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 flex items-center gap-2 uppercase tracking-wide">
+                    <FileText class="w-4 h-4" />ເອກະສານຢັ້ງຢືນ
+                </h3>
+                <div class="border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-xl p-4 text-center hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors relative">
+                    <input type="file" multiple accept="image/*,.pdf" onchange={handleFileUpload} disabled={isUploading} class="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed" />
+                    {#if isUploading}
+                        <Loader2 class="w-8 h-8 text-primary-500 animate-spin mx-auto mb-2" />
+                        <p class="text-sm text-gray-500">ກຳລັງອັບໂຫຼດ...</p>
+                    {:else}
+                        <Plus class="w-8 h-8 text-gray-400 mx-auto mb-2" />
+                        <p class="text-sm text-gray-600 dark:text-gray-300 font-medium">ຄລິກເພື່ອເລືອກໄຟລ໌ ຫຼື ລາກໄຟລ໌ມາໃສ່</p>
+                        <p class="text-xs text-gray-500 mt-1">ຮອງຮັບ: ຮູບພາບ ແລະ PDF (ບໍ່ເກີນ 5MB)</p>
+                    {/if}
+                </div>
+                {#if uploadedDocuments.length > 0}
+                    <div class="space-y-2 mt-3">
+                        {#each uploadedDocuments as doc, i}
+                            <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-700/50 rounded-lg border border-gray-200 dark:border-gray-600">
+                                <div class="flex items-center gap-3 overflow-hidden">
+                                    <FileText class="w-5 h-5 text-primary-500 shrink-0" />
+                                    <span class="text-sm text-gray-700 dark:text-gray-200 truncate">{doc.name}</span>
+                                </div>
+                                <button onclick={() => removeDocument(i)} class="p-1.5 hover:bg-red-100 text-red-500 rounded-md transition-colors" type="button">
+                                    <XCircle class="w-4 h-4" />
+                                </button>
+                            </div>
+                        {/each}
+                    </div>
+                {/if}
+            </div>
         </div>
         <div class="p-5 border-t border-gray-200 dark:border-gray-700 flex justify-end gap-3">
             <button onclick={() => showFormModal = false} class="px-4 py-2.5 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700 text-sm">ຍົກເລີກ</button>
@@ -407,6 +524,20 @@
                     <input id="branch-code" type="text" bind:value={branchForm.branchCode} placeholder="BR001" class="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-emerald-500 text-sm" />
                 </div>
             </div>
+            <!-- Parent Branch Selection -->
+            {#if ($branchesQuery.data || []).length > 0}
+            <div>
+                <label for="parent-branch" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    <Building2 class="w-3.5 h-3.5 inline -mt-0.5" /> ສາຂາຫຼັກ (ທີ່ຂຶ້ນກັບ)
+                </label>
+                <select id="parent-branch" bind:value={branchForm.parentBranchId} class="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-emerald-500 text-sm">
+                    <option value="">ບໍ່ມີ (ສາຂາໃໝ່ເລີຍ)</option>
+                    {#each ($branchesQuery.data || []) as branch (branch.id)}
+                        <option value={branch.id}>{branch.name} {branch.code ? `(${branch.code})` : ''}</option>
+                    {/each}
+                </select>
+            </div>
+            {/if}
             <div>
                 <label for="branch-address" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ທີ່ຢູ່ <span class="text-red-500">*</span></label>
                 <textarea id="branch-address" bind:value={branchForm.address} rows="2" placeholder="ທີ່ຢູ່ສາຂາ" class="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-emerald-500 text-sm resize-none"></textarea>
@@ -427,6 +558,39 @@
             <div>
                 <label for="branch-description" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ລາຍລະອຽດ</label>
                 <textarea id="branch-description" bind:value={branchForm.description} rows="2" placeholder="ເຫດຜົນທີ່ຕ້ອງການເປີດສາຂາ..." class="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-emerald-500 text-sm resize-none"></textarea>
+            </div>
+
+            <!-- Documents -->
+            <div class="space-y-3">
+                <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 flex items-center gap-2 uppercase tracking-wide">
+                    <FileText class="w-4 h-4" />ເອກະສານຢັ້ງຢືນ
+                </h3>
+                <div class="border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-xl p-4 text-center hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors relative">
+                    <input type="file" multiple accept="image/*,.pdf" onchange={handleFileUpload} disabled={isUploading} class="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed" />
+                    {#if isUploading}
+                        <Loader2 class="w-8 h-8 text-emerald-500 animate-spin mx-auto mb-2" />
+                        <p class="text-sm text-gray-500">ກຳລັງອັບໂຫຼດ...</p>
+                    {:else}
+                        <Plus class="w-8 h-8 text-gray-400 mx-auto mb-2" />
+                        <p class="text-sm text-gray-600 dark:text-gray-300 font-medium">ຄລິກເພື່ອເລືອກໄຟລ໌ ຫຼື ລາກໄຟລ໌ມາໃສ່</p>
+                        <p class="text-xs text-gray-500 mt-1">ຮອງຮັບ: ຮູບພາບ ແລະ PDF (ບໍ່ເກີນ 5MB)</p>
+                    {/if}
+                </div>
+                {#if uploadedDocuments.length > 0}
+                    <div class="space-y-2 mt-3">
+                        {#each uploadedDocuments as doc, i}
+                            <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-700/50 rounded-lg border border-gray-200 dark:border-gray-600">
+                                <div class="flex items-center gap-3 overflow-hidden">
+                                    <FileText class="w-5 h-5 text-emerald-500 shrink-0" />
+                                    <span class="text-sm text-gray-700 dark:text-gray-200 truncate">{doc.name}</span>
+                                </div>
+                                <button onclick={() => removeDocument(i)} class="p-1.5 hover:bg-red-100 text-red-500 rounded-md transition-colors" type="button">
+                                    <XCircle class="w-4 h-4" />
+                                </button>
+                            </div>
+                        {/each}
+                    </div>
+                {/if}
             </div>
         </div>
         <div class="p-5 border-t border-gray-200 dark:border-gray-700 flex justify-end gap-3">
@@ -469,16 +633,49 @@
                 <span class="text-sm text-gray-900 dark:text-white text-right">{selectedRequest.storeAddress || selectedRequest.branchAddress || '—'}</span>
             </div>
             {/if}
-            {#if selectedRequest.businessType}
+            {#if selectedRequest.metadata?.businessType || selectedRequest.businessType}
             <div class="flex justify-between items-center">
                 <span class="text-sm text-gray-500">ປະເພດທຸລະກິດ</span>
-                <span class="text-sm text-gray-900 dark:text-white">{selectedRequest.businessType}</span>
+                <span class="text-sm text-gray-900 dark:text-white">{selectedRequest.metadata?.businessType || selectedRequest.businessType}</span>
+            </div>
+            {/if}
+            {#if selectedRequest.metadata?.taxId}
+            <div class="flex justify-between items-center">
+                <span class="text-sm text-gray-500">ເລກທີພາສີ</span>
+                <span class="text-sm text-gray-900 dark:text-white">{selectedRequest.metadata?.taxId}</span>
+            </div>
+            {/if}
+            {#if selectedRequest.metadata?.ownerName}
+            <div class="flex justify-between items-center">
+                <span class="text-sm text-gray-500">ເຈົ້າຂອງຮ້ານ</span>
+                <span class="text-sm text-gray-900 dark:text-white">{selectedRequest.metadata?.ownerName}</span>
+            </div>
+            {/if}
+            {#if selectedRequest.reason}
+            <div class="pt-3 border-t border-gray-200 dark:border-gray-700">
+                <p class="text-xs text-gray-500 mb-1.5">ລາຍລະອຽດເພີ່ມເຕີມ:</p>
+                <p class="text-sm text-gray-900 dark:text-white bg-gray-50 dark:bg-gray-700 p-3 rounded-lg">{selectedRequest.reason}</p>
             </div>
             {/if}
             <div class="flex justify-between items-center">
                 <span class="text-sm text-gray-500">ວັນທີ</span>
                 <span class="text-sm text-gray-900 dark:text-white">{formatDate(selectedRequest.createdAt)}</span>
             </div>
+            {#if selectedRequest.documents && selectedRequest.documents.length > 0}
+            <div class="pt-3 border-t border-gray-200 dark:border-gray-700">
+                <p class="text-xs text-gray-500 mb-2">ເອກະສານແນບຕິດ:</p>
+                <div class="space-y-2">
+                    {#each selectedRequest.documents as docString}
+                        {@const doc = typeof docString === 'string' ? JSON.parse(docString) : docString}
+                        <a href={doc.url} target="_blank" rel="noopener noreferrer" class="flex items-center gap-3 p-2.5 bg-gray-50 dark:bg-gray-700/50 rounded-lg border border-gray-200 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors">
+                            <FileText class="w-5 h-5 text-primary-500 shrink-0" />
+                            <span class="text-sm text-gray-700 dark:text-gray-200 truncate flex-1">{doc.name || 'ເອກະສານ'}</span>
+                            <Eye class="w-4 h-4 text-gray-400 shrink-0" />
+                        </a>
+                    {/each}
+                </div>
+            </div>
+            {/if}
             {#if selectedRequest.reviewNote}
             <div class="pt-3 border-t border-gray-200 dark:border-gray-700">
                 <p class="text-xs text-gray-500 mb-1.5">ບັນທຶກຈາກ Admin:</p>

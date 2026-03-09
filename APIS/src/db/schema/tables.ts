@@ -4,7 +4,7 @@
 
 import {
     pgTable, uuid, text, boolean, timestamp, integer, doublePrecision,
-    jsonb, index, uniqueIndex,
+    jsonb, index, uniqueIndex, bigint,
 } from 'drizzle-orm/pg-core';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -23,6 +23,8 @@ export const tenants = pgTable('tenants', {
     address: text('address'),
     plan: text('plan').notNull().default('free'),
     isActive: boolean('is_active').notNull().default(true),
+    status: text('status').notNull().default('active'),
+    deleteAfter: timestamp('delete_after'),
     settings: jsonb('settings'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
@@ -36,7 +38,7 @@ export const branches = pgTable('branches', {
     id: uuid('id').primaryKey().defaultRandom(),
     tenantId: uuid('tenant_id'),
     name: text('name').notNull(),
-    code: text('code').notNull().unique(),
+    code: text('code').notNull(),
     address: text('address'),
     phone: text('phone'),
     email: text('email'),
@@ -50,6 +52,7 @@ export const branches = pgTable('branches', {
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (t) => [
     index('branches_tenant_idx').on(t.tenantId),
+    uniqueIndex('branches_tenant_code_idx').on(t.tenantId, t.code),
 ]);
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -59,7 +62,7 @@ export const branches = pgTable('branches', {
 export const users = pgTable('users', {
     id: uuid('id').primaryKey().defaultRandom(),
     tenantId: uuid('tenant_id'),
-    email: text('email').notNull().unique(),
+    email: text('email').notNull(),
     password: text('password').notNull(),
     name: text('name').notNull(),
     phone: text('phone'),
@@ -76,31 +79,39 @@ export const users = pgTable('users', {
     lastLoginAt: timestamp('last_login_at'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, (t) => [
+    uniqueIndex('users_tenant_email_idx').on(t.tenantId, t.email),
+]);
 
 export const sessions = pgTable('sessions', {
     id: uuid('id').primaryKey().defaultRandom(),
     userId: uuid('user_id').notNull(),
+    jti: text('jti').notNull().unique(),
     token: text('token').notNull().unique(),
     refreshToken: text('refresh_token').notNull().unique(),
     device: text('device'),
     ip: text('ip'),
     userAgent: text('user_agent'),
     expiresAt: timestamp('expires_at').notNull(),
+    revokedAt: timestamp('revoked_at'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
 });
 
 export const roles = pgTable('roles', {
     id: uuid('id').primaryKey().defaultRandom(),
     tenantId: uuid('tenant_id'),
-    name: text('name').notNull().unique(),
+    name: text('name').notNull(),
     displayName: text('display_name').notNull(),
     description: text('description'),
     permissions: text('permissions').array().notNull().default([]),
     isSystem: boolean('is_system').notNull().default(false),
+    maskLow: bigint('mask_low', { mode: 'number' }).notNull().default(0),
+    maskHigh: bigint('mask_high', { mode: 'number' }).notNull().default(0),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, (t) => [
+    uniqueIndex('roles_tenant_name_idx').on(t.tenantId, t.name),
+]);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // RULE-BASED ACCESS CONTROL
@@ -109,7 +120,7 @@ export const roles = pgTable('roles', {
 export const rules = pgTable('rules', {
     id: uuid('id').primaryKey().defaultRandom(),
     tenantId: uuid('tenant_id'),
-    name: text('name').notNull().unique(),
+    name: text('name').notNull(),
     displayName: text('display_name').notNull(),
     description: text('description'),
     module: text('module').notNull(),
@@ -121,10 +132,13 @@ export const rules = pgTable('rules', {
     isSystem: boolean('is_system').notNull().default(false),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, (t) => [
+    uniqueIndex('rules_tenant_name_idx').on(t.tenantId, t.name),
+]);
 
 export const roleRules = pgTable('role_rules', {
     id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
     roleId: uuid('role_id').notNull(),
     ruleId: uuid('rule_id').notNull(),
     canRead: boolean('can_read').notNull().default(true),
@@ -191,18 +205,24 @@ export const stores = pgTable('stores', {
     id: uuid('id').primaryKey().defaultRandom(),
     tenantId: uuid('tenant_id'),
     name: text('name').notNull(),
-    code: text('code').notNull().unique(),
+    code: text('code').notNull(),
     branchId: uuid('branch_id').notNull(),
     address: text('address'),
     phone: text('phone'),
     email: text('email'),
     description: text('description'),
+    logo: text('logo'),
+    theme: jsonb('theme'),
+    merchantId: text('merchant_id'),
+    paymentGateway: text('payment_gateway'),
     isActive: boolean('is_active').notNull().default(true),
     isDefault: boolean('is_default').notNull().default(false),
     settings: jsonb('settings'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, (t) => [
+    uniqueIndex('stores_tenant_code_idx').on(t.tenantId, t.code),
+]);
 
 export const userStores = pgTable('user_stores', {
     id: uuid('id').primaryKey().defaultRandom(),
@@ -225,6 +245,7 @@ export const userStores = pgTable('user_stores', {
 
 export const productStores = pgTable('product_stores', {
     id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
     productId: uuid('product_id').notNull(),
     storeId: uuid('store_id').notNull(),
     isActive: boolean('is_active').notNull().default(true),
@@ -235,6 +256,7 @@ export const productStores = pgTable('product_stores', {
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (t) => [
     uniqueIndex('product_stores_product_store_idx').on(t.productId, t.storeId),
+    index('product_stores_tenant_idx').on(t.tenantId),
 ]);
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -281,7 +303,7 @@ export const categories = pgTable('categories', {
     id: uuid('id').primaryKey().defaultRandom(),
     tenantId: uuid('tenant_id'),
     name: text('name').notNull(),
-    slug: text('slug').notNull().unique(),
+    slug: text('slug').notNull(),
     description: text('description'),
     image: text('image'),
     parentId: uuid('parent_id'),
@@ -292,6 +314,7 @@ export const categories = pgTable('categories', {
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (t) => [
     index('categories_store_idx').on(t.storeId),
+    uniqueIndex('categories_tenant_slug_idx').on(t.tenantId, t.slug),
 ]);
 
 export const products = pgTable('products', {
@@ -302,6 +325,7 @@ export const products = pgTable('products', {
     sku: text('sku'),
     barcode: text('barcode'),
     categoryId: uuid('category_id'),
+    vendorId: uuid('vendor_id'),
     branchId: uuid('branch_id').notNull(),
     price: doublePrecision('price').notNull(),
     cost: doublePrecision('cost').notNull().default(0),
@@ -319,13 +343,17 @@ export const products = pgTable('products', {
     attributes: jsonb('attributes'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, (t) => [
+    index('products_tenant_idx').on(t.tenantId),
+    index('products_branch_idx').on(t.branchId),
+]);
 
 export const skuVariants = pgTable('sku_variants', {
     id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
     productId: uuid('product_id').notNull(),
-    sku: text('sku').notNull().unique(),
-    barcode: text('barcode').unique(),
+    sku: text('sku').notNull(),
+    barcode: text('barcode'),
     name: text('name').notNull(),
     attributes: jsonb('attributes').notNull(),
     price: doublePrecision('price'),
@@ -334,10 +362,13 @@ export const skuVariants = pgTable('sku_variants', {
     isActive: boolean('is_active').notNull().default(true),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, (t) => [
+    uniqueIndex('sku_variants_tenant_sku_idx').on(t.tenantId, t.sku),
+]);
 
 export const billOfMaterials = pgTable('bill_of_materials', {
     id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
     productId: uuid('product_id').notNull(),
     ingredientId: uuid('ingredient_id').notNull(),
     quantity: doublePrecision('quantity').notNull(),
@@ -348,20 +379,24 @@ export const billOfMaterials = pgTable('bill_of_materials', {
 export const priceLevels = pgTable('price_levels', {
     id: uuid('id').primaryKey().defaultRandom(),
     tenantId: uuid('tenant_id'),
-    name: text('name').notNull().unique(),
+    name: text('name').notNull(),
     description: text('description'),
     isDefault: boolean('is_default').notNull().default(false),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, (t) => [
+    uniqueIndex('price_levels_tenant_name_idx').on(t.tenantId, t.name),
+]);
 
 export const productPriceLevels = pgTable('product_price_levels', {
     id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
     productId: uuid('product_id').notNull(),
     priceLevelId: uuid('price_level_id').notNull(),
     price: doublePrecision('price').notNull(),
 }, (t) => [
     uniqueIndex('product_price_levels_product_level_idx').on(t.productId, t.priceLevelId),
+    index('product_price_levels_tenant_idx').on(t.tenantId),
 ]);
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -386,6 +421,7 @@ export const inventory = pgTable('inventory', {
 }, (t) => [
     uniqueIndex('inventory_product_branch_sku_batch_idx').on(t.productId, t.branchId, t.skuVariantId, t.batchNumber),
     index('inventory_store_idx').on(t.storeId),
+    index('inventory_tenant_idx').on(t.tenantId),
 ]);
 
 export const stockMovements = pgTable('stock_movements', {
@@ -410,6 +446,7 @@ export const stockMovements = pgTable('stock_movements', {
     createdAt: timestamp('created_at').notNull().defaultNow(),
 }, (t) => [
     index('stock_movements_store_idx').on(t.storeId),
+    index('stock_movements_tenant_idx').on(t.tenantId),
 ]);
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -419,7 +456,7 @@ export const stockMovements = pgTable('stock_movements', {
 export const customers = pgTable('customers', {
     id: uuid('id').primaryKey().defaultRandom(),
     tenantId: uuid('tenant_id'),
-    memberCode: text('member_code').unique(),
+    memberCode: text('member_code'),
     name: text('name').notNull(),
     email: text('email'),
     phone: text('phone'),
@@ -439,10 +476,12 @@ export const customers = pgTable('customers', {
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (t) => [
     index('customers_store_idx').on(t.storeId),
+    index('customers_tenant_idx').on(t.tenantId),
 ]);
 
 export const pointsHistory = pgTable('points_history', {
     id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
     customerId: uuid('customer_id').notNull(),
     points: integer('points').notNull(),
     type: text('type').notNull(),
@@ -461,7 +500,7 @@ export const pointsHistory = pgTable('points_history', {
 export const transactions = pgTable('transactions', {
     id: uuid('id').primaryKey().defaultRandom(),
     tenantId: uuid('tenant_id'),
-    transactionNo: text('transaction_no').notNull().unique(),
+    transactionNo: text('transaction_no').notNull(),
     type: text('type').notNull().default('SALE'),
     status: text('status').notNull().default('COMPLETED'),
     branchId: uuid('branch_id').notNull(),
@@ -496,10 +535,13 @@ export const transactions = pgTable('transactions', {
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (t) => [
     index('transactions_store_idx').on(t.storeId),
+    index('transactions_tenant_idx').on(t.tenantId),
+    uniqueIndex('transactions_tenant_no_idx').on(t.tenantId, t.transactionNo),
 ]);
 
 export const transactionItems = pgTable('transaction_items', {
     id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
     transactionId: uuid('transaction_id').notNull(),
     productId: uuid('product_id').notNull(),
     productName: text('product_name').notNull(),
@@ -520,6 +562,7 @@ export const transactionItems = pgTable('transaction_items', {
 
 export const transactionPayments = pgTable('transaction_payments', {
     id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
     transactionId: uuid('transaction_id').notNull(),
     methodId: uuid('method_id').notNull(),
     methodName: text('method_name').notNull(),
@@ -555,7 +598,7 @@ export const paymentMethods = pgTable('payment_methods', {
     id: uuid('id').primaryKey().defaultRandom(),
     tenantId: uuid('tenant_id'),
     name: text('name').notNull(),
-    code: text('code').notNull().unique(),
+    code: text('code').notNull(),
     type: text('type').notNull(),
     icon: text('icon'),
     isActive: boolean('is_active').notNull().default(true),
@@ -564,7 +607,9 @@ export const paymentMethods = pgTable('payment_methods', {
     sortOrder: integer('sort_order').notNull().default(0),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, (t) => [
+    uniqueIndex('payment_methods_tenant_code_idx').on(t.tenantId, t.code),
+]);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SHIFTS & CASH MANAGEMENT
@@ -573,7 +618,7 @@ export const paymentMethods = pgTable('payment_methods', {
 export const shifts = pgTable('shifts', {
     id: uuid('id').primaryKey().defaultRandom(),
     tenantId: uuid('tenant_id'),
-    shiftNo: text('shift_no').notNull().unique(),
+    shiftNo: text('shift_no').notNull(),
     branchId: uuid('branch_id').notNull(),
     userId: uuid('user_id').notNull(),
     registerId: uuid('register_id'),
@@ -590,6 +635,8 @@ export const shifts = pgTable('shifts', {
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (t) => [
     index('shifts_store_idx').on(t.storeId),
+    index('shifts_tenant_idx').on(t.tenantId),
+    uniqueIndex('shifts_tenant_no_idx').on(t.tenantId, t.shiftNo),
 ]);
 
 export const cashRegisters = pgTable('cash_registers', {
@@ -597,13 +644,18 @@ export const cashRegisters = pgTable('cash_registers', {
     tenantId: uuid('tenant_id'),
     name: text('name').notNull(),
     branchId: uuid('branch_id').notNull(),
+    storeId: uuid('store_id'),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, (t) => [
+    index('cash_registers_tenant_idx').on(t.tenantId),
+    index('cash_registers_store_idx').on(t.storeId),
+]);
 
 export const cashMovements = pgTable('cash_movements', {
     id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
     shiftId: uuid('shift_id').notNull(),
     type: text('type').notNull(),
     amount: doublePrecision('amount').notNull(),
@@ -635,7 +687,7 @@ export const tables = pgTable('tables', {
 export const orders = pgTable('orders', {
     id: uuid('id').primaryKey().defaultRandom(),
     tenantId: uuid('tenant_id'),
-    orderNo: text('order_no').notNull().unique(),
+    orderNo: text('order_no').notNull(),
     branchId: uuid('branch_id').notNull(),
     tableId: uuid('table_id'),
     type: text('type').notNull().default('DINE_IN'),
@@ -651,10 +703,13 @@ export const orders = pgTable('orders', {
     completedAt: timestamp('completed_at'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, (t) => [
+    uniqueIndex('orders_tenant_no_idx').on(t.tenantId, t.orderNo),
+]);
 
 export const orderItems = pgTable('order_items', {
     id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
     orderId: uuid('order_id').notNull(),
     productId: uuid('product_id').notNull(),
     productName: text('product_name').notNull(),
@@ -696,11 +751,11 @@ export const reservations = pgTable('reservations', {
 export const members = pgTable('members', {
     id: uuid('id').primaryKey().defaultRandom(),
     tenantId: uuid('tenant_id'),
-    cardNumber: text('card_number').unique(),
+    cardNumber: text('card_number'),
     firstName: text('first_name').notNull(),
     lastName: text('last_name'),
     email: text('email'),
-    phone: text('phone').notNull().unique(),
+    phone: text('phone').notNull(),
     birthdate: timestamp('birthdate'),
     gender: text('gender'),
     address: text('address'),
@@ -712,12 +767,14 @@ export const members = pgTable('members', {
     notes: text('notes'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, (t) => [
+    uniqueIndex('members_tenant_phone_idx').on(t.tenantId, t.phone),
+]);
 
 export const membershipTiers = pgTable('membership_tiers', {
     id: uuid('id').primaryKey().defaultRandom(),
     tenantId: uuid('tenant_id'),
-    name: text('name').notNull().unique(),
+    name: text('name').notNull(),
     minPoints: integer('min_points').notNull().default(0),
     pointMultiplier: doublePrecision('point_multiplier').notNull().default(1),
     discountPercent: doublePrecision('discount_percent').notNull().default(0),
@@ -727,10 +784,13 @@ export const membershipTiers = pgTable('membership_tiers', {
     isActive: boolean('is_active').notNull().default(true),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, (t) => [
+    uniqueIndex('membership_tiers_tenant_name_idx').on(t.tenantId, t.name),
+]);
 
 export const pointHistory = pgTable('point_history', {
     id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
     memberId: uuid('member_id').notNull(),
     type: text('type').notNull(),
     points: integer('points').notNull(),
@@ -785,7 +845,7 @@ export const promotions = pgTable('promotions', {
 export const coupons = pgTable('coupons', {
     id: uuid('id').primaryKey().defaultRandom(),
     tenantId: uuid('tenant_id'),
-    code: text('code').notNull().unique(),
+    code: text('code').notNull(),
     name: text('name').notNull(),
     description: text('description'),
     type: text('type').notNull(),
@@ -803,6 +863,7 @@ export const coupons = pgTable('coupons', {
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (t) => [
     index('coupons_store_idx').on(t.storeId),
+    uniqueIndex('coupons_tenant_code_idx').on(t.tenantId, t.code),
 ]);
 
 export const discounts = pgTable('discounts', {
@@ -833,6 +894,8 @@ export const discounts = pgTable('discounts', {
 export const settlements = pgTable('settlements', {
     id: uuid('id').primaryKey().defaultRandom(),
     tenantId: uuid('tenant_id'),
+    branchId: uuid('branch_id'),
+    storeId: uuid('store_id'),
     settlementDate: timestamp('settlement_date').notNull(),
     totalAmount: doublePrecision('total_amount').notNull().default(0),
     cashAmount: doublePrecision('cash_amount').notNull().default(0),
@@ -844,7 +907,11 @@ export const settlements = pgTable('settlements', {
     notes: text('notes'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, (t) => [
+    index('settlements_tenant_idx').on(t.tenantId),
+    index('settlements_branch_idx').on(t.branchId),
+    index('settlements_store_idx').on(t.storeId),
+]);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // VENDORS & PURCHASE ORDERS
@@ -866,12 +933,14 @@ export const vendors = pgTable('vendors', {
     isStarred: boolean('is_starred').notNull().default(false),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, (t) => [
+    index('vendors_tenant_idx').on(t.tenantId),
+]);
 
 export const purchaseOrders = pgTable('purchase_orders', {
     id: uuid('id').primaryKey().defaultRandom(),
     tenantId: uuid('tenant_id'),
-    poNumber: text('po_number').notNull().unique(),
+    poNumber: text('po_number').notNull(),
     vendorId: uuid('vendor_id').notNull(),
     branchId: uuid('branch_id').notNull(),
     status: text('status').notNull().default('DRAFT'),
@@ -887,10 +956,13 @@ export const purchaseOrders = pgTable('purchase_orders', {
     createdBy: uuid('created_by').notNull(),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, (t) => [
+    uniqueIndex('purchase_orders_tenant_po_idx').on(t.tenantId, t.poNumber),
+]);
 
 export const purchaseOrderItems = pgTable('purchase_order_items', {
     id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
     purchaseOrderId: uuid('purchase_order_id').notNull(),
     productId: uuid('product_id').notNull(),
     productName: text('product_name').notNull(),
@@ -903,7 +975,7 @@ export const purchaseOrderItems = pgTable('purchase_order_items', {
 export const stockTransfers = pgTable('stock_transfers', {
     id: uuid('id').primaryKey().defaultRandom(),
     tenantId: uuid('tenant_id'),
-    transferNo: text('transfer_no').notNull().unique(),
+    transferNo: text('transfer_no').notNull(),
     fromBranchId: uuid('from_branch_id').notNull(),
     toBranchId: uuid('to_branch_id').notNull(),
     status: text('status').notNull().default('PENDING'),
@@ -915,10 +987,13 @@ export const stockTransfers = pgTable('stock_transfers', {
     completedAt: timestamp('completed_at'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, (t) => [
+    uniqueIndex('stock_transfers_tenant_no_idx').on(t.tenantId, t.transferNo),
+]);
 
 export const stockTransferItems = pgTable('stock_transfer_items', {
     id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
     transferId: uuid('transfer_id').notNull(),
     productId: uuid('product_id').notNull(),
     productName: text('product_name').notNull(),
@@ -933,7 +1008,7 @@ export const stockTransferItems = pgTable('stock_transfer_items', {
 export const stockCounts = pgTable('stock_counts', {
     id: uuid('id').primaryKey().defaultRandom(),
     tenantId: uuid('tenant_id'),
-    countNo: text('count_no').notNull().unique(),
+    countNo: text('count_no').notNull(),
     branchId: uuid('branch_id').notNull(),
     date: timestamp('date').notNull().defaultNow(),
     status: text('status').notNull().default('pending'),
@@ -944,10 +1019,13 @@ export const stockCounts = pgTable('stock_counts', {
     approvedAt: timestamp('approved_at'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, (t) => [
+    uniqueIndex('stock_counts_tenant_no_idx').on(t.tenantId, t.countNo),
+]);
 
 export const stockCountItems = pgTable('stock_count_items', {
     id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
     countId: uuid('count_id').notNull(),
     productId: uuid('product_id').notNull(),
     productName: text('product_name').notNull(),
@@ -964,7 +1042,7 @@ export const documents = pgTable('documents', {
     id: uuid('id').primaryKey().defaultRandom(),
     tenantId: uuid('tenant_id'),
     type: text('type').notNull(),
-    documentNo: text('document_no').notNull().unique(),
+    documentNo: text('document_no').notNull(),
     referenceId: uuid('reference_id').notNull(),
     referenceType: text('reference_type').notNull(),
     branchId: uuid('branch_id'),
@@ -977,19 +1055,22 @@ export const documents = pgTable('documents', {
 }, (t) => [
     index('documents_branch_idx').on(t.branchId),
     index('documents_store_idx').on(t.storeId),
+    uniqueIndex('documents_tenant_no_idx').on(t.tenantId, t.documentNo),
 ]);
 
 export const documentTemplates = pgTable('document_templates', {
     id: uuid('id').primaryKey().defaultRandom(),
     tenantId: uuid('tenant_id'),
-    type: text('type').notNull().unique(),
+    type: text('type').notNull(),
     name: text('name').notNull(),
     template: text('template').notNull(),
     settings: jsonb('settings'),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, (t) => [
+    uniqueIndex('document_templates_tenant_type_idx').on(t.tenantId, t.type),
+]);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SETTINGS & CONFIGURATION
@@ -1002,10 +1083,12 @@ export const settings = pgTable('settings', {
     key: text('key').notNull(),
     value: jsonb('value').notNull(),
     branchId: uuid('branch_id'),
+    storeId: uuid('store_id'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (t) => [
-    uniqueIndex('settings_category_key_branch_idx').on(t.category, t.key, t.branchId),
+    uniqueIndex('settings_tenant_cat_key_branch_store_idx').on(t.tenantId, t.category, t.key, t.branchId, t.storeId),
+    index('settings_tenant_idx').on(t.tenantId),
 ]);
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1058,9 +1141,55 @@ export const activityLogs = pgTable('activity_logs', {
     newData: jsonb('new_data'),
     ip: text('ip'),
     userAgent: text('user_agent'),
+    checksum: text('checksum'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
 }, (t) => [
     index('activity_logs_user_idx').on(t.userId),
     index('activity_logs_action_idx').on(t.action),
     index('activity_logs_created_idx').on(t.createdAt),
 ]);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PLATFORM AUDIT LOGS
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const platformAuditLogs = pgTable('platform_audit_logs', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    actorId: uuid('actor_id'),
+    action: text('action').notNull(),
+    tenantId: uuid('tenant_id'),
+    metadata: jsonb('metadata'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (t) => [
+    index('platform_audit_logs_actor_idx').on(t.actorId),
+    index('platform_audit_logs_tenant_idx').on(t.tenantId),
+]);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// USER ROLE ASSIGNMENTS (scoped multi-role)
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const userRoleAssignments = pgTable('user_role_assignments', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id').notNull(),
+    userId: uuid('user_id').notNull(),
+    roleId: uuid('role_id').notNull(),
+    scope: text('scope').notNull().default('merchant'),
+    storeId: uuid('store_id'),
+    grantedBy: uuid('granted_by'),
+    grantedAt: timestamp('granted_at').notNull().defaultNow(),
+}, (t) => [
+    uniqueIndex('user_role_assignments_unique_idx').on(t.tenantId, t.userId, t.roleId, t.storeId),
+    index('user_role_assignments_user_idx').on(t.userId),
+]);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// IDEMPOTENCY KEYS
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const idempotencyKeys = pgTable('idempotency_keys', {
+    key: text('key').primaryKey(),
+    result: jsonb('result').notNull(),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    expiresAt: timestamp('expires_at'),
+});

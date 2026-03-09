@@ -1,5 +1,6 @@
 <script lang="ts">
     import { createQuery, createMutation, useQueryClient } from "@tanstack/svelte-query";
+    import { get } from "svelte/store";
     import { api } from "$lib/api";
     import { goto } from "$app/navigation";
     import { onMount } from "svelte";
@@ -65,7 +66,7 @@
         },
         onSuccess: () => {
             toast.success("ບັນທຶກສິດສຳເລັດ");
-            queryClient.invalidateQueries({ queryKey: ["admin-permissions"] });
+            get(permissionsQuery).refetch();
         },
         onError: () => toast.error("ເກີດຂໍ້ຜິດພາດ")
     });

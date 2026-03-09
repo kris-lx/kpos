@@ -38,11 +38,13 @@ export interface TableFilters {
     zone?: string;
     floor?: string;
     isActive?: boolean;
+    tenantId?: string;
 }
 
 export class TableService {
     async findAll(filters: TableFilters = {}): Promise<Table[]> {
         const conds: any[] = [eq(tables.isActive, true)];
+        if (filters.tenantId) conds.push(eq(tables.tenantId, filters.tenantId));
         if (filters.branchId) conds.push(eq(tables.branchId, filters.branchId));
         if (filters.status) conds.push(eq(tables.status, filters.status));
         if (filters.isActive !== undefined) conds[0] = eq(tables.isActive, filters.isActive);
@@ -51,9 +53,11 @@ export class TableService {
         return rows.map(t => new Table(t as any));
     }
 
-    async findById(id: string): Promise<Table | null> {
+    async findById(id: string, tenantId?: string): Promise<Table | null> {
+        const conds: any[] = [eq(tables.id, id)];
+        if (tenantId) conds.push(eq(tables.tenantId, tenantId));
         const table = await db.query.tables.findFirst({
-            where: eq(tables.id, id),
+            where: and(...conds),
             with: { orders: { with: { items: true } } },
         });
 
@@ -63,6 +67,7 @@ export class TableService {
 
     async create(data: CreateTableDTO): Promise<Table> {
         const [table] = await db.insert(tables).values({
+            tenantId: (data as any).tenantId || undefined,
             name: data.name, branchId: data.branchId, areaId: data.areaId,
             capacity: data.capacity || 4, status: data.status || TableStatus.AVAILABLE,
             posX: data.posX || 0, posY: data.posY || 0, shape: data.shape || TableShape.SQUARE,
@@ -71,28 +76,36 @@ export class TableService {
         return new Table(table as any);
     }
 
-    async update(id: string, data: UpdateTableDTO): Promise<Table> {
-        const [table] = await db.update(tables).set(data).where(eq(tables.id, id)).returning();
+    async update(id: string, data: UpdateTableDTO, tenantId?: string): Promise<Table> {
+        const conds: any[] = [eq(tables.id, id)];
+        if (tenantId) conds.push(eq(tables.tenantId, tenantId));
+        const [table] = await db.update(tables).set(data).where(and(...conds)).returning();
         return new Table(table as any);
     }
 
-    async updateStatus(id: string, status: TableStatus): Promise<Table> {
-        const [table] = await db.update(tables).set({ status }).where(eq(tables.id, id)).returning();
+    async updateStatus(id: string, status: TableStatus, tenantId?: string): Promise<Table> {
+        const conds: any[] = [eq(tables.id, id)];
+        if (tenantId) conds.push(eq(tables.tenantId, tenantId));
+        const [table] = await db.update(tables).set({ status }).where(and(...conds)).returning();
         return new Table(table as any);
     }
 
-    async delete(id: string): Promise<void> {
-        await db.update(tables).set({ isActive: false }).where(eq(tables.id, id));
+    async delete(id: string, tenantId?: string): Promise<void> {
+        const conds: any[] = [eq(tables.id, id)];
+        if (tenantId) conds.push(eq(tables.tenantId, tenantId));
+        await db.update(tables).set({ isActive: false }).where(and(...conds));
     }
 
-    async getStats(branchId: string): Promise<{
+    async getStats(branchId: string, tenantId?: string): Promise<{
         total: number;
         available: number;
         occupied: number;
         reserved: number;
         cleaning: number;
     }> {
-        const base = and(eq(tables.branchId, branchId), eq(tables.isActive, true));
+        const baseConds: any[] = [eq(tables.branchId, branchId), eq(tables.isActive, true)];
+        if (tenantId) baseConds.push(eq(tables.tenantId, tenantId));
+        const base = and(...baseConds);
         const [[{ value: total }], [{ value: available }], [{ value: occupied }], [{ value: reserved }], [{ value: cleaning }]] = await Promise.all([
             db.select({ value: count() }).from(tables).where(base),
             db.select({ value: count() }).from(tables).where(and(base, eq(tables.status, TableStatus.AVAILABLE))),

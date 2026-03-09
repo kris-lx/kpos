@@ -28,7 +28,7 @@
         },
     });
 
-    const paymentTypes = [
+    const defaultPaymentTypes = [
         { value: "cash", label: "ເງິນສົດ" },
         { value: "card", label: "ບັດເຄຣດິດ/ເດບິດ" },
         { value: "qr", label: "QR Code" },
@@ -36,10 +36,24 @@
         { value: "ewallet", label: "E-Wallet" },
         { value: "credit", label: "ສິນເຊື່ອ" },
     ];
+    let paymentTypes = $state(defaultPaymentTypes);
+
+    async function loadPaymentTypes() {
+        try {
+            const res = await api.get('settings/enums?type=payment_method').json<any>();
+            if (res.data?.payment_method?.length) {
+                paymentTypes = res.data.payment_method.map((e: any) => ({ value: e.value, label: e.labelLao || e.label }));
+            }
+        } catch { /* keep defaults */ }
+    }
 
     $effect(() => {
         auth.activeStoreId;
         loadPaymentMethods();
+    });
+
+    onMount(() => {
+        loadPaymentTypes();
     });
 
     async function loadPaymentMethods() {

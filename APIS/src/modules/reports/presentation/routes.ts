@@ -4,7 +4,7 @@
 
 import { Router } from 'express';
 import { authenticate, authorize, branchFilter, applyScopeFilter, buildScopeCondition, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
-import { db } from '@/config/database.config';
+import { db, dbRead } from '@/config/database.config';
 import { transactions, transactionItems, transactionPayments, products, customers, inventory, users } from '@/db/schema/tables';
 import { eq, and, or, not, ilike, inArray, isNotNull, gte, lte, lt, desc, asc, count, sum, sql } from 'drizzle-orm';
 
@@ -15,46 +15,52 @@ export const reportRoutes = Router();
 // ═══════════════════════════════════════════════════════════════════════════
 reportRoutes.get('/summary', authenticate, branchFilter(), async (req, res, next) => {
     try {
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const filter = req.branchFilter;
         const branchId = filter?.branchIds?.[0] || req.user!.branchId;
         const today = new Date();
         today.setHours(0, 0, 0, 0);
         const tomorrow = new Date(today);
         tomorrow.setDate(tomorrow.getDate() + 1);
 
+        // BE-76: Tenant isolation
+        const tenantId = req.authUser?.tenantId;
+
         // Build scope conditions
         const txConds: any[] = [eq(transactions.status, 'COMPLETED'), eq(transactions.type, 'SALE'), gte(transactions.createdAt, today), lt(transactions.createdAt, tomorrow)];
+        if (tenantId && !req.authUser?.isSuperAdmin) txConds.push(eq(transactions.tenantId, tenantId));
         const scopeCond = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
         if (scopeCond) txConds.push(scopeCond);
         if (!filter) txConds.push(eq(transactions.branchId, branchId));
 
-        const [todaySales] = await db.select({ total: sum(transactions.total), cnt: count() }).from(transactions).where(and(...txConds));
+        const [todaySales] = await dbRead.select({ total: sum(transactions.total), cnt: count() }).from(transactions).where(and(...txConds));
 
         // Total products
         const prodConds: any[] = [eq(products.isActive, true)];
+        if (tenantId && !req.authUser?.isSuperAdmin) prodConds.push(eq(products.tenantId, tenantId));
         const prodScope = buildScopeCondition(filter, { branchId: products.branchId }, 'branchId');
         if (prodScope) prodConds.push(prodScope);
         if (!filter) prodConds.push(eq(products.branchId, branchId));
-        const [{ value: totalProducts }] = await db.select({ value: count() }).from(products).where(and(...prodConds));
+        const [{ value: totalProducts }] = await dbRead.select({ value: count() }).from(products).where(and(...prodConds));
 
         // Total customers
         const custConds: any[] = [eq(customers.isActive, true)];
+        if (tenantId && !req.authUser?.isSuperAdmin) custConds.push(eq(customers.tenantId, tenantId));
         const custScope = buildScopeCondition(filter, { storeId: customers.storeId }, 'storeId');
         if (custScope) custConds.push(custScope);
-        const [{ value: totalCustomers }] = await db.select({ value: count() }).from(customers).where(and(...custConds));
+        const [{ value: totalCustomers }] = await dbRead.select({ value: count() }).from(customers).where(and(...custConds));
 
         // Low stock
         const invConds: any[] = [lte(inventory.quantity, 10)];
         const invScope = buildScopeCondition(filter, { branchId: inventory.branchId }, 'branchId');
         if (invScope) invConds.push(invScope);
         if (!filter) invConds.push(eq(inventory.branchId, branchId));
-        const [{ value: lowStock }] = await db.select({ value: count() }).from(inventory).where(and(...invConds));
+        const [{ value: lowStock }] = await dbRead.select({ value: count() }).from(inventory).where(and(...invConds));
 
         // Recent sales
         const recentConds: any[] = [eq(transactions.status, 'COMPLETED'), eq(transactions.type, 'SALE')];
         if (scopeCond) recentConds.push(scopeCond);
         if (!filter) recentConds.push(eq(transactions.branchId, branchId));
-        const recentSales = await db.query.transactions.findMany({
+        const recentSales = await dbRead.query.transactions.findMany({
             where: and(...recentConds),
             limit: 5,
             orderBy: desc(transactions.createdAt),
@@ -89,7 +95,7 @@ reportRoutes.get('/summary', authenticate, branchFilter(), async (req, res, next
 reportRoutes.get('/sales', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { startDate, endDate, groupBy = 'day' } = req.query;
-        const filter = (req as any).branchFilter;
+        const filter = req.branchFilter;
         const branchId = filter?.branchIds?.[0] || req.user!.branchId;
 
         const start = startDate ? new Date(String(startDate)) : new Date(new Date().setDate(new Date().getDate() - 30));
@@ -97,11 +103,14 @@ reportRoutes.get('/sales', authenticate, branchFilter(), async (req, res, next) 
         end.setHours(23, 59, 59, 999);
 
         const salesConds: any[] = [eq(transactions.type, 'SALE'), eq(transactions.status, 'COMPLETED'), gte(transactions.createdAt, start), lte(transactions.createdAt, end)];
+        // BE-76: Tenant isolation
+        const tenantId = req.authUser?.tenantId;
+        if (tenantId && !req.authUser?.isSuperAdmin) salesConds.push(eq(transactions.tenantId, tenantId));
         const salesScope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
         if (salesScope) salesConds.push(salesScope);
         if (!filter) salesConds.push(eq(transactions.branchId, branchId));
 
-        const sales = await db.query.transactions.findMany({
+        const sales = await dbRead.query.transactions.findMany({
             where: and(...salesConds),
             columns: { id: true, total: true, subtotal: true, taxAmount: true, discountAmount: true, createdAt: true },
             orderBy: asc(transactions.createdAt),
@@ -156,7 +165,7 @@ reportRoutes.get('/sales', authenticate, branchFilter(), async (req, res, next) 
 reportRoutes.get('/top-products', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { startDate, endDate, limit = 10 } = req.query;
-        const filter = (req as any).branchFilter;
+        const filter = req.branchFilter;
         const branchId = filter?.branchIds?.[0] || req.user!.branchId;
 
         const start = startDate ? new Date(String(startDate)) : new Date(new Date().setDate(new Date().getDate() - 30));
@@ -164,18 +173,21 @@ reportRoutes.get('/top-products', authenticate, branchFilter(), async (req, res,
         end.setHours(23, 59, 59, 999);
 
         const tpConds: any[] = [eq(transactions.type, 'SALE'), eq(transactions.status, 'COMPLETED'), gte(transactions.createdAt, start), lte(transactions.createdAt, end)];
+        // BE-76: Tenant isolation
+        const tenantId = req.authUser?.tenantId;
+        if (tenantId && !req.authUser?.isSuperAdmin) tpConds.push(eq(transactions.tenantId, tenantId));
         const tpScope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
         if (tpScope) tpConds.push(tpScope);
         if (!filter) tpConds.push(eq(transactions.branchId, branchId));
 
-        const txIds = await db.query.transactions.findMany({
+        const txIds = await dbRead.query.transactions.findMany({
             where: and(...tpConds),
             columns: { id: true },
         });
         const transactionIds = txIds.map(t => t.id);
 
         const items = transactionIds.length > 0
-            ? await db.select({
+            ? await dbRead.select({
                 productId: transactionItems.productId,
                 productName: transactionItems.productName,
                 quantitySold: sum(transactionItems.quantity),
@@ -208,7 +220,7 @@ reportRoutes.get('/top-products', authenticate, branchFilter(), async (req, res,
 reportRoutes.get('/inventory', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { lowStockOnly, page = '1', limit = '20', search, stockFilter } = req.query;
-        const filter = (req as any).branchFilter;
+        const filter = req.branchFilter;
         const branchId = filter?.branchIds?.[0] || req.user!.branchId;
         const pageNum = Math.max(1, parseInt(String(page), 10) || 1);
         const limitNum = Math.min(100, Math.max(1, parseInt(String(limit), 10) || 20));
@@ -227,9 +239,9 @@ reportRoutes.get('/inventory', authenticate, branchFilter(), async (req, res, ne
         }
 
         const invWhere2 = invConds2.length > 0 ? and(...invConds2) : undefined;
-        const [{ value: total }] = await db.select({ value: count() }).from(inventory).where(invWhere2);
+        const [{ value: total }] = await dbRead.select({ value: count() }).from(inventory).where(invWhere2);
 
-        const invRows = await db.query.inventory.findMany({
+        const invRows = await dbRead.query.inventory.findMany({
             where: invWhere2,
             with: { product: true },
             orderBy: asc(inventory.quantity),
@@ -263,7 +275,7 @@ reportRoutes.get('/inventory', authenticate, branchFilter(), async (req, res, ne
         const sumConds: any[] = [];
         if (invScope2) sumConds.push(invScope2);
         if (!filter) sumConds.push(eq(inventory.branchId, branchId));
-        const allInventory = await db.query.inventory.findMany({
+        const allInventory = await dbRead.query.inventory.findMany({
             where: sumConds.length > 0 ? and(...sumConds) : undefined,
             with: { product: { columns: { cost: true, price: true } } },
         });
@@ -296,7 +308,7 @@ reportRoutes.get('/inventory', authenticate, branchFilter(), async (req, res, ne
 reportRoutes.get('/payments', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { startDate, endDate } = req.query;
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const filter = req.branchFilter;
         const branchId = filter?.branchIds?.[0] || req.user!.branchId;
 
         const start = startDate ? new Date(String(startDate)) : new Date(new Date().setDate(new Date().getDate() - 30));
@@ -304,15 +316,18 @@ reportRoutes.get('/payments', authenticate, branchFilter(), async (req, res, nex
         end.setHours(23, 59, 59, 999);
 
         const pmConds: any[] = [eq(transactions.type, 'SALE'), eq(transactions.status, 'COMPLETED'), gte(transactions.createdAt, start), lte(transactions.createdAt, end)];
+        // BE-76: Tenant isolation
+        const tenantId = req.authUser?.tenantId;
+        if (tenantId && !req.authUser?.isSuperAdmin) pmConds.push(eq(transactions.tenantId, tenantId));
         const pmScope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
         if (pmScope) pmConds.push(pmScope);
         if (!filter) pmConds.push(eq(transactions.branchId, branchId));
 
-        const pmTxIds = await db.query.transactions.findMany({ where: and(...pmConds), columns: { id: true } });
+        const pmTxIds = await dbRead.query.transactions.findMany({ where: and(...pmConds), columns: { id: true } });
         const pmTransactionIds = pmTxIds.map(t => t.id);
 
         const payments = pmTransactionIds.length > 0
-            ? await db.select({
+            ? await dbRead.select({
                 methodName: transactionPayments.methodName,
                 total: sum(transactionPayments.amount),
                 cnt: count(),
@@ -340,7 +355,7 @@ reportRoutes.get('/payments', authenticate, branchFilter(), async (req, res, nex
 reportRoutes.get('/customers', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { from, to, limit = 20, page = '1', search } = req.query;
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const filter = req.branchFilter;
         const branchId = filter?.branchIds?.[0] || req.user!.branchId;
         const pageNum = Math.max(1, parseInt(String(page), 10) || 1);
         const limitNum = Math.min(100, Math.max(1, parseInt(String(limit), 10) || 20));
@@ -356,12 +371,17 @@ reportRoutes.get('/customers', authenticate, branchFilter(), async (req, res, ne
         const prevStartDate = new Date(startDate.getTime() - periodMs);
         const prevEndDate = new Date(startDate.getTime() - 1);
 
+        // BE-76: Tenant isolation
+        const tenantId = req.authUser?.tenantId;
+
         // Build scope conditions
         const custBaseConds: any[] = [eq(customers.isActive, true)];
+        if (tenantId && !req.authUser?.isSuperAdmin) custBaseConds.push(eq(customers.tenantId, tenantId));
         const crScope = buildScopeCondition(filter, { storeId: customers.storeId }, 'storeId');
         if (crScope) custBaseConds.push(crScope);
 
         const txBaseConds: any[] = [eq(transactions.status, 'COMPLETED'), eq(transactions.type, 'SALE')];
+        if (tenantId && !req.authUser?.isSuperAdmin) txBaseConds.push(eq(transactions.tenantId, tenantId));
         const trScope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
         if (trScope) txBaseConds.push(trScope);
         if (!filter) txBaseConds.push(eq(transactions.branchId, branchId));
@@ -381,22 +401,22 @@ reportRoutes.get('/customers', authenticate, branchFilter(), async (req, res, ne
             topCustomers,
             [{ value: topCustomersTotal }],
         ] = await Promise.all([
-            db.select({ value: count() }).from(customers).where(and(...custBaseConds)),
-            db.select({ value: count() }).from(customers).where(and(...custBaseConds, gte(customers.createdAt, startDate), lte(customers.createdAt, endDate))),
-            db.select({ value: count() }).from(customers).where(and(...custBaseConds, gte(customers.createdAt, prevStartDate), lte(customers.createdAt, prevEndDate))),
-            db.select({ customerId: transactions.customerId }).from(transactions)
+            dbRead.select({ value: count() }).from(customers).where(and(...custBaseConds)),
+            dbRead.select({ value: count() }).from(customers).where(and(...custBaseConds, gte(customers.createdAt, startDate), lte(customers.createdAt, endDate))),
+            dbRead.select({ value: count() }).from(customers).where(and(...custBaseConds, gte(customers.createdAt, prevStartDate), lte(customers.createdAt, prevEndDate))),
+            dbRead.select({ customerId: transactions.customerId }).from(transactions)
                 .where(and(...txBaseConds, gte(transactions.createdAt, startDate), lte(transactions.createdAt, endDate), isNotNull(transactions.customerId)))
                 .groupBy(transactions.customerId),
-            db.select({ total: sum(transactions.total), cnt: count() }).from(transactions)
+            dbRead.select({ total: sum(transactions.total), cnt: count() }).from(transactions)
                 .where(and(...txBaseConds, gte(transactions.createdAt, startDate), lte(transactions.createdAt, endDate))),
-            db.query.customers.findMany({
+            dbRead.query.customers.findMany({
                 where: and(...custSearchConds),
                 columns: { id: true, name: true, phone: true, email: true, totalSpent: true, visitCount: true, lastVisitAt: true, memberCode: true },
                 orderBy: desc(customers.totalSpent),
                 offset: skip,
                 limit: limitNum,
             }),
-            db.select({ value: count() }).from(customers).where(and(...custSearchConds)),
+            dbRead.select({ value: count() }).from(customers).where(and(...custSearchConds)),
         ]);
 
         const activeCustomers = activeCustomersData.length;
@@ -475,7 +495,7 @@ reportRoutes.get('/customers', authenticate, branchFilter(), async (req, res, ne
 reportRoutes.get('/products', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { period = 'month', page = '1', limit = '20', search } = req.query;
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const filter = req.branchFilter;
         const branchId = filter?.branchIds?.[0] || req.user!.branchId;
         const pageNum = Math.max(1, parseInt(String(page), 10) || 1);
         const limitNum = Math.min(100, Math.max(1, parseInt(String(limit), 10) || 20));
@@ -502,11 +522,14 @@ reportRoutes.get('/products', authenticate, branchFilter(), async (req, res, nex
         }
 
         const prConds: any[] = [eq(transactions.type, 'SALE'), eq(transactions.status, 'COMPLETED'), gte(transactions.createdAt, start)];
+        // BE-76: Tenant isolation
+        const tenantId = req.authUser?.tenantId;
+        if (tenantId && !req.authUser?.isSuperAdmin) prConds.push(eq(transactions.tenantId, tenantId));
         const prScope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
         if (prScope) prConds.push(prScope);
         if (!filter) prConds.push(eq(transactions.branchId, branchId));
 
-        const prTxIds = await db.query.transactions.findMany({ where: and(...prConds), columns: { id: true } });
+        const prTxIds = await dbRead.query.transactions.findMany({ where: and(...prConds), columns: { id: true } });
         const prTransactionIds = prTxIds.map(t => t.id);
 
         if (prTransactionIds.length === 0) {
@@ -521,10 +544,10 @@ reportRoutes.get('/products', authenticate, branchFilter(), async (req, res, nex
         const itemWhere = and(...itemConds);
 
         // Count unique products
-        const allProds = await db.select({ productId: transactionItems.productId }).from(transactionItems).where(itemWhere).groupBy(transactionItems.productId);
+        const allProds = await dbRead.select({ productId: transactionItems.productId }).from(transactionItems).where(itemWhere).groupBy(transactionItems.productId);
         const total = allProds.length;
 
-        const items = await db.select({
+        const items = await dbRead.select({
             productId: transactionItems.productId,
             productName: transactionItems.productName,
             sku: transactionItems.sku,
@@ -564,7 +587,7 @@ reportRoutes.get('/products', authenticate, branchFilter(), async (req, res, nex
 reportRoutes.get('/financial', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { period = 'month' } = req.query;
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const filter = req.branchFilter;
         const branchId = filter?.branchIds?.[0] || req.user!.branchId;
 
         // Calculate date range based on period
@@ -604,29 +627,33 @@ reportRoutes.get('/financial', authenticate, branchFilter(), async (req, res, ne
         }
 
         const finConds: any[] = [eq(transactions.type, 'SALE'), eq(transactions.status, 'COMPLETED'), gte(transactions.createdAt, start)];
+        // BE-76: Tenant isolation
+        const tenantId = req.authUser?.tenantId;
+        if (tenantId && !req.authUser?.isSuperAdmin) finConds.push(eq(transactions.tenantId, tenantId));
         const finScope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
         if (finScope) finConds.push(finScope);
         if (!filter) finConds.push(eq(transactions.branchId, branchId));
 
         const prevConds: any[] = [eq(transactions.type, 'SALE'), eq(transactions.status, 'COMPLETED'), gte(transactions.createdAt, previousStart), lt(transactions.createdAt, previousEnd)];
+        if (tenantId && !req.authUser?.isSuperAdmin) prevConds.push(eq(transactions.tenantId, tenantId));
         if (finScope) prevConds.push(finScope);
         if (!filter) prevConds.push(eq(transactions.branchId, branchId));
 
         const [[currentSales], [previousSales]] = await Promise.all([
-            db.select({ total: sum(transactions.total), tax: sum(transactions.taxAmount), discount: sum(transactions.discountAmount) }).from(transactions).where(and(...finConds)),
-            db.select({ total: sum(transactions.total) }).from(transactions).where(and(...prevConds)),
+            dbRead.select({ total: sum(transactions.total), tax: sum(transactions.taxAmount), discount: sum(transactions.discountAmount) }).from(transactions).where(and(...finConds)),
+            dbRead.select({ total: sum(transactions.total) }).from(transactions).where(and(...prevConds)),
         ]);
 
-        const finTxIds = await db.query.transactions.findMany({ where: and(...finConds), columns: { id: true } });
+        const finTxIds = await dbRead.query.transactions.findMany({ where: and(...finConds), columns: { id: true } });
         const transactionIds = finTxIds.map(t => t.id);
 
         let cogs = 0;
         let payments: { methodName: string | null; total: string | null; cnt: number }[] = [];
         if (transactionIds.length > 0) {
-            const [cogsRow] = await db.select({ cost: sum(transactionItems.cost) }).from(transactionItems).where(inArray(transactionItems.transactionId, transactionIds));
+            const [cogsRow] = await dbRead.select({ cost: sum(transactionItems.cost) }).from(transactionItems).where(inArray(transactionItems.transactionId, transactionIds));
             cogs = Number(cogsRow.cost) || 0;
 
-            payments = await db.select({
+            payments = await dbRead.select({
                 methodName: transactionPayments.methodName,
                 total: sum(transactionPayments.amount),
                 cnt: count(),
@@ -650,7 +677,7 @@ reportRoutes.get('/financial', authenticate, branchFilter(), async (req, res, ne
             percentage: Math.round(((Number(p.total) || 0) / totalPaymentAmount) * 100 * 10) / 10,
         }));
 
-        const dailyTransactions = await db.query.transactions.findMany({
+        const dailyTransactions = await dbRead.query.transactions.findMany({
             where: and(...finConds),
             columns: { id: true, total: true, createdAt: true },
             with: { items: { columns: { cost: true, quantity: true } } },
@@ -699,7 +726,7 @@ reportRoutes.get('/financial', authenticate, branchFilter(), async (req, res, ne
 reportRoutes.get('/staff', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { period = 'month', page = '1', limit = '20', search } = req.query;
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const filter = req.branchFilter;
         const branchId = filter?.branchIds?.[0] || req.user!.branchId;
         const pageNum = Math.max(1, parseInt(String(page), 10) || 1);
         const limitNum = Math.min(100, Math.max(1, parseInt(String(limit), 10) || 20));
@@ -726,17 +753,20 @@ reportRoutes.get('/staff', authenticate, branchFilter(), async (req, res, next) 
         }
 
         const stConds: any[] = [eq(transactions.type, 'SALE'), eq(transactions.status, 'COMPLETED'), gte(transactions.createdAt, start)];
+        // BE-76: Tenant isolation
+        const tenantId = req.authUser?.tenantId;
+        if (tenantId && !req.authUser?.isSuperAdmin) stConds.push(eq(transactions.tenantId, tenantId));
         const stScope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
         if (stScope) stConds.push(stScope);
         if (!filter) stConds.push(eq(transactions.branchId, branchId));
         const stWhere = and(...stConds);
 
         // Get total unique users with sales
-        const allSalesByUser = await db.select({ userId: transactions.userId }).from(transactions).where(stWhere).groupBy(transactions.userId);
+        const allSalesByUser = await dbRead.select({ userId: transactions.userId }).from(transactions).where(stWhere).groupBy(transactions.userId);
         const total = allSalesByUser.length;
 
         // Get sales grouped by user with pagination
-        const salesByUser = await db.select({
+        const salesByUser = await dbRead.select({
             userId: transactions.userId,
             totalSales: count(),
             revenue: sum(transactions.total),
@@ -749,10 +779,10 @@ reportRoutes.get('/staff', authenticate, branchFilter(), async (req, res, next) 
 
         // Get user details
         const userIds = salesByUser.map(s => s.userId);
-        const authUser = (req as any).authUser;
+        const authUser = req.authUser;
         const isSuper = authUser?.isSuperAdmin;
         const userRows = userIds.length > 0
-            ? await db.query.users.findMany({
+            ? await dbRead.query.users.findMany({
                 where: inArray(users.id, userIds),
                 columns: { id: true, name: true, email: true },
             }) : [];

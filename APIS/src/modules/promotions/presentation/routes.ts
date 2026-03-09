@@ -20,9 +20,14 @@ promotionRoutes.get('/coupons/list', authenticate, branchFilter(), async (req, r
         const { page = 1, limit = 20, search, status } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
         const now = new Date();
-        const filter = (req as any).branchFilter;
+        const filter = req.branchFilter;
 
         const conditions: any[] = [];
+        // BE-71: Tenant isolation
+        const tenantId = req.authUser?.tenantId;
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            conditions.push(eq(coupons.tenantId, tenantId));
+        }
         const scopeCond = buildScopeCondition(filter, { storeId: coupons.storeId }, 'storeId');
         if (scopeCond) conditions.push(scopeCond);
 
@@ -73,8 +78,14 @@ promotionRoutes.post('/coupons/validate', authenticate, async (req, res, next) =
         const { code, subtotal, memberId } = req.body;
         const now = new Date();
 
+        // BE-71: Tenant-scoped coupon validation
+        const tenantId = req.authUser?.tenantId;
+        const valConds: any[] = [eq(coupons.code, code)];
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            valConds.push(eq(coupons.tenantId, tenantId));
+        }
         const coupon = await db.query.coupons.findFirst({
-            where: eq(coupons.code, code),
+            where: and(...valConds),
         });
 
         if (!coupon) {
@@ -144,6 +155,7 @@ promotionRoutes.post('/coupons', authenticate, authorize('promotions:create'), a
         if (data.startDate) data.startDate = new Date(data.startDate);
         if (data.endDate) data.endDate = data.endDate ? new Date(data.endDate) : null;
         if (req.authUser?.activeStoreId) data.storeId = req.authUser.activeStoreId;
+        if (req.authUser?.tenantId) data.tenantId = req.authUser.tenantId;
 
         const [coupon] = await db.insert(coupons).values(data).returning();
 
@@ -157,15 +169,20 @@ promotionRoutes.post('/coupons', authenticate, authorize('promotions:create'), a
 // Update coupon (scope-checked)
 promotionRoutes.put('/coupons/:id', authenticate, authorize('promotions:update'), async (req, res, next) => {
     try {
-        const existing = await db.query.coupons.findFirst({ where: eq(coupons.id, req.params.id) });
-        if (!existing) return res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Coupon not found' } });
+        // BE-71: Tenant-scoped coupon update
+        const tenantId = req.authUser?.tenantId;
+        const updConds: any[] = [eq(coupons.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) updConds.push(eq(coupons.tenantId, tenantId));
+        const existing = await db.query.coupons.findFirst({ where: and(...updConds) });
+        if (!existing) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Coupon not found or no access' } });
         if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
 
         const data = { ...req.body, updatedAt: new Date() };
+        delete data.tenantId;
         if (data.startDate) data.startDate = new Date(data.startDate);
         if (data.endDate !== undefined) data.endDate = data.endDate ? new Date(data.endDate) : null;
 
-        const [coupon] = await db.update(coupons).set(data).where(eq(coupons.id, req.params.id)).returning();
+        const [coupon] = await db.update(coupons).set(data).where(and(...updConds)).returning();
 
         await invalidateQueryCache('promotions*');
         res.json({ success: true, data: coupon });
@@ -177,11 +194,15 @@ promotionRoutes.put('/coupons/:id', authenticate, authorize('promotions:update')
 // Delete coupon (scope-checked)
 promotionRoutes.delete('/coupons/:id', authenticate, authorize('promotions:delete'), async (req, res, next) => {
     try {
-        const existing = await db.query.coupons.findFirst({ where: eq(coupons.id, req.params.id) });
-        if (!existing) return res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Coupon not found' } });
+        // BE-71: Tenant-scoped coupon delete
+        const tenantId = req.authUser?.tenantId;
+        const delConds: any[] = [eq(coupons.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) delConds.push(eq(coupons.tenantId, tenantId));
+        const existing = await db.query.coupons.findFirst({ where: and(...delConds) });
+        if (!existing) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Coupon not found or no access' } });
         if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
 
-        await db.delete(coupons).where(eq(coupons.id, req.params.id));
+        await db.delete(coupons).where(and(...delConds));
 
         await invalidateQueryCache('promotions*');
         res.json({ success: true, message: 'Coupon deleted successfully' });
@@ -199,9 +220,14 @@ promotionRoutes.get('/discounts', authenticate, branchFilter(), async (req, res,
     try {
         const { page = 1, limit = 20, search, isActive, applyTo } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
-        const filter = (req as any).branchFilter;
+        const filter = req.branchFilter;
         
         const dConditions: any[] = [];
+        // BE-71: Tenant isolation on discounts
+        const tenantId = req.authUser?.tenantId;
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            dConditions.push(eq(discounts.tenantId, tenantId));
+        }
         const dScopeCond = buildScopeCondition(filter, { storeId: discounts.storeId }, 'storeId');
         if (dScopeCond) dConditions.push(dScopeCond);
         
@@ -263,8 +289,8 @@ promotionRoutes.post('/discounts', authenticate, authorize('promotions:create'),
             applyTo: rest.applyTo || 'all',
             isActive: rest.isActive !== undefined ? rest.isActive : true,
             minQuantity: rest.minQuantity || 1,
-            productIds: rest.productIds || [],
-            categoryIds: rest.categoryIds || [],
+            productIds: Array.isArray(rest.productIds) ? rest.productIds : [],
+            categoryIds: Array.isArray(rest.categoryIds) ? rest.categoryIds : [],
         };
 
         // Only add optional fields if they exist in schema
@@ -274,10 +300,9 @@ promotionRoutes.post('/discounts', authenticate, authorize('promotions:create'),
         if (endDate) discountData.endDate = new Date(endDate);
         if (usageLimit !== undefined) discountData.usageLimit = usageLimit || null;
         
-        // Attach storeId from active store
-        if (req.authUser?.activeStoreId) {
-            discountData.storeId = req.authUser.activeStoreId;
-        }
+        // Attach storeId and tenantId from active session
+        if (req.authUser?.activeStoreId) discountData.storeId = req.authUser.activeStoreId;
+        if (req.authUser?.tenantId) discountData.tenantId = req.authUser.tenantId;
 
         const [discount] = await db.insert(discounts).values(discountData as any).returning();
 
@@ -292,8 +317,12 @@ promotionRoutes.post('/discounts', authenticate, authorize('promotions:create'),
 // Update discount (scope-checked)
 promotionRoutes.put('/discounts/:id', authenticate, authorize('promotions:update'), async (req, res, next) => {
     try {
-        const existing = await db.query.discounts.findFirst({ where: eq(discounts.id, req.params.id) });
-        if (!existing) return res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Discount not found' } });
+        // BE-71: Tenant-scoped discount update
+        const tenantId = req.authUser?.tenantId;
+        const updConds: any[] = [eq(discounts.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) updConds.push(eq(discounts.tenantId, tenantId));
+        const existing = await db.query.discounts.findFirst({ where: and(...updConds) });
+        if (!existing) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Discount not found or no access' } });
         if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
 
         const { 
@@ -311,15 +340,16 @@ promotionRoutes.put('/discounts/:id', authenticate, authorize('promotions:update
         if (applyTo !== undefined) discountData.applyTo = applyTo;
         if (isActive !== undefined) discountData.isActive = isActive;
         if (minQuantity !== undefined) discountData.minQuantity = minQuantity;
-        if (productIds !== undefined) discountData.productIds = productIds;
-        if (categoryIds !== undefined) discountData.categoryIds = categoryIds;
+        if (productIds !== undefined) discountData.productIds = Array.isArray(productIds) ? productIds : [];
+        if (categoryIds !== undefined) discountData.categoryIds = Array.isArray(categoryIds) ? categoryIds : [];
         if (minPurchase !== undefined) discountData.minPurchase = minPurchase;
         if (maxDiscount !== undefined) discountData.maxDiscount = maxDiscount;
         if (startDate !== undefined) discountData.startDate = startDate ? new Date(startDate) : null;
         if (endDate !== undefined) discountData.endDate = endDate ? new Date(endDate) : null;
         if (usageLimit !== undefined) discountData.usageLimit = usageLimit || null;
         
-        const [discount] = await db.update(discounts).set(discountData as any).where(eq(discounts.id, req.params.id)).returning();
+        delete discountData.tenantId;
+        const [discount] = await db.update(discounts).set(discountData as any).where(and(...updConds)).returning();
 
         await invalidateQueryCache('promotions*');
         res.json({ success: true, data: discount });
@@ -332,11 +362,15 @@ promotionRoutes.put('/discounts/:id', authenticate, authorize('promotions:update
 // Delete discount (scope-checked)
 promotionRoutes.delete('/discounts/:id', authenticate, authorize('promotions:delete'), async (req, res, next) => {
     try {
-        const existing = await db.query.discounts.findFirst({ where: eq(discounts.id, req.params.id) });
-        if (!existing) return res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Discount not found' } });
+        // BE-71: Tenant-scoped discount delete
+        const tenantId = req.authUser?.tenantId;
+        const delConds: any[] = [eq(discounts.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) delConds.push(eq(discounts.tenantId, tenantId));
+        const existing = await db.query.discounts.findFirst({ where: and(...delConds) });
+        if (!existing) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Discount not found or no access' } });
         if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
 
-        await db.delete(discounts).where(eq(discounts.id, req.params.id));
+        await db.delete(discounts).where(and(...delConds));
 
         await invalidateQueryCache('promotions*');
         res.json({ success: true, message: 'Discount deleted successfully' });
@@ -355,9 +389,14 @@ promotionRoutes.get('/', authenticate, branchFilter(), async (req, res, next) =>
         const { page = 1, limit = 20, search, status } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
         const now = new Date();
-        const filter = (req as any).branchFilter;
+        const filter = req.branchFilter;
 
         const pConditions: any[] = [];
+        // BE-71: Tenant isolation on promotions
+        const tenantId = req.authUser?.tenantId;
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            pConditions.push(eq(promotions.tenantId, tenantId));
+        }
         const pScopeCond = buildScopeCondition(filter, { storeId: promotions.storeId }, 'storeId');
         if (pScopeCond) pConditions.push(pScopeCond);
         if (search) {
@@ -406,12 +445,16 @@ promotionRoutes.get('/', authenticate, branchFilter(), async (req, res, next) =>
 // Get promotion by ID (scope-checked)
 promotionRoutes.get('/:id', authenticate, async (req, res, next) => {
     try {
+        // BE-71: Tenant-scoped promotion lookup
+        const tenantId = req.authUser?.tenantId;
+        const getConds: any[] = [eq(promotions.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) getConds.push(eq(promotions.tenantId, tenantId));
         const promotion = await db.query.promotions.findFirst({
-            where: eq(promotions.id, req.params.id),
+            where: and(...getConds),
         });
 
         if (!promotion) {
-            res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Promotion not found' } });
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Promotion not found or no access' } });
             return;
         }
 
@@ -445,10 +488,9 @@ promotionRoutes.post('/', authenticate, authorize('promotions:create'), async (r
             memberOnly: body.memberOnly || false,
         };
 
-        // Attach storeId from active store
-        if (req.authUser?.activeStoreId) {
-            data.storeId = req.authUser.activeStoreId;
-        }
+        // Attach storeId and tenantId from active session
+        if (req.authUser?.activeStoreId) data.storeId = req.authUser.activeStoreId;
+        if (req.authUser?.tenantId) data.tenantId = req.authUser.tenantId;
 
         const [promotion] = await db.insert(promotions).values(data as any).returning();
 
@@ -462,8 +504,12 @@ promotionRoutes.post('/', authenticate, authorize('promotions:create'), async (r
 // Update promotion (scope-checked)
 promotionRoutes.put('/:id', authenticate, authorize('promotions:update'), async (req, res, next) => {
     try {
-        const existing = await db.query.promotions.findFirst({ where: eq(promotions.id, req.params.id) });
-        if (!existing) return res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Promotion not found' } });
+        // BE-71: Tenant-scoped promotion update
+        const tenantId = req.authUser?.tenantId;
+        const updConds: any[] = [eq(promotions.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) updConds.push(eq(promotions.tenantId, tenantId));
+        const existing = await db.query.promotions.findFirst({ where: and(...updConds) });
+        if (!existing) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Promotion not found or no access' } });
         if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
 
         const { id, _id, createdAt, updatedAt, ...body } = req.body;
@@ -481,7 +527,8 @@ promotionRoutes.put('/:id', authenticate, authorize('promotions:update'), async 
         if (body.usageLimit !== undefined) data.usageLimit = body.usageLimit ? Number(body.usageLimit) : null;
         if (body.memberOnly !== undefined) data.memberOnly = body.memberOnly;
 
-        const [promotion] = await db.update(promotions).set(data as any).where(eq(promotions.id, req.params.id)).returning();
+        delete data.tenantId;
+        const [promotion] = await db.update(promotions).set(data as any).where(and(...updConds)).returning();
 
         await invalidateQueryCache('promotions*');
         res.json({ success: true, data: promotion });
@@ -493,11 +540,15 @@ promotionRoutes.put('/:id', authenticate, authorize('promotions:update'), async 
 // Delete promotion (scope-checked)
 promotionRoutes.delete('/:id', authenticate, authorize('promotions:delete'), async (req, res, next) => {
     try {
-        const existing = await db.query.promotions.findFirst({ where: eq(promotions.id, req.params.id) });
-        if (!existing) return res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Promotion not found' } });
+        // BE-71: Tenant-scoped promotion delete
+        const tenantId = req.authUser?.tenantId;
+        const delConds: any[] = [eq(promotions.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) delConds.push(eq(promotions.tenantId, tenantId));
+        const existing = await db.query.promotions.findFirst({ where: and(...delConds) });
+        if (!existing) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Promotion not found or no access' } });
         if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
 
-        await db.delete(promotions).where(eq(promotions.id, req.params.id));
+        await db.delete(promotions).where(and(...delConds));
 
         await invalidateQueryCache('promotions*');
         res.json({ success: true, message: 'Promotion deleted successfully' });

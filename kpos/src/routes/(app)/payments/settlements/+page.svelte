@@ -113,6 +113,38 @@
         formData = { date: new Date().toISOString().split("T")[0], amount: 0, paymentMethod: "cash", bankAccount: "", reference: "", notes: "" };
     }
 
+    let showExportMenu = $state(false);
+
+    function exportToCsv() {
+        let csv = '\ufeff';
+        csv += 'ວັນທີ,ລະຫັດ,ວິທີຊຳລະ,ຍອດເງິນ,ສະຖານະ,ໝາຍເຫດ\n';
+        for (const s of filteredSettlements) {
+            csv += `"${formatDate(s.date || s.createdAt)}","${s.reference || ''}","${s.paymentMethod || ''}","${s.amount}","${getStatusConfig(s.status).label}","${s.notes || ''}"\n`;
+        }
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = `settlements-${new Date().toISOString().split('T')[0]}.csv`;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        toast.success('ສົ່ງອອກ CSV ສຳເລັດ');
+        showExportMenu = false;
+    }
+
+    function exportToPdf() {
+        const rows = filteredSettlements.map(s =>
+            `<tr><td>${formatDate(s.date || s.createdAt)}</td><td>${s.reference || ''}</td><td>${s.paymentMethod || ''}</td><td style="text-align:right">${formatCurrency(s.amount)}</td><td>${getStatusConfig(s.status).label}</td></tr>`
+        ).join('');
+        const total = filteredSettlements.reduce((sum, s) => sum + (s.amount || 0), 0);
+        const html = `<html><head><meta charset="utf-8"><style>body{font-family:'Noto Sans Lao',sans-serif}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ddd;padding:8px;font-size:12px}th{background:#f5f5f5}tfoot td{font-weight:bold}</style></head><body><h2 style="text-align:center">ລາຍການຊຳລະ</h2><table><thead><tr><th>ວັນທີ</th><th>ລະຫັດ</th><th>ວິທີຊຳລະ</th><th>ຍອດເງິນ</th><th>ສະຖານະ</th></tr></thead><tbody>${rows}</tbody><tfoot><tr><td colspan="3" style="text-align:right">ລວມ</td><td style="text-align:right">${formatCurrency(total)}</td><td></td></tr></tfoot></table></body></html>`;
+        const blob = new Blob([html], { type: 'text/html' });
+        const url = URL.createObjectURL(blob);
+        const w = window.open(url, '_blank');
+        if (w) w.onload = () => w.print();
+        toast.success('ສົ່ງອອກ PDF ສຳເລັດ');
+        showExportMenu = false;
+    }
+
     let filteredSettlements = $derived.by(() => {
         return settlements.filter((s) => {
             const matchSearch = s.reference?.toLowerCase().includes(searchQuery.toLowerCase());
@@ -154,10 +186,18 @@
         </div>
 
         <div class="flex items-center gap-3">
-            <button class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium">
-                <Download class="w-4 h-4" />
-                ສົ່ງອອກ
-            </button>
+            <div class="relative">
+                <button onclick={() => showExportMenu = !showExportMenu} class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium">
+                    <Download class="w-4 h-4" />
+                    ສົ່ງອອກ
+                </button>
+                {#if showExportMenu}
+                    <div class="absolute right-0 mt-2 w-44 bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 z-50 overflow-hidden">
+                        <button onclick={exportToCsv} class="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 text-sm">Excel (CSV)</button>
+                        <button onclick={exportToPdf} class="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 text-sm">PDF</button>
+                    </div>
+                {/if}
+            </div>
             {#if canCreateSettlement}
             <button
                 onclick={() => { resetForm(); showModal = true; }}

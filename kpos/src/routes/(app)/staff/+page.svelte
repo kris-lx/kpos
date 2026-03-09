@@ -31,9 +31,9 @@
     } from "lucide-svelte";
 
     // Rule-based CRUD
-    const canCreateStaff = $derived(auth.canCreate('management.staff'));
-    const canUpdateStaff = $derived(auth.canUpdate('management.staff'));
-    const canDeleteStaff = $derived(auth.canDelete('management.staff'));
+    const canCreateStaff = $derived(auth.canCreate('staff'));
+    const canUpdateStaff = $derived(auth.canUpdate('staff'));
+    const canDeleteStaff = $derived(auth.canDelete('staff'));
 
     // State
     let searchQuery = $state("");
@@ -62,22 +62,31 @@
         password: "",
         phone: "",
         role: "staff",
+        storeId: "",
         branchId: "",
         roleId: "",
         isActive: true,
     });
     
-    // Branches and Roles for dropdowns
+    // Stores, Branches and Roles for dropdowns
+    let stores = $state<any[]>([]);
     let branches = $state<any[]>([]);
     let roles = $state<any[]>([]);
+
+    // No storeId on branches — branches are the parent; stores belong to branches.
+    // filteredBranches is just all accessible branches (branchId auto-filled from store selection).
+    let filteredBranches = $derived(branches);
     
-    // Load branches and roles
+    // Load stores, branches and roles
     async function loadDropdownData() {
         try {
-            const [branchRes, roleRes] = await Promise.all([
+            const [storeRes, branchRes, roleRes] = await Promise.all([
+                api.get("stores/my-stores").json<any>(),
                 api.get("staff/branches/list").json<any>(),
                 api.get("staff/roles/list").json<any>()
             ]);
+            // my-stores returns { stores: [...], activeStoreId, activeBranchId, ... }
+            stores = storeRes.data?.stores || [];
             branches = branchRes.data || [];
             roles = roleRes.data || [];
         } catch (error) {
@@ -162,6 +171,7 @@
             password: "",
             phone: staff.phone || "",
             role: staff.role || "staff",
+            storeId: staff.storeId || auth.activeStoreId || "",
             branchId: staff.branchId || "",
             roleId: staff.roleId || "",
             isActive: staff.isActive ?? true,
@@ -215,7 +225,7 @@
                 toast.success(selectedStaff ? t("staff.updateSuccess") : t("staff.createSuccess"));
                 showAddModal = false;
                 selectedStaff = null;
-                formData = { name: "", email: "", password: "", phone: "", role: "staff", branchId: "", roleId: "", isActive: true };
+                formData = { name: "", email: "", password: "", phone: "", role: "staff", storeId: "", branchId: "", roleId: "", isActive: true };
                 await loadStaff();
             } else {
                 toast.error(response.error?.message || t("error.network"));
@@ -231,7 +241,7 @@
     // Open add modal
     function openAddModal() {
         selectedStaff = null;
-        formData = { name: "", email: "", password: "", phone: "", role: "staff", branchId: "", roleId: "", isActive: true };
+        formData = { name: "", email: "", password: "", phone: "", role: "staff", storeId: auth.activeStoreId || "", branchId: "", roleId: "", isActive: true };
         showAddModal = true;
     }
 
@@ -713,6 +723,27 @@
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                     />
                 </div>
+                {#if stores.length > 1}
+                <div>
+                    <label for="staffStore" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        ຮ້ານ (Store)
+                    </label>
+                    <select
+                        id="staffStore"
+                        bind:value={formData.storeId}
+                        onchange={() => {
+                            const s = stores.find(st => st.id === formData.storeId);
+                            formData.branchId = s?.branchId || "";
+                        }}
+                        class="w-full px-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                    >
+                        <option value="">-- ທຸກຮ້ານ --</option>
+                        {#each stores as store (store.id)}
+                            <option value={store.id}>{store.name}</option>
+                        {/each}
+                    </select>
+                </div>
+                {/if}
                 <div>
                     <label for="staffBranch" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                         {t("staff.branch")} <span class="text-red-500">*</span>
@@ -724,7 +755,7 @@
                         required
                     >
                         <option value="">-- ເລືອກສາຂາ --</option>
-                        {#each branches as branch (branch.id)}
+                        {#each filteredBranches as branch (branch.id)}
                             <option value={branch.id}>{branch.name}</option>
                         {/each}
                     </select>

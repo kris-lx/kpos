@@ -1,8 +1,9 @@
 <script lang="ts">
     import { createQuery, useQueryClient } from "@tanstack/svelte-query";
+    import { get } from "svelte/store";
     import { api } from "$lib/api";
     import { goto } from "$app/navigation";
-    import { onMount } from "svelte";
+    import { onMount, onDestroy } from "svelte";
     import { toast } from "svelte-sonner";
     import { cn } from "$lib/utils";
     import { auth } from "$lib/stores/auth.svelte";
@@ -43,9 +44,13 @@
         HardDrive,
         Cpu,
         ShieldCheck,
-        BadgeCheck
+        BadgeCheck,
+        PieChart,
+        LineChart,
     } from "lucide-svelte";
     import { createMutation } from "@tanstack/svelte-query";
+    import { Chart, registerables } from 'chart.js';
+    Chart.register(...registerables);
 
     const queryClient = useQueryClient();
 
@@ -83,34 +88,34 @@
     });
 
     // ດຶງຂໍ້ມູນ Dashboard ຕາມບົດບາດ
-    const dashboardQuery = createQuery($derived({
-        queryKey: ["admin-dashboard", userRole],
+    const dashboardQuery = createQuery({
+        queryKey: ["admin-dashboard"],
         queryFn: async () => {
             const response = await api.get("admin/dashboard").json<any>();
             return response.data;
         },
         enabled: canAccess
-    }));
+    });
 
-    const pendingRequestsQuery = createQuery($derived({
-        queryKey: ["admin-requests", "pending"],
+    const pendingRequestsQuery = createQuery({
+        queryKey: ["admin-requests-pending"],
         queryFn: async () => {
             const response = await api.get("admin/requests?status=pending&limit=5").json<any>();
             return response.data || [];
         },
-        enabled: userRole === 'super_admin' || userRole === 'admin'
-    }));
+        enabled: canAccess
+    });
 
-    const recentActivityQuery = createQuery($derived({
+    const recentActivityQuery = createQuery({
         queryKey: ["admin-activity"],
         queryFn: async () => {
             const response = await api.get("admin/activity?limit=10").json<any>();
             return response.data || [];
         },
-        enabled: userRole === 'super_admin' || userRole === 'admin'
-    }));
+        enabled: canAccess
+    });
 
-    const systemHealthQuery = createQuery($derived({
+    const systemHealthQuery = createQuery({
         queryKey: ["admin-system-health"],
         queryFn: async () => {
             const response = await api.get("admin/system/health").json<any>();
@@ -121,8 +126,117 @@
                 memory: { used: 60, total: 100 }
             };
         },
-        enabled: userRole === 'super_admin' || userRole === 'admin'
-    }));
+        enabled: canAccess
+    });
+
+    const chartDataQuery = createQuery({
+        queryKey: ["admin-chart-data"],
+        queryFn: async () => {
+            const response = await api.get("admin/dashboard/chart-data").json<any>();
+            return response.data || { usersByRole: [], storesByBranch: [], transactionsTrend: [] };
+        },
+        enabled: canAccess
+    });
+
+    // Canvas refs for charts
+    let pieCanvas = $state<HTMLCanvasElement | undefined>();
+    let barCanvas = $state<HTMLCanvasElement | undefined>();
+    let lineCanvas = $state<HTMLCanvasElement | undefined>();
+    let pieChart: Chart | null = null;
+    let barChart: Chart | null = null;
+    let lineChart: Chart | null = null;
+
+    const ROLE_COLORS: Record<string, string> = {
+        super_admin: '#7c3aed', admin: '#2563eb', store_owner: '#059669',
+        branch_admin: '#0891b2', store_manager: '#d97706', cashier: '#16a34a',
+        inventory_staff: '#9333ea', kitchen_staff: '#dc2626', waiter: '#ea580c',
+        staff: '#6b7280', unknown: '#9ca3af',
+    };
+
+    function getColor(role: string, idx: number) {
+        return ROLE_COLORS[role] ?? `hsl(${(idx * 47) % 360}, 60%, 50%)`;
+    }
+
+    $effect(() => {
+        const data = $chartDataQuery.data;
+        if (!data || !pieCanvas || !barCanvas || !lineCanvas) return;
+
+        // Pie chart — users by role
+        pieChart?.destroy();
+        const pieCtx = pieCanvas.getContext('2d');
+        if (pieCtx && data.usersByRole.length > 0) {
+            pieChart = new Chart(pieCtx, {
+                type: 'pie',
+                data: {
+                    labels: data.usersByRole.map((r: any) => r.role),
+                    datasets: [{
+                        data: data.usersByRole.map((r: any) => r.count),
+                        backgroundColor: data.usersByRole.map((r: any, i: number) => getColor(r.role, i)),
+                        borderWidth: 2,
+                        borderColor: '#ffffff',
+                    }]
+                },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right', labels: { font: { size: 11 } } } } }
+            });
+        }
+
+        // Bar chart — stores per branch
+        barChart?.destroy();
+        const barCtx = barCanvas.getContext('2d');
+        if (barCtx) {
+            barChart = new Chart(barCtx, {
+                type: 'bar',
+                data: {
+                    labels: data.storesByBranch.length > 0 ? data.storesByBranch.map((r: any) => r.branch) : ['ຍັງບໍ່ມີຂໍ້ມູນ'],
+                    datasets: [{
+                        label: 'ຈຳນວນຮ້ານ',
+                        data: data.storesByBranch.length > 0 ? data.storesByBranch.map((r: any) => r.count) : [0],
+                        backgroundColor: '#3b82f6',
+                        borderRadius: 6,
+                    }]
+                },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } } }
+            });
+        }
+
+        // Line chart — transactions trend
+        lineChart?.destroy();
+        const lineCtx = lineCanvas.getContext('2d');
+        if (lineCtx) {
+            const labels = data.transactionsTrend.map((r: any) => r.date.slice(5));
+            lineChart = new Chart(lineCtx, {
+                type: 'line',
+                data: {
+                    labels,
+                    datasets: [
+                        {
+                            label: 'ທຸລະກຳ',
+                            data: data.transactionsTrend.map((r: any) => r.count),
+                            borderColor: '#8b5cf6',
+                            backgroundColor: 'rgba(139,92,246,0.1)',
+                            fill: true,
+                            tension: 0.4,
+                            pointRadius: 4,
+                        },
+                    ]
+                },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } } }
+            });
+        }
+    });
+
+    onDestroy(() => { pieChart?.destroy(); barChart?.destroy(); lineChart?.destroy(); });
+
+    // Refetch when canAccess becomes true (after onMount)
+    $effect(() => {
+        if (canAccess) {
+            get(dashboardQuery).refetch();
+            get(pendingRequestsQuery).refetch();
+            get(recentActivityQuery).refetch();
+            get(systemHealthQuery).refetch();
+            get(chartDataQuery).refetch();
+        }
+    });
 
     const approveMutation = createMutation({
         mutationFn: async ({ id, note }: { id: string; note?: string }) => {
@@ -286,8 +400,8 @@
         }
         // Links ສຳລັບ Shop Admin ແລະ Manager
         return [
-            { href: "/admin/users", icon: Users, label: "ຈັດການຜູ້ໃຊ້", desc: "ສ້າງ ແລະ ແກ້ໄຂຜູ້ໃຊ້ໃນຮ້ານ", color: "from-amber-500 to-orange-500", roles: ['store_owner', 'manager'] },
-            { href: "/admin/branches", icon: Building2, label: "ສາຂາຂອງຂ້ອຍ", desc: "ເບິ່ງສາຂາໃນຮ້ານ", color: "from-blue-500 to-cyan-500", roles: ['store_owner', 'manager'] },
+            { href: "/staff", icon: Users, label: "ຈັດການຜູ້ໃຊ້", desc: "ສ້າງ ແລະ ແກ້ໄຂຜູ້ໃຊ້ໃນຮ້ານ", color: "from-amber-500 to-orange-500", roles: ['store_owner', 'manager'] },
+            { href: "/branches", icon: Building2, label: "ສາຂາຂອງຂ້ອຍ", desc: "ເບິ່ງສາຂາໃນຮ້ານ", color: "from-blue-500 to-cyan-500", roles: ['store_owner', 'manager'] },
             { href: "/products", icon: Package, label: "ຈັດການສິນຄ້າ", desc: "ເພີ່ມ, ແກ້ໄຂ, ລົບສິນຄ້າ", color: "from-emerald-500 to-green-500", roles: ['store_owner', 'manager'] },
             { href: "/inventory", icon: Boxes, label: "ຈັດການສາງ", desc: "Stock, SKU, Barcode", color: "from-violet-500 to-purple-500", roles: ['store_owner', 'manager'] },
         ];
@@ -745,6 +859,58 @@
                 </div>
             </div>
             {/if}
+
+            <!-- Charts Section -->
+            <div class="bg-white dark:bg-gray-800/50 backdrop-blur-xl rounded-2xl border border-gray-100 dark:border-gray-700/50 shadow-xl shadow-gray-200/50 dark:shadow-none overflow-hidden">
+                <div class="p-5 border-b border-gray-100 dark:border-gray-700">
+                    <h3 class="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+                        <BarChart3 class="w-5 h-5 text-blue-500" />
+                        ສະຖິຕິ ແລະ ກາຟ
+                    </h3>
+                </div>
+                {#if $chartDataQuery.isLoading}
+                    <div class="p-8 flex justify-center"><Loader2 class="w-8 h-8 text-blue-500 animate-spin" /></div>
+                {:else}
+                    <div class="p-5 grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        <!-- Pie: Users by Role -->
+                        <div class="bg-gray-50 dark:bg-gray-700/30 rounded-2xl p-4">
+                            <div class="flex items-center gap-2 mb-3">
+                                <PieChart class="w-4 h-4 text-violet-500" />
+                                <span class="text-sm font-semibold text-gray-700 dark:text-gray-300">ຜູ້ໃຊ້ຕາມບົດບາດ</span>
+                            </div>
+                            {#if ($chartDataQuery.data?.usersByRole?.length || 0) === 0}
+                                <div class="h-48 flex items-center justify-center text-gray-400 text-sm">ບໍ່ມີຂໍ້ມູນ</div>
+                            {:else}
+                                <div class="h-48 relative">
+                                    <canvas bind:this={pieCanvas}></canvas>
+                                </div>
+                            {/if}
+                        </div>
+
+                        <!-- Bar: Stores per Branch -->
+                        <div class="bg-gray-50 dark:bg-gray-700/30 rounded-2xl p-4">
+                            <div class="flex items-center gap-2 mb-3">
+                                <BarChart3 class="w-4 h-4 text-blue-500" />
+                                <span class="text-sm font-semibold text-gray-700 dark:text-gray-300">ຮ້ານຕໍ່ສາຂາ</span>
+                            </div>
+                            <div class="h-48 relative">
+                                <canvas bind:this={barCanvas}></canvas>
+                            </div>
+                        </div>
+
+                        <!-- Line: Transactions Trend -->
+                        <div class="bg-gray-50 dark:bg-gray-700/30 rounded-2xl p-4">
+                            <div class="flex items-center gap-2 mb-3">
+                                <LineChart class="w-4 h-4 text-purple-500" />
+                                <span class="text-sm font-semibold text-gray-700 dark:text-gray-300">ທຸລະກຳ 7 ວັນ</span>
+                            </div>
+                            <div class="h-48 relative">
+                                <canvas bind:this={lineCanvas}></canvas>
+                            </div>
+                        </div>
+                    </div>
+                {/if}
+            </div>
 
             <!-- Roles & Permissions Summary -->
             <div class="bg-white dark:bg-gray-800/50 backdrop-blur-xl rounded-2xl border border-gray-100 dark:border-gray-700/50 shadow-xl shadow-gray-200/50 dark:shadow-none overflow-hidden">

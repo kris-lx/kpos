@@ -13,20 +13,24 @@ import { z } from 'zod';
 export const uploadRoutes = Router();
 
 const SingleUploadSchema = z.object({
-    image: z.string().min(1, 'Image data is required'),
+    file: z.string().min(1).optional(),
+    image: z.string().min(1).optional(),
     folder: z.string().optional(),
     maxWidth: z.number().optional(),
     maxHeight: z.number().optional(),
     quality: z.number().min(1).max(100).optional(),
-});
+    resourceType: z.enum(['image', 'video', 'raw', 'auto']).optional(),
+}).refine(data => data.file || data.image, { message: 'File data is required (use "file" or "image" field)' });
 
 const MultiUploadSchema = z.object({
-    images: z.array(z.string().min(1)).min(1).max(10, 'Maximum 10 images at once'),
+    files: z.array(z.string().min(1)).min(1).max(10, 'Maximum 10 files at once').optional(),
+    images: z.array(z.string().min(1)).min(1).max(10, 'Maximum 10 files at once').optional(),
     folder: z.string().optional(),
     maxWidth: z.number().optional(),
     maxHeight: z.number().optional(),
     quality: z.number().min(1).max(100).optional(),
-});
+    resourceType: z.enum(['image', 'video', 'raw', 'auto']).optional(),
+}).refine(data => (data.files && data.files.length > 0) || (data.images && data.images.length > 0), { message: 'Files data is required (use "files" or "images" field)' });
 
 // Upload single image
 uploadRoutes.post('/single', authenticate, async (req, res, next) => {
@@ -39,8 +43,9 @@ uploadRoutes.post('/single', authenticate, async (req, res, next) => {
             });
         }
 
-        const { image, folder, maxWidth, maxHeight, quality } = parsed.data;
-        const result = await uploadService.uploadSingle(image, { folder, maxWidth, maxHeight, quality });
+        const { file, image, folder, maxWidth, maxHeight, quality, resourceType } = parsed.data;
+        const fileData = file || image!;
+        const result = await uploadService.uploadSingle(fileData, { folder, maxWidth, maxHeight, quality, resourceType });
 
         res.json({ success: true, data: result });
     } catch (error: any) {
@@ -59,8 +64,9 @@ uploadRoutes.post('/multi', authenticate, async (req, res, next) => {
             });
         }
 
-        const { images, folder, maxWidth, maxHeight, quality } = parsed.data;
-        const files = images.map(data => ({ data, options: { folder, maxWidth, maxHeight, quality } }));
+        const { files: fileList, images, folder, maxWidth, maxHeight, quality } = parsed.data;
+        const dataArray = fileList || images || [];
+        const files = dataArray.map(data => ({ data, options: { folder, maxWidth, maxHeight, quality } }));
         const results = await uploadService.uploadMultiple(files);
 
         res.json({ success: true, data: results });

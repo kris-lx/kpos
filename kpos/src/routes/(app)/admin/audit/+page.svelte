@@ -1,5 +1,6 @@
 <script lang="ts">
     import { createQuery, useQueryClient } from "@tanstack/svelte-query";
+    import { get } from "svelte/store";
     import { api } from "$lib/api";
     import { goto } from "$app/navigation";
     import { onMount } from "svelte";
@@ -77,7 +78,7 @@
     let selectedLog = $state<any>(null);
 
     const auditQuery = createQuery({
-        queryKey: () => ["admin-audit-logs", currentPage, pageSize, searchQuery, actionFilter, userFilter, dateFrom, dateTo],
+        queryKey: ["admin-audit-logs"],
         queryFn: async () => {
             const params = new URLSearchParams();
             params.append("page", String(currentPage));
@@ -93,8 +94,13 @@
         },
     });
 
+    $effect(() => {
+        void currentPage; void pageSize; void searchQuery; void actionFilter; void userFilter; void dateFrom; void dateTo;
+        $auditQuery.refetch();
+    });
+
     const usersQuery = createQuery({
-        queryKey: () => ["admin-users-list"],
+        queryKey: ["admin-users-list"],
         queryFn: async () => {
             const response = await api.get("admin/users?limit=1000").json<any>();
             return response.data || [];
@@ -102,7 +108,7 @@
     });
 
     function refreshData() {
-        queryClient.invalidateQueries({ queryKey: ["admin-audit-logs"] });
+        get(auditQuery).refetch();
     }
 
     function clearFilters() {

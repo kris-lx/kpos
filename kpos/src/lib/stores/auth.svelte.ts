@@ -111,6 +111,12 @@ function createAuthStore() {
         activeBranchId = initStore?.branchId || parsedUser?.branchId || null;
         
         isLoading = false;
+
+        // Auto-refresh permissions if user is logged in but has no permissions stored
+        // (happens when role was seeded with empty permissions before fix was applied)
+        if (parsedUser && accessToken && (!parsedUser.permissions || parsedUser.permissions.length === 0)) {
+            setTimeout(() => refreshProfile(), 100);
+        }
     }
 
     const isAuthenticated = $derived(!!accessToken && !!user);
@@ -287,6 +293,23 @@ function createAuthStore() {
         }
     }
 
+    // Refresh user profile + permissions from server (use when permissions may be stale)
+    async function refreshProfile(): Promise<void> {
+        if (!accessToken) return;
+        try {
+            const res = await api.get('auth/me').json<{ success: boolean; data?: any }>();
+            if (res.success && res.data && user) {
+                const updated = { ...user, permissions: res.data.permissions || [] };
+                user = updated;
+                if (browser) {
+                    localStorage.setItem(USER_KEY, JSON.stringify(updated));
+                }
+            }
+        } catch (error) {
+            console.error('Failed to refresh profile:', error);
+        }
+    }
+
     // Load user rules from API
     async function loadRules(): Promise<void> {
         if (!accessToken) return;
@@ -303,33 +326,41 @@ function createAuthStore() {
         }
     }
 
-    // Rule-based CRUD checks
+    // Rule-based CRUD checks — falls back to legacy permissions if no matching rule
     function canRead(module: string): boolean {
         if (!user) return false;
         if (user.isSuperAdmin) return true;
         const rule = userRules.find(r => r.module === module || r.name === module);
-        return rule?.crud.read ?? false;
+        if (rule) return rule.crud.read;
+        const perm = module.split('.').pop() || module;
+        return hasPermission(`${perm}:read`) || hasPermission(`${perm}:view`);
     }
 
     function canCreate(module: string): boolean {
         if (!user) return false;
         if (user.isSuperAdmin) return true;
         const rule = userRules.find(r => r.module === module || r.name === module);
-        return rule?.crud.create ?? false;
+        if (rule) return rule.crud.create;
+        const perm = module.split('.').pop() || module;
+        return hasPermission(`${perm}:create`);
     }
 
     function canUpdate(module: string): boolean {
         if (!user) return false;
         if (user.isSuperAdmin) return true;
         const rule = userRules.find(r => r.module === module || r.name === module);
-        return rule?.crud.update ?? false;
+        if (rule) return rule.crud.update;
+        const perm = module.split('.').pop() || module;
+        return hasPermission(`${perm}:update`);
     }
 
     function canDelete(module: string): boolean {
         if (!user) return false;
         if (user.isSuperAdmin) return true;
         const rule = userRules.find(r => r.module === module || r.name === module);
-        return rule?.crud.delete ?? false;
+        if (rule) return rule.crud.delete;
+        const perm = module.split('.').pop() || module;
+        return hasPermission(`${perm}:delete`);
     }
 
     // Check if user has access to a specific frontend route
@@ -411,19 +442,19 @@ function createAuthStore() {
         if (user.isSuperAdmin) return 'Super Admin';
         switch (user.role) {
             case 'admin': return 'Admin';
-            case 'shop_admin': return 'Shop Admin';
+            case 'store_owner': return 'Store Owner';
             case 'branch_admin': return 'Branch Admin';
             case 'manager': return 'Manager';
             case 'cashier': return 'Cashier';
             case 'staff': return 'Staff';
-            default: return user.role;
+            default: return user.role || 'User';
         }
     }
 
     // Check if user can access admin features
     function canAccessAdmin(): boolean {
         if (!user) return false;
-        return user.isSuperAdmin || ['admin', 'shop_admin', 'branch_admin'].includes(user.role);
+        return user.isSuperAdmin || ['admin', 'store_owner', 'branch_admin'].includes(user.role);
     }
 
     // Check if user is cashier (limited access)
@@ -473,6 +504,7 @@ function createAuthStore() {
         // Store methods
         loadStoreContext,
         refreshStores,
+        refreshProfile,
         setActiveStore,
         hasStoreAccess,
         hasBranchAccess,

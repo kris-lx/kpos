@@ -1,5 +1,6 @@
 <script lang="ts">
     import { createQuery, createMutation, useQueryClient } from "@tanstack/svelte-query";
+    import { get } from "svelte/store";
     import { api } from "$lib/api";
     import { goto } from "$app/navigation";
     import { onMount } from "svelte";
@@ -37,7 +38,8 @@
         FileText,
         Settings,
         BarChart3,
-        Utensils
+        Utensils,
+        UserPlus,
     } from "lucide-svelte";
 
     import { auth } from "$lib/stores/auth.svelte";
@@ -94,7 +96,7 @@
     });
 
     $effect(() => {
-        currentPage; pageSize; searchQuery; roleFilter; statusFilter;
+        void searchQuery; void roleFilter; void statusFilter; void currentPage; void pageSize;
         $usersQuery.refetch();
     });
 
@@ -129,7 +131,7 @@
         },
         onSuccess: () => {
             toast.success("ອັບເດດສຳເລັດ");
-            queryClient.invalidateQueries({ queryKey: ["admin-users"] });
+            get(usersQuery).refetch();
         },
         onError: () => toast.error("ເກີດຂໍ້ຜິດພາດ")
     });
@@ -140,10 +142,24 @@
         },
         onSuccess: () => {
             toast.success("ອັບເດດຜູ້ໃຊ້ສຳເລັດ");
-            queryClient.invalidateQueries({ queryKey: ["admin-users"] });
+            get(usersQuery).refetch();
             showFormModal = false;
         },
         onError: () => toast.error("ເກີດຂໍ້ຜິດພາດ")
+    });
+
+    const createMutationFn = createMutation({
+        mutationFn: async (data: any) => {
+            return api.post(`admin/users`, { json: data }).json();
+        },
+        onSuccess: () => {
+            toast.success("ເພີ່ມຜູ້ໃຊ້ສຳເລັດ");
+            get(usersQuery).refetch();
+            showFormModal = false;
+        },
+        onError: (err: any) => {
+            toast.error(err.response?.data?.error?.message || "ເກີດຂໍ້ຜິດພາດໃນການເພີ່ມຜູ້ໃຊ້");
+        }
     });
 
     const deleteMutationFn = createMutation({
@@ -152,7 +168,7 @@
         },
         onSuccess: () => {
             toast.success("ລຶບຜູ້ໃຊ້ສຳເລັດ");
-            queryClient.invalidateQueries({ queryKey: ["admin-users"] });
+            get(usersQuery).refetch();
             showDeleteModal = false;
         },
         onError: () => toast.error("ເກີດຂໍ້ຜິດພາດ")
@@ -291,6 +307,22 @@
         });
     }
 
+    function openAddModal() {
+        selectedUser = null;
+        formData = {
+            name: "",
+            email: "",
+            phone: "",
+            password: "",
+            roleId: "",
+            branchId: "",
+            isActive: true,
+            permissions: {}
+        };
+        openPermissionGroups = {};
+        showFormModal = true;
+    }
+
     function openEditModal(user: any) {
         selectedUser = user;
         formData = {
@@ -323,6 +355,8 @@
         }
         if (selectedUser) {
             $updateMutationFn.mutate({ id: selectedUser.id, data: formData });
+        } else {
+            $createMutationFn.mutate(formData);
         }
     }
 
@@ -396,6 +430,13 @@
                         <p class="text-gray-500 dark:text-gray-400">ເບິ່ງ ແລະ ຈັດການຜູ້ໃຊ້ທັງໝົດ</p>
                     </div>
                 </div>
+                <button
+                    onclick={openAddModal}
+                    class="flex items-center gap-2 px-4 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white font-medium rounded-xl shadow-lg shadow-emerald-500/30 transition-all"
+                >
+                    <UserPlus class="w-5 h-5" />
+                    <span>ເພີ່ມຜູ້ໃຊ້ໃໝ່</span>
+                </button>
             </div>
 
             <!-- Filters -->

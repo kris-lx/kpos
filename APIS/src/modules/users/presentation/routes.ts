@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, branchFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, branchFilter, ensureScopeAccess } from '@/infrastructure/http/middleware/auth.middleware';
 import { db } from '@/config/database.config';
 import { users, userStores, branches, transactions, menuPermissions, rules, roleRules } from '@/db/schema/tables';
 import { eq, and, or, ilike, inArray, notInArray, desc, asc, count } from 'drizzle-orm';
@@ -18,19 +18,24 @@ userRoutes.get('/', authenticate, authorize('users:read'), branchFilter(), async
     try {
         const { page = '1', limit = '50', search, branchId, role, isActive } = req.query;
         const skip = (parseInt(page as string) - 1) * parseInt(limit as string);
-        const authUser = (req as any).authUser;
+        const authUser = req.authUser;
         const isSuperAdmin = authUser?.isSuperAdmin;
 
         // Non-superadmins: scope to their store and hide system admins
         const conditions: any[] = [];
         let scopedUserIds: string[] | null = null;
         if (!isSuperAdmin) {
+            // BE-77: Tenant isolation — always filter by tenantId first
+            const tenantId = authUser?.tenantId;
+            if (tenantId) {
+                conditions.push(eq(users.tenantId, tenantId));
+            }
             const activeStoreId = authUser?.activeStoreId;
             if (activeStoreId) {
                 const usList = await db.query.userStores.findMany({ where: eq(userStores.storeId, activeStoreId), columns: { userId: true } });
                 scopedUserIds = usList.map(us => us.userId);
             } else {
-                const filter = (req as any).branchFilter;
+                const filter = req.branchFilter;
                 if (filter?.branchIds?.length) {
                     const usList = await db.query.userStores.findMany({ where: inArray(userStores.branchId, filter.branchIds), columns: { userId: true } });
                     scopedUserIds = usList.map(us => us.userId);
@@ -103,6 +108,11 @@ userRoutes.get('/:id', authenticate, authorize('users:read'), async (req, res) =
             });
         }
 
+        // Tenant isolation: non-super-admins can only view users within their tenant
+        if (!req.authUser?.isSuperAdmin && req.authUser?.tenantId && user.tenantId && user.tenantId !== req.authUser.tenantId) {
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'User not found' } });
+        }
+
         res.json({ success: true, data: user });
     } catch (error) {
         console.error('Get user error:', error);
@@ -146,10 +156,17 @@ userRoutes.post('/', authenticate, authorize('users:create'), async (req, res) =
             });
         }
 
+        // Tenant isolation: verify branch belongs to caller's tenant
+        if (!req.authUser?.isSuperAdmin && req.authUser?.tenantId && branch.tenantId && branch.tenantId !== req.authUser.tenantId) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot create user in another tenant\'s branch' } });
+        }
+
         // Hash password
         const hashedPassword = await argon2.hash(password);
 
+        const tenantId = req.authUser?.tenantId || req.user?.tenantId;
         const [user] = await db.insert(users).values({
+            tenantId,
             email,
             password: hashedPassword,
             name,
@@ -186,6 +203,11 @@ userRoutes.put('/:id', authenticate, authorize('users:update'), async (req, res)
                 success: false,
                 error: { code: 'NOT_FOUND', message: 'User not found' }
             });
+        }
+
+        // Tenant isolation
+        if (!req.authUser?.isSuperAdmin && req.authUser?.tenantId && existing.tenantId && existing.tenantId !== req.authUser.tenantId) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot modify user from another tenant' } });
         }
 
         // Check if new email conflicts
@@ -243,6 +265,11 @@ userRoutes.delete('/:id', authenticate, authorize('users:delete'), async (req, r
                 success: false,
                 error: { code: 'NOT_FOUND', message: 'User not found' }
             });
+        }
+
+        // Tenant isolation
+        if (!req.authUser?.isSuperAdmin && req.authUser?.tenantId && existing.tenantId && existing.tenantId !== req.authUser.tenantId) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot delete user from another tenant' } });
         }
 
         // Prevent self-deletion

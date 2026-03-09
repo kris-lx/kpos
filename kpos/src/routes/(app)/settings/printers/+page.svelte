@@ -30,23 +30,36 @@
         },
     });
 
-    const printerTypes = [
+    const defaultPrinterTypes = [
         { value: "receipt", label: "ເຄື່ອງພິມໃບບິນ" },
         { value: "kitchen", label: "ເຄື່ອງພິມເຮືອນຄົວ" },
         { value: "label", label: "ເຄື່ອງພິມລາຄາ/ບາໂຄດ" },
         { value: "report", label: "ເຄື່ອງພິມລາຍງານ" },
     ];
-
-    const connectionTypes = [
+    const defaultConnectionTypes = [
         { value: "usb", label: "USB" },
         { value: "network", label: "Network (LAN)" },
         { value: "bluetooth", label: "Bluetooth" },
         { value: "serial", label: "Serial Port" },
     ];
+    let printerTypes = $state(defaultPrinterTypes);
+    let connectionTypes = $state(defaultConnectionTypes);
+
+    async function loadEnums() {
+        try {
+            const res = await api.get('settings/enums?type=printer_type,connection_type').json<any>();
+            if (res.data?.printer_type?.length) printerTypes = res.data.printer_type.map((e: any) => ({ value: e.value, label: e.labelLao || e.label }));
+            if (res.data?.connection_type?.length) connectionTypes = res.data.connection_type.map((e: any) => ({ value: e.value, label: e.labelLao || e.label }));
+        } catch { /* keep defaults */ }
+    }
 
     $effect(() => {
         auth.activeStoreId;
         loadPrinters();
+    });
+
+    onMount(() => {
+        loadEnums();
     });
 
     async function loadPrinters() {

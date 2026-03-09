@@ -2,7 +2,7 @@
 // KPOS - Main Entry Point
 // ═══════════════════════════════════════════════════════════════════════════
 
-import 'dotenv/config';
+import './env';
 import { appServer } from './infrastructure/http/server';
 import { connectDatabase, disconnectDatabase } from './config/database.config';
 import { connectRedis, disconnectRedis } from './config/redis.config';

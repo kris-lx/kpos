@@ -5,7 +5,7 @@
 import { Router } from 'express';
 import { authenticate, authorize, branchFilter, ensureScopeAccess, buildScopeCondition, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { queryCache } from '@/infrastructure/http/middleware/cache.middleware';
-import { db } from '@/config/database.config';
+import { db, dbRead } from '@/config/database.config';
 import { products, categories, inventory, stockMovements, vendors, purchaseOrders, purchaseOrderItems, stockTransfers, stockTransferItems, stockCounts, stockCountItems, branches, stores } from '@/db/schema/tables';
 import { eq, and, or, ne, ilike, inArray, isNotNull, isNull, gte, lte, gt, lt, desc, asc, count, sum, sql } from 'drizzle-orm';
 import { queueActivityLog } from '@/infrastructure/helpers/activity-log.helper';
@@ -25,7 +25,7 @@ inventoryRoutes.get('/', authenticate, branchFilter(), async (req, res, next) =>
         } = req.query;
         
         const skip = (Number(page) - 1) * Number(limit);
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const filter = req.branchFilter;
         
         // Determine branch ID based on filter or query
         let userBranchId = branchId ? String(branchId) : (req.user as any)?.branchId;
@@ -44,6 +44,11 @@ inventoryRoutes.get('/', authenticate, branchFilter(), async (req, res, next) =>
         }
 
         const prodConds: any[] = [eq(products.isActive, true)];
+        // BE-41: Tenant isolation
+        const tenantId = req.authUser?.tenantId;
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            prodConds.push(eq(products.tenantId, tenantId));
+        }
         const prodScope = buildScopeCondition(filter, { branchId: products.branchId }, 'branchId');
         if (prodScope) prodConds.push(prodScope);
         if (!filter && userBranchId) prodConds.push(eq(products.branchId, userBranchId));
@@ -115,11 +120,14 @@ inventoryRoutes.get('/', authenticate, branchFilter(), async (req, res, next) =>
 // Get inventory stats (for dashboard cards)
 inventoryRoutes.get('/stats', authenticate, branchFilter(), queryCache(30, 'inventory'), async (req, res, next) => {
     try {
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const filter = req.branchFilter;
         const userBranchId = filter?.branchIds?.[0] || (req.user as any)?.branchId;
         
         // Get all products with inventory (filtered by branch for non-admin users)
         const statsConds: any[] = [eq(products.isActive, true)];
+        // BE-76: Tenant isolation
+        const statsTenantId = req.authUser?.tenantId;
+        if (statsTenantId && !req.authUser?.isSuperAdmin) statsConds.push(eq(products.tenantId, statsTenantId));
         const statsScope = buildScopeCondition(filter, { branchId: products.branchId }, 'branchId');
         if (statsScope) statsConds.push(statsScope);
         const statsProducts = await db.query.products.findMany({
@@ -165,9 +173,12 @@ inventoryRoutes.get('/movements', authenticate, branchFilter(), async (req, res,
     try {
         const { productId, branchId, type, startDate, endDate, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const filter = req.branchFilter;
         
         const mvConds: any[] = [];
+        // BE-76: Tenant isolation
+        const mvTenantId = req.authUser?.tenantId;
+        if (mvTenantId && !req.authUser?.isSuperAdmin) mvConds.push(eq(stockMovements.tenantId, mvTenantId));
         const mvScope = buildScopeCondition(filter, { storeId: stockMovements.storeId }, 'storeId');
         if (mvScope) mvConds.push(mvScope);
         if (productId) mvConds.push(eq(stockMovements.productId, String(productId)));
@@ -212,7 +223,9 @@ inventoryRoutes.put('/adjust', authenticate, authorize('inventory:update'), asyn
         const newQty = Math.max(0, previousQty + quantity);
         const movementType = quantity > 0 ? 'IN' : 'OUT';
 
+        const invTenantId = req.authUser?.tenantId || req.user?.tenantId;
         const [movement] = await db.insert(stockMovements).values({
+            tenantId: invTenantId,
             productId, branchId, quantity: Math.abs(quantity), previousQty, newQty, type: movementType,
             reason: reason || (type === 'add' ? 'Stock Addition' : 'Stock Reduction'), reference, referenceType: 'ADJUSTMENT', userId,
         }).returning();
@@ -220,7 +233,7 @@ inventoryRoutes.put('/adjust', authenticate, authorize('inventory:update'), asyn
         if (currentInventory) {
             await db.update(inventory).set({ quantity: newQty, available: Math.max(0, newQty - currentInventory.reserved) }).where(eq(inventory.id, currentInventory.id));
         } else {
-            await db.insert(inventory).values({ productId, branchId, quantity: newQty, available: newQty, reserved: 0 });
+            await db.insert(inventory).values({ tenantId: invTenantId, productId, branchId, quantity: newQty, available: newQty, reserved: 0 });
         }
 
         // Invalidate inventory cache after adjustment
@@ -257,10 +270,11 @@ inventoryRoutes.post('/transfer', authenticate, authorize('inventory:transfer'),
             });
         }
 
-        // Validate both branches exist
+        // BE-42: Validate both branches exist AND belong to same tenant
+        const tenantId = req.authUser?.tenantId;
         const [fromBranch, toBranch] = await Promise.all([
-            db.query.branches.findFirst({ where: eq(branches.id, fromBranchId), columns: { id: true, name: true } }),
-            db.query.branches.findFirst({ where: eq(branches.id, toBranchId), columns: { id: true, name: true } }),
+            db.query.branches.findFirst({ where: eq(branches.id, fromBranchId), columns: { id: true, name: true, tenantId: true } }),
+            db.query.branches.findFirst({ where: eq(branches.id, toBranchId), columns: { id: true, name: true, tenantId: true } }),
         ]);
 
         if (!fromBranch) {
@@ -274,6 +288,16 @@ inventoryRoutes.post('/transfer', authenticate, authorize('inventory:transfer'),
                 success: false,
                 error: { code: 'NOT_FOUND', message: 'ບໍ່ພົບສາຂາປາຍທາງ' }
             });
+        }
+
+        // BE-42: Cross-tenant transfer prevention
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            if (fromBranch.tenantId !== tenantId || toBranch.tenantId !== tenantId) {
+                return res.status(403).json({
+                    success: false,
+                    error: { code: 'CROSS_TENANT', message: 'ບໍ່ສາມາດໂອນຂ້າມບໍລິສັດໄດ້' }
+                });
+            }
         }
 
         const fromInventory = await db.query.inventory.findFirst({ where: and(eq(inventory.productId, productId), eq(inventory.branchId, fromBranchId)) });
@@ -298,12 +322,15 @@ inventoryRoutes.post('/transfer', authenticate, authorize('inventory:transfer'),
         const transferReason = reason || `ໂອນຈາກ ${fromBranch.name} ໄປ ${toBranch.name}`;
 
         const result = await db.transaction(async (tx) => {
+            // BE-43: Inject tenantId into stock movement inserts
             const [outMovement] = await tx.insert(stockMovements).values({
+                tenantId: tenantId || null,
                 productId, branchId: fromBranchId, quantity, previousQty: fromPreviousQty, newQty: fromNewQty,
                 type: 'TRANSFER_OUT', reason: transferReason, reference: toBranchId, referenceType: 'TRANSFER', userId,
             }).returning();
 
             await tx.insert(stockMovements).values({
+                tenantId: tenantId || null,
                 productId, branchId: toBranchId, quantity, previousQty: toPreviousQty, newQty: toNewQty,
                 type: 'TRANSFER_IN', reason: transferReason, reference: fromBranchId, referenceType: 'TRANSFER', userId,
             });
@@ -346,10 +373,13 @@ inventoryRoutes.get('/out-of-stock', authenticate, branchFilter(), async (req, r
     try {
         const { search, page = 1, limit = 20 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
-        const filter = (req as any).branchFilter;
+        const filter = req.branchFilter;
         const branchId = filter?.branchIds?.[0] || req.user?.branchId;
 
         const oosConds: any[] = [lte(inventory.quantity, 0)];
+        // BE-76: Tenant isolation
+        const oosTenantId = req.authUser?.tenantId;
+        if (oosTenantId && !req.authUser?.isSuperAdmin) oosConds.push(eq(inventory.tenantId, oosTenantId));
         if (filter?.branchIds?.length) oosConds.push(inArray(inventory.branchId, filter.branchIds));
         else if (branchId) oosConds.push(eq(inventory.branchId, branchId));
 
@@ -405,10 +435,13 @@ inventoryRoutes.get('/out-of-stock', authenticate, branchFilter(), async (req, r
 // Low stock alerts
 inventoryRoutes.get('/alerts', authenticate, branchFilter(), async (req, res, next) => {
     try {
-        const filter = (req as any).branchFilter;
+        const filter = req.branchFilter;
         const branchId = filter?.branchIds?.[0] || req.user?.branchId || String(req.query.branchId);
 
         const alertConds: any[] = [lte(inventory.quantity, 10)];
+        // BE-76: Tenant isolation
+        const alertTenantId = req.authUser?.tenantId;
+        if (alertTenantId && !req.authUser?.isSuperAdmin) alertConds.push(eq(inventory.tenantId, alertTenantId));
         if (filter?.branchIds?.length) alertConds.push(inArray(inventory.branchId, filter.branchIds));
         else if (branchId) alertConds.push(eq(inventory.branchId, branchId));
 
@@ -420,38 +453,22 @@ inventoryRoutes.get('/alerts', authenticate, branchFilter(), async (req, res, ne
     }
 });
 
-// VENDORS
-// ═══════════════════════════════════════════════════════════════════════════
-
-// Get all vendors with pagination
-inventoryRoutes.get('/vendors', authenticate, branchFilter(), async (req, res, next) => {
+// Get all vendors (tenant-scoped)
+inventoryRoutes.get('/vendors', authenticate, async (req, res, next) => {
     try {
-        const { search, isActive, page = 1, limit = 20 } = req.query;
+        const { search, isActive, page = 1, limit = 1000 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
-        
-        const vConds: any[] = [];
-        if (search) {
-            const s = String(search);
-            vConds.push(or(ilike(vendors.name, `%${s}%`), ilike(vendors.code, `%${s}%`), ilike(vendors.contactName, `%${s}%`)));
-        }
-        if (isActive !== undefined) vConds.push(eq(vendors.isActive, isActive === 'true'));
-        const vWhere = vConds.length > 0 ? and(...vConds) : undefined;
-
-        const [vendorRows, [{ value: total }]] = await Promise.all([
-            db.query.vendors.findMany({ where: vWhere, offset: skip, limit: Number(limit), orderBy: asc(vendors.name) }),
-            db.select({ value: count() }).from(vendors).where(vWhere),
+        const vGetTenantId = req.authUser?.tenantId;
+        const vGetConds: any[] = [];
+        if (vGetTenantId && !req.authUser?.isSuperAdmin) vGetConds.push(eq(vendors.tenantId, vGetTenantId));
+        if (search) vGetConds.push(ilike(vendors.name, `%${search}%`));
+        if (isActive !== undefined) vGetConds.push(eq(vendors.isActive, isActive === 'true'));
+        const vGetWhere = vGetConds.length > 0 ? and(...vGetConds) : undefined;
+        const [rows, [{ value: total }]] = await Promise.all([
+            dbRead.select().from(vendors).where(vGetWhere).orderBy(asc(vendors.name)).offset(skip).limit(Number(limit)),
+            dbRead.select({ value: count() }).from(vendors).where(vGetWhere),
         ]);
-
-        res.json({ 
-            success: true, 
-            data: vendorRows,
-            meta: {
-                page: Number(page),
-                limit: Number(limit),
-                total,
-                totalPages: Math.ceil(total / Number(limit)),
-            },
-        });
+        res.json({ success: true, data: rows, meta: { page: Number(page), limit: Number(limit), total, totalPages: Math.ceil(total / Number(limit)) } });
     } catch (error) {
         next(error);
     }
@@ -460,47 +477,44 @@ inventoryRoutes.get('/vendors', authenticate, branchFilter(), async (req, res, n
 // Get vendor by ID
 inventoryRoutes.get('/vendors/:id', authenticate, async (req, res, next) => {
     try {
-        const vendor = await db.query.vendors.findFirst({
-            where: eq(vendors.id, req.params.id),
-            with: { purchaseOrders: { limit: 10, orderBy: desc(purchaseOrders.createdAt) } },
-        });
-
-        if (!vendor) {
-            res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Vendor not found' } });
-            return;
-        }
-
+        const vOneTenantId = req.authUser?.tenantId;
+        const vOneConds: any[] = [eq(vendors.id, req.params.id)];
+        if (vOneTenantId && !req.authUser?.isSuperAdmin) vOneConds.push(eq(vendors.tenantId, vOneTenantId));
+        const [vendor] = await dbRead.select().from(vendors).where(and(...vOneConds));
+        if (!vendor) { res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'ບໍ່ພົບຜູ້ສະໜອງ' } }); return; }
         res.json({ success: true, data: vendor });
     } catch (error) {
         next(error);
     }
-});
+}); // <--- Added missing closing });
 
 // Create vendor
 inventoryRoutes.post('/vendors', authenticate, authorize('inventory:create'), async (req, res, next) => {
     try {
-        const { name, contactName, phone, email, address, notes, code, taxId, paymentTerms } = req.body;
-        
-        if (!name || !name.trim()) {
-            res.status(400).json({ 
-                success: false, 
-                error: { code: 'VAL_001', message: 'ກະລຸນາປ້ອນຊື່ຜູ້ສະໜອງ' } 
-            });
+        const { name, code, contactName, phone, email, address, notes, taxId, paymentTerms, isActive, isStarred } = req.body;
+        if (!name?.trim()) {
+            res.status(400).json({ success: false, error: { code: 'VAL_001', message: 'ກະລຸນາປ້ອນຊື່ຜູ້ສະໜອງ' } });
             return;
         }
-        
+        const vCreateTenantId = req.authUser?.tenantId;
         const [vendor] = await db.insert(vendors).values({
-            name: name.trim(), contactName: contactName?.trim() || null, phone: phone?.trim() || null,
-            email: email?.trim() || null, address: address?.trim() || null, notes: notes?.trim() || null,
-            code: code?.trim() || null, taxId: taxId?.trim() || null, paymentTerms: paymentTerms ?? 30, isActive: true,
+            name: name.trim(),
+            code: code?.trim() || null,
+            contactName: contactName?.trim() || null,
+            phone: phone?.trim() || null,
+            email: email?.trim() || null,
+            address: address?.trim() || null,
+            notes: notes?.trim() || null,
+            taxId: taxId?.trim() || null,
+            paymentTerms: paymentTerms ?? 30,
+            isActive: isActive !== false,
+            isStarred: isStarred === true,
+            tenantId: vCreateTenantId || null,
         }).returning();
         res.status(201).json({ success: true, data: vendor });
     } catch (error: any) {
         if (error.code === '23505') {
-            res.status(400).json({ 
-                success: false, 
-                error: { code: 'DUP_001', message: 'ຜູ້ສະໜອງນີ້ມີຢູ່ແລ້ວ' } 
-            });
+            res.status(400).json({ success: false, error: { code: 'DUP_001', message: 'ຜູ້ສະໜອງນີ້ມີຢູ່ແລ້ວ' } });
             return;
         }
         next(error);
@@ -510,7 +524,7 @@ inventoryRoutes.post('/vendors', authenticate, authorize('inventory:create'), as
 // Update vendor
 inventoryRoutes.put('/vendors/:id', authenticate, authorize('inventory:update'), async (req, res, next) => {
     try {
-        const { name, contactName, phone, email, address, notes, code, taxId, paymentTerms, isActive } = req.body;
+        const { name, contactName, phone, email, address, notes, code, taxId, paymentTerms, isActive, isStarred } = req.body;
         
         if (name !== undefined && (!name || !name.trim())) {
             res.status(400).json({ 
@@ -531,9 +545,15 @@ inventoryRoutes.put('/vendors/:id', authenticate, authorize('inventory:update'),
         if (taxId !== undefined) updateData.taxId = taxId?.trim() || null;
         if (paymentTerms !== undefined) updateData.paymentTerms = paymentTerms || null;
         if (isActive !== undefined) updateData.isActive = isActive;
+        if (isStarred !== undefined) updateData.isStarred = isStarred;
         
-        const [vendor] = await db.update(vendors).set(updateData).where(eq(vendors.id, req.params.id)).returning();
-        if (!vendor) { res.status(404).json({ success: false, error: { code: 'RES_001', message: 'ບໍ່ພົບຜູ້ສະໜອງນີ້' } }); return; }
+        // BE-76: Tenant-scoped vendor update
+        const vTenantId = req.authUser?.tenantId;
+        const vUpdConds: any[] = [eq(vendors.id, req.params.id)];
+        if (vTenantId && !req.authUser?.isSuperAdmin) vUpdConds.push(eq(vendors.tenantId, vTenantId));
+        delete updateData.tenantId;
+        const [vendor] = await db.update(vendors).set(updateData).where(and(...vUpdConds)).returning();
+        if (!vendor) { res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'ບໍ່ພົບຜູ້ສະໜອງນີ້ ຫຼື ບໍ່ມີສິດ' } }); return; }
         res.json({ success: true, data: vendor });
     } catch (error: any) {
         if (error.code === '23505') {
@@ -545,17 +565,21 @@ inventoryRoutes.put('/vendors/:id', authenticate, authorize('inventory:update'),
         }
         next(error);
     }
-});
+}); 
 
 // Delete vendor
 inventoryRoutes.delete('/vendors/:id', authenticate, authorize('inventory:delete'), async (req, res, next) => {
     try {
+        // BE-76: Tenant-scoped vendor delete
+        const vDelTenantId = req.authUser?.tenantId;
+        const vDelConds: any[] = [eq(vendors.id, req.params.id)];
+        if (vDelTenantId && !req.authUser?.isSuperAdmin) vDelConds.push(eq(vendors.tenantId, vDelTenantId));
         const [{ value: orderCount }] = await db.select({ value: count() }).from(purchaseOrders).where(eq(purchaseOrders.vendorId, req.params.id));
         if (orderCount > 0) {
             res.status(400).json({ success: false, error: { code: 'REF_001', message: `ບໍ່ສາມາດລຶບໄດ້ ເນື່ອງຈາກມີ ${orderCount} ໃບສັ່ງຊື້ທີ່ກ່ຽວຂ້ອງ` } });
             return;
         }
-        await db.delete(vendors).where(eq(vendors.id, req.params.id));
+        await db.delete(vendors).where(and(...vDelConds));
         res.json({ success: true, data: { message: 'Vendor deleted' } });
     } catch (error: any) {
         if (error.code === '23503') {
@@ -568,6 +592,8 @@ inventoryRoutes.delete('/vendors/:id', authenticate, authorize('inventory:delete
         next(error);
     }
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
 // PURCHASE ORDERS
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -576,9 +602,12 @@ inventoryRoutes.get('/purchase-orders', authenticate, branchFilter(), async (req
     try {
         const { branchId, vendorId, status, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
-        const filter = (req as any).branchFilter;
+        const filter = req.branchFilter;
         
         const poConds: any[] = [];
+        // BE-76: Tenant isolation
+        const poTenantId = req.authUser?.tenantId;
+        if (poTenantId && !req.authUser?.isSuperAdmin) poConds.push(eq(purchaseOrders.tenantId, poTenantId));
         const poScope = buildScopeCondition(filter, { branchId: purchaseOrders.branchId }, 'branchId');
         if (poScope) poConds.push(poScope);
         if (branchId) poConds.push(eq(purchaseOrders.branchId, String(branchId)));
@@ -604,13 +633,17 @@ inventoryRoutes.get('/purchase-orders', authenticate, branchFilter(), async (req
 // Get purchase order by ID (scope-checked)
 inventoryRoutes.get('/purchase-orders/:id', authenticate, async (req, res, next) => {
     try {
+        // BE-76: Tenant-scoped PO lookup
+        const poGetTenantId = req.authUser?.tenantId;
+        const poGetConds: any[] = [eq(purchaseOrders.id, req.params.id)];
+        if (poGetTenantId && !req.authUser?.isSuperAdmin) poGetConds.push(eq(purchaseOrders.tenantId, poGetTenantId));
         const order = await db.query.purchaseOrders.findFirst({
-            where: eq(purchaseOrders.id, req.params.id),
+            where: and(...poGetConds),
             with: { vendor: true, items: true },
         });
 
         if (!order) {
-            res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Purchase order not found' } });
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Purchase order not found or no access' } });
             return;
         }
 
@@ -638,7 +671,9 @@ inventoryRoutes.post('/purchase-orders', authenticate, authorize('inventory:crea
         const discount = orderData.discount || 0;
         const total = subtotal + tax - discount;
 
-        const [po] = await db.insert(purchaseOrders).values({ ...orderData, poNumber, subtotal, tax, discount, total, createdBy: userId }).returning();
+        // BE-76: Inject tenantId
+        const poCreateTenantId = req.authUser?.tenantId || req.user?.tenantId;
+        const [po] = await db.insert(purchaseOrders).values({ ...orderData, tenantId: poCreateTenantId, poNumber, subtotal, tax, discount, total, createdBy: userId }).returning();
         if (items.length > 0) {
             await db.insert(purchaseOrderItems).values(items.map((item: any) => ({
                 purchaseOrderId: po.id, productId: item.productId, productName: item.productName,
@@ -655,8 +690,15 @@ inventoryRoutes.post('/purchase-orders', authenticate, authorize('inventory:crea
 // Update purchase order
 inventoryRoutes.put('/purchase-orders/:id', authenticate, authorize('inventory:update'), async (req, res, next) => {
     try {
-        await db.update(purchaseOrders).set(req.body).where(eq(purchaseOrders.id, req.params.id));
-        const order = await db.query.purchaseOrders.findFirst({ where: eq(purchaseOrders.id, req.params.id), with: { vendor: true, items: true } });
+        // BE-76: Tenant-scoped PO update
+        const poUpdTenantId = req.authUser?.tenantId;
+        const poUpdConds: any[] = [eq(purchaseOrders.id, req.params.id)];
+        if (poUpdTenantId && !req.authUser?.isSuperAdmin) poUpdConds.push(eq(purchaseOrders.tenantId, poUpdTenantId));
+        const poUpdateData = { ...req.body };
+        delete poUpdateData.tenantId;
+        await db.update(purchaseOrders).set(poUpdateData).where(and(...poUpdConds));
+        const order = await db.query.purchaseOrders.findFirst({ where: and(...poUpdConds), with: { vendor: true, items: true } });
+        if (!order) { res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Purchase order not found or no access' } }); return; }
         res.json({ success: true, data: order });
     } catch (error) {
         next(error);
@@ -678,8 +720,12 @@ inventoryRoutes.patch('/purchase-orders/:id/status', authenticate, authorize('in
             updateData.receivedDate = new Date();
         }
 
-        await db.update(purchaseOrders).set(updateData).where(eq(purchaseOrders.id, req.params.id));
-        const order = await db.query.purchaseOrders.findFirst({ where: eq(purchaseOrders.id, req.params.id), with: { items: true } });
+        // BE-76: Tenant-scoped PO status update
+        const poStTenantId = req.authUser?.tenantId;
+        const poStConds: any[] = [eq(purchaseOrders.id, req.params.id)];
+        if (poStTenantId && !req.authUser?.isSuperAdmin) poStConds.push(eq(purchaseOrders.tenantId, poStTenantId));
+        await db.update(purchaseOrders).set(updateData).where(and(...poStConds));
+        const order = await db.query.purchaseOrders.findFirst({ where: and(...poStConds), with: { items: true } });
 
         if (status === 'RECEIVED' && order) {
             for (const item of order.items) {
@@ -689,7 +735,10 @@ inventoryRoutes.patch('/purchase-orders/:id/status', authenticate, authorize('in
                 } else {
                     await db.insert(inventory).values({ productId: item.productId, branchId: order.branchId, quantity: item.quantity });
                 }
+                // BE-43: Inject tenantId into stock movement on PO receive
+                const poTenantId = req.authUser?.tenantId;
                 await db.insert(stockMovements).values({
+                    tenantId: poTenantId || null,
                     productId: item.productId, branchId: order.branchId, type: 'IN', quantity: item.quantity,
                     previousQty: inv?.quantity || 0, newQty: (inv?.quantity || 0) + item.quantity,
                     reason: 'Purchase Order Received', reference: order.id, referenceType: 'PURCHASE', userId,
@@ -706,13 +755,18 @@ inventoryRoutes.patch('/purchase-orders/:id/status', authenticate, authorize('in
 // Delete purchase order
 inventoryRoutes.delete('/purchase-orders/:id', authenticate, authorize('inventory:delete'), async (req, res, next) => {
     try {
-        const order = await db.query.purchaseOrders.findFirst({ where: eq(purchaseOrders.id, req.params.id) });
-        if (order?.status !== 'DRAFT') {
+        // BE-76: Tenant-scoped PO delete
+        const poDelTenantId = req.authUser?.tenantId;
+        const poDelConds: any[] = [eq(purchaseOrders.id, req.params.id)];
+        if (poDelTenantId && !req.authUser?.isSuperAdmin) poDelConds.push(eq(purchaseOrders.tenantId, poDelTenantId));
+        const order = await db.query.purchaseOrders.findFirst({ where: and(...poDelConds) });
+        if (!order) { res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Purchase order not found or no access' } }); return; }
+        if (order.status !== 'DRAFT') {
             res.status(400).json({ success: false, error: { code: 'INV_001', message: 'Can only delete draft orders' } });
             return;
         }
         await db.delete(purchaseOrderItems).where(eq(purchaseOrderItems.purchaseOrderId, req.params.id));
-        await db.delete(purchaseOrders).where(eq(purchaseOrders.id, req.params.id));
+        await db.delete(purchaseOrders).where(and(...poDelConds));
         
         res.json({ success: true, data: { message: 'Purchase order deleted' } });
     } catch (error) {
@@ -729,9 +783,12 @@ inventoryRoutes.get('/stock-transfers', authenticate, branchFilter(), async (req
     try {
         const { fromBranchId, toBranchId, status, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
+        const filter = req.branchFilter;
         
         const stConds: any[] = [];
+        // BE-76: Tenant isolation
+        const stTenantId = req.authUser?.tenantId;
+        if (stTenantId && !req.authUser?.isSuperAdmin) stConds.push(eq(stockTransfers.tenantId, stTenantId));
         if (filter?.branchIds?.length) {
             stConds.push(or(inArray(stockTransfers.fromBranchId, filter.branchIds), inArray(stockTransfers.toBranchId, filter.branchIds)));
         }
@@ -801,7 +858,9 @@ inventoryRoutes.post('/stock-transfers', authenticate, authorize('inventory:upda
         const [{ value: stCnt }] = await db.select({ value: count() }).from(stockTransfers);
         const transferNo = `TRF-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(stCnt + 1).padStart(4, '0')}`;
 
-        const [st] = await db.insert(stockTransfers).values({ ...transferData, fromBranchId, toBranchId, transferNo, requestedBy: userId }).returning();
+        // BE-76: Inject tenantId
+        const stCreateTenantId = req.authUser?.tenantId || req.user?.tenantId;
+        const [st] = await db.insert(stockTransfers).values({ ...transferData, tenantId: stCreateTenantId, fromBranchId, toBranchId, transferNo, requestedBy: userId }).returning();
         if (items.length > 0) {
             await db.insert(stockTransferItems).values(items.map((item: any) => ({ transferId: st.id, productId: item.productId, productName: item.productName, quantity: item.quantity })));
         }
@@ -819,9 +878,12 @@ inventoryRoutes.get('/expiring', authenticate, branchFilter(), async (req, res, 
         const skip = (Number(page) - 1) * Number(limit);
         const futureDate = new Date();
         futureDate.setDate(futureDate.getDate() + Number(days));
-        const scopeFilter = (req as any).branchFilter as ScopeFilter | undefined;
+        const scopeFilter = req.branchFilter;
 
         const expConds: any[] = [isNotNull(inventory.expiryDate), lte(inventory.expiryDate, futureDate), gt(inventory.quantity, 0)];
+        // BE-76: Tenant isolation
+        const expTenantId = req.authUser?.tenantId;
+        if (expTenantId && !req.authUser?.isSuperAdmin) expConds.push(eq(inventory.tenantId, expTenantId));
         if (branchId) expConds.push(eq(inventory.branchId, String(branchId)));
         else if (scopeFilter?.branchIds?.length) expConds.push(inArray(inventory.branchId, scopeFilter.branchIds));
 
@@ -896,9 +958,12 @@ inventoryRoutes.get('/stock-in', authenticate, branchFilter(), async (req, res, 
     try {
         const { search, page = 1, limit = 10 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
-        const filter = (req as any).branchFilter;
+        const filter = req.branchFilter;
 
         const siConds: any[] = [eq(stockMovements.type, 'IN')];
+        // BE-76: Tenant isolation
+        const siTenantId = req.authUser?.tenantId;
+        if (siTenantId && !req.authUser?.isSuperAdmin) siConds.push(eq(stockMovements.tenantId, siTenantId));
         if (filter?.branchIds?.length) siConds.push(inArray(stockMovements.branchId, filter.branchIds));
         if (search) {
             const s = String(search);
@@ -930,9 +995,12 @@ inventoryRoutes.get('/stock-out', authenticate, branchFilter(), async (req, res,
     try {
         const { search, page = 1, limit = 10 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
-        const filter = (req as any).branchFilter;
+        const filter = req.branchFilter;
 
         const soConds: any[] = [eq(stockMovements.type, 'OUT')];
+        // BE-76: Tenant isolation
+        const soTenantId = req.authUser?.tenantId;
+        if (soTenantId && !req.authUser?.isSuperAdmin) soConds.push(eq(stockMovements.tenantId, soTenantId));
         if (filter?.branchIds?.length) soConds.push(inArray(stockMovements.branchId, filter.branchIds));
         if (search) {
             const s = String(search);
@@ -971,7 +1039,9 @@ inventoryRoutes.post('/stock-out', authenticate, authorize('inventory:create'), 
         const outQty = Math.abs(Number(quantity));
         const newQty = Math.max(0, previousQty - outQty);
 
+        const soTenantId = req.authUser?.tenantId || req.user?.tenantId;
         const [movement] = await db.insert(stockMovements).values({
+            tenantId: soTenantId,
             productId, branchId, quantity: -outQty, previousQty, newQty, type: 'OUT',
             reason: reason || 'Stock Out', reference: reference || null, notes: notes || null,
             userId, createdAt: date ? new Date(date) : new Date(),
@@ -1000,7 +1070,9 @@ inventoryRoutes.post('/stock-in', authenticate, authorize('inventory:create'), a
         const previousQty = inv?.quantity || 0;
         const newQty = previousQty + Number(quantity);
 
+        const siTenantId = req.authUser?.tenantId || req.user?.tenantId;
         const [movement] = await db.insert(stockMovements).values({
+            tenantId: siTenantId,
             productId, branchId, quantity: Number(quantity), previousQty, newQty,
             unitCost: unitCost ? Number(unitCost) : null, supplier: supplier || null,
             type: 'IN', reason: supplier || 'Stock In', reference, notes, userId,
@@ -1011,7 +1083,7 @@ inventoryRoutes.post('/stock-in', authenticate, authorize('inventory:create'), a
         if (inv) {
             await db.update(inventory).set({ quantity: newQty, expiryDate: expiryDate ? new Date(expiryDate) : inv.expiryDate }).where(eq(inventory.id, inv.id));
         } else {
-            await db.insert(inventory).values({ productId, branchId, quantity: newQty, expiryDate: expiryDate ? new Date(expiryDate) : null, batchNumber: batchNumber || null });
+            await db.insert(inventory).values({ tenantId: siTenantId, productId, branchId, quantity: newQty, expiryDate: expiryDate ? new Date(expiryDate) : null, batchNumber: batchNumber || null });
         }
 
         res.status(201).json({ success: true, data: movement });
@@ -1028,9 +1100,13 @@ inventoryRoutes.put('/stock-in/:id', authenticate, authorize('inventory:update')
         const userId = req.user!.userId;
         const branchId = req.user!.branchId || 'default';
 
-        const existing = await db.query.stockMovements.findFirst({ where: eq(stockMovements.id, id) });
+        // BE-76: Tenant-scoped stock-in update
+        const siUpdTenantId = req.authUser?.tenantId;
+        const siUpdConds: any[] = [eq(stockMovements.id, id)];
+        if (siUpdTenantId && !req.authUser?.isSuperAdmin) siUpdConds.push(eq(stockMovements.tenantId, siUpdTenantId));
+        const existing = await db.query.stockMovements.findFirst({ where: and(...siUpdConds) });
         if (!existing) {
-            res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Record not found' } });
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Record not found or no access' } });
             return;
         }
 
@@ -1046,7 +1122,7 @@ inventoryRoutes.put('/stock-in/:id', authenticate, authorize('inventory:update')
             notes: notes ?? existing.notes,
             expiryDate: expiryDate ? new Date(expiryDate) : existing.expiryDate,
             batchNumber: batchNumber ?? existing.batchNumber,
-        }).where(eq(stockMovements.id, id)).returning();
+        }).where(and(...siUpdConds)).returning();
 
         if (quantityDiff !== 0) {
             const inv = await db.query.inventory.findFirst({ where: and(eq(inventory.productId, existing.productId), eq(inventory.branchId, branchId)) });
@@ -1062,13 +1138,17 @@ inventoryRoutes.put('/stock-in/:id', authenticate, authorize('inventory:update')
 // Delete stock in (reverses inventory)
 inventoryRoutes.delete('/stock-in/:id', authenticate, authorize('inventory:delete'), async (req, res, next) => {
     try {
-        const movement = await db.query.stockMovements.findFirst({ where: eq(stockMovements.id, req.params.id) });
+        // BE-76: Tenant-scoped stock-in delete
+        const siDelTenantId = req.authUser?.tenantId;
+        const siDelConds: any[] = [eq(stockMovements.id, req.params.id)];
+        if (siDelTenantId && !req.authUser?.isSuperAdmin) siDelConds.push(eq(stockMovements.tenantId, siDelTenantId));
+        const movement = await db.query.stockMovements.findFirst({ where: and(...siDelConds) });
         if (!movement) {
-            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Record not found' } });
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Record not found or no access' } });
         }
         const inv = await db.query.inventory.findFirst({ where: and(eq(inventory.productId, movement.productId), eq(inventory.branchId, movement.branchId)) });
         if (inv) await db.update(inventory).set({ quantity: Math.max(0, inv.quantity - Math.abs(movement.quantity)) }).where(eq(inventory.id, inv.id));
-        await db.delete(stockMovements).where(eq(stockMovements.id, req.params.id));
+        await db.delete(stockMovements).where(and(...siDelConds));
         res.json({ success: true, data: { message: 'Deleted successfully' } });
     } catch (error) {
         next(error);
@@ -1082,9 +1162,13 @@ inventoryRoutes.put('/stock-out/:id', authenticate, authorize('inventory:update'
         const { productId, quantity, reason, reference, notes, date } = req.body;
         const branchId = req.user!.branchId || 'default';
 
-        const existing = await db.query.stockMovements.findFirst({ where: eq(stockMovements.id, id) });
+        // BE-76: Tenant-scoped stock-out update
+        const soUpdTenantId = req.authUser?.tenantId;
+        const soUpdConds: any[] = [eq(stockMovements.id, id)];
+        if (soUpdTenantId && !req.authUser?.isSuperAdmin) soUpdConds.push(eq(stockMovements.tenantId, soUpdTenantId));
+        const existing = await db.query.stockMovements.findFirst({ where: and(...soUpdConds) });
         if (!existing) {
-            res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Record not found' } });
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Record not found or no access' } });
             return;
         }
 
@@ -1098,7 +1182,7 @@ inventoryRoutes.put('/stock-out/:id', authenticate, authorize('inventory:update'
             reason: reason ?? existing.reason,
             reference: reference ?? existing.reference,
             notes: notes ?? existing.notes,
-        }).where(eq(stockMovements.id, id)).returning();
+        }).where(and(...soUpdConds)).returning();
 
         if (quantityDiff !== 0) {
             const inv = await db.query.inventory.findFirst({ where: and(eq(inventory.productId, existing.productId), eq(inventory.branchId, branchId)) });
@@ -1114,16 +1198,20 @@ inventoryRoutes.put('/stock-out/:id', authenticate, authorize('inventory:update'
 // Delete stock out
 inventoryRoutes.delete('/stock-out/:id', authenticate, authorize('inventory:delete'), async (req, res, next) => {
     try {
-        const movement = await db.query.stockMovements.findFirst({ where: eq(stockMovements.id, req.params.id) });
+        // BE-76: Tenant-scoped stock-out delete
+        const soDelTenantId = req.authUser?.tenantId;
+        const soDelConds: any[] = [eq(stockMovements.id, req.params.id)];
+        if (soDelTenantId && !req.authUser?.isSuperAdmin) soDelConds.push(eq(stockMovements.tenantId, soDelTenantId));
+        const movement = await db.query.stockMovements.findFirst({ where: and(...soDelConds) });
         if (!movement) {
-            res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Record not found' } });
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Record not found or no access' } });
             return;
         }
 
         const inv = await db.query.inventory.findFirst({ where: and(eq(inventory.productId, movement.productId), eq(inventory.branchId, movement.branchId)) });
         if (inv) await db.update(inventory).set({ quantity: inv.quantity + Math.abs(movement.quantity) }).where(eq(inventory.id, inv.id));
 
-        await db.delete(stockMovements).where(eq(stockMovements.id, req.params.id));
+        await db.delete(stockMovements).where(and(...soDelConds));
         res.json({ success: true, data: { message: 'Deleted successfully' } });
     } catch (error) {
         next(error);
@@ -1135,9 +1223,12 @@ inventoryRoutes.get('/adjustments', authenticate, branchFilter(), async (req, re
     try {
         const { search, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
-        const scopeFilter = (req as any).branchFilter as ScopeFilter | undefined;
+        const scopeFilter = req.branchFilter;
 
         const adjConds: any[] = [inArray(stockMovements.type, ['ADJUSTMENT', 'INCREASE', 'DECREASE'])];
+        // BE-76: Tenant isolation
+        const adjTenantId = req.authUser?.tenantId;
+        if (adjTenantId && !req.authUser?.isSuperAdmin) adjConds.push(eq(stockMovements.tenantId, adjTenantId));
         if (scopeFilter?.branchIds?.length) adjConds.push(inArray(stockMovements.branchId, scopeFilter.branchIds));
         if (search) {
             const s = String(search);
@@ -1169,44 +1260,17 @@ inventoryRoutes.get('/adjustments', authenticate, branchFilter(), async (req, re
     }
 });
 
-// Update/Create adjustment (PUT for adjusting inventory)
-inventoryRoutes.put('/adjustments', authenticate, authorize('inventory:update'), async (req, res, next) => {
-    try {
-        const { productId, adjustmentType, quantity, reason, reference, notes, date } = req.body;
-        const userId = req.user!.userId;
-        const branchId = req.user!.branchId || 'default';
-
-        const inv = await db.query.inventory.findFirst({ where: and(eq(inventory.productId, productId), eq(inventory.branchId, branchId)) });
-        const previousQty = inv?.quantity || 0;
-        const adjustQty = adjustmentType === 'increase' ? Number(quantity) : -Number(quantity);
-        const newQty = Math.max(0, previousQty + adjustQty);
-
-        const [movement] = await db.insert(stockMovements).values({
-            productId, branchId, quantity: adjustQty, previousQty, newQty,
-            type: adjustmentType === 'increase' ? 'INCREASE' : 'DECREASE',
-            reason, reference, notes, userId, createdAt: date ? new Date(date) : new Date(),
-        }).returning();
-
-        if (inv) {
-            await db.update(inventory).set({ quantity: newQty }).where(eq(inventory.id, inv.id));
-        } else {
-            await db.insert(inventory).values({ productId, branchId, quantity: newQty });
-        }
-
-        res.status(201).json({ success: true, data: movement });
-    } catch (error) {
-        next(error);
-    }
-});
-
 // Get transfers
 inventoryRoutes.get('/transfers', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { search, status, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
-        const scopeFilter = (req as any).branchFilter as ScopeFilter | undefined;
+        const scopeFilter = req.branchFilter;
 
         const trConds: any[] = [];
+        // BE-76: Tenant isolation
+        const trTenantId = req.authUser?.tenantId;
+        if (trTenantId && !req.authUser?.isSuperAdmin) trConds.push(eq(stockTransfers.tenantId, trTenantId));
         if (scopeFilter?.branchIds?.length) {
             trConds.push(or(inArray(stockTransfers.fromBranchId, scopeFilter.branchIds), inArray(stockTransfers.toBranchId, scopeFilter.branchIds)));
         }
@@ -1251,7 +1315,9 @@ inventoryRoutes.post('/transfers', authenticate, authorize('inventory:update'), 
         const [{ value: trCnt }] = await db.select({ value: count() }).from(stockTransfers);
         const transferNo = `TRF-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(trCnt + 1).padStart(4, '0')}`;
 
-        const [tr] = await db.insert(stockTransfers).values({ transferNo, fromBranchId, toBranchId, status: 'completed', notes, requestedBy: userId }).returning();
+        // BE-76: Inject tenantId
+        const trCreateTenantId = req.authUser?.tenantId || req.user?.tenantId;
+        const [tr] = await db.insert(stockTransfers).values({ tenantId: trCreateTenantId, transferNo, fromBranchId, toBranchId, status: 'completed', notes, requestedBy: userId }).returning();
         await db.insert(stockTransferItems).values([{ transferId: tr.id, productId, productName: product?.name || '', quantity: qty }]);
 
         await db.insert(stockMovements).values([
@@ -1278,9 +1344,12 @@ inventoryRoutes.get('/stock-counts', authenticate, branchFilter(), async (req, r
     try {
         const { status, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
-        const filter = (req as any).branchFilter;
+        const filter = req.branchFilter;
 
         const scConds: any[] = [];
+        // BE-76: Tenant isolation
+        const scTenantId = req.authUser?.tenantId;
+        if (scTenantId && !req.authUser?.isSuperAdmin) scConds.push(eq(stockCounts.tenantId, scTenantId));
         if (filter?.branchIds?.length) scConds.push(inArray(stockCounts.branchId, filter.branchIds));
         if (status) scConds.push(eq(stockCounts.status, String(status)));
         const scWhere = scConds.length > 0 ? and(...scConds) : undefined;
@@ -1320,7 +1389,9 @@ inventoryRoutes.post('/stock-counts', authenticate, authorize('inventory:adjust'
             })
         );
 
-        const [sc] = await db.insert(stockCounts).values({ countNo, branchId, date: date ? new Date(date) : new Date(), notes, status: 'pending', hasDiscrepancy, countedBy: userId }).returning();
+        // BE-76: Inject tenantId
+        const scCreateTenantId = req.authUser?.tenantId || req.user?.tenantId;
+        const [sc] = await db.insert(stockCounts).values({ tenantId: scCreateTenantId, countNo, branchId, date: date ? new Date(date) : new Date(), notes, status: 'pending', hasDiscrepancy, countedBy: userId }).returning();
         if (itemsWithProducts.length > 0) {
             await db.insert(stockCountItems).values(itemsWithProducts.map(i => ({ ...i, countId: sc.id })));
         }

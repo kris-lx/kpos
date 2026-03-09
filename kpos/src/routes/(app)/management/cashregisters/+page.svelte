@@ -3,6 +3,7 @@
      ═══════════════════════════════════════════════════════════════════════════ -->
 <script lang="ts">
     import { createQuery, createMutation, useQueryClient } from "@tanstack/svelte-query";
+    import { get } from "svelte/store";
     import { t } from "$lib/i18n/index.svelte";
     import { cn, formatCurrency, formatDate } from "$utils";
     import { api } from "$api";
@@ -87,7 +88,7 @@
         },
         onSuccess: () => {
             toast.success(t("registers.createSuccess"));
-            queryClient.invalidateQueries({ queryKey: ["cash-registers"] });
+            get(registersQuery).refetch();
             closeModal();
         },
         onError: (error: any) => {
@@ -103,7 +104,7 @@
         },
         onSuccess: () => {
             toast.success(t("registers.updateSuccess"));
-            queryClient.invalidateQueries({ queryKey: ["cash-registers"] });
+            get(registersQuery).refetch();
             closeModal();
         },
         onError: (error: any) => {
@@ -119,7 +120,7 @@
         },
         onSuccess: () => {
             toast.success(t("registers.deleteSuccess"));
-            queryClient.invalidateQueries({ queryKey: ["cash-registers"] });
+            get(registersQuery).refetch();
         },
         onError: (error: any) => {
             toast.error(error.message || t("common.error"));

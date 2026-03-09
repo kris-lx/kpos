@@ -109,27 +109,31 @@
         error = "";
 
         try {
+            // Scope to active branch so even admin sees their own store data
+            const branchParam = auth.activeBranchId ? `branchId=${auth.activeBranchId}` : '';
+            const sep = branchParam ? '&' : '';
+
             // Load all dashboard data in parallel
             const [summaryRes, transactionsRes, productsRes, alertsRes, chartRes] =
                 await Promise.all([
                     api
-                        .get("dashboard/stats")
+                        .get(`dashboard/stats${branchParam ? '?' + branchParam : ''}`)
                         .json()
                         .catch(() => null),
                     api
-                        .get("dashboard/recent-transactions")
+                        .get(`dashboard/recent-transactions${branchParam ? '?' + branchParam : ''}`)
                         .json()
                         .catch(() => ({ data: [] })),
                     api
-                        .get("dashboard/top-products")
+                        .get(`dashboard/top-products${branchParam ? '?' + branchParam : ''}`)
                         .json()
                         .catch(() => ({ data: [] })),
                     api
-                        .get("dashboard/low-stock")
+                        .get(`dashboard/low-stock${branchParam ? '?' + branchParam : ''}`)
                         .json()
                         .catch(() => ({ data: [] })),
                     api
-                        .get("dashboard/sales-chart?period=7days")
+                        .get(`dashboard/sales-chart?period=7days${sep}${branchParam}`)
                         .json()
                         .catch(() => ({ data: [] })),
                 ]);

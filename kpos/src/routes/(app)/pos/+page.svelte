@@ -171,11 +171,19 @@
 
     // Customers query — scoped to active store
     const customersQuery = createQuery({
-        queryKey: ["customers", activeStoreId],
+        queryKey: ["customers"],
         queryFn: async () => {
             const response = await api.get("customers?limit=100").json<any>();
             return response.data || [];
         },
+    });
+
+    // Refetch store-scoped queries when active store changes
+    $effect(() => {
+        void activeStoreId;
+        $productsQuery.refetch();
+        $categoriesQuery.refetch();
+        $customersQuery.refetch();
     });
 
     // Filtered customers based on search
@@ -272,14 +280,23 @@
         toast.success(t('pos.billDeleted'));
     }
 
-    // Actions
-    function addToCart(product: any) {
+    // Add-to-cart fly animation
+    let flyingItems = $state<Array<{id: string; x: number; y: number; name: string}>>([]);
+
+    function addToCart(product: any, event?: MouseEvent) {
         const result = cart.addItem(product);
         if (!result.success) {
             toast.error(result.message);
             return;
         }
-        toast.success(t('pos.addedToCart', { name: product.name }));
+
+        // Trigger fly animation from product card to cart
+        if (event) {
+            const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+            const flyId = `fly-${Date.now()}`;
+            flyingItems = [...flyingItems, { id: flyId, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, name: product.name }];
+            setTimeout(() => { flyingItems = flyingItems.filter(f => f.id !== flyId); }, 600);
+        }
     }
 
     async function processPayment() {
@@ -529,7 +546,7 @@
                         {@const cartItem = cart.items.find(item => item.product.id === product.id)}
                         {@const isInCart = !!cartItem}
                         <button
-                            onclick={() => addToCart(product)}
+                            onclick={(e) => addToCart(product, e)}
                             class={cn(
                                 "relative bg-white dark:bg-gray-800 rounded-xl p-4 text-left transition-all",
                                 "hover:shadow-lg hover:scale-[1.02] active:scale-[0.98]",
@@ -1501,6 +1518,18 @@
     autoPrint={true}
 />
 
+<!-- Flying add-to-cart animation -->
+{#each flyingItems as fly (fly.id)}
+    <div
+        class="fly-to-cart"
+        style="--start-x: {fly.x}px; --start-y: {fly.y}px;"
+    >
+        <div class="w-10 h-10 bg-primary-500 text-white rounded-full flex items-center justify-center shadow-xl text-lg font-bold">
+            +1
+        </div>
+    </div>
+{/each}
+
 <style>
     .scrollbar-hide::-webkit-scrollbar {
         display: none;
@@ -1508,5 +1537,30 @@
     .scrollbar-hide {
         -ms-overflow-style: none;
         scrollbar-width: none;
+    }
+
+    /* Fly-to-cart animation */
+    .fly-to-cart {
+        position: fixed;
+        left: var(--start-x);
+        top: var(--start-y);
+        z-index: 9999;
+        pointer-events: none;
+        animation: flyToCart 0.55s cubic-bezier(0.22, 0.68, 0, 1.2) forwards;
+    }
+
+    @keyframes flyToCart {
+        0% {
+            transform: translate(-50%, -50%) scale(1);
+            opacity: 1;
+        }
+        60% {
+            transform: translate(calc(100vw - 26rem - 50%), -60px) scale(0.6);
+            opacity: 0.8;
+        }
+        100% {
+            transform: translate(calc(100vw - 26rem - 50%), 0px) scale(0.2);
+            opacity: 0;
+        }
     }
 </style>

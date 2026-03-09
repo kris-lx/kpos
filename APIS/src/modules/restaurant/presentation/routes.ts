@@ -24,14 +24,18 @@ export const restaurantRoutes = Router();
 restaurantRoutes.get('/tables', authenticate, branchFilter(), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { branchId, status, zone, floor } = req.query;
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
-        const effectiveBranchId = (branchId as string) || filter?.branchIds?.[0] || (req as any).authUser?.activeBranchId;
+        const filter = req.branchFilter;
+        const effectiveBranchId = (branchId as string) || filter?.branchIds?.[0] || req.authUser?.activeBranchId;
         
+        // BE-76: Tenant isolation
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+
         const tables = await tableService.findAll({
             branchId: effectiveBranchId,
             status: status as TableStatus,
             zone: zone as string,
             floor: floor as string,
+            tenantId,
         });
 
         res.json({ success: true, data: tables });
@@ -50,7 +54,8 @@ restaurantRoutes.get('/tables/stats', authenticate, async (req: Request, res: Re
             return;
         }
 
-        const stats = await tableService.getStats(branchId as string);
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        const stats = await tableService.getStats(branchId as string, tenantId);
         res.json({ success: true, data: stats });
     } catch (error) {
         next(error);
@@ -60,10 +65,12 @@ restaurantRoutes.get('/tables/stats', authenticate, async (req: Request, res: Re
 // Get table by ID (scope-checked)
 restaurantRoutes.get('/tables/:id', authenticate, async (req: Request, res: Response, next: NextFunction) => {
     try {
-        const table = await tableService.findById(req.params.id);
+        // BE-76: Tenant-scoped table lookup
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        const table = await tableService.findById(req.params.id, tenantId);
 
         if (!table) {
-            res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Table not found' } });
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Table not found or no access' } });
             return;
         }
 
@@ -80,7 +87,7 @@ restaurantRoutes.get('/tables/:id', authenticate, async (req: Request, res: Resp
 // Create table
 restaurantRoutes.post('/tables', authenticate, authorize('tables:create'), async (req: Request, res: Response, next: NextFunction) => {
     try {
-        const table = await tableService.create(req.body);
+        const table = await tableService.create({ ...req.body, tenantId: req.authUser?.tenantId || req.user?.tenantId });
         res.status(201).json({ success: true, data: table });
     } catch (error) {
         next(error);
@@ -90,7 +97,8 @@ restaurantRoutes.post('/tables', authenticate, authorize('tables:create'), async
 // Update table
 restaurantRoutes.put('/tables/:id', authenticate, authorize('tables:update'), async (req: Request, res: Response, next: NextFunction) => {
     try {
-        const table = await tableService.update(req.params.id, req.body);
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        const table = await tableService.update(req.params.id, req.body, tenantId);
         res.json({ success: true, data: table });
     } catch (error) {
         next(error);
@@ -101,7 +109,8 @@ restaurantRoutes.put('/tables/:id', authenticate, authorize('tables:update'), as
 restaurantRoutes.patch('/tables/:id/status', authenticate, async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { status } = req.body;
-        const table = await tableService.updateStatus(req.params.id, status as TableStatus);
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        const table = await tableService.updateStatus(req.params.id, status as TableStatus, tenantId);
         res.json({ success: true, data: table });
     } catch (error) {
         next(error);
@@ -111,8 +120,49 @@ restaurantRoutes.patch('/tables/:id/status', authenticate, async (req: Request, 
 // Delete table (soft delete)
 restaurantRoutes.delete('/tables/:id', authenticate, authorize('tables:delete'), async (req: Request, res: Response, next: NextFunction) => {
     try {
-        await tableService.delete(req.params.id);
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        await tableService.delete(req.params.id, tenantId);
         res.json({ success: true, message: 'Table deleted successfully' });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ZONES / FLOORS
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Get distinct zones from tables
+restaurantRoutes.get('/zones', authenticate, branchFilter(), async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const filter = req.branchFilter;
+        const effectiveBranchId = (req.query.branchId as string) || filter?.branchIds?.[0] || req.authUser?.activeBranchId;
+
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        const allTables = await tableService.findAll({ branchId: effectiveBranchId, tenantId });
+        const zoneSet = new Set<string>();
+        const floorSet = new Set<string>();
+        allTables.forEach((t: any) => {
+            if (t.zone) zoneSet.add(t.zone);
+            if (t.floor) floorSet.add(String(t.floor));
+        });
+
+        const defaultZones = [
+            { id: 'main', name: 'ຫ້ອງໃຫຍ່', color: 'blue' },
+            { id: 'vip', name: 'ຫ້ອງ VIP', color: 'purple' },
+            { id: 'outdoor', name: 'ນອກອາຄານ', color: 'green' },
+            { id: 'private', name: 'ຫ້ອງສ່ວນຕົວ', color: 'amber' },
+        ];
+
+        const zones = zoneSet.size > 0
+            ? Array.from(zoneSet).map(z => ({ id: z, name: z, color: 'blue' }))
+            : defaultZones;
+
+        const floors = floorSet.size > 0
+            ? Array.from(floorSet).sort().map(f => ({ id: f, name: `ຊັ້ນ ${f}` }))
+            : [{ id: '1', name: 'ຊັ້ນ 1' }];
+
+        res.json({ success: true, data: zones, floors });
     } catch (error) {
         next(error);
     }
@@ -126,13 +176,15 @@ restaurantRoutes.delete('/tables/:id', authenticate, authorize('tables:delete'),
 restaurantRoutes.get('/orders', authenticate, branchFilter(), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { branchId, status, tableId } = req.query;
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
-        const effectiveBranchId = (branchId as string) || filter?.branchIds?.[0] || (req as any).authUser?.activeBranchId;
+        const filter = req.branchFilter;
+        const effectiveBranchId = (branchId as string) || filter?.branchIds?.[0] || req.authUser?.activeBranchId;
 
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         const orders = await orderService.findAll({
             branchId: effectiveBranchId,
             status: status as OrderStatus,
             tableId: tableId as string,
+            tenantId,
         });
 
         res.json({ success: true, data: orders });
@@ -151,7 +203,8 @@ restaurantRoutes.get('/orders/stats', authenticate, async (req: Request, res: Re
             return;
         }
 
-        const stats = await orderService.getStats(branchId as string);
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        const stats = await orderService.getStats(branchId as string, tenantId);
         res.json({ success: true, data: stats });
     } catch (error) {
         next(error);
@@ -161,10 +214,11 @@ restaurantRoutes.get('/orders/stats', authenticate, async (req: Request, res: Re
 // Get order by ID
 restaurantRoutes.get('/orders/:id', authenticate, async (req: Request, res: Response, next: NextFunction) => {
     try {
-        const order = await orderService.findById(req.params.id);
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        const order = await orderService.findById(req.params.id, tenantId);
 
         if (!order) {
-            res.status(404).json({ success: false, error: { code: 'RES_002', message: 'Order not found' } });
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Order not found or no access' } });
             return;
         }
 
@@ -177,7 +231,7 @@ restaurantRoutes.get('/orders/:id', authenticate, async (req: Request, res: Resp
 // Create order
 restaurantRoutes.post('/orders', authenticate, async (req: Request, res: Response, next: NextFunction) => {
     try {
-        const order = await orderService.create(req.body);
+        const order = await orderService.create({ ...req.body, tenantId: req.authUser?.tenantId || req.user?.tenantId });
         res.status(201).json({ success: true, data: order });
     } catch (error) {
         next(error);
@@ -187,7 +241,8 @@ restaurantRoutes.post('/orders', authenticate, async (req: Request, res: Respons
 // Update order
 restaurantRoutes.put('/orders/:id', authenticate, async (req: Request, res: Response, next: NextFunction) => {
     try {
-        const order = await orderService.update(req.params.id, req.body);
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        const order = await orderService.update(req.params.id, req.body, tenantId);
         res.json({ success: true, data: order });
     } catch (error) {
         next(error);
@@ -198,7 +253,8 @@ restaurantRoutes.put('/orders/:id', authenticate, async (req: Request, res: Resp
 restaurantRoutes.patch('/orders/:id/status', authenticate, async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { status } = req.body;
-        const order = await orderService.update(req.params.id, { status: status as OrderStatus });
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        const order = await orderService.update(req.params.id, { status: status as OrderStatus }, tenantId);
         res.json({ success: true, data: order });
     } catch (error) {
         next(error);
@@ -224,9 +280,10 @@ restaurantRoutes.post('/orders/:id/items', authenticate, async (req: Request, re
 restaurantRoutes.get('/kitchen', authenticate, branchFilter(), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { branchId } = req.query;
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
-        const effectiveBranchId = (branchId as string) || filter?.branchIds?.[0] || (req as any).authUser?.activeBranchId;
-        const orders = await orderService.getKitchenOrders(effectiveBranchId);
+        const filter = req.branchFilter;
+        const effectiveBranchId = (branchId as string) || filter?.branchIds?.[0] || req.authUser?.activeBranchId;
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        const orders = await orderService.getKitchenOrders(effectiveBranchId, tenantId);
         res.json({ success: true, data: orders });
     } catch (error) {
         next(error);
@@ -263,15 +320,17 @@ restaurantRoutes.patch('/kitchen/items/:id/status', authenticate, async (req: Re
 restaurantRoutes.get('/reservations', authenticate, branchFilter(), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { branchId, status, date, page, limit } = req.query;
-        const filter = (req as any).branchFilter as ScopeFilter | undefined;
-        const effectiveBranchId = (branchId as string) || filter?.branchIds?.[0] || (req as any).authUser?.activeBranchId;
+        const filter = req.branchFilter;
+        const effectiveBranchId = (branchId as string) || filter?.branchIds?.[0] || req.authUser?.activeBranchId;
 
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         const result = await reservationService.findAll({
             branchId: effectiveBranchId,
             status: status as ReservationStatus,
             date: date as string,
             page: page ? Number(page) : 1,
             limit: limit ? Number(limit) : 50,
+            tenantId,
         });
 
         res.json({
@@ -299,9 +358,11 @@ restaurantRoutes.get('/reservations/stats', authenticate, async (req: Request, r
             return;
         }
 
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         const stats = await reservationService.getStats(
             branchId as string, 
-            date ? new Date(date as string) : undefined
+            date ? new Date(date as string) : undefined,
+            tenantId
         );
         res.json({ success: true, data: stats });
     } catch (error) {
@@ -312,10 +373,11 @@ restaurantRoutes.get('/reservations/stats', authenticate, async (req: Request, r
 // Get reservation by ID
 restaurantRoutes.get('/reservations/:id', authenticate, async (req: Request, res: Response, next: NextFunction) => {
     try {
-        const reservation = await reservationService.findById(req.params.id);
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        const reservation = await reservationService.findById(req.params.id, tenantId);
 
         if (!reservation) {
-            res.status(404).json({ success: false, error: { code: 'RES_003', message: 'Reservation not found' } });
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Reservation not found or no access' } });
             return;
         }
 
@@ -328,7 +390,7 @@ restaurantRoutes.get('/reservations/:id', authenticate, async (req: Request, res
 // Create reservation
 restaurantRoutes.post('/reservations', authenticate, async (req: Request, res: Response, next: NextFunction) => {
     try {
-        const reservation = await reservationService.create(req.body);
+        const reservation = await reservationService.create({ ...req.body, tenantId: req.authUser?.tenantId || req.user?.tenantId });
         res.status(201).json({ success: true, data: reservation });
     } catch (error) {
         next(error);
@@ -338,7 +400,8 @@ restaurantRoutes.post('/reservations', authenticate, async (req: Request, res: R
 // Update reservation
 restaurantRoutes.put('/reservations/:id', authenticate, async (req: Request, res: Response, next: NextFunction) => {
     try {
-        const reservation = await reservationService.update(req.params.id, req.body);
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        const reservation = await reservationService.update(req.params.id, req.body, tenantId);
         res.json({ success: true, data: reservation });
     } catch (error) {
         next(error);
@@ -349,7 +412,8 @@ restaurantRoutes.put('/reservations/:id', authenticate, async (req: Request, res
 restaurantRoutes.patch('/reservations/:id/status', authenticate, async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { status } = req.body;
-        const reservation = await reservationService.update(req.params.id, { status: status as ReservationStatus });
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        const reservation = await reservationService.update(req.params.id, { status: status as ReservationStatus }, tenantId);
         res.json({ success: true, data: reservation });
     } catch (error) {
         next(error);
@@ -359,7 +423,8 @@ restaurantRoutes.patch('/reservations/:id/status', authenticate, async (req: Req
 // Delete reservation
 restaurantRoutes.delete('/reservations/:id', authenticate, async (req: Request, res: Response, next: NextFunction) => {
     try {
-        await reservationService.delete(req.params.id);
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        await reservationService.delete(req.params.id, tenantId);
         res.json({ success: true, message: 'Reservation deleted successfully' });
     } catch (error) {
         next(error);

@@ -373,21 +373,33 @@
         return content;
     }
 
-    function saveDesign() {
+    async function saveDesign() {
         try {
             const design = {
                 paperSize: selectedPaperSize,
                 elements: receiptElements,
             };
             localStorage.setItem("kpos_receipt_design", JSON.stringify(design));
+            // Persist to DB for cross-device sync
+            await api.put('settings', { json: { category: 'receipt', key: 'design', value: design } }).json().catch(() => {});
             toast.success("ບັນທຶກສຳເລັດ!");
         } catch (e) {
             console.error("Failed to save design:", e);
-            toast.error("ບັນທຶກບໍ່ສຳເລັດ");
+            toast.error("ບັນທຶກບໍສຳເລັດ");
         }
     }
 
-    function loadDesign() {
+    async function loadDesign() {
+        // Try API first for cross-device sync
+        try {
+            const res = await api.get('settings?category=receipt&key=design').json<any>();
+            if (res.data?.value) {
+                const design = typeof res.data.value === 'string' ? JSON.parse(res.data.value) : res.data.value;
+                if (design.paperSize) selectedPaperSize = design.paperSize;
+                if (design.elements?.length) receiptElements = design.elements;
+                return;
+            }
+        } catch { /* fallback to localStorage */ }
         const saved = localStorage.getItem("kpos_receipt_design");
         if (saved) {
             const design = JSON.parse(saved);
@@ -455,7 +467,7 @@
         };
         saveDesign();
         // Also try to save to API for persistence across devices
-        api.post('documents/settings', { json: { type: 'receipt', template: design } }).json().catch(() => {});
+        api.put('documents/settings', { json: { receiptDesign: design } }).json().catch(() => {});
         toast.success('ບັນທຶກສຳເລັດ!');
     }
 </script>
@@ -563,8 +575,8 @@
                                 class={cn(
                                     "group relative py-1 px-2 -mx-2 rounded cursor-pointer transition-colors",
                                     selectedElementId === element.id
-                                        ? "bg-primary-50 dark:bg-primary-900/20 ring-2 ring-primary-500"
-                                        : "hover:bg-gray-50 dark:hover:bg-gray-800",
+                                        ? "bg-primary-50 ring-2 ring-primary-500"
+                                        : "hover:bg-gray-50",
                                 )}
                             >
                                 <!-- Element content -->
@@ -597,7 +609,7 @@
                                 {:else if element.type === "logo"}
                                     <div class="text-center py-2">
                                         <div
-                                            class="inline-block w-16 h-16 bg-gray-200 dark:bg-gray-700 rounded-lg flex items-center justify-center"
+                                            class="inline-block w-16 h-16 bg-gray-200 rounded-lg flex items-center justify-center"
                                         >
                                             <Image
                                                 class="w-8 h-8 text-gray-400"
@@ -607,7 +619,7 @@
                                 {:else if element.type === "qrcode"}
                                     <div class="text-center py-2">
                                         <div
-                                            class="inline-block w-20 h-20 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded flex items-center justify-center"
+                                            class="inline-block w-20 h-20 bg-gray-100 border border-gray-300 rounded flex items-center justify-center"
                                         >
                                             <QrCode
                                                 class="w-12 h-12 text-gray-400"
@@ -617,7 +629,7 @@
                                 {:else if element.type === "barcode"}
                                     <div class="text-center py-2">
                                         <div
-                                            class="inline-block w-32 h-10 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded flex items-center justify-center"
+                                            class="inline-block w-32 h-10 bg-gray-100 border border-gray-300 rounded flex items-center justify-center"
                                         >
                                             <Barcode
                                                 class="w-20 h-6 text-gray-400"
@@ -642,7 +654,7 @@
 
                                 <!-- Actions -->
                                 <div
-                                    class="absolute right-0 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 flex items-center gap-1 bg-white dark:bg-gray-800 shadow rounded px-1"
+                                    class="absolute right-0 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 flex items-center gap-1 bg-white shadow rounded px-1"
                                 >
                                     <button
                                         onclick={(e) => {

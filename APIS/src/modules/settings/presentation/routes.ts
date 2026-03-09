@@ -11,36 +11,37 @@ import { eq, and, or, isNull, inArray, desc, asc, count, sql } from 'drizzle-orm
 export const settingRoutes = Router();
 
 // Helper: find or create a setting
-async function upsertSetting(category: string, key: string, value: any, branchId: string | null) {
+async function upsertSetting(category: string, key: string, value: any, branchId: string | null, tenantId?: string | null) {
     const conditions = [eq(settings.category, category), eq(settings.key, key)];
     conditions.push(branchId ? eq(settings.branchId, branchId) : isNull(settings.branchId));
+    if (tenantId) conditions.push(eq(settings.tenantId, tenantId));
     const existing = await db.query.settings.findFirst({ where: and(...conditions) });
     if (existing) {
         const [updated] = await db.update(settings).set({ value, updatedAt: new Date() }).where(eq(settings.id, existing.id)).returning();
         return updated;
     }
-    const [created] = await db.insert(settings).values({ category, key, value, branchId }).returning();
+    const [created] = await db.insert(settings).values({ category, key, value, branchId, tenantId }).returning();
     return created;
 }
 
 // Helper: get settings with branch fallback (global + branch-specific)
-async function getSettingsForBranch(category: string, branchId: string) {
-    return db.query.settings.findMany({
-        where: and(
-            eq(settings.category, category),
-            or(isNull(settings.branchId), eq(settings.branchId, branchId)),
-        ),
-    });
+async function getSettingsForBranch(category: string, branchId: string, tenantId?: string) {
+    const conds: any[] = [
+        eq(settings.category, category),
+        or(isNull(settings.branchId), eq(settings.branchId, branchId)),
+    ];
+    if (tenantId) conds.push(or(isNull(settings.tenantId), eq(settings.tenantId, tenantId)));
+    return db.query.settings.findMany({ where: and(...conds) });
 }
 
 // Helper: get settings for multiple categories with branch fallback
-async function getSettingsForBranchMultiCategory(categories: string[], branchId: string) {
-    return db.query.settings.findMany({
-        where: and(
-            inArray(settings.category, categories),
-            or(isNull(settings.branchId), eq(settings.branchId, branchId)),
-        ),
-    });
+async function getSettingsForBranchMultiCategory(categories: string[], branchId: string, tenantId?: string) {
+    const conds: any[] = [
+        inArray(settings.category, categories),
+        or(isNull(settings.branchId), eq(settings.branchId, branchId)),
+    ];
+    if (tenantId) conds.push(or(isNull(settings.tenantId), eq(settings.tenantId, tenantId)));
+    return db.query.settings.findMany({ where: and(...conds) });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -121,6 +122,18 @@ export const ENUM_SEED_DATA: Record<string, { value: string; label: string; labe
         { value: 'VIE', label: 'Vietnamese', labelLao: 'ຫວຽດນາມ', isSystem: true },
         { value: 'CHN', label: 'Chinese', labelLao: 'ຈີນ', isSystem: true },
         { value: 'OTHER', label: 'Other', labelLao: 'ອື່ນໆ', isSystem: true },
+    ],
+    printer_type: [
+        { value: 'receipt', label: 'Receipt Printer', labelLao: 'ເຄື່ອງພິມໃບບິນ', isSystem: true },
+        { value: 'kitchen', label: 'Kitchen Printer', labelLao: 'ເຄື່ອງພິມເຮືອນຄົວ', isSystem: true },
+        { value: 'label', label: 'Label/Barcode Printer', labelLao: 'ເຄື່ອງພິມລາຄາ/ບາໂຄດ', isSystem: true },
+        { value: 'report', label: 'Report Printer', labelLao: 'ເຄື່ອງພິມລາຍງານ', isSystem: true },
+    ],
+    connection_type: [
+        { value: 'usb', label: 'USB', labelLao: 'USB', isSystem: true },
+        { value: 'network', label: 'Network (LAN)', labelLao: 'ເຄືອຂ່າຍ (LAN)', isSystem: true },
+        { value: 'bluetooth', label: 'Bluetooth', labelLao: 'Bluetooth', isSystem: true },
+        { value: 'serial', label: 'Serial Port', labelLao: 'Serial Port', isSystem: true },
     ],
 };
 
@@ -220,6 +233,9 @@ settingRoutes.get('/', authenticate, async (req, res, next) => {
         const targetBranchId = branchId ? String(branchId) : req.user!.branchId;
 
         const conditions: any[] = [or(isNull(settings.branchId), eq(settings.branchId, targetBranchId))];
+        // BE-76: Tenant isolation
+        const tenantId = req.authUser?.tenantId;
+        if (tenantId && !req.authUser?.isSuperAdmin) conditions.push(or(isNull(settings.tenantId), eq(settings.tenantId, tenantId)));
         if (category) conditions.push(eq(settings.category, String(category)));
 
         const settingsRows = await db.query.settings.findMany({
@@ -250,7 +266,8 @@ settingRoutes.get('/category/:category', authenticate, async (req, res, next) =>
         const { category } = req.params;
         const branchId = req.query.branchId ? String(req.query.branchId) : req.user!.branchId;
 
-        const settingsRows = await getSettingsForBranch(category, branchId);
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        const settingsRows = await getSettingsForBranch(category, branchId, tenantId);
 
         // Convert to key-value object
         const settingsObject = settingsRows.reduce((acc, s) => {
@@ -309,7 +326,8 @@ settingRoutes.put('/:category/:key', authenticate, authorize('settings:update'),
         const effectiveGlobal = isGlobal && isSuperOrAdmin;
         const branchId = effectiveGlobal ? null : (isSuperOrAdmin && req.body.branchId ? req.body.branchId : req.user!.branchId);
 
-        const setting = await upsertSetting(category, key, value, branchId);
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        const setting = await upsertSetting(category, key, value, branchId, tenantId);
 
         res.json({ success: true, data: setting });
     } catch (error) {
@@ -328,12 +346,13 @@ settingRoutes.post('/bulk', authenticate, authorize('settings:update'), async (r
         // Only super admins and admins can set global settings or modify other branches
         const effectiveGlobal = isGlobal && isSuperOrAdmin;
         const branchId = effectiveGlobal ? null : (isSuperOrAdmin && req.body.branchId ? req.body.branchId : req.user!.branchId);
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
 
         const results = [];
 
         for (const [category, values] of Object.entries(settings as Record<string, Record<string, unknown>>)) {
             for (const [key, value] of Object.entries(values)) {
-                const setting = await upsertSetting(category, key, value as any, branchId);
+                const setting = await upsertSetting(category, key, value as any, branchId, tenantId);
                 results.push(setting);
             }
         }
@@ -476,6 +495,34 @@ settingRoutes.post('/initialize', authenticate, authorize('settings:update'), as
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// STORE LOGO UPLOAD (Cloudinary)
+// ═══════════════════════════════════════════════════════════════════════════
+settingRoutes.post('/store/logo', authenticate, authorize('settings:update'), async (req, res, next) => {
+    try {
+        const { image } = req.body; // base64 data URI
+        if (!image) {
+            return res.status(400).json({ success: false, error: { code: 'VALIDATION_001', message: 'Image data is required' } });
+        }
+
+        const { uploadService } = await import('@/infrastructure/services/upload.service');
+        const result = await uploadService.uploadSingle(image, {
+            folder: 'kpos/logos',
+            maxWidth: 512,
+            maxHeight: 512,
+            quality: 90,
+        });
+
+        // Save logo URL to store settings
+        const branchId = req.body.branchId || req.authUser?.activeBranchId || req.user?.branchId;
+        await upsertSetting('store', 'logo', result.url, branchId || null);
+
+        res.json({ success: true, data: { url: result.url, publicId: result.publicId } });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // INTEGRATIONS
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -484,7 +531,8 @@ settingRoutes.get('/integrations', authenticate, async (req, res, next) => {
     try {
         const branchId = req.query.branchId ? String(req.query.branchId) : req.user!.branchId;
         
-        const settingsRows = await getSettingsForBranchMultiCategory(['integrations', 'integration'], branchId);
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        const settingsRows = await getSettingsForBranchMultiCategory(['integrations', 'integration'], branchId, tenantId);
         
         // Return as array with id from key
         const integrations = settingsRows.map(s => {
@@ -505,8 +553,9 @@ settingRoutes.put('/integrations/:integrationId', authenticate, authorize('setti
         const { enabled, config } = req.body;
         const branchId = req.body.branchId || req.user!.branchId;
         
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         const value = { enabled, config, updatedAt: new Date().toISOString() };
-        const setting = await upsertSetting('integrations', integrationId, value, branchId);
+        const setting = await upsertSetting('integrations', integrationId, value, branchId, tenantId);
         
         res.json({ success: true, data: setting });
     } catch (error) {
@@ -523,7 +572,8 @@ settingRoutes.get('/receipt', authenticate, async (req, res, next) => {
     try {
         const branchId = req.query.branchId ? String(req.query.branchId) : req.user!.branchId;
         
-        const settingsRows = await getSettingsForBranch('receipt', branchId);
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        const settingsRows = await getSettingsForBranch('receipt', branchId, tenantId);
         
         // Convert to object
         const receipt = settingsRows.reduce((acc, s) => {
@@ -548,7 +598,8 @@ settingRoutes.put('/receipt', authenticate, authorize('settings:update'), async 
         for (const [key, value] of Object.entries(receiptSettings)) {
             if (key === 'branchId') continue;
             
-            const setting = await upsertSetting('receipt', key, value as any, branchId);
+            const tenantId2 = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+            const setting = await upsertSetting('receipt', key, value as any, branchId, tenantId2);
             results.push(setting);
         }
         
@@ -567,7 +618,8 @@ settingRoutes.get('/taxes', authenticate, async (req, res, next) => {
     try {
         const branchId = req.query.branchId ? String(req.query.branchId) : req.user!.branchId;
         
-        const settingsRows = await getSettingsForBranch('tax', branchId);
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        const settingsRows = await getSettingsForBranch('tax', branchId, tenantId);
         
         // Convert settings to tax list format
         const taxList = settingsRows
@@ -587,11 +639,13 @@ settingRoutes.post('/taxes', authenticate, authorize('settings:update'), async (
         const { name, rate, isActive = true, isDefault = false } = req.body;
         
         const key = `tax_${Date.now()}`;
+        const taxTenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         const [setting] = await db.insert(settings).values({
             category: 'tax',
             key,
             value: { name, rate, isActive, isDefault } as any,
             branchId,
+            tenantId: taxTenantId,
         }).returning();
         
         res.status(201).json({ success: true, data: { id: setting.id, name, rate, isActive, isDefault } });
@@ -605,9 +659,13 @@ settingRoutes.put('/taxes/:id', authenticate, authorize('settings:update'), asyn
     try {
         const { name, rate, isActive, isDefault } = req.body;
         
-        const existing = await db.query.settings.findFirst({ where: eq(settings.id, req.params.id) });
+        // BE-76: Tenant-scoped tax update
+        const tenantId = req.authUser?.tenantId;
+        const taxConds: any[] = [eq(settings.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) taxConds.push(eq(settings.tenantId, tenantId));
+        const existing = await db.query.settings.findFirst({ where: and(...taxConds) });
         if (!existing) {
-            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Tax not found' } });
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Tax not found or no access' } });
         }
         
         const currentValue = (existing.value || {}) as Record<string, unknown>;
@@ -619,7 +677,7 @@ settingRoutes.put('/taxes/:id', authenticate, authorize('settings:update'), asyn
             ...(isDefault !== undefined && { isDefault }),
         };
         
-        await db.update(settings).set({ value: updatedValue as any, updatedAt: new Date() }).where(eq(settings.id, req.params.id));
+        await db.update(settings).set({ value: updatedValue as any, updatedAt: new Date() }).where(and(...taxConds));
         
         res.json({ success: true, data: { id: req.params.id, ...updatedValue } });
     } catch (error) {
@@ -630,7 +688,11 @@ settingRoutes.put('/taxes/:id', authenticate, authorize('settings:update'), asyn
 // Delete tax
 settingRoutes.delete('/taxes/:id', authenticate, authorize('settings:update'), async (req, res, next) => {
     try {
-        await db.delete(settings).where(eq(settings.id, req.params.id));
+        // BE-76: Tenant-scoped tax delete
+        const tenantId = req.authUser?.tenantId;
+        const delConds: any[] = [eq(settings.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) delConds.push(eq(settings.tenantId, tenantId));
+        await db.delete(settings).where(and(...delConds));
         res.json({ success: true, data: { message: 'Tax deleted' } });
     } catch (error) {
         next(error);
@@ -646,7 +708,8 @@ settingRoutes.get('/printers', authenticate, async (req, res, next) => {
     try {
         const branchId = req.query.branchId ? String(req.query.branchId) : req.user!.branchId;
         
-        const settingsRows = await getSettingsForBranch('printer', branchId);
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        const settingsRows = await getSettingsForBranch('printer', branchId, tenantId);
         
         const printers = settingsRows
             .filter(s => s.key.startsWith('printer_'))
@@ -667,7 +730,8 @@ settingRoutes.post('/printers', authenticate, authorize('settings:update'), asyn
         const key = `printer_${Date.now()}`;
         const value = { name, type, connectionType, address, port, isDefault, isActive };
         
-        const [setting] = await db.insert(settings).values({ category: 'printer', key, value: value as any, branchId }).returning();
+        const prtTenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        const [setting] = await db.insert(settings).values({ category: 'printer', key, value: value as any, branchId, tenantId: prtTenantId }).returning();
         
         res.status(201).json({ success: true, data: { id: setting.id, ...value } });
     } catch (error) {
@@ -678,16 +742,20 @@ settingRoutes.post('/printers', authenticate, authorize('settings:update'), asyn
 // Update printer
 settingRoutes.put('/printers/:id', authenticate, authorize('settings:update'), async (req, res, next) => {
     try {
-        const existing = await db.query.settings.findFirst({ where: eq(settings.id, req.params.id) });
+        // BE-76: Tenant-scoped printer update
+        const tenantId = req.authUser?.tenantId;
+        const pConds: any[] = [eq(settings.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) pConds.push(eq(settings.tenantId, tenantId));
+        const existing = await db.query.settings.findFirst({ where: and(...pConds) });
         if (!existing) {
-            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Printer not found' } });
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Printer not found or no access' } });
         }
         
         const currentValue = (existing.value || {}) as Record<string, unknown>;
         const updatedValue = { ...currentValue, ...req.body };
         delete (updatedValue as any).branchId;
         
-        await db.update(settings).set({ value: updatedValue as any, updatedAt: new Date() }).where(eq(settings.id, req.params.id));
+        await db.update(settings).set({ value: updatedValue as any, updatedAt: new Date() }).where(and(...pConds));
         
         res.json({ success: true, data: { id: req.params.id, ...updatedValue } });
     } catch (error) {
@@ -698,9 +766,12 @@ settingRoutes.put('/printers/:id', authenticate, authorize('settings:update'), a
 // Test printer
 settingRoutes.post('/printers/:id/test', authenticate, async (req, res, next) => {
     try {
-        const existing = await db.query.settings.findFirst({ where: eq(settings.id, req.params.id) });
+        const tenantId = req.authUser?.tenantId;
+        const tConds: any[] = [eq(settings.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) tConds.push(eq(settings.tenantId, tenantId));
+        const existing = await db.query.settings.findFirst({ where: and(...tConds) });
         if (!existing) {
-            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Printer not found' } });
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Printer not found or no access' } });
         }
         
         // In production, this would send a test print to the actual printer
@@ -713,7 +784,10 @@ settingRoutes.post('/printers/:id/test', authenticate, async (req, res, next) =>
 // Delete printer
 settingRoutes.delete('/printers/:id', authenticate, authorize('settings:update'), async (req, res, next) => {
     try {
-        await db.delete(settings).where(eq(settings.id, req.params.id));
+        const tenantId = req.authUser?.tenantId;
+        const dConds: any[] = [eq(settings.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) dConds.push(eq(settings.tenantId, tenantId));
+        await db.delete(settings).where(and(...dConds));
         res.json({ success: true, data: { message: 'Printer deleted' } });
     } catch (error) {
         next(error);
@@ -729,7 +803,8 @@ settingRoutes.get('/notifications', authenticate, async (req, res, next) => {
     try {
         const branchId = req.query.branchId ? String(req.query.branchId) : req.user!.branchId;
         
-        const settingsRows = await getSettingsForBranch('notifications', branchId);
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        const settingsRows = await getSettingsForBranch('notifications', branchId, tenantId);
         
         const notifSettings = settingsRows.reduce((acc, s) => {
             acc[s.key] = s.value;
@@ -761,7 +836,8 @@ settingRoutes.put('/notifications', authenticate, authorize('settings:update'), 
         for (const [key, value] of Object.entries(notifSettings)) {
             if (key === 'branchId') continue;
             
-            const setting = await upsertSetting('notifications', key, value as any, branchId);
+            const nTenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+            const setting = await upsertSetting('notifications', key, value as any, branchId, nTenantId);
             results.push(setting);
         }
         
@@ -782,6 +858,9 @@ settingRoutes.get('/documents', authenticate, async (req, res, next) => {
         const skip = (Number(page) - 1) * Number(limit);
 
         const conditions: any[] = [];
+        // BE-76: Tenant isolation
+        const tenantId = req.authUser?.tenantId;
+        if (tenantId && !req.authUser?.isSuperAdmin) conditions.push(eq(documents.tenantId, tenantId));
         if (type) conditions.push(eq(documents.type, String(type)));
         if (status) conditions.push(eq(documents.status, String(status)));
         const docWhere = conditions.length > 0 ? and(...conditions) : undefined;
@@ -809,12 +888,16 @@ settingRoutes.get('/documents', authenticate, async (req, res, next) => {
 // Get document by ID
 settingRoutes.get('/documents/:id', authenticate, async (req, res, next) => {
     try {
+        // BE-76: Tenant-scoped document lookup
+        const tenantId = req.authUser?.tenantId;
+        const dConds: any[] = [eq(documents.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) dConds.push(eq(documents.tenantId, tenantId));
         const document = await db.query.documents.findFirst({
-            where: eq(documents.id, req.params.id),
+            where: and(...dConds),
         });
 
         if (!document) {
-            res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Document not found' } });
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Document not found or no access' } });
             return;
         }
 
@@ -834,7 +917,9 @@ settingRoutes.post('/documents', authenticate, async (req, res, next) => {
         const [{ value: docCount }] = await db.select({ value: count() }).from(documents).where(eq(documents.type, type));
         const documentNo = `${prefix}-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(docCount + 1).padStart(5, '0')}`;
 
+        const docTenantId = req.authUser?.tenantId || req.user?.tenantId;
         const [document] = await db.insert(documents).values({
+            tenantId: docTenantId,
             type,
             documentNo,
             referenceId,
@@ -856,9 +941,13 @@ settingRoutes.patch('/documents/:id/status', authenticate, async (req, res, next
         const setData: any = { status, updatedAt: new Date() };
         if (status === 'PRINTED') setData.printCount = sql`${documents.printCount} + 1`;
 
+        // BE-76: Tenant-scoped document status update
+        const tenantId = req.authUser?.tenantId;
+        const stConds: any[] = [eq(documents.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) stConds.push(eq(documents.tenantId, tenantId));
         const [document] = await db.update(documents)
             .set(setData)
-            .where(eq(documents.id, req.params.id))
+            .where(and(...stConds))
             .returning();
 
         res.json({ success: true, data: document });
@@ -1023,8 +1112,12 @@ settingRoutes.delete('/user-notifications/:id', authenticate, async (req, res, n
 settingRoutes.get('/api-keys', authenticate, authorize('settings:read'), async (req, res, next) => {
     try {
         const branchId = req.user!.branchId;
+        // BE-76: Tenant isolation
+        const tenantId = req.authUser?.tenantId;
+        const akConds: any[] = [eq(settings.category, 'api_key'), or(isNull(settings.branchId), eq(settings.branchId, branchId))];
+        if (tenantId && !req.authUser?.isSuperAdmin) akConds.push(or(isNull(settings.tenantId), eq(settings.tenantId, tenantId)));
         const apiKeyRows = await db.query.settings.findMany({
-            where: and(eq(settings.category, 'api_key'), or(isNull(settings.branchId), eq(settings.branchId, branchId))),
+            where: and(...akConds),
             orderBy: desc(settings.createdAt),
         });
 
@@ -1054,9 +1147,10 @@ settingRoutes.post('/api-keys', authenticate, authorize('settings:update'), asyn
         const { name, service, apiKey, secretKey } = req.body;
         const branchId = req.user!.branchId;
 
-        const existing = await db.query.settings.findFirst({
-            where: and(eq(settings.category, 'api_key'), eq(settings.key, name), eq(settings.branchId, branchId)),
-        });
+        const akTenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        const dupConds: any[] = [eq(settings.category, 'api_key'), eq(settings.key, name), eq(settings.branchId, branchId)];
+        if (akTenantId) dupConds.push(eq(settings.tenantId, akTenantId));
+        const existing = await db.query.settings.findFirst({ where: and(...dupConds) });
         if (existing) {
             return res.status(400).json({ success: false, error: { code: 'DUPLICATE', message: 'API key name already exists' } });
         }
@@ -1066,6 +1160,7 @@ settingRoutes.post('/api-keys', authenticate, authorize('settings:update'), asyn
             key: name,
             value: JSON.stringify({ service, apiKey, secretKey, isActive: true }),
             branchId,
+            tenantId: akTenantId,
         }).returning();
 
         res.status(201).json({
@@ -1081,9 +1176,13 @@ settingRoutes.post('/api-keys', authenticate, authorize('settings:update'), asyn
 settingRoutes.put('/api-keys/:id', authenticate, authorize('settings:update'), async (req, res, next) => {
     try {
         const { name, service, apiKey, secretKey, isActive } = req.body;
-        const existing = await db.query.settings.findFirst({ where: eq(settings.id, req.params.id) });
+        // BE-76: Tenant-scoped API key update
+        const tenantId = req.authUser?.tenantId;
+        const akUpdConds: any[] = [eq(settings.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) akUpdConds.push(eq(settings.tenantId, tenantId));
+        const existing = await db.query.settings.findFirst({ where: and(...akUpdConds) });
         if (!existing) {
-            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'API key not found' } });
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'API key not found or no access' } });
         }
 
         const currentVal = typeof existing.value === 'string' ? JSON.parse(existing.value) : existing.value as Record<string, unknown>;
@@ -1099,7 +1198,7 @@ settingRoutes.put('/api-keys/:id', authenticate, authorize('settings:update'), a
                 }),
                 updatedAt: new Date(),
             })
-            .where(eq(settings.id, req.params.id))
+            .where(and(...akUpdConds))
             .returning();
 
         res.json({ success: true, data: { id: updated.id, name: updated.key } });
@@ -1111,11 +1210,15 @@ settingRoutes.put('/api-keys/:id', authenticate, authorize('settings:update'), a
 // Delete API key
 settingRoutes.delete('/api-keys/:id', authenticate, authorize('settings:update'), async (req, res, next) => {
     try {
-        const existing = await db.query.settings.findFirst({ where: eq(settings.id, req.params.id) });
+        // BE-76: Tenant-scoped API key delete
+        const tenantId = req.authUser?.tenantId;
+        const akDelConds: any[] = [eq(settings.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) akDelConds.push(eq(settings.tenantId, tenantId));
+        const existing = await db.query.settings.findFirst({ where: and(...akDelConds) });
         if (!existing) {
-            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'API key not found' } });
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'API key not found or no access' } });
         }
-        await db.delete(settings).where(eq(settings.id, req.params.id));
+        await db.delete(settings).where(and(...akDelConds));
         res.json({ success: true, data: { message: 'Deleted' } });
     } catch (error) {
         next(error);
@@ -1129,8 +1232,9 @@ settingRoutes.delete('/api-keys/:id', authenticate, authorize('settings:update')
 settingRoutes.post('/integrations/:id/connect', authenticate, authorize('settings:update'), async (req, res, next) => {
     try {
         const branchId = req.user!.branchId;
+        const intTenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         const data = { connected: true, lastSync: new Date().toISOString(), ...req.body };
-        await upsertSetting('integration', req.params.id, JSON.stringify(data), branchId);
+        await upsertSetting('integration', req.params.id, JSON.stringify(data), branchId, intTenantId);
         res.json({ success: true, data: { id: req.params.id, connected: true } });
     } catch (error) {
         next(error);
@@ -1140,9 +1244,10 @@ settingRoutes.post('/integrations/:id/connect', authenticate, authorize('setting
 settingRoutes.post('/integrations/:id/disconnect', authenticate, authorize('settings:update'), async (req, res, next) => {
     try {
         const branchId = req.user!.branchId;
-        const existing = await db.query.settings.findFirst({
-            where: and(eq(settings.category, 'integration'), eq(settings.key, req.params.id), eq(settings.branchId, branchId)),
-        });
+        const disTenantId = req.authUser?.tenantId;
+        const disConds: any[] = [eq(settings.category, 'integration'), eq(settings.key, req.params.id), eq(settings.branchId, branchId)];
+        if (disTenantId && !req.authUser?.isSuperAdmin) disConds.push(eq(settings.tenantId, disTenantId));
+        const existing = await db.query.settings.findFirst({ where: and(...disConds) });
         if (existing) {
             const val = typeof existing.value === 'string' ? JSON.parse(existing.value) : existing.value as Record<string, unknown>;
             await db.update(settings).set({ value: JSON.stringify({ ...(val as object), connected: false }), updatedAt: new Date() }).where(eq(settings.id, existing.id));
