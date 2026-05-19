@@ -2,8 +2,14 @@
 .env
 .env.*
 !.env.example
+.env.example
 
 # Confidential files
 KPOS-AGENT-TASKS.md
 promp.md
 rbac-1M-10M-full-isolation-fixed.md
+APIS/prompt.md
+APIS/RBAC_AUDIT_REPORT.md
+
+# Temporary files
+temp_url.txt
