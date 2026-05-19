@@ -13,3 +13,8 @@ APIS/RBAC_AUDIT_REPORT.md
 
 # Temporary files
 temp_url.txt
+
+# Docker files
+docker/
+docker-compose.yml
+**/Dockerfile
