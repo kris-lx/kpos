@@ -1,0 +1,9 @@
+# Environment
+.env
+.env.*
+!.env.example
+
+# Confidential files
+KPOS-AGENT-TASKS.md
+promp.md
+rbac-1M-10M-full-isolation-fixed.md
