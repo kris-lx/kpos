@@ -8,8 +8,8 @@ import { jwtConfig } from '@/config/app.config';
 import { ApiError } from './error.middleware';
 import { db } from '@/config/database.config';
 import { cache } from '@/config/redis.config';
-import { eq, inArray, and, isNull, type SQL } from 'drizzle-orm';
-import { users, userStores, roleRules as roleRulesTable, tenants, roles } from '@/db/schema/tables';
+import { eq, inArray, and, isNull, sql, type SQL } from 'drizzle-orm';
+import { users, userStores, roleRules as roleRulesTable, tenants, roles, branches } from '@/db/schema/tables';
 import { SYSTEM_ROLE_PERMISSIONS } from '@/shared/systemRolePermissions';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import { hasPerm, type PermBit } from '@/infrastructure/permissions';
@@ -58,9 +58,11 @@ export interface AuthenticatedUser extends JwtPayload {
     permissions: string[];
     accessibleStores: UserStoreAccess[];
     accessibleBranchIds: string[];
+    accessibleBranchPaths: string[];
     accessibleStoreIds: string[];
     activeStoreId?: string;
     activeBranchId: string;
+    activeBranchPath?: string;
     isSuperAdmin: boolean;
     tenantId: string;
 }
@@ -106,6 +108,40 @@ export async function invalidateRoleRulesCache(roleId?: string): Promise<void> {
 /** Invalidate query cache by pattern (call after data mutations) */
 export async function invalidateQueryCache(pattern: string): Promise<void> {
     await cache.delPattern(`${CACHE_PREFIX}:q:${pattern}`);
+}
+
+/**
+ * Load branch_path for a single branch (DB hit, no cache).
+ * Returns undefined if branch not found.
+ */
+async function loadBranchPath(branchId: string): Promise<string | undefined> {
+    const row = await db.query.branches.findFirst({
+        where: eq(branches.id, branchId),
+        columns: { branchPath: true },
+    });
+    return row?.branchPath || undefined;
+}
+
+/**
+ * Load distinct branch_paths for all branches the user can access.
+ * Cached per user. Empty array means no scope restriction (used by admins).
+ */
+async function loadAccessibleBranchPaths(
+    userId: string,
+    branchIds: string[],
+): Promise<string[]> {
+    if (!branchIds.length) return [];
+    const cacheKey = `${CACHE_PREFIX}:paths:${userId}`;
+    const cached = await cache.get<string[]>(cacheKey);
+    if (cached) return cached;
+
+    const rows = await db.query.branches.findMany({
+        where: inArray(branches.id, branchIds),
+        columns: { branchPath: true },
+    });
+    const paths = [...new Set(rows.map(r => r.branchPath).filter(Boolean) as string[])];
+    await cache.set(cacheKey, paths, CACHE_TTL);
+    return paths;
 }
 
 // Load user's store access from database (with Redis cache)
@@ -271,6 +307,11 @@ export async function authenticate(
                 accessibleBranchIds.push(user.branchId);
             }
 
+            // Load branch_path for each accessible branch (descendants of each
+            // root included so users automatically see sub-branches under their
+            // scope). Cached per user.
+            const accessibleBranchPaths = await loadAccessibleBranchPaths(userId, accessibleBranchIds);
+
             // Get active store from header or use default
             const activeStoreHeader = req.headers['x-active-store'] as string | undefined;
             const defaultStore = accessibleStores.find(s => s.isDefault);
@@ -281,6 +322,9 @@ export async function authenticate(
             // Set active branch from active store or user's default branch
             const activeStore = accessibleStores.find(s => s.storeId === activeStoreId);
             const activeBranchId = activeStore?.branchId || user.branchId || branchId;
+            const activeBranchPath = activeBranchId
+                ? await loadBranchPath(activeBranchId)
+                : undefined;
 
             // Build legacy JwtPayload for backward compat on req.user
             const legacyPayload: JwtPayload = {
@@ -299,9 +343,11 @@ export async function authenticate(
                 tenantId: user.tenantId || tenantId,
                 accessibleStores,
                 accessibleBranchIds,
+                accessibleBranchPaths,
                 accessibleStoreIds,
                 activeStoreId,
                 activeBranchId,
+                activeBranchPath,
                 isSuperAdmin: user.isSuperAdmin || false
             };
 
@@ -731,6 +777,33 @@ export function tenantScope(
     const tid = req.authUser.tenantId;
     if (!tid) return undefined;
     return eq(tenantIdColumn, tid);
+}
+
+/**
+ * Branch-path scope condition based on materialized path semantics.
+ * Returns `branch_path = ANY(paths) OR branch_path LIKE 'p.%' for each p`.
+ *
+ * - SuperAdmin / tenant admin (no accessibleBranchPaths) → undefined (no restriction).
+ * - User with paths → restrict to those paths and their descendants.
+ *
+ * Pair this with `tenantScope()` for full Layer-1 isolation on any tenant
+ * table that has a `branch_path` column (typically `branches` itself; other
+ * tables should use `buildScopeCondition()` against `branch_id`).
+ */
+export function buildBranchPathScope(
+    req: Request,
+    branchPathColumn: PgColumn
+): SQL | undefined {
+    if (!req.authUser) return undefined;
+    if (req.authUser.isSuperAdmin) return undefined;
+    const paths = req.authUser.accessibleBranchPaths || [];
+    if (paths.length === 0) return undefined;
+
+    // Match exact path or any descendant: `path = 'x' OR path LIKE 'x.%'`
+    const conds: SQL[] = paths.map(
+        (p) => sql`(${branchPathColumn} = ${p} OR ${branchPathColumn} LIKE ${p + '.%'})`
+    );
+    return conds.length === 1 ? conds[0] : sql.join(conds, sql` OR `);
 }
 
 /** @deprecated Use buildScopeCondition for Drizzle queries. Kept for migration reference. */

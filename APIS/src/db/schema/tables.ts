@@ -37,6 +37,8 @@ export const tenants = pgTable('tenants', {
 export const branches = pgTable('branches', {
     id: uuid('id').primaryKey().defaultRandom(),
     tenantId: uuid('tenant_id'),
+    parentBranchId: uuid('parent_branch_id'),
+    branchPath: text('branch_path').notNull().default(''),
     name: text('name').notNull(),
     code: text('code').notNull(),
     address: text('address'),
@@ -52,6 +54,8 @@ export const branches = pgTable('branches', {
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (t) => [
     index('branches_tenant_idx').on(t.tenantId),
+    index('branches_parent_idx').on(t.parentBranchId),
+    index('branches_path_idx').on(t.branchPath),
     uniqueIndex('branches_tenant_code_idx').on(t.tenantId, t.code),
 ]);
 
