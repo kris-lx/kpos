@@ -51,6 +51,9 @@ export const zh = {
     'common.name': '名称',
     'common.description': '描述',
     'common.notes': '备注',
+    'common.perPage': '每页',
+    'common.quantity': '数量',
+    'common.unitPrice': '单价',
 
     // Auth
     'auth.login': '登录',
@@ -110,6 +113,13 @@ export const zh = {
     'product.minStock': '最低库存',
     'product.lowStock': '库存不足',
     'product.outOfStock': '缺货',
+    'products.product': '商品',
+    'profile.title': '个人资料',
+    'profile.profileInfo': '资料信息',
+    'profile.security': '安全',
+    'profile.name': '姓名',
+    'profile.email': '邮箱',
+    'profile.phone': '电话',
 
     // Categories
     'category.title': '分类管理',
@@ -144,7 +154,9 @@ export const zh = {
     'settings.receipt': '收据',
     'settings.tax': '税务',
     'settings.payment': '支付',
+    'settings.payments': '支付',
     'settings.printer': '打印机',
+    'settings.printers': '打印机',
     'settings.notifications': '通知',
 
     // Navigation
@@ -258,6 +270,7 @@ export const zh = {
     'promotions.status': '状态',
     'promotions.codeCopied': '已复制优惠码',
     'promotions.noPromotions': '未找到促销活动',
+    'promotions.totalSaved': '总节省',
 
     // Restaurant
     'restaurant.title': '餐厅管理',
@@ -285,6 +298,9 @@ export const zh = {
     'restaurant.readyToServe': '待上菜',
     'restaurant.startCooking': '开始制作',
     'restaurant.callWaiter': '呼叫服务员',
+    'restaurant.totalReservations': '总预订数',
+    'restaurant.seated': '已入座',
+    'restaurant.guests': '客人',
 
     // Payments
     'payments.title': '支付管理',
@@ -322,6 +338,9 @@ export const zh = {
     'payments.netAmount': '净金额',
     'payments.enableMethod': '启用支付方式',
     'payments.disableMethod': '禁用支付方式',
+    'payments.methods': '支付方式',
+    'payments.noSettlements': '无结算',
+    'payments.noTransactions': '无交易',
 
     // Customers
     'customer.title': '客户管理',
@@ -335,6 +354,15 @@ export const zh = {
     'customer.totalSpent': '累计消费',
     'customer.lastVisit': '最近到店',
     'customer.group': '客户分组',
+    'customers.noCustomers': '无客户',
+    'customers.members': '会员',
+    'customers.vipCustomers': 'VIP客户',
+    'customers.newThisMonth': '本月新增',
+    'customers.addCustomer': '添加客户',
+    'customers.phone': '电话',
+    'customers.email': '邮箱',
+    'customers.address': '地址',
+    'customers.totalCustomers': '客户总数',
 
     // Reports
     'reports.title': '报表',
@@ -359,6 +387,7 @@ export const zh = {
     'inventory.count': '库存盘点',
     'inventory.quantity': '数量',
     'inventory.reason': '原因',
+    'inventory.reasonSale': '销售原因',
     'inventory.reference': '参考号',
     'inventory.fromBranch': '来源门店',
     'inventory.toBranch': '目标门店',
@@ -517,6 +546,7 @@ export const zh = {
     'common.addNew': '新增',
     'common.selected': '已选择',
     'common.selectAll': '全选',
+    'common.select': '选择',
     'common.unselectAll': '取消全选',
     'common.type': '类型',
     'common.value': '值',
@@ -681,6 +711,8 @@ export const zh = {
     'stores.deleteSuccess': '店铺删除成功',
     'stores.deleteConfirm': '确定删除此店铺吗？',
     'stores.default': '默认',
+    'stores.userCount': '用户数量',
+    'stores.branchCount': '门店数量',
 
     // Cash Registers
     'registers.title': '收银机管理',

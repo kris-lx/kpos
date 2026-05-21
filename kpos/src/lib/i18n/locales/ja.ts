@@ -51,6 +51,9 @@ export const ja = {
     'common.name': '名前',
     'common.description': '説明',
     'common.notes': 'メモ',
+    'common.perPage': 'ページあたり',
+    'common.quantity': '数量',
+    'common.unitPrice': '単価',
 
     // Auth
     'auth.login': 'ログイン',
@@ -110,6 +113,13 @@ export const ja = {
     'product.minStock': '最低在庫',
     'product.lowStock': '在庫僅少',
     'product.outOfStock': '在庫切れ',
+    'products.product': '商品',
+    'profile.title': 'プロフィール',
+    'profile.profileInfo': 'プロフィール情報',
+    'profile.security': 'セキュリティ',
+    'profile.name': '名前',
+    'profile.email': 'メール',
+    'profile.phone': '電話番号',
 
     // Categories
     'category.title': 'カテゴリー管理',
@@ -144,7 +154,9 @@ export const ja = {
     'settings.receipt': 'レシート',
     'settings.tax': '税金',
     'settings.payment': '支払い',
+    'settings.payments': '支払い',
     'settings.printer': 'プリンター',
+    'settings.printers': 'プリンター',
     'settings.notifications': '通知',
 
     // Navigation
@@ -258,6 +270,7 @@ export const ja = {
     'promotions.status': 'ステータス',
     'promotions.codeCopied': 'コードをコピーしました',
     'promotions.noPromotions': 'プロモーションが見つかりません',
+    'promotions.totalSaved': '総節約額',
 
     // Restaurant
     'restaurant.title': 'レストラン管理',
@@ -285,6 +298,9 @@ export const ja = {
     'restaurant.readyToServe': '提供待ち',
     'restaurant.startCooking': '調理開始',
     'restaurant.callWaiter': 'スタッフを呼ぶ',
+    'restaurant.totalReservations': '総予約数',
+    'restaurant.seated': '着席済み',
+    'restaurant.guests': 'ゲスト',
 
     // Payments
     'payments.title': '支払い管理',
@@ -322,6 +338,9 @@ export const ja = {
     'payments.netAmount': '純額',
     'payments.enableMethod': '支払い方法を有効化',
     'payments.disableMethod': '支払い方法を無効化',
+    'payments.methods': '支払い方法',
+    'payments.noSettlements': '精算なし',
+    'payments.noTransactions': '取引なし',
 
     // Customers
     'customer.title': '顧客管理',
@@ -335,6 +354,15 @@ export const ja = {
     'customer.totalSpent': '累計購入額',
     'customer.lastVisit': '最終来店',
     'customer.group': '顧客グループ',
+    'customers.noCustomers': '顧客が見つかりません',
+    'customers.members': '会員',
+    'customers.vipCustomers': 'VIP顧客',
+    'customers.newThisMonth': '今月の新規',
+    'customers.addCustomer': '顧客追加',
+    'customers.phone': '電話番号',
+    'customers.email': 'メール',
+    'customers.address': '住所',
+    'customers.totalCustomers': '顧客総数',
 
     // Reports
     'reports.title': 'レポート',
@@ -359,6 +387,7 @@ export const ja = {
     'inventory.count': '棚卸し',
     'inventory.quantity': '数量',
     'inventory.reason': '理由',
+    'inventory.reasonSale': '販売理由',
     'inventory.reference': '参照',
     'inventory.fromBranch': '移動元店舗',
     'inventory.toBranch': '移動先店舗',
@@ -517,6 +546,7 @@ export const ja = {
     'common.addNew': '新規追加',
     'common.selected': '選択済み',
     'common.selectAll': 'すべて選択',
+    'common.select': '選択',
     'common.unselectAll': '選択解除',
     'common.type': '種類',
     'common.value': '値',
@@ -681,6 +711,8 @@ export const ja = {
     'stores.deleteSuccess': '店舗を削除しました',
     'stores.deleteConfirm': 'この店舗を削除しますか？',
     'stores.default': 'デフォルト',
+    'stores.userCount': 'ユーザー数',
+    'stores.branchCount': '支店数',
 
     // Cash Registers
     'registers.title': 'レジ管理',

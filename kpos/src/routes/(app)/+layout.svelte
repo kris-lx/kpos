@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { auth } from "$stores";
     import { goto } from "$app/navigation";
     import { page } from "$app/stores";
@@ -43,16 +43,36 @@
     let unreadCount = $state(0);
     let pendingRequestsCount = $state(0);
     let heldSalesCount = $state(0);
+    let layoutPollFailures = 0;
+    const MAX_LAYOUT_FAILURES = 3;
 
-    // Shift enforcement
-    const SHIFT_REQUIRED_ROLES = ['cashier', 'store_manager', 'branch_admin', 'inventory_staff', 'waiter', 'kitchen_staff'];
+    function isNetworkError(err: unknown): boolean {
+        const msg = (err instanceof Error) ? err.message : String(err);
+        return msg.includes('Failed to fetch') || msg.includes('ERR_CONNECTION_REFUSED') || msg.includes('NetworkError');
+    }
+
+    // Shift enforcement — roles that require an open shift are loaded from /roles/levels
+    let shiftRequiredRoles = $state<string[]>([]);
     let showShiftWarning = $state(false);
     let currentShift = $state<any>(null);
     let shiftCheckDone = $state(false);
 
+    async function loadShiftRequiredRoles() {
+        // Level 6+ (branch_manager, staff, cashier) require an open shift
+        try {
+            const res = await api.get('roles/levels').json<{ success: boolean; data: { level: number; name: string }[] }>();
+            if (res.success) {
+                shiftRequiredRoles = res.data.filter(l => l.level >= 6).map(l => l.name);
+            }
+        } catch {
+            // fallback to safe default
+            shiftRequiredRoles = ['cashier', 'store_manager', 'branch_manager', 'inventory_staff', 'waiter', 'kitchen_staff'];
+        }
+    }
+
     async function checkActiveShift() {
         const user = auth.user;
-        if (!user || !SHIFT_REQUIRED_ROLES.includes(user.role)) {
+        if (!user || !shiftRequiredRoles.includes(user.role)) {
             shiftCheckDone = true;
             return;
         }
@@ -81,6 +101,7 @@
     }
 
     async function loadNotifications() {
+        if (layoutPollFailures >= MAX_LAYOUT_FAILURES) return;
         try {
             const res = await api.get("settings/user-notifications?limit=10").json<any>();
             if (res.success) {
@@ -94,17 +115,20 @@
                 }));
                 unreadCount = res.unreadCount || 0;
             }
+            layoutPollFailures = 0;
         } catch (e) {
-            // Silently fail - notifications are non-critical
+            if (isNetworkError(e)) layoutPollFailures++;
         }
     }
 
     async function loadHeldSalesCount() {
+        if (layoutPollFailures >= MAX_LAYOUT_FAILURES) return;
         try {
             const res = await api.get('sales/held?limit=1').json<any>();
             heldSalesCount = res.pagination?.total || res.data?.length || 0;
-        } catch {
-            // non-critical
+            layoutPollFailures = 0;
+        } catch (e) {
+            if (isNetworkError(e)) layoutPollFailures++;
         }
     }
 
@@ -113,11 +137,13 @@
         if (!user) return;
         const isAdminUser = user.isSuperAdmin || user.role === 'admin' || user.role === 'super_admin';
         if (!isAdminUser) return;
+        if (layoutPollFailures >= MAX_LAYOUT_FAILURES) return;
         try {
             const res = await api.get('admin/requests/count').json<any>();
             if (res.success) pendingRequestsCount = res.data?.pending || 0;
+            layoutPollFailures = 0;
         } catch (e) {
-            // Silently fail
+            if (isNetworkError(e)) layoutPollFailures++;
         }
     }
 
@@ -125,6 +151,8 @@
         { code: "th", name: "ภาษาไทย", flag: "🇹🇭" },
         { code: "en", name: "English", flag: "🇺🇸" },
         { code: "lo", name: "ພາສາລາວ", flag: "🇱🇦" },
+        { code: "zh", name: "中文", flag: "🇨🇳" },
+        { code: "ja", name: "日本語", flag: "🇯🇵" },
     ];
 
     onMount(() => {
@@ -148,13 +176,32 @@
             auth.loadRules();
         }
 
+        // Route-level permission guard: redirect to dashboard if user has no access to current path.
+        // Always-accessible paths: dashboard, help, profile, settings, pos (pos has its own shift guard).
+        const alwaysAllowed = ['/dashboard', '/help', '/settings', '/pos', '/store-request'];
+        if (!user?.isSuperAdmin && auth.userRules.length > 0 && currentPath !== '/dashboard') {
+            const pathAllowed = alwaysAllowed.some(p => currentPath === p || currentPath.startsWith(p + '/'))
+                || auth.hasRouteAccess(currentPath);
+            if (!pathAllowed) {
+                goto('/dashboard');
+                return;
+            }
+        }
+
+        // Load shift-required roles from API (removes hardcoded role list)
+        loadShiftRequiredRoles().then(() => checkActiveShift());
+
         // Load notifications from API
         loadNotifications();
         loadPendingRequests();
         loadHeldSalesCount();
-        // Auto-refresh notifications every 60 seconds, held sales every 15s
+        // Auto-refresh notifications every 60 seconds, held sales every 30s
         const notifInterval = setInterval(() => { loadNotifications(); loadPendingRequests(); }, 60 * 1000);
-        const heldInterval = setInterval(loadHeldSalesCount, 15 * 1000);
+        const heldInterval = setInterval(loadHeldSalesCount, 30 * 1000);
+        // On tab focus: reset failure counter so we retry when user returns
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) { layoutPollFailures = 0; loadHeldSalesCount(); }
+        });
 
         // Check if user needs to clock in
         checkActiveShift();
@@ -179,6 +226,20 @@
         });
 
         return () => { clearInterval(notifInterval); clearInterval(heldInterval); };
+    });
+
+    // Re-run route guard reactively when rules load after initial mount or when page changes
+    $effect(() => {
+        const user = auth.user;
+        const rules = auth.userRules;
+        const currentPath = $page.url.pathname;
+        if (!user || user.isSuperAdmin || rules.length === 0) return;
+        const alwaysAllowed = ['/dashboard', '/help', '/settings', '/pos', '/store-request'];
+        const pathAllowed = alwaysAllowed.some(p => currentPath === p || currentPath.startsWith(p + '/'))
+            || auth.hasRouteAccess(currentPath);
+        if (!pathAllowed && currentPath !== '/dashboard') {
+            goto('/dashboard');
+        }
     });
 
     function handleLogout() {
@@ -341,15 +402,20 @@
                 {/if}
 
                 <!-- Shift Status Indicator -->
-                {#if shiftCheckDone && SHIFT_REQUIRED_ROLES.includes(auth.user?.role || '')}
+                {#if shiftCheckDone && shiftRequiredRoles.includes(auth.user?.role || '')}
                     {#if currentShift}
-                        <div class="hidden md:flex items-center gap-2 px-3 py-1.5 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg">
-                            <span class="relative flex h-2.5 w-2.5">
-                                <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                                <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-green-500"></span>
+                        <a
+                            href="/staff/shifts"
+                            class="hidden md:flex items-center gap-2 px-3 py-1.5 bg-success-50 dark:bg-success-900/20 border border-success-200 dark:border-success-800 rounded-lg hover:bg-danger-50 hover:border-danger-200 dark:hover:bg-danger-900/20 dark:hover:border-danger-800 transition-colors group"
+                            title="ຄລິກເພື່ອຈົບການເຮັດວຽກ"
+                        >
+                            <span class="relative flex h-2.5 w-2.5 group-hover:hidden">
+                                <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-success-400 opacity-75"></span>
+                                <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-success-500"></span>
                             </span>
-                            <span class="text-xs font-medium text-green-700 dark:text-green-400">ກຳລັງເຮັດວຽກ</span>
-                        </div>
+                            <span class="text-xs font-medium text-success-700 dark:text-success-400 group-hover:hidden">ກຳລັງເຮັດວຽກ</span>
+                            <span class="hidden group-hover:inline text-xs font-medium text-danger-600 dark:text-danger-400">ຈົບການເຮັດວຽກ</span>
+                        </a>
                     {:else}
                         <button
                             onclick={clockIn}

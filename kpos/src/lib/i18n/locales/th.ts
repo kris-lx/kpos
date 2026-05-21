@@ -52,6 +52,9 @@ export const th = {
     'common.description': 'คำอธิบาย',
     'common.notes': 'หมายเหตุ',
     'common.rowsPerPage': 'แถวต่อหน้า',
+    'common.perPage': 'ต่อหน้า',
+    'common.quantity': 'จำนวน',
+    'common.unitPrice': 'ราคาต่อหน่วย',
     'common.showing': 'แสดง',
     'common.of': 'จาก',
     'common.to': 'ถึง',
@@ -74,6 +77,7 @@ export const th = {
     'common.addNew': 'เพิ่มใหม่',
     'common.selected': 'เลือกแล้ว',
     'common.selectAll': 'เลือกทั้งหมด',
+    'common.select': 'เลือก',
     'common.unselectAll': 'ยกเลิกทั้งหมด',
     'common.type': 'ประเภท',
     'common.value': 'ค่า',
@@ -276,6 +280,13 @@ export const th = {
     'product.minStock': 'สต็อกขั้นต่ำ',
     'product.lowStock': 'สต็อกต่ำ',
     'product.outOfStock': 'หมดสต็อก',
+    'products.product': 'สินค้า',
+    'profile.title': 'โปรไฟล์',
+    'profile.profileInfo': 'ข้อมูลโปรไฟล์',
+    'profile.security': 'ความปลอดภัย',
+    'profile.name': 'ชื่อ',
+    'profile.email': 'อีเมล',
+    'profile.phone': 'โทรศัพท์',
 
     // Categories
     'category.title': 'หมวดหมู่',
@@ -310,7 +321,9 @@ export const th = {
     'settings.receipt': 'ใบเสร็จ',
     'settings.tax': 'ภาษี',
     'settings.payment': 'การชำระเงิน',
+    'settings.payments': 'การชำระเงิน',
     'settings.printer': 'เครื่องพิมพ์',
+    'settings.printers': 'เครื่องพิมพ์',
     'settings.notifications': 'แจ้งเตือน',
 
     // Navigation
@@ -447,6 +460,7 @@ export const th = {
     'promotions.status': 'สถานะ',
     'promotions.codeCopied': 'คัดลอกรหัสแล้ว',
     'promotions.noPromotions': 'ไม่พบโปรโมชั่น',
+    'promotions.totalSaved': 'ประหยัดทั้งหมด',
 
     // Restaurant
     'restaurant.title': 'ร้านอาหาร',
@@ -474,6 +488,9 @@ export const th = {
     'restaurant.readyToServe': 'พร้อมเสิร์ฟ',
     'restaurant.startCooking': 'เริ่มทำ',
     'restaurant.callWaiter': 'เรียกพนักงาน',
+    'restaurant.totalReservations': 'การจองทั้งหมด',
+    'restaurant.seated': 'นั่งแล้ว',
+    'restaurant.guests': 'แขก',
 
     // Payments
     'payments.title': 'การชำระเงิน',
@@ -511,6 +528,9 @@ export const th = {
     'payments.netAmount': 'ยอดสุทธิ',
     'payments.enableMethod': 'เปิดใช้งานวิธีการชำระเงิน',
     'payments.disableMethod': 'ปิดใช้งานวิธีการชำระเงิน',
+    'payments.methods': 'วิธีการชำระเงิน',
+    'payments.noSettlements': 'ไม่มีการชำระเงิน',
+    'payments.noTransactions': 'ไม่มีรายการ',
 
     // Customers
     'customer.title': 'ลูกค้า',
@@ -524,6 +544,15 @@ export const th = {
     'customer.totalSpent': 'ยอดซื้อสะสม',
     'customer.lastVisit': 'เข้าร้านล่าสุด',
     'customer.group': 'กลุ่มลูกค้า',
+    'customers.noCustomers': 'ไม่มีลูกค้า',
+    'customers.members': 'สมาชิก',
+    'customers.vipCustomers': 'ลูกค้า VIP',
+    'customers.newThisMonth': 'ใหม่เดือนนี้',
+    'customers.addCustomer': 'เพิ่มลูกค้า',
+    'customers.phone': 'โทรศัพท์',
+    'customers.email': 'อีเมล',
+    'customers.address': 'ที่อยู่',
+    'customers.totalCustomers': 'ลูกค้าทั้งหมด',
 
     // Reports
     'reports.title': 'รายงาน',
@@ -548,6 +577,7 @@ export const th = {
     'inventory.count': 'ตรวจนับ',
     'inventory.quantity': 'จำนวน',
     'inventory.reason': 'เหตุผล',
+    'inventory.reasonSale': 'เหตุผลการขาย',
     'inventory.reference': 'อ้างอิง',
     'inventory.fromBranch': 'จากสาขา',
     'inventory.toBranch': 'ไปสาขา',
@@ -820,6 +850,8 @@ export const th = {
     'stores.deleteSuccess': 'ลบร้านค้าสำเร็จ',
     'stores.deleteConfirm': 'ต้องการลบร้านค้านี้หรือไม่?',
     'stores.default': 'หลัก',
+    'stores.userCount': 'จำนวนผู้ใช้',
+    'stores.branchCount': 'จำนวนสาขา',
 
     // Cash Registers
     'registers.title': 'เครื่องเก็บเงิน',
