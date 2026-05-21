@@ -84,11 +84,97 @@
 
     // QR code data URL cache (generated on-demand)
     let qrDataUrl = $state<string>('');
+    let qrFormat = $state<'iso' | 'emvco'>('iso');
     const QR_PREVIEW_TEXT = 'https://kpos.example.com/receipt/preview';
+
+    // EMVco TLV (Tag-Length-Value) encoding
+    function encodeTLV(tag: string, value: string): string {
+        const length = value.length.toString(16).padStart(2, '0').toUpperCase();
+        return tag + length + value;
+    }
+
+    // Generate EMVco compliant QR code payload
+    function generateEMVcoPayload(data: {
+        merchantAccount?: string;
+        amount?: number;
+        currency?: string;
+        transactionId?: string;
+    }): string {
+        // Payload Format Indicator (ID 00)
+        const payloadFormat = encodeTLV('00', '01');
+        
+        // Point of Initiation Method (ID 01) - 11 = Static, 12 = Dynamic
+        const poiMethod = encodeTLV('01', '12');
+        
+        // Merchant Account Information (ID 26-51)
+        const merchantInfo = encodeTLV('26', data.merchantAccount || '00020101021226580016TH.PROMPTPAY011511234567890352034005802TH530376454541612.34545802TH5910TEST STORE6007BANGKOK6304');
+        
+        // Transaction Currency (ID 53)
+        const currency = encodeTLV('53', data.currency || '764'); // 764 = THB
+        
+        // Transaction Amount (ID 54)
+        const amount = data.amount ? encodeTLV('54', data.amount.toFixed(2)) : '';
+        
+        // Tip or Convenience Fee Indicator (ID 55)
+        const tipIndicator = encodeTLV('55', '02');
+        
+        // Transaction Currency (ID 56)
+        const tipCurrency = encodeTLV('56', '764');
+        
+        // Tip or Convenience Fee Amount (ID 57)
+        const tipAmount = encodeTLV('57', '0.00');
+        
+        // Country Code (ID 58)
+        const countryCode = encodeTLV('58', 'TH');
+        
+        // Merchant Name (ID 59)
+        const merchantName = encodeTLV('59', data.merchantAccount?.split(':')[0] || 'TEST STORE');
+        
+        // Merchant City (ID 60)
+        const merchantCity = encodeTLV('60', 'BANGKOK');
+        
+        // Postal Code (ID 61)
+        const postalCode = encodeTLV('61', '10100');
+        
+        // Additional Data Field Template (ID 62)
+        const additionalData = encodeTLV('62', data.transactionId ? encodeTLV('05', data.transactionId) : '');
+        
+        // CRC (ID 63) - CRC16-CCITT
+        const payloadWithoutCrc = payloadFormat + poiMethod + merchantInfo + currency + amount + tipIndicator + tipCurrency + tipAmount + countryCode + merchantName + merchantCity + postalCode + additionalData;
+        const crc = calculateCRC16(payloadWithoutCrc);
+        const crcField = encodeTLV('63', crc);
+        
+        return payloadWithoutCrc + crcField;
+    }
+
+    // CRC16-CCITT calculation for EMVco
+    function calculateCRC16(data: string): string {
+        let crc = 0xFFFF;
+        for (let i = 0; i < data.length; i++) {
+            crc ^= data.charCodeAt(i) << 8;
+            for (let j = 0; j < 8; j++) {
+                if ((crc & 0x8000) !== 0) {
+                    crc = (crc << 1) ^ 0x1021;
+                } else {
+                    crc = crc << 1;
+                }
+            }
+        }
+        return (crc & 0xFFFF).toString(16).padStart(4, '0').toUpperCase();
+    }
 
     async function generateQrPreview(text: string = QR_PREVIEW_TEXT) {
         try {
-            qrDataUrl = await QRCode.toDataURL(text, { width: 80, margin: 1, errorCorrectionLevel: 'M' });
+            let qrData = text;
+            if (qrFormat === 'emvco') {
+                qrData = generateEMVcoPayload({
+                    merchantAccount: 'TH.PROMPTPAY0115112345678903',
+                    amount: 123.45,
+                    currency: '764',
+                    transactionId: 'TXN123456789'
+                });
+            }
+            qrDataUrl = await QRCode.toDataURL(qrData, { width: 80, margin: 1, errorCorrectionLevel: 'M' });
         } catch { qrDataUrl = ''; }
     }
 
@@ -978,6 +1064,33 @@
                                     class="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm px-3 py-2 text-gray-900 dark:text-white"
                                     rows="2"
                                 ></textarea>
+                            </div>
+                        {/if}
+
+                        <!-- QR Code Format -->
+                        {#if selectedElement.type === "qrcode"}
+                            <div>
+                                <label
+                                    for="qr-format"
+                                    class="block text-xs text-gray-500 dark:text-gray-400 mb-1"
+                                    >QR Code Format</label
+                                >
+                                <select
+                                    id="qr-format"
+                                    bind:value={qrFormat}
+                                    onchange={() => generateQrPreview()}
+                                    class="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm px-3 py-2 text-gray-900 dark:text-white"
+                                >
+                                    <option value="iso">ISO (Standard)</option>
+                                    <option value="emvco">EMVco (Payment)</option>
+                                </select>
+                                <p class="text-xs text-gray-400 mt-1">
+                                    {#if qrFormat === 'iso'}
+                                        Standard ISO 18004 QR Code format
+                                    {:else}
+                                        EMVco QR Code Specification for payment systems
+                                    {/if}
+                                </p>
                             </div>
                         {/if}
 
