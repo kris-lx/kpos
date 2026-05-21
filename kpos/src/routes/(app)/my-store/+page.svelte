@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { createQuery, createMutation, useQueryClient } from "@tanstack/svelte-query";
     import { api } from "$lib/api";
     import { toast } from "svelte-sonner";
@@ -281,7 +281,7 @@
                                 <h1 class="text-2xl font-bold text-gray-900 dark:text-white">
                                     {$storeQuery.data.name}
                                 </h1>
-                                <span class="px-2.5 py-1 rounded-full text-xs font-medium {$storeQuery.data.isActive ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'}">
+                                <span class="px-2.5 py-1 rounded-full text-xs font-medium {$storeQuery.data.isActive ? 'bg-success-100 text-success-700 dark:bg-success-900/30 dark:text-success-400' : 'bg-danger-100 text-danger-700 dark:bg-danger-900/30 dark:text-danger-400'}">
                                     {$storeQuery.data.isActive ? "ເປີດໃຊ້ງານ" : "ປິດໃຊ້ງານ"}
                                 </span>
                             </div>
@@ -471,14 +471,14 @@
                                                 </div>
                                             </div>
                                             <div class="flex items-center gap-2">
-                                                <span class="px-2.5 py-1 rounded-full text-xs font-medium {branch.isActive ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}">
+                                                <span class="px-2.5 py-1 rounded-full text-xs font-medium {branch.isActive ? 'bg-success-100 text-success-700' : 'bg-danger-100 text-danger-700'}">
                                                     {branch.isActive ? "ເປີດ" : "ປິດ"}
                                                 </span>
                                                 <button onclick={() => openEditBranch(branch)} class="p-2 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg" title="ແກ້ໄຂ">
                                                     <Edit class="w-4 h-4 text-gray-500" />
                                                 </button>
-                                                <button onclick={() => deleteBranch(branch)} class="p-2 hover:bg-red-100 dark:hover:bg-red-900/20 rounded-lg" title="ລຶບ">
-                                                    <Trash2 class="w-4 h-4 text-red-500" />
+                                                <button onclick={() => deleteBranch(branch)} class="p-2 hover:bg-danger-100 dark:hover:bg-danger-900/20 rounded-lg" title="ລຶບ">
+                                                    <Trash2 class="w-4 h-4 text-danger-500" />
                                                 </button>
                                             </div>
                                         </div>
@@ -525,7 +525,7 @@
                                                         </span>
                                                     </td>
                                                     <td class="py-3 px-4">
-                                                        <span class="px-2.5 py-1 rounded-full text-xs font-medium {user.isActive ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}">
+                                                        <span class="px-2.5 py-1 rounded-full text-xs font-medium {user.isActive ? 'bg-success-100 text-success-700' : 'bg-danger-100 text-danger-700'}">
                                                             {user.isActive ? "ເປີດ" : "ປິດ"}
                                                         </span>
                                                     </td>

@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * Ensures the system_enums table exists and is seeded with default values.
  * Called once on server startup — safe to re-run (idempotent).

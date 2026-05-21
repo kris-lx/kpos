@@ -52,7 +52,6 @@
         Layers,
         ShoppingBag,
         ChefHat,
-        UtensilsCrossed as TableIcon,
         ClipboardCheck,
         Timer,
         Star,
@@ -63,6 +62,7 @@
         FileCheck,
         Key,
         History,
+        Briefcase,
         type Icon,
     } from "lucide-svelte";
 
@@ -88,6 +88,8 @@
     let heldOrdersCount = $state(0);
     let pendingCreditCount = $state(0);
     let menuLoaded = $state(false);
+    let badgePollFailures = $state(0);
+    const MAX_BADGE_FAILURES = 3;
 
     // Helper: check if a menu item should be visible based on rules + permissions
     function isMenuVisible(item: MenuItem): boolean {
@@ -119,7 +121,7 @@
         PackageSearch, CalendarClock, TrendingUp, TrendingDown, PieChart,
         FileSpreadsheet, Wallet, BellRing, Plug, Monitor, HelpCircle,
         Crown, Layers, ShoppingBag, ChefHat, ClipboardCheck, Timer,
-        Star, Heart, PackageX, Shield, ShieldCheck, FileCheck, Key, History,
+        Star, Heart, PackageX, Shield, ShieldCheck, FileCheck, Key, History, Briefcase,
         Store, LogOut, ChevronDown,
     };
 
@@ -144,67 +146,79 @@
         }
     });
 
+    function isNetworkError(err: unknown): boolean {
+        const msg = (err instanceof Error) ? err.message : String(err);
+        return msg.includes('Failed to fetch') || msg.includes('ERR_CONNECTION_REFUSED') || msg.includes('NetworkError');
+    }
+
     // Load held orders count
     async function loadHeldOrdersCount() {
+        if (!auth.isAuthenticated || badgePollFailures >= MAX_BADGE_FAILURES) return;
         try {
             const response = await api.get("sales/held").json<any>();
             if (response.success && response.data) {
                 heldOrdersCount = response.data.length;
             }
+            badgePollFailures = 0;
         } catch (err) {
-            console.error("Failed to load held orders count:", err);
+            if (isNetworkError(err)) {
+                badgePollFailures++;
+            }
         }
     }
 
     // Load pending credit sales count
     async function loadPendingCreditCount() {
+        if (!auth.isAuthenticated || badgePollFailures >= MAX_BADGE_FAILURES) return;
         try {
             const response = await api.get("sales/credit").json<any>();
             if (response.success && response.data) {
-                // Count only pending/partial/overdue items
-                pendingCreditCount = response.data.filter((s: any) => 
+                pendingCreditCount = response.data.filter((s: any) =>
                     s.status === 'pending' || s.status === 'partial' || s.status === 'overdue'
                 ).length;
             }
+            badgePollFailures = 0;
         } catch (err) {
-            console.error("Failed to load pending credit count:", err);
+            if (isNetworkError(err)) {
+                badgePollFailures++;
+            }
         }
     }
 
+    let menuItems = $state<MenuItem[]>([]);
+
+    function mapApiMenuItem(raw: any): MenuItem {
+        const item: MenuItem = {
+            id: raw.key,
+            name: raw.labelLao || raw.label,
+            nameKey: raw.key ? `nav.${raw.key.replace(/\./g, '_')}` : undefined,
+            icon: resolveIcon(raw.icon),
+            permission: raw.requiredPermission || undefined,
+            href: raw.path || undefined,
+        };
+        if (raw.children?.length > 0) {
+            item.children = raw.children.map(mapApiMenuItem);
+        }
+        return item;
+    }
+
+    let menuLoading = $state(true);
+
     async function loadMenuFromApi() {
+        menuLoading = true;
         try {
             const res = await api.get('users/me/menu').json<any>();
-            if (res.success && res.data?.length > 0) {
-                const apiMenus: MenuItem[] = res.data.map((menu: any) => {
-                    const item: MenuItem = {
-                        id: menu.key,
-                        name: menu.labelLao || menu.label,
-                        nameKey: menu.key ? `nav.${menu.key.replace(/\./g, '_')}` : undefined,
-                        icon: resolveIcon(menu.icon),
-                        permission: menu.requiredPermission || undefined,
-                        href: menu.path || undefined,
-                    };
-                    if (menu.children?.length > 0) {
-                        item.children = menu.children.map((child: any) => ({
-                            id: child.key,
-                            name: child.labelLao || child.label,
-                            nameKey: child.key ? `nav.${child.key.replace(/\./g, '_')}` : undefined,
-                            href: child.path,
-                            icon: resolveIcon(child.icon),
-                            permission: child.requiredPermission || undefined,
-                        }));
-                    }
-                    return item;
-                });
-                // Append help link if not present
-                if (!apiMenus.find(m => m.id === 'help')) {
-                    apiMenus.push({ id: 'help', name: 'ຊ່ວຍເຫຼືອ', nameKey: 'nav.help', href: '/help', icon: HelpCircle });
+            if (res.success && Array.isArray(res.data)) {
+                menuItems = res.data.map(mapApiMenuItem);
+                if (menuItems.length === 0 && auth.user?.isSuperAdmin) {
+                    console.error('[Sidebar] Super admin has no menu items — run seed to populate menu_permissions table');
                 }
-                menuItems = apiMenus;
-                menuLoaded = true;
             }
-        } catch {
-            // Keep hardcoded fallback
+        } catch (err) {
+            console.error('[Sidebar] Failed to load menu from API:', err);
+        } finally {
+            menuLoading = false;
+            menuLoaded = true;
         }
     }
 
@@ -212,658 +226,21 @@
         loadMenuFromApi();
         loadHeldOrdersCount();
         loadPendingCreditCount();
-        // Refresh count every 10 seconds for near-realtime badges
+        // Refresh badge counts every 30 seconds
         const interval = setInterval(() => {
             loadHeldOrdersCount();
             loadPendingCreditCount();
-        }, 10000);
-        // Also refresh on tab focus
-        const onFocus = () => { loadHeldOrdersCount(); loadPendingCreditCount(); };
-        document.addEventListener('visibilitychange', () => { if (!document.hidden) onFocus(); });
+        }, 30000);
+        // On tab focus: reset failure counter so we retry the server after coming back
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) {
+                badgePollFailures = 0;
+                loadHeldOrdersCount();
+                loadPendingCreditCount();
+            }
+        });
         return () => { clearInterval(interval); };
     });
-
-    let menuItems = $state<MenuItem[]>([
-        {
-            id: "dashboard",
-            name: "Dashboard",
-            nameKey: "nav.dashboard",
-            href: "/dashboard",
-            icon: LayoutDashboard,
-            permission: "dashboard:view",
-        },
-        {
-            id: "sales",
-            name: "ຂາຍ",
-            nameKey: "nav.sales",
-            icon: ShoppingCart,
-            permission: "sales:create",
-            children: [
-                {
-                    id: "pos",
-                    name: "ໜ້າຂາຍ POS",
-                    nameKey: "nav.pos",
-                    href: "/pos",
-                    icon: ShoppingCart,
-                    permission: "sales:create",
-                },
-                {
-                    id: "credit-sales",
-                    name: "ຂາຍສິນເຊື່ອ",
-                    nameKey: "nav.creditSales",
-                    href: "/pos/credit",
-                    icon: CreditCard,
-                    permission: "sales:create",
-                    badgeColor: "error",
-                },
-                {
-                    id: "held-orders",
-                    name: "ບິນທີ່ພັກໄວ້",
-                    nameKey: "nav.heldOrders",
-                    href: "/pos/held",
-                    icon: ClipboardList,
-                    permission: "sales:create",
-                    badgeColor: "warning",
-                },
-            ],
-        },
-        {
-            id: "products",
-            name: "ສິນຄ້າ",
-            nameKey: "nav.products",
-            icon: Package,
-            permission: "products:view",
-            children: [
-                {
-                    id: "products-list",
-                    name: "ລາຍການສິນຄ້າ",
-                    nameKey: "nav.productsList",
-                    href: "/products",
-                    icon: Package,
-                    permission: "products:view",
-                },
-                {
-                    id: "categories",
-                    name: "ໝວດໝູ່",
-                    nameKey: "nav.categories",
-                    href: "/categories",
-                    icon: Tags,
-                    permission: "categories:view",
-                },
-                {
-                    id: "barcode",
-                    name: "Barcode / QR Code",
-                    nameKey: "nav.barcode",
-                    href: "/barcode",
-                    icon: Barcode,
-                    permission: "products:view",
-                },
-                {
-                    id: "sku",
-                    name: "SKU / ຕົວເລືອກ",
-                    nameKey: "nav.sku",
-                    href: "/products/sku",
-                    icon: Layers,
-                    permission: "products:view",
-                },
-                {
-                    id: "pricing",
-                    name: "ລະດັບລາຄາ",
-                    nameKey: "nav.pricing",
-                    href: "/products/pricing",
-                    icon: DollarSign,
-                    permission: "products:update",
-                },
-            ],
-        },
-        {
-            id: "inventory",
-            name: "ສາງ",
-            nameKey: "nav.inventory",
-            icon: Boxes,
-            permission: "inventory:view",
-            children: [
-                {
-                    id: "stock",
-                    name: "ສາງສິນຄ້າ",
-                    nameKey: "nav.stock",
-                    href: "/inventory",
-                    icon: Boxes,
-                    permission: "inventory:view",
-                },
-                {
-                    id: "stock-in",
-                    name: "ນຳເຂົ້າສິນຄ້າ",
-                    nameKey: "nav.stockIn",
-                    href: "/inventory/stockin",
-                    icon: TrendingUp,
-                    permission: "inventory:create",
-                },
-                {
-                    id: "stock-out",
-                    name: "ນຳອອກສິນຄ້າ",
-                    nameKey: "nav.stockOut",
-                    href: "/inventory/stockout",
-                    icon: TrendingDown,
-                    permission: "inventory:create",
-                },
-                {
-                    id: "stock-adjust",
-                    name: "ປັບປ່ຽນສະຕ໋ອກ",
-                    nameKey: "nav.stockAdjust",
-                    href: "/inventory/adjust",
-                    icon: Scale,
-                    permission: "inventory:update",
-                },
-                {
-                    id: "stock-transfer",
-                    name: "ໂອນຍ້າຍສິນຄ້າ",
-                    nameKey: "nav.stockTransfer",
-                    href: "/inventory/transfer",
-                    icon: ArrowRightLeft,
-                    permission: "inventory:update",
-                },
-                {
-                    id: "stock-count",
-                    name: "ກວດນັບສະຕ໋ອກ",
-                    nameKey: "nav.stockCount",
-                    href: "/inventory/count",
-                    icon: ClipboardCheck,
-                    permission: "inventory:update",
-                },
-                {
-                    id: "purchase-orders",
-                    name: "ສັ່ງຊື້ (PO)",
-                    nameKey: "nav.purchaseOrders",
-                    href: "/inventory/purchase-orders",
-                    icon: ClipboardList,
-                    permission: "inventory:create",
-                },
-                {
-                    id: "vendors",
-                    name: "ຜູ້ສະໜອງ",
-                    nameKey: "nav.vendors",
-                    href: "/inventory/vendors",
-                    icon: Truck,
-                    permission: "inventory:view",
-                },
-                {
-                    id: "expiry",
-                    name: "ວັນໝົດອາຍຸ",
-                    nameKey: "nav.expiry",
-                    href: "/inventory/expiry",
-                    icon: CalendarClock,
-                    permission: "inventory:view",
-                },
-                {
-                    id: "out-of-stock",
-                    name: "ສິນຄ້າໝົດສະຕ໋ອກ",
-                    nameKey: "nav.outOfStock",
-                    href: "/inventory/out-of-stock",
-                    icon: PackageX,
-                    permission: "inventory:view",
-                    badgeColor: "error",
-                },
-            ],
-        },
-        {
-            id: "restaurant",
-            name: "ຮ້ານອາຫານ",
-            nameKey: "nav.restaurant",
-            icon: UtensilsCrossed,
-            permission: "restaurant:view",
-            children: [
-                {
-                    id: "tables",
-                    name: "ໂຕະ",
-                    nameKey: "nav.tables",
-                    href: "/restaurant/tables",
-                    icon: TableIcon,
-                    permission: "restaurant:view",
-                },
-                {
-                    id: "orders",
-                    name: "ອໍເດີ",
-                    nameKey: "nav.orders",
-                    href: "/restaurant/orders",
-                    icon: ClipboardList,
-                    permission: "restaurant:view",
-                },
-                {
-                    id: "kitchen",
-                    name: "ຄົວ (KDS)",
-                    nameKey: "nav.kitchen",
-                    href: "/restaurant/kitchen",
-                    icon: ChefHat,
-                    permission: "restaurant:manage",
-                },
-                {
-                    id: "reservations",
-                    name: "ຈອງໂຕະ",
-                    nameKey: "nav.reservations",
-                    href: "/restaurant/reservations",
-                    icon: CalendarClock,
-                    permission: "restaurant:view",
-                },
-                {
-                    id: "emenu",
-                    name: "e-Menu",
-                    nameKey: "nav.emenu",
-                    href: "/restaurant/e-menu",
-                    icon: QrCode,
-                    permission: "restaurant:view",
-                },
-            ],
-        },
-        {
-            id: "promotions",
-            name: "ໂປຣໂມຊັ່ນ",
-            nameKey: "nav.promotions",
-            icon: Gift,
-            permission: "promotions:view",
-            children: [
-                {
-                    id: "promotions-list",
-                    name: "ໂປຣໂມຊັ່ນ",
-                    nameKey: "nav.promotionsList",
-                    href: "/promotions",
-                    icon: Gift,
-                    permission: "promotions:view",
-                },
-                {
-                    id: "coupons",
-                    name: "ຄູປອງ",
-                    nameKey: "nav.coupons",
-                    href: "/promotions/coupons",
-                    icon: TicketPercent,
-                    permission: "promotions:view",
-                },
-                {
-                    id: "discounts",
-                    name: "ສ່ວນຫຼຸດ",
-                    nameKey: "nav.discounts",
-                    href: "/promotions/discounts",
-                    icon: Percent,
-                    permission: "promotions:view",
-                },
-            ],
-        },
-        {
-            id: "crm",
-            name: "ລູກຄ້າ (CRM)",
-            nameKey: "nav.crm",
-            icon: Users,
-            permission: "customers:view",
-            children: [
-                {
-                    id: "customers",
-                    name: "ລູກຄ້າ",
-                    nameKey: "nav.customers",
-                    href: "/customers",
-                    icon: Users,
-                    permission: "customers:view",
-                },
-                {
-                    id: "members",
-                    name: "ສະມາຊິກ",
-                    nameKey: "nav.members",
-                    href: "/customers/members",
-                    icon: Crown,
-                    permission: "customers:view",
-                },
-                {
-                    id: "points",
-                    name: "ຄະແນນສະສົມ",
-                    nameKey: "nav.points",
-                    href: "/customers/points",
-                    icon: Star,
-                    permission: "customers:view",
-                },
-                {
-                    id: "loyalty",
-                    name: "ໂປຣແກຣມ Loyalty",
-                    nameKey: "nav.loyalty",
-                    href: "/customers/loyalty",
-                    icon: Heart,
-                    permission: "customers:update",
-                },
-            ],
-        },
-        {
-            id: "payments",
-            name: "ການຊຳລະ",
-            nameKey: "nav.payments",
-            icon: Wallet,
-            permission: "payments:view",
-            children: [
-                {
-                    id: "payment-methods",
-                    name: "ວິທີຊຳລະ",
-                    nameKey: "nav.paymentMethods",
-                    href: "/payments",
-                    icon: CreditCard,
-                    permission: "payments:view",
-                },
-                {
-                    id: "transactions",
-                    name: "ລາຍການຊຳລະ",
-                    nameKey: "nav.transactions",
-                    href: "/payments/transactions",
-                    icon: Receipt,
-                    permission: "payments:view",
-                },
-                {
-                    id: "settlements",
-                    name: "ປິດບັນຊີ",
-                    nameKey: "nav.settlements",
-                    href: "/payments/settlements",
-                    icon: DollarSign,
-                    permission: "payments:manage",
-                },
-            ],
-        },
-        {
-            id: "documents",
-            name: "ເອກະສານ",
-            nameKey: "nav.documents",
-            icon: FileText,
-            permission: "sales:view",
-            children: [
-                {
-                    id: "receipts",
-                    name: "ໃບບິນ",
-                    nameKey: "nav.receipts",
-                    href: "/documents",
-                    icon: Receipt,
-                    permission: "sales:view",
-                },
-                {
-                    id: "receipt-design",
-                    name: "ອອກແບບໃບບິນ",
-                    nameKey: "nav.receiptDesign",
-                    href: "/documents/design",
-                    icon: Printer,
-                    permission: "settings:update",
-                },
-                {
-                    id: "invoices",
-                    name: "ໃບແຈ້ງໜີ້",
-                    nameKey: "nav.invoices",
-                    href: "/documents/invoices",
-                    icon: FileText,
-                    permission: "sales:view",
-                },
-                {
-                    id: "tax-invoices",
-                    name: "ໃບກຳກັບພາສີ",
-                    nameKey: "nav.taxInvoices",
-                    href: "/documents/tax-invoices",
-                    icon: FileSpreadsheet,
-                    permission: "sales:view",
-                },
-            ],
-        },
-        {
-            id: "reports",
-            name: "ລາຍງານ",
-            nameKey: "nav.reports",
-            icon: BarChart3,
-            permission: "reports:view",
-            children: [
-                {
-                    id: "sales-report",
-                    name: "ລາຍງານການຂາຍ",
-                    nameKey: "nav.salesReport",
-                    href: "/reports",
-                    icon: BarChart3,
-                    permission: "reports:view",
-                },
-                {
-                    id: "product-report",
-                    name: "ລາຍງານສິນຄ້າ",
-                    nameKey: "nav.productReport",
-                    href: "/reports/products",
-                    icon: Package,
-                    permission: "reports:view",
-                },
-                {
-                    id: "inventory-report",
-                    name: "ລາຍງານສາງ",
-                    nameKey: "nav.inventoryReport",
-                    href: "/reports/inventory",
-                    icon: Boxes,
-                    permission: "reports:view",
-                },
-                {
-                    id: "financial-report",
-                    name: "ລາຍງານການເງິນ",
-                    nameKey: "nav.financialReport",
-                    href: "/reports/financial",
-                    icon: DollarSign,
-                    permission: "reports:view",
-                },
-                {
-                    id: "staff-report",
-                    name: "ລາຍງານພະນັກງານ",
-                    nameKey: "nav.staffReport",
-                    href: "/reports/staff",
-                    icon: UserCog,
-                    permission: "reports:view",
-                },
-                {
-                    id: "customer-report",
-                    name: "ລາຍງານລູກຄ້າ",
-                    nameKey: "nav.customerReport",
-                    href: "/reports/customers",
-                    icon: Users,
-                    permission: "reports:view",
-                },
-            ],
-        },
-        // Super Admin Section - Only visible to super admins
-        ...(auth.user?.isSuperAdmin ? [{
-            id: "super-admin",
-            name: "Super Admin",
-            nameKey: "nav.superAdmin",
-            icon: ShieldCheck,
-            badgeColor: "badge-error",
-            children: [
-                {
-                    id: "admin-dashboard",
-                    name: "ແຜງຄວບຄຸມ",
-                    nameKey: "nav.adminDashboard",
-                    href: "/admin",
-                    icon: Shield,
-                },
-                {
-                    id: "admin-requests",
-                    name: "ຄຳຂໍເປີດຮ້ານ",
-                    nameKey: "nav.adminRequests",
-                    href: "/admin/requests",
-                    icon: FileCheck,
-                },
-                {
-                    id: "admin-branches",
-                    name: "ຈັດການສາຂາ",
-                    nameKey: "nav.adminBranches",
-                    href: "/admin/branches",
-                    icon: Building2,
-                },
-                {
-                    id: "admin-users",
-                    name: "ຈັດການຜູ້ໃຊ້",
-                    nameKey: "nav.adminUsers",
-                    href: "/admin/users",
-                    icon: Users,
-                },
-                {
-                    id: "admin-roles",
-                    name: "ຈັດການບົດບາດ",
-                    nameKey: "nav.adminRoles",
-                    href: "/admin/roles",
-                    icon: Key,
-                },
-                {
-                    id: "admin-rules",
-                    name: "ຈັດການ Rules",
-                    nameKey: "nav.adminRules",
-                    href: "/admin/rules",
-                    icon: ShieldCheck,
-                },
-                {
-                    id: "admin-permissions",
-                    name: "ຈັດການສິດ",
-                    nameKey: "nav.adminPermissions",
-                    href: "/admin/permissions",
-                    icon: Shield,
-                },
-                {
-                    id: "admin-audit",
-                    name: "ປະຫວັດການໃຊ້ງານ",
-                    nameKey: "nav.adminAudit",
-                    href: "/admin/audit",
-                    icon: History,
-                },
-            ],
-        }] : []),
-        {
-            id: "management",
-            name: "ຈັດການ",
-            nameKey: "nav.management",
-            icon: Building2,
-            permission: "staff:view",
-            children: [
-                ...(auth.user?.isSuperAdmin || auth.user?.role === 'admin' ? [{
-                    id: "branches",
-                    name: "ສາຂາ",
-                    nameKey: "nav.branches",
-                    href: "/branches",
-                    icon: Building2,
-                    permission: "branches:view",
-                },
-                {
-                    id: "stores",
-                    name: "ຮ້ານຄ້າ",
-                    nameKey: "nav.stores",
-                    href: "/management/stores",
-                    icon: Store,
-                    permission: "stores:view",
-                }] : []),
-                {
-                    id: "staff",
-                    name: "ພະນັກງານ",
-                    nameKey: "nav.staff",
-                    href: "/staff",
-                    icon: UserCog,
-                    permission: "staff:view",
-                },
-                {
-                    id: "roles",
-                    name: "ບົດບາດ",
-                    nameKey: "nav.roles",
-                    href: "/staff/roles",
-                    icon: Users,
-                    permission: "roles:view",
-                },
-                {
-                    id: "cash-registers",
-                    name: "ເຄື່ອງ POS",
-                    nameKey: "nav.cashRegisters",
-                    href: "/management/cashregisters",
-                    icon: Monitor,
-                    permission: "settings:view",
-                },
-                {
-                    id: "shifts",
-                    name: "ກະການເຮັດວຽກ",
-                    nameKey: "nav.shifts",
-                    href: "/staff/shifts",
-                    icon: Timer,
-                    permission: "staff:view",
-                },
-            ],
-        },
-        {
-            id: "settings",
-            name: "ຕັ້ງຄ່າ",
-            nameKey: "nav.settings",
-            icon: Settings,
-            permission: "settings:view",
-            children: [
-                {
-                    id: "general-settings",
-                    name: "ຕັ້ງຄ່າທົ່ວໄປ",
-                    nameKey: "nav.generalSettings",
-                    href: "/settings",
-                    icon: Settings,
-                    permission: "settings:view",
-                },
-                {
-                    id: "display-settings",
-                    name: "ຕັ້ງຄ່າຈໍສະແດງ",
-                    nameKey: "nav.displaySettings",
-                    href: "/settings/display",
-                    icon: Monitor,
-                    permission: "settings:view",
-                },
-                {
-                    id: "receipt-settings",
-                    name: "ຕັ້ງຄ່າໃບບິນ",
-                    nameKey: "nav.receiptSettings",
-                    href: "/settings/receipt",
-                    icon: Receipt,
-                    permission: "settings:update",
-                },
-                {
-                    id: "tax-settings",
-                    name: "ຕັ້ງຄ່າພາສີ",
-                    nameKey: "nav.taxSettings",
-                    href: "/settings/tax",
-                    icon: Percent,
-                    permission: "settings:update",
-                },
-                {
-                    id: "payment-settings",
-                    name: "ຕັ້ງຄ່າການຊຳລະ",
-                    nameKey: "nav.paymentSettings",
-                    href: "/settings/payments",
-                    icon: CreditCard,
-                    permission: "settings:update",
-                },
-                {
-                    id: "printer-settings",
-                    name: "ຕັ້ງຄ່າເຄື່ອງພິມ",
-                    nameKey: "nav.printerSettings",
-                    href: "/settings/printers",
-                    icon: Printer,
-                    permission: "settings:update",
-                },
-                {
-                    id: "notifications-settings",
-                    name: "ຕັ້ງຄ່າແຈ້ງເຕືອນ",
-                    nameKey: "nav.notificationsSettings",
-                    href: "/settings/notifications",
-                    icon: BellRing,
-                    permission: "settings:view",
-                },
-                {
-                    id: "integrations",
-                    name: "ເຊື່ອມຕໍ່",
-                    nameKey: "nav.integrations",
-                    href: "/settings/integrations",
-                    icon: Plug,
-                    permission: "settings:update",
-                },
-            ],
-        },
-        {
-            id: "help",
-            name: "ຊ່ວຍເຫຼືອ",
-            nameKey: "nav.help",
-            href: "/help",
-            icon: HelpCircle,
-        },
-    ]);
 
     function toggleMenu(menuId: string) {
         if (expandedMenus.has(menuId)) {
@@ -947,19 +324,24 @@
     <div
         class="flex items-center gap-3 h-16 px-4 border-b border-gray-200 dark:border-gray-800 shrink-0"
     >
+        {#if auth.activeStore?.storeName && false}
+            <!-- reserved for branch logo img -->
+        {/if}
         <div
-            class="flex items-center justify-center w-10 h-10 rounded-xl bg-linear-to-br from-primary-500 to-primary-600 text-white shadow-lg shadow-primary-500/25"
+            class="flex items-center justify-center w-10 h-10 rounded-xl bg-linear-to-br from-primary-500 to-primary-600 text-white shadow-lg shadow-primary-500/25 shrink-0"
         >
             <Store class="w-5 h-5" />
         </div>
         {#if isOpen}
-            <div class="flex flex-col" transition:fade={{ duration: 150 }}>
-                <span class="text-xl font-bold text-gray-900 dark:text-white"
-                    >KPOS</span
-                >
-                <span class="text-xs text-gray-500 dark:text-gray-400"
-                    >Enterprise POS</span
-                >
+            <div class="flex flex-col min-w-0" transition:fade={{ duration: 150 }}>
+                <span class="text-base font-bold text-gray-900 dark:text-white truncate leading-tight">
+                    {auth.activeStore?.branchName || auth.activeStore?.storeName || 'KPOS'}
+                </span>
+                <span class="text-xs text-gray-500 dark:text-gray-400 truncate">
+                    {auth.activeStore?.storeName && auth.activeStore.storeName !== auth.activeStore.branchName
+                        ? auth.activeStore.storeName
+                        : 'Enterprise POS'}
+                </span>
             </div>
         {/if}
     </div>
@@ -973,6 +355,18 @@
 
     <!-- Navigation -->
     <nav class={cn("flex-1 py-4 px-3", isOpen ? "overflow-y-auto scrollbar-thin" : "overflow-visible")}>
+        {#if menuLoading}
+            <ul class="space-y-1">
+                {#each { length: isOpen ? 8 : 6 } as _, i}
+                    <li class={cn("px-3 py-2.5 rounded-xl flex items-center gap-3", !isOpen && "justify-center")}>
+                        <div class="w-5 h-5 rounded bg-gray-200 dark:bg-gray-700 animate-pulse shrink-0"></div>
+                        {#if isOpen}
+                            <div class="h-4 rounded bg-gray-200 dark:bg-gray-700 animate-pulse flex-1" style="width: {60 + (i * 13) % 30}%"></div>
+                        {/if}
+                    </li>
+                {/each}
+            </ul>
+        {:else}
         <ul class="space-y-1">
             {#each menuItems as item}
                 {#if isParentVisible(item)}
@@ -993,12 +387,12 @@
                                             : "text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800",
                                         !isOpen && "justify-center",
                                     )}
-                                    title={!isOpen ? (item.nameKey ? t(item.nameKey) : item.name) : undefined}
+                                    title={!isOpen ? (item.nameKey && t(item.nameKey) !== item.nameKey ? t(item.nameKey) : item.name) : undefined}
                                 >
                                     <item.icon class="w-5 h-5 shrink-0" />
                                     {#if isOpen}
                                         <span class="flex-1 text-left"
-                                            >{item.nameKey
+                                            >{item.nameKey && t(item.nameKey) !== item.nameKey
                                                 ? t(item.nameKey)
                                                 : item.name}</span
                                         >
@@ -1037,7 +431,7 @@
                                                 >
                                                     <child.icon class="w-4 h-4 shrink-0" />
                                                     <span class="flex-1"
-                                                        >{child.nameKey
+                                                        >{child.nameKey && t(child.nameKey) !== child.nameKey
                                                             ? t(child.nameKey)
                                                             : child.name}</span
                                                     >
@@ -1067,36 +461,75 @@
                                     {#each item.children as child}
                                         {#if isMenuVisible(child)}
                                             <li>
-                                                <a
-                                                    href={child.href}
-                                                    class={cn(
-                                                        "flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all duration-200",
-                                                        isActive(child.href)
-                                                            ? "bg-primary-50 text-primary-600 dark:bg-primary-900/20 dark:text-primary-400 font-medium"
-                                                            : "text-gray-500 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-300",
-                                                    )}
-                                                >
-                                                    <child.icon
-                                                        class="w-4 h-4 shrink-0"
-                                                    />
-                                                    <span class="flex-1"
-                                                        >{child.nameKey
-                                                            ? t(child.nameKey)
-                                                            : child.name}</span
+                                                {#if child.children?.length}
+                                                    <!-- Level 2 parent (grandparent submenu) -->
+                                                    <button
+                                                        onclick={() => toggleMenu(child.id)}
+                                                        class={cn(
+                                                            "flex items-center w-full gap-3 px-3 py-2 rounded-lg text-sm transition-all duration-200",
+                                                            child.children.some(gc => isActive(gc.href))
+                                                                ? "text-primary-600 dark:text-primary-400 font-medium"
+                                                                : "text-gray-500 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-300",
+                                                        )}
                                                     >
-                                                    {#if child.badge || getDynamicBadge(child.id)}
-                                                        <span
-                                                            class={cn(
-                                                                "px-1.5 py-0.5 text-xs font-medium rounded-full",
-                                                                getBadgeClass(
-                                                                    child.badgeColor,
-                                                                ),
-                                                            )}
-                                                        >
-                                                            {getDynamicBadge(child.id) ?? child.badge}
-                                                        </span>
+                                                        <child.icon class="w-4 h-4 shrink-0" />
+                                                        <span class="flex-1 text-left">{child.nameKey && t(child.nameKey) !== child.nameKey ? t(child.nameKey) : child.name}</span>
+                                                        <ChevronDown class={cn("w-3 h-3 transition-transform duration-200", expandedMenus.has(child.id) ? "rotate-180" : "")} />
+                                                    </button>
+                                                    {#if expandedMenus.has(child.id)}
+                                                        <ul class="mt-1 ml-3 pl-3 border-l border-gray-200 dark:border-gray-700 space-y-0.5">
+                                                            {#each child.children as grandchild}
+                                                                {#if isMenuVisible(grandchild)}
+                                                                    <li>
+                                                                        <a
+                                                                            href={grandchild.href}
+                                                                            class={cn(
+                                                                                "flex items-center gap-2 px-3 py-1.5 rounded-md text-xs transition-all duration-200",
+                                                                                isActive(grandchild.href)
+                                                                                    ? "bg-primary-50 text-primary-600 dark:bg-primary-900/20 dark:text-primary-400 font-medium"
+                                                                                    : "text-gray-500 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800",
+                                                                            )}
+                                                                        >
+                                                                            <grandchild.icon class="w-3.5 h-3.5 shrink-0" />
+                                                                            <span>{grandchild.nameKey && t(grandchild.nameKey) !== grandchild.nameKey ? t(grandchild.nameKey) : grandchild.name}</span>
+                                                                        </a>
+                                                                    </li>
+                                                                {/if}
+                                                            {/each}
+                                                        </ul>
                                                     {/if}
-                                                </a>
+                                                {:else}
+                                                    <a
+                                                        href={child.href}
+                                                        class={cn(
+                                                            "flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all duration-200",
+                                                            isActive(child.href)
+                                                                ? "bg-primary-50 text-primary-600 dark:bg-primary-900/20 dark:text-primary-400 font-medium"
+                                                                : "text-gray-500 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-300",
+                                                        )}
+                                                    >
+                                                        <child.icon
+                                                            class="w-4 h-4 shrink-0"
+                                                        />
+                                                        <span class="flex-1"
+                                                            >{child.nameKey && t(child.nameKey) !== child.nameKey
+                                                                ? t(child.nameKey)
+                                                                : child.name}</span
+                                                        >
+                                                        {#if child.badge || getDynamicBadge(child.id)}
+                                                            <span
+                                                                class={cn(
+                                                                    "px-1.5 py-0.5 text-xs font-medium rounded-full",
+                                                                    getBadgeClass(
+                                                                        child.badgeColor,
+                                                                    ),
+                                                                )}
+                                                            >
+                                                                {getDynamicBadge(child.id) ?? child.badge}
+                                                            </span>
+                                                        {/if}
+                                                    </a>
+                                                {/if}
                                             </li>
                                         {/if}
                                     {/each}
@@ -1119,12 +552,12 @@
                                             : "text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800",
                                         !isOpen && "justify-center",
                                     )}
-                                    title={!isOpen ? (item.nameKey ? t(item.nameKey) : item.name) : undefined}
+                                    title={!isOpen ? (item.nameKey && t(item.nameKey) !== item.nameKey ? t(item.nameKey) : item.name) : undefined}
                                 >
                                     <item.icon class="w-5 h-5 shrink-0" />
                                     {#if isOpen}
                                         <span
-                                            >{item.nameKey
+                                            >{item.nameKey && t(item.nameKey) !== item.nameKey
                                                 ? t(item.nameKey)
                                                 : item.name}</span
                                         >
@@ -1147,6 +580,7 @@
                 {/if}
             {/each}
         </ul>
+        {/if}
     </nav>
 
     <!-- User Section -->

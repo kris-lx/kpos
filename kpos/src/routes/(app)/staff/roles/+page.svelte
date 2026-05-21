@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
     import { api } from "$api";
@@ -27,6 +27,16 @@
     const canCreate = $derived(auth.hasPermission('roles:create'));
     const canUpdate = $derived(auth.hasPermission('roles:update'));
     const canDelete = $derived(auth.hasPermission('roles:delete'));
+
+    const ROLE_LEVEL_MAP: Record<string, number> = {
+        system_admin: 1, admin: 2, hq_admin: 3, hq_manager: 4,
+        branch_admin: 5, store_owner: 5, branch_manager: 6, store_manager: 6,
+        cashier: 7, staff: 7, inventory_staff: 7, kitchen_staff: 7, waiter: 7,
+    };
+
+    function getRoleLevel(roleName: string): number | null {
+        return ROLE_LEVEL_MAP[roleName] ?? null;
+    }
 
     // State
     let roles = $state<any[]>([]);
@@ -304,7 +314,7 @@
         </div>
     {:else if error}
         <div class="flex flex-col items-center justify-center py-12 bg-white dark:bg-gray-800 rounded-xl shadow-sm">
-            <AlertCircle class="w-12 h-12 text-red-500 dark:text-red-400 mb-4" />
+            <AlertCircle class="w-12 h-12 text-danger-500 dark:text-danger-400 mb-4" />
             <p class="text-gray-700 dark:text-gray-300 mb-4">{error}</p>
             <button
                 onclick={() => loadRoles()}
@@ -338,6 +348,11 @@
                                     {#if role.isSystem}
                                         <span class="px-2 py-0.5 text-xs font-medium bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400 rounded-full">
                                             System
+                                        </span>
+                                    {/if}
+                                    {#if getRoleLevel(role.name) !== null}
+                                        <span class="px-2 py-0.5 text-xs font-medium bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400 rounded-full">
+                                            ລະດັບ {getRoleLevel(role.name)}
                                         </span>
                                     {/if}
                                 </div>
@@ -378,7 +393,7 @@
                             {#if canDelete && !role.isSystem}
                                 <button
                                     onclick={() => deleteRole(role.id)}
-                                    class="p-2 text-gray-500 hover:text-red-600 dark:text-gray-400 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
+                                    class="p-2 text-gray-500 hover:text-danger-600 dark:text-gray-400 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
                                 >
                                     <Trash2 class="w-4 h-4" />
                                 </button>
@@ -442,7 +457,7 @@
                 <div class="grid grid-cols-2 gap-4">
                     <div>
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                            {t("roles.name")} <span class="text-red-500">*</span>
+                            {t("roles.name")} <span class="text-danger-500">*</span>
                         </label>
                         <input
                             type="text"
@@ -455,7 +470,7 @@
                     </div>
                     <div>
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                            {t("roles.displayName")} <span class="text-red-500">*</span>
+                            {t("roles.displayName")} <span class="text-danger-500">*</span>
                         </label>
                         <input
                             type="text"

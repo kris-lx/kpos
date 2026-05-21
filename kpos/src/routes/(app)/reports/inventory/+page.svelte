@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount } from "svelte";
     import { cn, formatCurrency } from "$utils";
     import { api } from "$api";
@@ -51,9 +51,9 @@
     });
 
     function getStockStatus(current: number, min: number) {
-        if (current <= 0) return { bg: "bg-red-100 dark:bg-red-900/50", text: "text-red-700 dark:text-red-400", label: "ໝົດສາງ" };
+        if (current <= 0) return { bg: "bg-danger-100 dark:bg-danger-900/50", text: "text-danger-700 dark:text-danger-400", label: "ໝົດສາງ" };
         if (current <= min) return { bg: "bg-amber-100 dark:bg-amber-900/50", text: "text-amber-700 dark:text-amber-400", label: "ຕໍ່າ" };
-        return { bg: "bg-green-100 dark:bg-green-900/50", text: "text-green-700 dark:text-green-400", label: "ປົກກະຕິ" };
+        return { bg: "bg-success-100 dark:bg-success-900/50", text: "text-success-700 dark:text-success-400", label: "ປົກກະຕິ" };
     }
 
     async function loadData() {
@@ -218,11 +218,11 @@ ${filteredInventory.map((p, i) => { const st = getStockStatus(p.currentStock || 
             {#if showExportMenu}
                 <div class="absolute right-0 mt-2 w-48 bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 z-50 overflow-hidden">
                     <button onclick={() => exportToExcel()} class="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300">
-                        <FileSpreadsheet class="w-5 h-5 text-green-600" />
+                        <FileSpreadsheet class="w-5 h-5 text-success-600" />
                         <span>{t("reports.exportExcel")}</span>
                     </button>
                     <button onclick={() => exportToPdf()} class="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300">
-                        <FileType class="w-5 h-5 text-red-600" />
+                        <FileType class="w-5 h-5 text-danger-600" />
                         <span>{t("reports.exportPdf")}</span>
                     </button>
                     <button onclick={() => exportToWord()} class="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300">

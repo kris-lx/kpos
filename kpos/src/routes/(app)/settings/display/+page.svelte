@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount } from "svelte";
     import { cn } from "$utils";
     import { t } from "$lib/i18n/index.svelte";
@@ -113,8 +113,10 @@
         // Try loading from backend first
         try {
             const res = await api.get('settings/category/display').json<any>();
-            if (res.success && res.data?.config) {
-                const parsed = typeof res.data.config === 'string' ? JSON.parse(res.data.config) : res.data.config;
+            const rows: any[] = Array.isArray(res.data) ? res.data : [];
+            const row = rows.find((s: any) => s.key === 'display_config');
+            if (res.success && row?.value) {
+                const parsed = typeof row.value === 'string' ? JSON.parse(row.value) : row.value;
                 config = { ...config, ...parsed };
             } else {
                 throw new Error('No backend config');
@@ -202,8 +204,8 @@
             // Save to localStorage as fallback
             localStorage.setItem("kpos_display_config", JSON.stringify(config));
 
-            // Save to backend
-            await api.put('settings/display/config', {
+            // Save to backend via generic settings /:category/:key endpoint
+            await api.put('settings/display/display_config', {
                 json: { value: JSON.stringify(config) }
             }).json();
 
@@ -259,7 +261,7 @@
                 class={cn(
                     "flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-all",
                     saveSuccess
-                        ? "bg-green-500 text-white"
+                        ? "bg-success-500 text-white"
                         : "bg-primary-500 hover:bg-primary-600 text-white",
                     isSaving && "opacity-50 cursor-not-allowed",
                 )}
@@ -687,7 +689,7 @@
                         class={cn(
                             "flex items-center justify-between p-4 rounded-lg",
                             isCustomerDisplayOpen
-                                ? "bg-green-50 dark:bg-green-900/20"
+                                ? "bg-success-50 dark:bg-success-900/20"
                                 : "bg-gray-50 dark:bg-gray-700/50",
                         )}
                     >
@@ -696,7 +698,7 @@
                                 class={cn(
                                     "w-3 h-3 rounded-full",
                                     isCustomerDisplayOpen
-                                        ? "bg-green-500 animate-pulse"
+                                        ? "bg-success-500 animate-pulse"
                                         : "bg-gray-400",
                                 )}
                             ></div>
@@ -704,7 +706,7 @@
                                 class={cn(
                                     "text-sm font-medium",
                                     isCustomerDisplayOpen
-                                        ? "text-green-700 dark:text-green-400"
+                                        ? "text-success-700 dark:text-success-400"
                                         : "text-gray-600 dark:text-gray-400",
                                 )}
                             >
@@ -737,7 +739,7 @@
                             </button>
                             <button
                                 onclick={closeCustomerDisplay}
-                                class="flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-red-500 hover:bg-red-600 text-white font-medium transition-colors"
+                                class="flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-danger-500 hover:bg-danger-600 text-white font-medium transition-colors"
                             >
                                 <X class="w-5 h-5" />
                                 ປິດ

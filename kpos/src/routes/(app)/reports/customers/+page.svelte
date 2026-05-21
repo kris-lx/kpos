@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { t } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
     import { formatCurrency, formatNumber, formatDate } from "$lib/utils";
@@ -68,6 +68,8 @@
                 limit: itemsPerPage.toString()
             });
             if (searchQuery) params.append('search', searchQuery);
+            const custRptBranchId = auth.activeBranchId;
+            if (custRptBranchId && !auth.isSuperAdmin) params.append('branchId', custRptBranchId);
             
             const response = await api
                 .get(`reports/customers?${params}`)
@@ -91,7 +93,7 @@
         const colors: Record<string, string> = {
             VIP: "bg-purple-500",
             ປະຈຳ: "bg-blue-500",
-            ທົ່ວໄປ: "bg-green-500",
+            ທົ່ວໄປ: "bg-success-500",
             ໃໝ່: "bg-gray-500",
         };
         return colors[name] || "bg-gray-500";
@@ -221,10 +223,10 @@ ${headerRow}${tableRows}</w:tbl></w:body></w:wordDocument>`;
                 {#if showExportMenu}
                     <div class="absolute right-0 mt-1 w-44 bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 z-20">
                         <button onclick={exportExcel} class="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 rounded-t-xl">
-                            <FileSpreadsheet class="w-4 h-4 text-green-600" /> Excel / CSV
+                            <FileSpreadsheet class="w-4 h-4 text-success-600" /> Excel / CSV
                         </button>
                         <button onclick={exportPdf} class="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
-                            <FileText class="w-4 h-4 text-red-500" /> PDF (Print)
+                            <FileText class="w-4 h-4 text-danger-500" /> PDF (Print)
                         </button>
                         <button onclick={exportWord} class="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 rounded-b-xl">
                             <FileText class="w-4 h-4 text-blue-600" /> Word (.doc)
@@ -253,10 +255,10 @@ ${headerRow}${tableRows}</w:tbl></w:body></w:wordDocument>`;
             </div>
             <div class="bg-white dark:bg-gray-800 rounded-lg shadow-sm p-4">
                 <div class="flex items-center gap-2 mb-2">
-                    <UserPlus class="w-4 h-4 text-green-600 dark:text-green-400" />
+                    <UserPlus class="w-4 h-4 text-success-600 dark:text-success-400" />
                     <p class="text-sm text-gray-500 dark:text-gray-400">ລູກຄ້າໃໝ່</p>
                 </div>
-                <p class="text-2xl font-bold text-green-600 dark:text-green-400">
+                <p class="text-2xl font-bold text-success-600 dark:text-success-400">
                     +{formatNumber(reportData.summary.newCustomers)}
                 </p>
             </div>
@@ -352,6 +354,23 @@ ${headerRow}${tableRows}</w:tbl></w:body></w:wordDocument>`;
                         </div>
                     {/each}
                 </div>
+                <!-- Totals row -->
+                {#if (reportData.topCustomers || []).length > 0}
+                    {@const custTotals = (reportData.topCustomers || []).reduce(
+                        (a: any, c: any) => ({ spent: a.spent + (c.totalSpent || 0), orders: a.orders + (c.orderCount || 0) }),
+                        { spent: 0, orders: 0 }
+                    )}
+                    <div class="p-4 flex items-center gap-4 bg-primary-50 dark:bg-primary-900/20 border-t-2 border-primary-200 dark:border-primary-700 font-bold">
+                        <span class="w-8 h-8"></span>
+                        <div class="flex-1">
+                            <p class="text-gray-900 dark:text-white">ລວມທັງໝົດ ({totalItems} ຄົນ)</p>
+                        </div>
+                        <div class="text-right">
+                            <p class="font-bold text-primary-600">{formatCurrency(custTotals.spent)}</p>
+                            <p class="text-xs text-gray-500 dark:text-gray-400">{custTotals.orders} ອໍເດີ</p>
+                        </div>
+                    </div>
+                {/if}
                 <!-- Pagination for Top Customers -->
                 {#if totalPages >= 1}
                     <div class="flex flex-col sm:flex-row items-center justify-between gap-3 border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-3">
@@ -443,7 +462,7 @@ ${headerRow}${tableRows}</w:tbl></w:body></w:wordDocument>`;
         <div class="bg-white dark:bg-gray-800 rounded-lg shadow-sm">
             <div class="p-4 border-b border-gray-200 dark:border-gray-700">
                 <h2 class="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
-                    <TrendingUp class="w-5 h-5 text-green-500" />
+                    <TrendingUp class="w-5 h-5 text-success-500" />
                     ແນວໂນ້ມລູກຄ້າ
                 </h2>
             </div>
@@ -459,7 +478,7 @@ ${headerRow}${tableRows}</w:tbl></w:body></w:wordDocument>`;
                                     class="flex-1 flex flex-col justify-end gap-1"
                                 >
                                     <div
-                                        class="bg-green-400 dark:bg-green-500 rounded-t transition-all"
+                                        class="bg-success-400 dark:bg-success-500 rounded-t transition-all"
                                         style="height: {(month.new / 80) *
                                             100}px"
                                         title="ລູກຄ້າໃໝ່: {month.new}"
@@ -481,7 +500,7 @@ ${headerRow}${tableRows}</w:tbl></w:body></w:wordDocument>`;
                 </div>
                 <div class="flex justify-center gap-6 mt-4">
                     <div class="flex items-center gap-2">
-                        <span class="w-3 h-3 bg-green-400 dark:bg-green-500 rounded"></span>
+                        <span class="w-3 h-3 bg-success-400 dark:bg-success-500 rounded"></span>
                         <span class="text-sm text-gray-600 dark:text-gray-400">ລູກຄ້າໃໝ່</span>
                     </div>
                     <div class="flex items-center gap-2">
@@ -496,10 +515,10 @@ ${headerRow}${tableRows}</w:tbl></w:body></w:wordDocument>`;
         <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mt-6">
             <div class="bg-white dark:bg-gray-800 rounded-lg shadow-sm p-4">
                 <h3 class="font-medium mb-3 text-gray-900 dark:text-white flex items-center gap-2">
-                    <TrendingUp class="w-5 h-5 text-green-500" />
+                    <TrendingUp class="w-5 h-5 text-success-500" />
                     ການເຕີບໂຕ
                 </h3>
-                <p class="text-3xl font-bold {(reportData.summary?.growthRate ?? 0) >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}">
+                <p class="text-3xl font-bold {(reportData.summary?.growthRate ?? 0) >= 0 ? 'text-success-600 dark:text-success-400' : 'text-danger-600 dark:text-danger-400'}">
                     {(reportData.summary?.growthRate ?? 0) >= 0 ? '+' : ''}{(reportData.summary?.growthRate ?? 0).toFixed(1)}%
                 </p>
                 <p class="text-sm text-gray-500 dark:text-gray-400">ອັດຕາເຕີບໂຕລູກຄ້າໃໝ່</p>

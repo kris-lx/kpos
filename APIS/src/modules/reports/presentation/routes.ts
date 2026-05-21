@@ -30,7 +30,7 @@ reportRoutes.get('/summary', authenticate, branchFilter(), async (req, res, next
         if (tenantId && !req.authUser?.isSuperAdmin) txConds.push(eq(transactions.tenantId, tenantId));
         const scopeCond = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
         if (scopeCond) txConds.push(scopeCond);
-        if (!filter) txConds.push(eq(transactions.branchId, branchId));
+        if (!filter && branchId)txConds.push(eq(transactions.branchId, branchId));
 
         const [todaySales] = await dbRead.select({ total: sum(transactions.total), cnt: count() }).from(transactions).where(and(...txConds));
 
@@ -39,7 +39,7 @@ reportRoutes.get('/summary', authenticate, branchFilter(), async (req, res, next
         if (tenantId && !req.authUser?.isSuperAdmin) prodConds.push(eq(products.tenantId, tenantId));
         const prodScope = buildScopeCondition(filter, { branchId: products.branchId }, 'branchId');
         if (prodScope) prodConds.push(prodScope);
-        if (!filter) prodConds.push(eq(products.branchId, branchId));
+        if (!filter && branchId)prodConds.push(eq(products.branchId, branchId));
         const [{ value: totalProducts }] = await dbRead.select({ value: count() }).from(products).where(and(...prodConds));
 
         // Total customers
@@ -53,13 +53,13 @@ reportRoutes.get('/summary', authenticate, branchFilter(), async (req, res, next
         const invConds: any[] = [lte(inventory.quantity, 10)];
         const invScope = buildScopeCondition(filter, { branchId: inventory.branchId }, 'branchId');
         if (invScope) invConds.push(invScope);
-        if (!filter) invConds.push(eq(inventory.branchId, branchId));
+        if (!filter && branchId)invConds.push(eq(inventory.branchId, branchId));
         const [{ value: lowStock }] = await dbRead.select({ value: count() }).from(inventory).where(and(...invConds));
 
         // Recent sales
         const recentConds: any[] = [eq(transactions.status, 'COMPLETED'), eq(transactions.type, 'SALE')];
         if (scopeCond) recentConds.push(scopeCond);
-        if (!filter) recentConds.push(eq(transactions.branchId, branchId));
+        if (!filter && branchId)recentConds.push(eq(transactions.branchId, branchId));
         const recentSales = await dbRead.query.transactions.findMany({
             where: and(...recentConds),
             limit: 5,
@@ -108,7 +108,7 @@ reportRoutes.get('/sales', authenticate, branchFilter(), async (req, res, next) 
         if (tenantId && !req.authUser?.isSuperAdmin) salesConds.push(eq(transactions.tenantId, tenantId));
         const salesScope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
         if (salesScope) salesConds.push(salesScope);
-        if (!filter) salesConds.push(eq(transactions.branchId, branchId));
+        if (!filter && branchId)salesConds.push(eq(transactions.branchId, branchId));
 
         const sales = await dbRead.query.transactions.findMany({
             where: and(...salesConds),
@@ -178,7 +178,7 @@ reportRoutes.get('/top-products', authenticate, branchFilter(), async (req, res,
         if (tenantId && !req.authUser?.isSuperAdmin) tpConds.push(eq(transactions.tenantId, tenantId));
         const tpScope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
         if (tpScope) tpConds.push(tpScope);
-        if (!filter) tpConds.push(eq(transactions.branchId, branchId));
+        if (!filter && branchId)tpConds.push(eq(transactions.branchId, branchId));
 
         const txIds = await dbRead.query.transactions.findMany({
             where: and(...tpConds),
@@ -229,7 +229,7 @@ reportRoutes.get('/inventory', authenticate, branchFilter(), async (req, res, ne
         const invConds2: any[] = [];
         const invScope2 = buildScopeCondition(filter, { branchId: inventory.branchId }, 'branchId');
         if (invScope2) invConds2.push(invScope2);
-        if (!filter) invConds2.push(eq(inventory.branchId, branchId));
+        if (!filter && branchId)invConds2.push(eq(inventory.branchId, branchId));
         if (lowStockOnly === 'true' || stockFilter === 'low') {
             invConds2.push(lte(inventory.quantity, 10), sql`${inventory.quantity} > 0`);
         } else if (stockFilter === 'out') {
@@ -274,7 +274,7 @@ reportRoutes.get('/inventory', authenticate, branchFilter(), async (req, res, ne
 
         const sumConds: any[] = [];
         if (invScope2) sumConds.push(invScope2);
-        if (!filter) sumConds.push(eq(inventory.branchId, branchId));
+        if (!filter && branchId)sumConds.push(eq(inventory.branchId, branchId));
         const allInventory = await dbRead.query.inventory.findMany({
             where: sumConds.length > 0 ? and(...sumConds) : undefined,
             with: { product: { columns: { cost: true, price: true } } },
@@ -321,7 +321,7 @@ reportRoutes.get('/payments', authenticate, branchFilter(), async (req, res, nex
         if (tenantId && !req.authUser?.isSuperAdmin) pmConds.push(eq(transactions.tenantId, tenantId));
         const pmScope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
         if (pmScope) pmConds.push(pmScope);
-        if (!filter) pmConds.push(eq(transactions.branchId, branchId));
+        if (!filter && branchId)pmConds.push(eq(transactions.branchId, branchId));
 
         const pmTxIds = await dbRead.query.transactions.findMany({ where: and(...pmConds), columns: { id: true } });
         const pmTransactionIds = pmTxIds.map(t => t.id);
@@ -354,8 +354,9 @@ reportRoutes.get('/payments', authenticate, branchFilter(), async (req, res, nex
 // ═══════════════════════════════════════════════════════════════════════════
 reportRoutes.get('/customers', authenticate, branchFilter(), async (req, res, next) => {
     try {
-        const { from, to, limit = 20, page = '1', search } = req.query;
+        const { from, to, limit = 20, page = '1', search, branchId: qBranchId } = req.query;
         const filter = req.branchFilter;
+        const requestedBranchId = qBranchId ? String(qBranchId) : undefined;
         const branchId = filter?.branchIds?.[0] || req.user!.branchId;
         const pageNum = Math.max(1, parseInt(String(page), 10) || 1);
         const limitNum = Math.min(100, Math.max(1, parseInt(String(limit), 10) || 20));
@@ -377,14 +378,22 @@ reportRoutes.get('/customers', authenticate, branchFilter(), async (req, res, ne
         // Build scope conditions
         const custBaseConds: any[] = [eq(customers.isActive, true)];
         if (tenantId && !req.authUser?.isSuperAdmin) custBaseConds.push(eq(customers.tenantId, tenantId));
-        const crScope = buildScopeCondition(filter, { storeId: customers.storeId }, 'storeId');
-        if (crScope) custBaseConds.push(crScope);
+        if (requestedBranchId && filter?.branchIds?.includes(requestedBranchId)) {
+            custBaseConds.push(eq(customers.branchId, requestedBranchId));
+        } else {
+            const crScope = buildScopeCondition(filter, { storeId: customers.storeId }, 'storeId');
+            if (crScope) custBaseConds.push(crScope);
+        }
 
         const txBaseConds: any[] = [eq(transactions.status, 'COMPLETED'), eq(transactions.type, 'SALE')];
         if (tenantId && !req.authUser?.isSuperAdmin) txBaseConds.push(eq(transactions.tenantId, tenantId));
-        const trScope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
-        if (trScope) txBaseConds.push(trScope);
-        if (!filter) txBaseConds.push(eq(transactions.branchId, branchId));
+        if (requestedBranchId && filter?.branchIds?.includes(requestedBranchId)) {
+            txBaseConds.push(eq(transactions.branchId, requestedBranchId));
+        } else {
+            const trScope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
+            if (trScope) txBaseConds.push(trScope);
+            if (!filter && branchId) txBaseConds.push(eq(transactions.branchId, branchId));
+        }
 
         const custSearchConds = [...custBaseConds];
         if (search) {
@@ -527,7 +536,7 @@ reportRoutes.get('/products', authenticate, branchFilter(), async (req, res, nex
         if (tenantId && !req.authUser?.isSuperAdmin) prConds.push(eq(transactions.tenantId, tenantId));
         const prScope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
         if (prScope) prConds.push(prScope);
-        if (!filter) prConds.push(eq(transactions.branchId, branchId));
+        if (!filter && branchId)prConds.push(eq(transactions.branchId, branchId));
 
         const prTxIds = await dbRead.query.transactions.findMany({ where: and(...prConds), columns: { id: true } });
         const prTransactionIds = prTxIds.map(t => t.id);
@@ -632,12 +641,12 @@ reportRoutes.get('/financial', authenticate, branchFilter(), async (req, res, ne
         if (tenantId && !req.authUser?.isSuperAdmin) finConds.push(eq(transactions.tenantId, tenantId));
         const finScope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
         if (finScope) finConds.push(finScope);
-        if (!filter) finConds.push(eq(transactions.branchId, branchId));
+        if (!filter && branchId)finConds.push(eq(transactions.branchId, branchId));
 
         const prevConds: any[] = [eq(transactions.type, 'SALE'), eq(transactions.status, 'COMPLETED'), gte(transactions.createdAt, previousStart), lt(transactions.createdAt, previousEnd)];
         if (tenantId && !req.authUser?.isSuperAdmin) prevConds.push(eq(transactions.tenantId, tenantId));
         if (finScope) prevConds.push(finScope);
-        if (!filter) prevConds.push(eq(transactions.branchId, branchId));
+        if (!filter && branchId)prevConds.push(eq(transactions.branchId, branchId));
 
         const [[currentSales], [previousSales]] = await Promise.all([
             dbRead.select({ total: sum(transactions.total), tax: sum(transactions.taxAmount), discount: sum(transactions.discountAmount) }).from(transactions).where(and(...finConds)),
@@ -725,9 +734,13 @@ reportRoutes.get('/financial', authenticate, branchFilter(), async (req, res, ne
 // ═══════════════════════════════════════════════════════════════════════════
 reportRoutes.get('/staff', authenticate, branchFilter(), async (req, res, next) => {
     try {
-        const { period = 'month', page = '1', limit = '20', search } = req.query;
+        const { period = 'month', page = '1', limit = '20', search, branchId: qBranchId } = req.query;
         const filter = req.branchFilter;
-        const branchId = filter?.branchIds?.[0] || req.user!.branchId;
+        // If branchId query param provided and in accessible branches, use it as a drill-down filter
+        const requestedBranchId = qBranchId ? String(qBranchId) : undefined;
+        const effectiveBranchId = (requestedBranchId && filter?.branchIds?.includes(requestedBranchId))
+            ? requestedBranchId
+            : (filter?.branchIds?.[0] || req.user!.branchId);
         const pageNum = Math.max(1, parseInt(String(page), 10) || 1);
         const limitNum = Math.min(100, Math.max(1, parseInt(String(limit), 10) || 20));
         const skip = (pageNum - 1) * limitNum;
@@ -756,9 +769,14 @@ reportRoutes.get('/staff', authenticate, branchFilter(), async (req, res, next) 
         // BE-76: Tenant isolation
         const tenantId = req.authUser?.tenantId;
         if (tenantId && !req.authUser?.isSuperAdmin) stConds.push(eq(transactions.tenantId, tenantId));
-        const stScope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
-        if (stScope) stConds.push(stScope);
-        if (!filter) stConds.push(eq(transactions.branchId, branchId));
+        // Apply branchId filter: use explicit drill-down branchId if provided, else scope from filter
+        if (requestedBranchId && filter?.branchIds?.includes(requestedBranchId)) {
+            stConds.push(eq(transactions.branchId, requestedBranchId));
+        } else {
+            const stScope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
+            if (stScope) stConds.push(stScope);
+            if (!filter && effectiveBranchId) stConds.push(eq(transactions.branchId, effectiveBranchId));
+        }
         const stWhere = and(...stConds);
 
         // Get total unique users with sales

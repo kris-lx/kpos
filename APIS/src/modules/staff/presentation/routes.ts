@@ -101,7 +101,7 @@ staffRoutes.get('/roles/list', authenticate, async (req, res, next) => {
     try {
         const user = req.authUser || req.user!;
         const isSuperAdmin = user.isSuperAdmin;
-        const isAdmin = isSuperAdmin || user.role === 'admin';
+        const isAdmin = isSuperAdmin || ['admin', 'hq_admin', 'hq_manager'].includes(user.role);
         const isStoreOwner = user.role === 'store_owner';
 
         // BE-78: Tenant isolation on roles list
@@ -126,8 +126,11 @@ staffRoutes.get('/roles/list', authenticate, async (req, res, next) => {
                 orderBy: asc(roles.name),
             });
         } else {
+            // branch_admin and below: show assignable system roles + tenant custom roles
+            // Exclude elevated roles they cannot grant
+            const excludeNames = ['super_admin', 'admin', 'hq_admin', 'hq_manager', 'store_owner'];
             roleRows = await db.query.roles.findMany({
-                where: and(...baseConds, notInArray(roles.name, ['super_admin', 'admin', 'store_owner']), eq(roles.isSystem, false)),
+                where: and(...baseConds, notInArray(roles.name, excludeNames)),
                 orderBy: asc(roles.name),
             });
         }
@@ -143,7 +146,7 @@ staffRoutes.get('/branches/list', authenticate, async (req, res, next) => {
     try {
         const authUser = req.authUser!;
         const isSuperAdmin = authUser.isSuperAdmin;
-        const isAdmin = isSuperAdmin || authUser.role === 'admin';
+        const isAdmin = isSuperAdmin || ['admin', 'hq_admin', 'hq_manager'].includes(authUser.role);
 
         const conditions: any[] = [eq(branches.isActive, true)];
 
@@ -215,7 +218,7 @@ staffRoutes.get('/:id', authenticate, authorize('staff:read'), async (req, res, 
 });
 
 // Create staff
-staffRoutes.post('/', authenticate, authorize('staff:create'), async (req, res, next) => {
+staffRoutes.post('/', authenticate, branchFilter(), authorize('staff:create'), async (req, res, next) => {
     try {
         const { email, password, name, phone, role, branchId, storeId, roleId, isActive, permissions } = req.body;
         const authUser = req.authUser;
@@ -238,8 +241,15 @@ staffRoutes.post('/', authenticate, authorize('staff:create'), async (req, res, 
 
         const hashedPassword = await argon2.hash(password);
 
-        const sanitizedBranchId = branchId && branchId.trim() !== '' ? branchId : (req.user as any)?.branchId || undefined;
+        const sanitizedBranchId = branchId && branchId.trim() !== '' ? branchId : req.authUser?.activeBranchId || (req.user as any)?.branchId || undefined;
         const sanitizedRoleId = roleId && roleId.trim() !== '' ? roleId : undefined;
+        // Validate branchId is within user's accessible scope
+        const staffFilter = req.branchFilter;
+        if (staffFilter && sanitizedBranchId && !req.authUser?.isSuperAdmin && (req.authUser?.roleLevel ?? 7) > 2) {
+            if (!staffFilter.branchIds.includes(sanitizedBranchId)) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot create staff in a branch outside your scope' } });
+            }
+        }
         const sanitizedStoreId = creatorStoreId && creatorStoreId.trim() !== '' ? creatorStoreId : undefined;
 
         const [staff] = await db.insert(users).values({
@@ -425,8 +435,38 @@ staffRoutes.put('/:id/permissions', authenticate, authorize('staff:update'), asy
 
         const validPermissions = permissions.filter((p: unknown) => typeof p === 'string');
 
+        // Tenant scope: target user must belong to caller's tenant
+        if (!req.authUser!.isSuperAdmin) {
+            const targetUser = await db.query.users.findFirst({
+                where: eq(users.id, req.params.id),
+                columns: { tenantId: true },
+            });
+            if (!targetUser || targetUser.tenantId !== req.authUser!.tenantId) {
+                res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot modify user outside your tenant' } });
+                return;
+            }
+        }
+
+        // Scope constraint: non-superadmin callers can only grant permissions they themselves hold
+        let scopedPermissions = validPermissions;
+        if (!req.authUser!.isSuperAdmin) {
+            let callerRolePerms: string[] = [];
+            if (req.authUser!.role) {
+                const callerRole = await db.query.roles.findFirst({
+                    where: eq(roles.name, req.authUser!.role),
+                    columns: { permissions: true },
+                });
+                callerRolePerms = (callerRole?.permissions as string[]) ?? [];
+            }
+            const callerEffectivePerms = new Set([
+                ...(req.authUser!.permissions as string[] || []),
+                ...callerRolePerms,
+            ]);
+            scopedPermissions = validPermissions.filter((p: string) => callerEffectivePerms.has(p));
+        }
+
         const [user] = await db.update(users)
-            .set({ permissions: validPermissions, updatedAt: new Date() })
+            .set({ permissions: scopedPermissions, updatedAt: new Date() })
             .where(eq(users.id, req.params.id))
             .returning();
 

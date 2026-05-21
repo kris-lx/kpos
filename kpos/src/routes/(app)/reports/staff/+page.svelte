@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { cn, formatCurrency } from "$utils";
     import { api } from "$api";
     import { t } from "$lib/i18n/index.svelte";
@@ -55,7 +55,9 @@
                 limit: itemsPerPage.toString()
             });
             if (searchQuery) params.append('search', searchQuery);
-            
+            const staffRptBranchId = auth.activeBranchId;
+            if (staffRptBranchId && !auth.isSuperAdmin) params.append('branchId', staffRptBranchId);
+
             const res = await api.get(`reports/staff?${params}`).json<any>();
             staffReports = res.data || [];
             if (res.pagination) {
@@ -215,11 +217,11 @@ ${staffReports.map((s: any, i: number) => `<tr><td>${i + 1}</td><td>${s.name || 
                 {#if showExportMenu}
                     <div class="absolute right-0 mt-2 w-48 bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 z-50 overflow-hidden">
                         <button onclick={() => exportToExcel()} class="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300">
-                            <FileSpreadsheet class="w-5 h-5 text-green-600" />
+                            <FileSpreadsheet class="w-5 h-5 text-success-600" />
                             <span>{t("reports.exportExcel")}</span>
                         </button>
                         <button onclick={() => exportToPdf()} class="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300">
-                            <FileType class="w-5 h-5 text-red-600" />
+                            <FileType class="w-5 h-5 text-danger-600" />
                             <span>{t("reports.exportPdf")}</span>
                         </button>
                         <button onclick={() => exportToWord()} class="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300">
@@ -345,6 +347,19 @@ ${staffReports.map((s: any, i: number) => `<tr><td>${i + 1}</td><td>${s.name || 
                             </tr>
                         {/each}
                     </tbody>
+                    <tfoot>
+                        <tr class="bg-violet-50 dark:bg-violet-900/20 border-t-2 border-violet-200 dark:border-violet-700 font-bold">
+                            <td class="px-6 py-4 text-gray-900 dark:text-white" colspan="2">ລວມທັງໝົດ ({totalItems} ຄົນ)</td>
+                            <td class="px-6 py-4 text-right text-gray-900 dark:text-white">{stats.totalSales}</td>
+                            <td class="px-6 py-4 text-right text-emerald-600 dark:text-emerald-400">{formatCurrency(stats.totalRevenue)}</td>
+                            <td class="px-6 py-4 text-right text-gray-500 dark:text-gray-400">
+                                {stats.totalSales > 0 ? formatCurrency(stats.totalRevenue / stats.totalSales) : '-'}
+                            </td>
+                            <td class="px-6 py-4 text-right text-gray-500 dark:text-gray-400">
+                                {staffReports.reduce((s, r) => s + (r.hoursWorked || 0), 0)}h
+                            </td>
+                        </tr>
+                    </tfoot>
                 </table>
             </div>
         </div>

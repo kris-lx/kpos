@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
     import {
@@ -145,11 +145,11 @@
             <span class="text-sm font-medium text-gray-900 dark:text-white">{t("help.documentation")}</span>
         </a>
         <a href="/videos" class="flex flex-col items-center gap-2 p-4 bg-white dark:bg-gray-800 rounded-xl shadow-sm hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
-            <Video class="w-6 h-6 text-red-500" />
+            <Video class="w-6 h-6 text-danger-500" />
             <span class="text-sm font-medium text-gray-900 dark:text-white">{t("help.videoTutorials")}</span>
         </a>
         <a href="/changelog" class="flex flex-col items-center gap-2 p-4 bg-white dark:bg-gray-800 rounded-xl shadow-sm hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
-            <FileText class="w-6 h-6 text-green-500" />
+            <FileText class="w-6 h-6 text-success-500" />
             <span class="text-sm font-medium text-gray-900 dark:text-white">{t("help.changelog")}</span>
         </a>
         <button onclick={() => activeTab = "contact"} class="flex flex-col items-center gap-2 p-4 bg-white dark:bg-gray-800 rounded-xl shadow-sm hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
@@ -269,8 +269,8 @@
                 </div>
                 <div class="p-6 space-y-4">
                     <a href={`tel:${contactInfo.phone}`} class="flex items-center gap-4 p-4 rounded-xl border border-gray-200 dark:border-gray-700 hover:border-primary-500 transition-colors">
-                        <div class="p-3 bg-green-50 dark:bg-green-900/20 rounded-lg">
-                            <Phone class="w-5 h-5 text-green-600" />
+                        <div class="p-3 bg-success-50 dark:bg-success-900/20 rounded-lg">
+                            <Phone class="w-5 h-5 text-success-600" />
                         </div>
                         <div>
                             <p class="font-medium text-gray-900 dark:text-white">{t("help.phone")}</p>

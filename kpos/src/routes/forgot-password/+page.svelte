@@ -1,9 +1,10 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { themeStore } from "$stores";
     import { i18n, t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
     import { Store, Sun, Moon, Globe, ArrowLeft, Mail } from "lucide-svelte";
     import { toast } from "svelte-sonner";
+    import { api } from "$lib/api";
 
     let email = $state("");
     let isLoading = $state(false);
@@ -18,12 +19,7 @@
         isLoading = true;
 
         try {
-            // TODO: Implement actual API call for forgot password
-            // Example: await api.post("auth/forgot-password", { json: { email } }).json();
-            
-            // Mock API call simulation
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            
+            await api.post("auth/forgot-password", { json: { email } }).json();
             successMessage = "ຖ້າອີເມວນີ້ມີໃນລະບົບ, ພວກເຮົາໄດ້ສົ່ງລິ້ງປ່ຽນລະຫັດຜ່ານໄປໃຫ້ແລ້ວ. ກະລຸນາກວດເບິ່ງກ່ອງຈົດໝາຍຂອງທ່ານ.";
             toast.success("ສົ່ງອີເມວສຳເລັດ");
             email = "";
@@ -114,13 +110,13 @@
             </div>
 
             {#if error}
-                <div class="mb-6 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl text-red-600 dark:text-red-400 text-sm">
+                <div class="mb-6 p-4 bg-danger-50 dark:bg-danger-900/20 border border-danger-200 dark:border-danger-800 rounded-xl text-danger-600 dark:text-danger-400 text-sm">
                     {error}
                 </div>
             {/if}
 
             {#if successMessage}
-                <div class="mb-6 p-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-xl text-green-600 dark:text-green-400 text-sm text-center">
+                <div class="mb-6 p-4 bg-success-50 dark:bg-success-900/20 border border-success-200 dark:border-success-800 rounded-xl text-success-600 dark:text-success-400 text-sm text-center">
                     {successMessage}
                 </div>
             {/if}

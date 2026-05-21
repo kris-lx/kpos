@@ -5,10 +5,28 @@
 import ky, { type BeforeRequestHook, type AfterResponseHook } from 'ky';
 import { PUBLIC_API_URL } from '$env/static/public';
 import { browser } from '$app/environment';
+import { LOCAL_STORAGE_KEYS } from '$lib/config';
 
-const API_URL = PUBLIC_API_URL || 'http://localhost:5000/api/v1';
-const ACCESS_TOKEN_KEY = 'kpos_access_token';
-const ACTIVE_STORE_KEY = 'kpos_active_store';
+// PUBLIC_API_URL must be set in .env — no hardcoded fallback
+if (!PUBLIC_API_URL) {
+    console.error('[KPOS] PUBLIC_API_URL is not set. Please add it to your .env file.');
+}
+
+const API_URL = PUBLIC_API_URL;
+
+// Held separately to avoid importing auth store (circular dep)
+const ACTIVE_STORE_KEY = LOCAL_STORAGE_KEYS.ACTIVE_STORE;
+const ACCESS_TOKEN_KEY = LOCAL_STORAGE_KEYS.ACCESS_TOKEN;
+const REFRESH_TOKEN_KEY = LOCAL_STORAGE_KEYS.REFRESH_TOKEN;
+const USER_KEY = LOCAL_STORAGE_KEYS.USER;
+
+/** Active branch ID — set via CustomEvent 'branch-changed' dispatched by StoreBranchSelector */
+let _activeBranchId: string | null = null;
+if (browser) {
+    document.addEventListener('branch-changed', (e: Event) => {
+        _activeBranchId = (e as CustomEvent<{ branchId: string }>).detail.branchId;
+    });
+}
 
 // Helper: strip undefined/null values from params to prevent ky sending "undefined" strings
 function cleanParams(params?: Record<string, unknown>): Record<string, string> | undefined {
@@ -28,21 +46,24 @@ const beforeRequest: BeforeRequestHook = (request) => {
         if (token) {
             request.headers.set('Authorization', `Bearer ${token}`);
         }
-        
-        // Include active store header for branch/store filtering
+
         const activeStore = localStorage.getItem(ACTIVE_STORE_KEY);
         if (activeStore) {
             request.headers.set('X-Active-Store', activeStore);
+        }
+
+        // X-Branch-Id: used by HQ-level users to scope cross-branch queries
+        if (_activeBranchId) {
+            request.headers.set('X-Branch-Id', _activeBranchId);
         }
     }
 };
 
 const afterResponse: AfterResponseHook = async (_request, _options, response) => {
     if (response.status === 401 && browser) {
-        // Clear local storage and redirect to login
         localStorage.removeItem(ACCESS_TOKEN_KEY);
-        localStorage.removeItem('kpos_refresh_token');
-        localStorage.removeItem('kpos_user');
+        localStorage.removeItem(REFRESH_TOKEN_KEY);
+        localStorage.removeItem(USER_KEY);
         window.location.href = '/login';
     }
     return response;
@@ -51,6 +72,12 @@ const afterResponse: AfterResponseHook = async (_request, _options, response) =>
 export const api = ky.create({
     prefixUrl: API_URL,
     timeout: 30000,
+    retry: {
+        limit: 1,
+        statusCodes: [429], // retry once on rate-limit
+        afterStatusCodes: [429],
+        delay: (attemptCount) => 0.3 * 2 ** (attemptCount - 1) * 1000,
+    },
     hooks: {
         beforeRequest: [beforeRequest],
         afterResponse: [afterResponse],

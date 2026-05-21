@@ -1,10 +1,11 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
     import { api } from "$api";
     import { formatCurrency } from "$lib/utils";
     import { toast } from "svelte-sonner";
+    import { auth } from "$stores";
     import {
         Search,
         Loader2,
@@ -36,6 +37,7 @@
     let quantity = $state(1);
     let specialRequest = $state("");
     let showCart = $state(false);
+    let branchId = $state<string | null>(null);
 
     // Cart
     let cart = $state<any[]>([]);
@@ -73,7 +75,9 @@
         isLoading = true;
         error = null;
         try {
-            const res = await api.get("restaurant/e-menu").json<any>();
+            const params = new URLSearchParams();
+            if (branchId) params.set("branchId", branchId);
+            const res = await api.get(`restaurant/e-menu${branchId ? `?branchId=${branchId}` : ""}`).json<any>();
             if (res.success) {
                 categories = res.data?.categories || [];
                 menuItems = res.data?.items || [];
@@ -101,16 +105,18 @@
 
     function addToCart() {
         if (!selectedItem) return;
-        
+
         const existingIndex = cart.findIndex(
-            (i) => i.id === selectedItem.id && i.specialRequest === specialRequest
+            (i) => i.itemId === selectedItem.id && i.specialRequest === specialRequest
         );
-        
+
         if (existingIndex >= 0) {
-            cart[existingIndex].quantity += quantity;
+            cart = cart.map((item, i) =>
+                i === existingIndex ? { ...item, quantity: item.quantity + quantity } : item
+            );
         } else {
             cart = [...cart, {
-                id: selectedItem.id,
+                itemId: selectedItem.id,
                 name: selectedItem.name,
                 price: selectedItem.price,
                 image: selectedItem.image,
@@ -119,7 +125,7 @@
                 specialRequest,
             }];
         }
-        
+
         showItemModal = false;
         toast.success(t("restaurant.addedToOrder"));
     }
@@ -129,7 +135,9 @@
         if (newQty <= 0) {
             cart = cart.filter((_, i) => i !== index);
         } else {
-            cart[index].quantity = newQty;
+            cart = cart.map((item, i) =>
+                i === index ? { ...item, quantity: newQty } : item
+            );
         }
     }
 
@@ -139,16 +147,22 @@
 
     async function submitOrder() {
         if (cart.length === 0) return;
-        
+
         try {
             await api.post("restaurant/e-menu/order", {
                 json: {
-                    items: cart,
+                    branchId: branchId || undefined,
                     tableNumber: restaurantInfo.tableNumber,
-                    total: cartTotal,
+                    items: cart.map(item => ({
+                        itemId: item.itemId,
+                        name: item.name,
+                        price: item.price,
+                        quantity: item.quantity,
+                        specialRequest: item.specialRequest || undefined,
+                    })),
                 },
             }).json();
-            
+
             cart = [];
             showCart = false;
             toast.success(t("restaurant.orderPlaced"));
@@ -165,7 +179,17 @@
     onMount(() => {
         const params = new URLSearchParams(window.location.search);
         restaurantInfo.tableNumber = params.get("table");
+        branchId = params.get("branchId") || auth.activeBranchId;
         loadMenu();
+    });
+
+    // Reload when active branch changes
+    $effect(() => {
+        const newBranchId = auth.activeBranchId;
+        if (newBranchId && newBranchId !== branchId) {
+            branchId = newBranchId;
+            loadMenu();
+        }
     });
 </script>
 
@@ -250,8 +274,8 @@
             </div>
         {:else if error}
             <div class="text-center py-16">
-                <div class="w-20 h-20 mx-auto bg-red-100 dark:bg-red-900/30 rounded-full flex items-center justify-center mb-4">
-                    <AlertCircle class="w-10 h-10 text-red-500" />
+                <div class="w-20 h-20 mx-auto bg-danger-100 dark:bg-danger-900/30 rounded-full flex items-center justify-center mb-4">
+                    <AlertCircle class="w-10 h-10 text-danger-500" />
                 </div>
                 <p class="text-gray-700 dark:text-gray-300 mb-4">{error}</p>
                 <button
@@ -297,7 +321,7 @@
                                 
                                 <!-- Badges -->
                                 {#if item.isPopular}
-                                    <div class="absolute top-2 left-2 px-2 py-1 bg-gradient-to-r from-red-500 to-orange-500 text-white text-xs font-bold rounded-lg flex items-center gap-1 shadow-lg">
+                                    <div class="absolute top-2 left-2 px-2 py-1 bg-gradient-to-r from-danger-500 to-orange-500 text-white text-xs font-bold rounded-lg flex items-center gap-1 shadow-lg">
                                         <Star class="w-3 h-3" />
                                         {t("restaurant.popular")}
                                     </div>
@@ -312,13 +336,13 @@
                                         </h3>
                                         <div class="flex gap-1 shrink-0">
                                             {#if item.isSpicy}
-                                                <span class="p-1 bg-red-100 dark:bg-red-900/50 rounded-lg" title="ເຜັດ">
-                                                    <Flame class="w-3.5 h-3.5 text-red-500" />
+                                                <span class="p-1 bg-danger-100 dark:bg-danger-900/50 rounded-lg" title="ເຜັດ">
+                                                    <Flame class="w-3.5 h-3.5 text-danger-500" />
                                                 </span>
                                             {/if}
                                             {#if item.isVegetarian}
-                                                <span class="p-1 bg-green-100 dark:bg-green-900/50 rounded-lg" title="ເຈ">
-                                                    <Leaf class="w-3.5 h-3.5 text-green-500" />
+                                                <span class="p-1 bg-success-100 dark:bg-success-900/50 rounded-lg" title="ເຈ">
+                                                    <Leaf class="w-3.5 h-3.5 text-success-500" />
                                                 </span>
                                             {/if}
                                         </div>
@@ -332,7 +356,7 @@
                                         {formatCurrency(item.price)}
                                     </p>
                                     {#if !item.isAvailable}
-                                        <span class="px-2 py-1 bg-red-100 dark:bg-red-900/50 text-red-600 dark:text-red-400 text-xs rounded-lg">
+                                        <span class="px-2 py-1 bg-danger-100 dark:bg-danger-900/50 text-danger-600 dark:text-danger-400 text-xs rounded-lg">
                                             ໝົດແລ້ວ
                                         </span>
                                     {:else}
@@ -364,7 +388,7 @@
                 >
                     <div class="relative">
                         <ShoppingBag class="w-5 h-5" />
-                        <span class="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white text-xs rounded-full flex items-center justify-center font-bold">
+                        <span class="absolute -top-2 -right-2 w-5 h-5 bg-danger-500 text-white text-xs rounded-full flex items-center justify-center font-bold">
                             {cartCount}
                         </span>
                     </div>
@@ -405,7 +429,7 @@
                 </button>
                 
                 {#if selectedItem.isPopular}
-                    <div class="absolute bottom-4 left-4 px-3 py-1.5 bg-gradient-to-r from-red-500 to-orange-500 text-white text-sm font-bold rounded-xl flex items-center gap-1.5 shadow-lg">
+                    <div class="absolute bottom-4 left-4 px-3 py-1.5 bg-gradient-to-r from-danger-500 to-orange-500 text-white text-sm font-bold rounded-xl flex items-center gap-1.5 shadow-lg">
                         <Star class="w-4 h-4" />
                         {t("restaurant.popular")}
                     </div>
@@ -429,13 +453,13 @@
 
                 <div class="flex gap-3 mt-4">
                     {#if selectedItem.isSpicy}
-                        <span class="px-3 py-1.5 bg-red-100 dark:bg-red-900/50 text-red-600 dark:text-red-400 text-sm rounded-xl flex items-center gap-1.5">
+                        <span class="px-3 py-1.5 bg-danger-100 dark:bg-danger-900/50 text-danger-600 dark:text-danger-400 text-sm rounded-xl flex items-center gap-1.5">
                             <Flame class="w-4 h-4" />
                             {t("restaurant.spicy")}
                         </span>
                     {/if}
                     {#if selectedItem.isVegetarian}
-                        <span class="px-3 py-1.5 bg-green-100 dark:bg-green-900/50 text-green-600 dark:text-green-400 text-sm rounded-xl flex items-center gap-1.5">
+                        <span class="px-3 py-1.5 bg-success-100 dark:bg-success-900/50 text-success-600 dark:text-success-400 text-sm rounded-xl flex items-center gap-1.5">
                             <Leaf class="w-4 h-4" />
                             {t("restaurant.vegetarian")}
                         </span>
@@ -530,7 +554,7 @@
                                 <div class="flex flex-col items-end justify-between">
                                     <button
                                         onclick={() => removeFromCart(index)}
-                                        class="p-1.5 text-red-500 hover:bg-red-100 dark:hover:bg-red-900/30 rounded-lg transition-all"
+                                        class="p-1.5 text-danger-500 hover:bg-danger-100 dark:hover:bg-danger-900/30 rounded-lg transition-all"
                                     >
                                         <Trash2 class="w-4 h-4" />
                                     </button>
@@ -565,7 +589,7 @@
                     </div>
                     <button
                         onclick={submitOrder}
-                        class="w-full py-4 bg-gradient-to-r from-green-500 to-emerald-600 text-white rounded-2xl font-bold text-lg shadow-lg shadow-green-500/30 hover:from-green-600 hover:to-emerald-700 active:scale-[0.98] transition-all flex items-center justify-center gap-3"
+                        class="w-full py-4 bg-gradient-to-r from-success-500 to-emerald-600 text-white rounded-2xl font-bold text-lg shadow-lg shadow-success-500/30 hover:from-success-600 hover:to-emerald-700 active:scale-[0.98] transition-all flex items-center justify-center gap-3"
                     >
                         <Send class="w-5 h-5" />
                         {t("restaurant.placeOrder")}

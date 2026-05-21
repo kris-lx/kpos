@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount, onDestroy } from "svelte";
     import { cn } from "$utils";
     import { t } from "$lib/i18n/index.svelte";
@@ -430,7 +430,7 @@
                             </div>
                             {#if currentTransaction.discount > 0}
                                 <div
-                                    class="flex justify-between text-lg text-green-500"
+                                    class="flex justify-between text-lg text-success-500"
                                 >
                                     <span>ສ່ວນຫຼຸດ</span>
                                     <span
@@ -508,14 +508,14 @@
                             class={cn(
                                 "mt-6 p-6 rounded-2xl text-center",
                                 displaySettings.theme === "dark"
-                                    ? "bg-green-500/20"
-                                    : "bg-green-50",
+                                    ? "bg-success-500/20"
+                                    : "bg-success-50",
                             )}
                         >
                             <Check
-                                class="w-12 h-12 mx-auto mb-3 text-green-500"
+                                class="w-12 h-12 mx-auto mb-3 text-success-500"
                             />
-                            <p class="text-xl font-bold text-green-500">
+                            <p class="text-xl font-bold text-success-500">
                                 ຊຳລະສຳເລັດ!
                             </p>
                             {#if currentTransaction.change}

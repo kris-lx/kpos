@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
     import { api } from "$api";
@@ -215,7 +215,7 @@
             </div>
         {:else if error}
             <div class="flex flex-col items-center justify-center py-12 bg-white dark:bg-gray-800 rounded-xl shadow-sm">
-                <AlertCircle class="w-12 h-12 text-red-500 dark:text-red-400 mb-4" />
+                <AlertCircle class="w-12 h-12 text-danger-500 dark:text-danger-400 mb-4" />
                 <p class="text-gray-700 dark:text-gray-300 mb-4">{error}</p>
                 <button
                     onclick={() => loadProfile()}

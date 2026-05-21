@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
@@ -49,17 +49,19 @@
 
     function getExpiryConfig(days: number) {
         if (days < 0) return { bg: "bg-gray-100 dark:bg-gray-700", text: "text-gray-600 dark:text-gray-400", label: "ໝົດອາຍຸແລ້ວ", icon: AlertCircle };
-        if (days <= 7) return { bg: "bg-red-100 dark:bg-red-900/50", text: "text-red-700 dark:text-red-400", label: `${days} ມື້`, icon: AlertTriangle };
+        if (days <= 7) return { bg: "bg-danger-100 dark:bg-danger-900/50", text: "text-danger-700 dark:text-danger-400", label: `${days} ມື້`, icon: AlertTriangle };
         if (days <= 30) return { bg: "bg-amber-100 dark:bg-amber-900/50", text: "text-amber-700 dark:text-amber-400", label: `${days} ມື້`, icon: Clock };
-        return { bg: "bg-green-100 dark:bg-green-900/50", text: "text-green-700 dark:text-green-400", label: `${days} ມື້`, icon: CheckCircle };
+        return { bg: "bg-success-100 dark:bg-success-900/50", text: "text-success-700 dark:text-success-400", label: `${days} ມື້`, icon: CheckCircle };
     }
 
     async function loadData() {
         isLoading = true;
         try {
+            const activeBranchId = auth.activeBranchId;
             const params = new URLSearchParams({
                 page: currentPage.toString(),
                 limit: itemsPerPage.toString(),
+                ...(activeBranchId && { branchId: activeBranchId }),
             });
             if (searchQuery.trim()) {
                 params.append("search", searchQuery.trim());
@@ -99,6 +101,38 @@
         }
     }
 
+    function downloadFile(content: string, filename: string, type: string) {
+        const blob = new Blob([content], { type });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
+    async function exportToCsv() {
+        try {
+            const activeBranchId = auth.activeBranchId;
+            const res = await api.get(`inventory/expiry?limit=10000${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>();
+            const rows: any[] = res.data || [];
+            let csv = '﻿';
+            csv += 'ຊື່ສິນຄ້າ,SKU,Batch,ຈຳນວນ,ວັນໝົດອາຍຸ,ຈຳນວນວັນ,ສະຖານະ\n';
+            for (const item of rows) {
+                const days = getDaysUntilExpiry(item.expiryDate);
+                const config = getExpiryConfig(days);
+                const expiryDate = item.expiryDate ? new Date(item.expiryDate).toLocaleDateString('lo-LA') : '';
+                csv += `"${item.product?.name || item.productName || ''}","${item.product?.sku || item.sku || ''}","${item.batchNumber || ''}","${item.quantity || 0}","${expiryDate}","${days}","${config.label}"\n`;
+            }
+            downloadFile(csv, `expiry-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
+            toast.success('ສົ່ງອອກ CSV ສຳເລັດ');
+        } catch {
+            toast.error('ສົ່ງອອກລົ້ມເຫລວ');
+        }
+    }
+
     $effect(() => {
         auth.activeStoreId;
         loadData();
@@ -114,7 +148,7 @@
     <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between mb-6 gap-4">
         <div>
             <div class="flex items-center gap-3">
-                <div class="p-2.5 bg-gradient-to-br from-red-500 to-pink-600 rounded-xl shadow-lg">
+                <div class="p-2.5 bg-gradient-to-br from-danger-500 to-pink-600 rounded-xl shadow-lg">
                     <Clock class="w-6 h-6 text-white" />
                 </div>
                 <div>
@@ -124,7 +158,7 @@
             </div>
         </div>
 
-        <button class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium">
+        <button onclick={exportToCsv} class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium">
             <Download class="w-4 h-4" />
             ສົ່ງອອກ
         </button>
@@ -152,10 +186,10 @@
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
             <div class="flex items-center justify-between">
-                <div class="p-2 bg-red-100 dark:bg-red-900/50 rounded-lg">
-                    <AlertTriangle class="w-5 h-5 text-red-600 dark:text-red-400" />
+                <div class="p-2 bg-danger-100 dark:bg-danger-900/50 rounded-lg">
+                    <AlertTriangle class="w-5 h-5 text-danger-600 dark:text-danger-400" />
                 </div>
-                <span class="text-2xl font-bold text-red-600 dark:text-red-400">{stats.critical}</span>
+                <span class="text-2xl font-bold text-danger-600 dark:text-danger-400">{stats.critical}</span>
             </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">≤ 7 ມື້</p>
         </div>
@@ -170,10 +204,10 @@
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
             <div class="flex items-center justify-between">
-                <div class="p-2 bg-green-100 dark:bg-green-900/50 rounded-lg">
-                    <CheckCircle class="w-5 h-5 text-green-600 dark:text-green-400" />
+                <div class="p-2 bg-success-100 dark:bg-success-900/50 rounded-lg">
+                    <CheckCircle class="w-5 h-5 text-success-600 dark:text-success-400" />
                 </div>
-                <span class="text-2xl font-bold text-green-600 dark:text-green-400">{stats.ok}</span>
+                <span class="text-2xl font-bold text-success-600 dark:text-success-400">{stats.ok}</span>
             </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">&gt; 30 ມື້</p>
         </div>
@@ -184,13 +218,13 @@
         <div class="flex flex-col lg:flex-row lg:items-center gap-4">
             <div class="relative flex-1">
                 <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                <input type="text" bind:value={searchQuery} oninput={handleSearch} placeholder="ຄົ້ນຫາສິນຄ້າ..." class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-red-500" />
+                <input type="text" bind:value={searchQuery} oninput={handleSearch} placeholder="ຄົ້ນຫາສິນຄ້າ..." class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-danger-500" />
             </div>
             <div class="flex gap-2 flex-wrap">
                 {#each [{ id: null, label: "ທັງໝົດ" }, { id: 0, label: "ໝົດອາຍຸ" }, { id: 7, label: "≤ 7 ມື້" }, { id: 30, label: "8-30 ມື້" }, { id: 31, label: "> 30 ມື້" }] as filter (filter.id)}
                     <button
                         onclick={() => { daysFilter = filter.id; handleFilterChange(); }}
-                        class={cn("px-3 py-2 rounded-lg text-sm font-medium transition-all", daysFilter === filter.id ? "bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-400" : "text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700")}
+                        class={cn("px-3 py-2 rounded-lg text-sm font-medium transition-all", daysFilter === filter.id ? "bg-danger-100 dark:bg-danger-900/50 text-danger-700 dark:text-danger-400" : "text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700")}
                     >
                         {filter.label}
                     </button>
@@ -202,11 +236,11 @@
     <!-- Content -->
     {#if isLoading}
         <div class="flex items-center justify-center py-20">
-            <Loader2 class="w-10 h-10 text-red-500 animate-spin" />
+            <Loader2 class="w-10 h-10 text-danger-500 animate-spin" />
         </div>
     {:else if expiringProducts.length === 0}
         <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-16 text-center">
-            <CheckCircle class="w-16 h-16 mx-auto text-green-500" />
+            <CheckCircle class="w-16 h-16 mx-auto text-success-500" />
             <h3 class="text-lg font-semibold text-gray-900 dark:text-white mt-4">ບໍ່ມີສິນຄ້າໃກ້ໝົດອາຍຸ</h3>
         </div>
     {:else}

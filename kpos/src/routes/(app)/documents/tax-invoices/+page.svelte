@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { t } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
     import { formatCurrency, formatDate, formatDateTime } from "$lib/utils";
@@ -26,6 +26,8 @@
         Building2,
         Download,
         FileType,
+        ThumbsUp,
+        ThumbsDown,
     } from "lucide-svelte";
 
     // State
@@ -114,6 +116,8 @@
             if (dateFilter.to) params.append("to", dateFilter.to);
             if (statusFilter !== "all") params.append("status", statusFilter);
             if (searchQuery) params.append("search", searchQuery);
+            const taxInvBranchId = auth.activeBranchId;
+            if (taxInvBranchId && !auth.isSuperAdmin) params.append("branchId", taxInvBranchId);
 
             const response = await api
                 .get(`documents/tax-invoices?${params}`)
@@ -275,6 +279,42 @@
         }
     }
 
+    // Maker/checker
+    let canApprove = $derived(auth.isSuperAdmin || (auth.roleLevel ?? 7) <= 4);
+
+    async function approveTaxInvoice(id: string) {
+        try {
+            await api.patch(`documents/tax-invoices/${id}/approve`).json();
+            showToast("ອະນຸມັດໃບກຳກັບພາສີສຳເລັດ", "success");
+            loadTaxInvoices();
+        } catch (error) {
+            showToast("ບໍ່ສາມາດອະນຸມັດໄດ້", "error");
+        }
+    }
+
+    let taxRejectReason = $state("");
+    let showTaxRejectModal = $state(false);
+    let taxRejectTargetId = $state<string | null>(null);
+
+    function openTaxRejectModal(id: string) {
+        taxRejectTargetId = id;
+        taxRejectReason = "";
+        showTaxRejectModal = true;
+    }
+
+    async function confirmTaxReject() {
+        if (!taxRejectTargetId) return;
+        try {
+            await api.patch(`documents/tax-invoices/${taxRejectTargetId}/reject`, { json: { reason: taxRejectReason } }).json();
+            showToast("ປະຕິເສດໃບກຳກັບພາສີສຳເລັດ", "success");
+            showTaxRejectModal = false;
+            taxRejectTargetId = null;
+            loadTaxInvoices();
+        } catch (error) {
+            showToast("ບໍ່ສາມາດປະຕິເສດໄດ້", "error");
+        }
+    }
+
     async function printInvoice(invoice: any) {
         try {
             const response = await api
@@ -433,8 +473,8 @@
     function getStatusColor(status: string): string {
         const colors: Record<string, string> = {
             pending: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400",
-            issued: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
-            cancelled: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
+            issued: "bg-success-100 text-success-700 dark:bg-success-900/30 dark:text-success-400",
+            cancelled: "bg-danger-100 text-danger-700 dark:bg-danger-900/30 dark:text-danger-400",
         };
         return colors[status] || "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300";
     }
@@ -482,9 +522,9 @@
     {#each toasts as toast (toast.id)}
         <div
             class="flex items-center gap-3 px-4 py-3 rounded-lg shadow-lg transition-all duration-300 {toast.type === 'success'
-                ? 'bg-green-500 text-white'
+                ? 'bg-success-500 text-white'
                 : toast.type === 'error'
-                  ? 'bg-red-500 text-white'
+                  ? 'bg-danger-500 text-white'
                   : 'bg-blue-500 text-white'}"
         >
             {#if toast.type === "success"}
@@ -514,7 +554,7 @@
         <div class="flex items-center gap-2">
             <button
                 onclick={exportListToPdf}
-                class="flex items-center gap-2 px-3 py-2 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors text-sm font-medium"
+                class="flex items-center gap-2 px-3 py-2 bg-danger-50 dark:bg-danger-900/20 text-danger-600 dark:text-danger-400 rounded-lg hover:bg-danger-100 dark:hover:bg-danger-900/40 transition-colors text-sm font-medium"
             >
                 <FileType class="w-4 h-4" />
                 PDF
@@ -556,7 +596,7 @@
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-lg border dark:border-gray-700 p-4">
             <p class="text-sm text-gray-500 dark:text-gray-400">ລວມທັງໝົດ</p>
-            <p class="text-2xl font-bold text-green-600 dark:text-green-400">
+            <p class="text-2xl font-bold text-success-600 dark:text-success-400">
                 {formatCurrency(totals.total)}
             </p>
         </div>
@@ -622,14 +662,14 @@
 
     <!-- Error State -->
     {#if error && !loading}
-        <div class="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl p-6 mb-6">
+        <div class="bg-danger-50 dark:bg-danger-900/20 border border-danger-200 dark:border-danger-800 rounded-xl p-6 mb-6">
             <div class="flex flex-col items-center justify-center text-center">
-                <AlertCircle class="w-12 h-12 text-red-500 mb-3" />
-                <h3 class="text-lg font-semibold text-red-700 dark:text-red-400 mb-2">ເກີດຂໍ້ຜິດພາດ</h3>
-                <p class="text-red-600 dark:text-red-300 mb-4">{error}</p>
+                <AlertCircle class="w-12 h-12 text-danger-500 mb-3" />
+                <h3 class="text-lg font-semibold text-danger-700 dark:text-danger-400 mb-2">ເກີດຂໍ້ຜິດພາດ</h3>
+                <p class="text-danger-600 dark:text-danger-300 mb-4">{error}</p>
                 <button
                     onclick={() => loadTaxInvoices()}
-                    class="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+                    class="flex items-center gap-2 px-4 py-2 bg-danger-600 text-white rounded-lg hover:bg-danger-700 transition-colors"
                 >
                     <RefreshCw class="w-4 h-4" />
                     ລອງໃໝ່
@@ -700,6 +740,22 @@
                                         >
                                             <Eye class="w-4 h-4" />
                                         </button>
+                                        {#if (invoice.status === "pending" || invoice.status === "pending_approval") && canApprove}
+                                            <button
+                                                onclick={() => approveTaxInvoice(invoice.id)}
+                                                class="p-1.5 text-success-600 dark:text-success-400 hover:bg-success-50 dark:hover:bg-success-900/30 rounded transition-colors"
+                                                title="ອະນຸມັດ / ອອກໃບກຳກັບ"
+                                            >
+                                                <ThumbsUp class="w-4 h-4" />
+                                            </button>
+                                            <button
+                                                onclick={() => openTaxRejectModal(invoice.id)}
+                                                class="p-1.5 text-danger-600 dark:text-danger-400 hover:bg-danger-50 dark:hover:bg-danger-900/30 rounded transition-colors"
+                                                title="ປະຕິເສດ"
+                                            >
+                                                <ThumbsDown class="w-4 h-4" />
+                                            </button>
+                                        {/if}
                                         {#if invoice.status === "pending"}
                                             <button
                                                 onclick={() => openEditModal(invoice)}
@@ -707,13 +763,6 @@
                                                 title="ແກ້ໄຂ"
                                             >
                                                 <Edit class="w-4 h-4" />
-                                            </button>
-                                            <button
-                                                onclick={() => issueInvoice(invoice)}
-                                                class="p-1.5 text-green-600 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-900/30 rounded transition-colors"
-                                                title="ອອກໃບກຳກັບ"
-                                            >
-                                                <Check class="w-4 h-4" />
                                             </button>
                                         {/if}
                                         {#if invoice.status === "issued"}
@@ -727,7 +776,7 @@
                                         {/if}
                                         <button
                                             onclick={() => exportInvoiceToPdf(invoice)}
-                                            class="p-1.5 text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 rounded transition-colors"
+                                            class="p-1.5 text-danger-500 dark:text-danger-400 hover:bg-danger-50 dark:hover:bg-danger-900/30 rounded transition-colors"
                                             title="ສົ່ງອອກ PDF"
                                         >
                                             <FileType class="w-4 h-4" />
@@ -742,7 +791,7 @@
                                         {#if invoice.status !== "cancelled"}
                                             <button
                                                 onclick={() => cancelInvoice(invoice)}
-                                                class="p-1.5 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 rounded transition-colors"
+                                                class="p-1.5 text-danger-600 dark:text-danger-400 hover:bg-danger-50 dark:hover:bg-danger-900/30 rounded transition-colors"
                                                 title="ຍົກເລີກ"
                                             >
                                                 <X class="w-4 h-4" />
@@ -751,7 +800,7 @@
                                         {#if invoice.status === "pending"}
                                             <button
                                                 onclick={() => openDeleteModal(invoice)}
-                                                class="p-1.5 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 rounded transition-colors"
+                                                class="p-1.5 text-danger-600 dark:text-danger-400 hover:bg-danger-50 dark:hover:bg-danger-900/30 rounded transition-colors"
                                                 title="ລຶບ"
                                             >
                                                 <Trash2 class="w-4 h-4" />
@@ -949,7 +998,7 @@
                 >
                     <div>
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                            ຊື່ລູກຄ້າ <span class="text-red-500">*</span>
+                            ຊື່ລູກຄ້າ <span class="text-danger-500">*</span>
                         </label>
                         <input
                             type="text"
@@ -962,7 +1011,7 @@
 
                     <div>
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                            ເລກປະຈຳຕົວຜູ້ເສຍພາສີ <span class="text-red-500">*</span>
+                            ເລກປະຈຳຕົວຜູ້ເສຍພາສີ <span class="text-danger-500">*</span>
                         </label>
                         <input
                             type="text"
@@ -988,7 +1037,7 @@
                     <div class="grid grid-cols-2 gap-4">
                         <div>
                             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                ມູນຄ່າກ່ອນພາສີ <span class="text-red-500">*</span>
+                                ມູນຄ່າກ່ອນພາສີ <span class="text-danger-500">*</span>
                             </label>
                             <input
                                 type="number"
@@ -1057,7 +1106,7 @@
                 <div class="p-6 border-b dark:border-gray-700">
                     <div class="flex justify-between items-start">
                         <div>
-                            <h2 class="text-xl font-bold text-red-600 dark:text-red-400">
+                            <h2 class="text-xl font-bold text-danger-600 dark:text-danger-400">
                                 {selectedInvoice.status === "pending" ? "ຢືນຢັນການລຶບ" : "ຢືນຢັນການຍົກເລີກ"}
                             </h2>
                         </div>
@@ -1072,8 +1121,8 @@
 
                 <div class="p-6">
                     <div class="flex items-center justify-center mb-6">
-                        <div class="w-16 h-16 rounded-full bg-red-100 dark:bg-red-900/30 flex items-center justify-center">
-                            <AlertCircle class="w-8 h-8 text-red-600 dark:text-red-400" />
+                        <div class="w-16 h-16 rounded-full bg-danger-100 dark:bg-danger-900/30 flex items-center justify-center">
+                            <AlertCircle class="w-8 h-8 text-danger-600 dark:text-danger-400" />
                         </div>
                     </div>
 
@@ -1104,7 +1153,7 @@
                         </button>
                         <button
                             onclick={() => selectedInvoice.status === "pending" ? deleteInvoice() : confirmCancelInvoice()}
-                            class="flex items-center gap-2 px-6 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+                            class="flex items-center gap-2 px-6 py-2 bg-danger-600 text-white rounded-lg hover:bg-danger-700 transition-colors"
                         >
                             <Trash2 class="w-4 h-4" />
                             {selectedInvoice.status === "pending" ? "ລຶບ" : "ຍົກເລີກໃບກຳກັບ"}
@@ -1112,6 +1161,30 @@
                     </div>
                 </div>
             {/if}
+        </div>
+    </div>
+{/if}
+
+<!-- Tax Invoice Reject Modal -->
+{#if showTaxRejectModal}
+    <div class="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+        <div class="w-full max-w-md bg-white dark:bg-gray-800 rounded-2xl shadow-2xl overflow-hidden">
+            <div class="px-6 py-4 bg-gradient-to-r from-danger-500 to-red-600 flex items-center justify-between">
+                <h2 class="text-lg font-bold text-white">ປະຕິເສດໃບກຳກັບພາສີ</h2>
+                <button onclick={() => (showTaxRejectModal = false)} class="p-1.5 hover:bg-white/20 rounded-lg">
+                    <X class="w-5 h-5 text-white" />
+                </button>
+            </div>
+            <div class="p-6 space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ເຫດຜົນ</label>
+                    <textarea bind:value={taxRejectReason} rows="3" placeholder="ລະບຸເຫດຜົນ..." class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white resize-none"></textarea>
+                </div>
+                <div class="flex justify-end gap-3">
+                    <button onclick={() => (showTaxRejectModal = false)} class="px-5 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 font-medium">ຍົກເລີກ</button>
+                    <button onclick={confirmTaxReject} class="px-5 py-2.5 bg-gradient-to-r from-danger-500 to-red-600 text-white rounded-xl font-medium">ຢືນຢັນປະຕິເສດ</button>
+                </div>
+            </div>
         </div>
     </div>
 {/if}

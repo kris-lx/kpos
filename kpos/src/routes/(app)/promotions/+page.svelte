@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
@@ -123,9 +123,9 @@
         switch (status) {
             case "active":
                 return {
-                    bg: "bg-green-100 dark:bg-green-900/50",
-                    text: "text-green-700 dark:text-green-400",
-                    dot: "bg-green-500",
+                    bg: "bg-success-100 dark:bg-success-900/50",
+                    text: "text-success-700 dark:text-success-400",
+                    dot: "bg-success-500",
                     label: t("common.active"),
                 };
             case "scheduled":
@@ -164,7 +164,7 @@
             case "PERCENTAGE":
                 return { icon: Percent, label: "ສ່ວນຫຼຸດ %", color: "text-purple-500" };
             case "FIXED":
-                return { icon: Tag, label: "ສ່ວນຫຼຸດເງິນ", color: "text-green-500" };
+                return { icon: Tag, label: "ສ່ວນຫຼຸດເງິນ", color: "text-success-500" };
             case "BUY_X_GET_Y":
                 return { icon: Gift, label: "ຊື້ X ແຖມ Y", color: "text-orange-500" };
             case "BUNDLE":
@@ -401,10 +401,10 @@
     <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
             <div class="flex items-center justify-between">
-                <div class="p-2 bg-green-100 dark:bg-green-900/50 rounded-lg">
-                    <Zap class="w-5 h-5 text-green-600 dark:text-green-400" />
+                <div class="p-2 bg-success-100 dark:bg-success-900/50 rounded-lg">
+                    <Zap class="w-5 h-5 text-success-600 dark:text-success-400" />
                 </div>
-                <span class="text-2xl font-bold text-green-600 dark:text-green-400">{stats.activePromotions}</span>
+                <span class="text-2xl font-bold text-success-600 dark:text-success-400">{stats.activePromotions}</span>
             </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">{t("promotions.activePromotions")}</p>
         </div>
@@ -689,8 +689,8 @@
                                     <Percent class="w-4 h-4 text-purple-500" />
                                     <span class="font-bold text-purple-600 dark:text-purple-400">{item.value || item.discountValue}%</span>
                                 {:else}
-                                    <Tag class="w-4 h-4 text-green-500" />
-                                    <span class="font-bold text-green-600 dark:text-green-400">{formatCurrency(item.value || item.discountValue)}</span>
+                                    <Tag class="w-4 h-4 text-success-500" />
+                                    <span class="font-bold text-success-600 dark:text-success-400">{formatCurrency(item.value || item.discountValue)}</span>
                                 {/if}
                             </div>
                             
@@ -740,7 +740,7 @@
                                 "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all",
                                 item.isActive
                                     ? "text-amber-600 hover:bg-amber-100 dark:text-amber-400 dark:hover:bg-amber-900/30"
-                                    : "text-green-600 hover:bg-green-100 dark:text-green-400 dark:hover:bg-green-900/30"
+                                    : "text-success-600 hover:bg-success-100 dark:text-success-400 dark:hover:bg-success-900/30"
                             )}
                         >
                             {#if item.isActive}
@@ -763,7 +763,7 @@
                             {#if canDeletePromo}
                             <button
                                 onclick={() => handleDelete(item)}
-                                class="p-2 text-red-500 hover:bg-red-100 dark:hover:bg-red-900/30 rounded-lg transition-all"
+                                class="p-2 text-danger-500 hover:bg-danger-100 dark:hover:bg-danger-900/30 rounded-lg transition-all"
                             >
                                 <Trash2 class="w-4 h-4" />
                             </button>

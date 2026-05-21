@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { i18n } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
     import { formatCurrency, formatDateTime } from "$lib/utils";
@@ -54,7 +54,7 @@
 
     function getStatusColor(status: string): string {
         return status === "active"
-            ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
+            ? "bg-success-100 text-success-700 dark:bg-success-900/30 dark:text-success-400"
             : "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300";
     }
 
@@ -100,12 +100,12 @@
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-lg shadow-sm p-4">
             <div class="flex items-center gap-3">
-                <div class="w-10 h-10 rounded-lg bg-green-100 dark:bg-green-900/30 flex items-center justify-center">
-                    <Timer class="w-5 h-5 text-green-600 dark:text-green-400" />
+                <div class="w-10 h-10 rounded-lg bg-success-100 dark:bg-success-900/30 flex items-center justify-center">
+                    <Timer class="w-5 h-5 text-success-600 dark:text-success-400" />
                 </div>
                 <div>
                     <p class="text-sm text-gray-500 dark:text-gray-400">ກຳລັງເຮັດວຽກ</p>
-                    <p class="text-2xl font-bold text-green-600 dark:text-green-400">
+                    <p class="text-2xl font-bold text-success-600 dark:text-success-400">
                         {shifts.filter((s) => s.status === "active").length}
                     </p>
                 </div>
@@ -151,7 +151,7 @@
         </div>
     {:else if error}
         <div class="flex flex-col items-center justify-center py-12 bg-white dark:bg-gray-800 rounded-lg shadow-sm">
-            <AlertCircle class="w-12 h-12 text-red-500 dark:text-red-400 mb-4" />
+            <AlertCircle class="w-12 h-12 text-danger-500 dark:text-danger-400 mb-4" />
             <p class="text-gray-700 dark:text-gray-300 mb-4">{error}</p>
             <button
                 onclick={() => loadShifts()}
@@ -207,7 +207,7 @@
                             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white">
                                 {shift.transactions}
                             </td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-green-600 dark:text-green-400">
+                            <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-success-600 dark:text-success-400">
                                 {formatCurrency((shift.cashSales || 0) + (shift.cardSales || 0))}
                             </td>
                             <td class="px-6 py-4 whitespace-nowrap">
@@ -301,7 +301,7 @@
                                 <Banknote class="w-4 h-4" />
                                 ຍອດຂາຍເງິນສົດ:
                             </span>
-                            <span class="text-green-600 dark:text-green-400">{formatCurrency(selectedShift.cashSales || 0)}</span>
+                            <span class="text-success-600 dark:text-success-400">{formatCurrency(selectedShift.cashSales || 0)}</span>
                         </div>
                         <div class="flex justify-between text-sm">
                             <span class="text-gray-600 dark:text-gray-400 flex items-center gap-1">
@@ -322,15 +322,15 @@
                             <div class="flex justify-between text-sm">
                                 <span class="text-gray-600 dark:text-gray-400">ສ່ວນຕ່າງ:</span>
                                 <span class={selectedShift.variance === 0
-                                    ? "text-green-600 dark:text-green-400"
-                                    : "text-red-600 dark:text-red-400"}>
+                                    ? "text-success-600 dark:text-success-400"
+                                    : "text-danger-600 dark:text-danger-400"}>
                                     {formatCurrency(selectedShift.variance || 0)}
                                 </span>
                             </div>
                         {:else}
                             <div class="flex justify-between text-sm border-t border-gray-200 dark:border-gray-700 pt-2">
                                 <span class="text-gray-600 dark:text-gray-400">ຍອດປັດຈຸບັນ:</span>
-                                <span class="font-bold text-green-600 dark:text-green-400">{formatCurrency(selectedShift.currentBalance || 0)}</span>
+                                <span class="font-bold text-success-600 dark:text-success-400">{formatCurrency(selectedShift.currentBalance || 0)}</span>
                             </div>
                         {/if}
                     </div>

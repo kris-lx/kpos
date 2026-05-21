@@ -5,14 +5,36 @@
 import { authClientApi } from '$api/auth-client';
 import { api } from '$api';
 import { browser } from '$app/environment';
+import { LOCAL_STORAGE_KEYS } from '$lib/config';
 
-// Storage keys
-const ACCESS_TOKEN_KEY = 'kpos_access_token';
-const REFRESH_TOKEN_KEY = 'kpos_refresh_token';
-const USER_KEY = 'kpos_user';
-const ACTIVE_STORE_KEY = 'kpos_active_store';
-const ACCESSIBLE_STORES_KEY = 'kpos_accessible_stores';
-const RULES_KEY = 'kpos_user_rules';
+const ACCESS_TOKEN_KEY = LOCAL_STORAGE_KEYS.ACCESS_TOKEN;
+const REFRESH_TOKEN_KEY = LOCAL_STORAGE_KEYS.REFRESH_TOKEN;
+const USER_KEY = LOCAL_STORAGE_KEYS.USER;
+const ACTIVE_STORE_KEY = LOCAL_STORAGE_KEYS.ACTIVE_STORE;
+const ACCESSIBLE_STORES_KEY = LOCAL_STORAGE_KEYS.ACCESSIBLE_STORES;
+const RULES_KEY = LOCAL_STORAGE_KEYS.RULES;
+
+/**
+ * 7-level role hierarchy matching the backend ROLE_LEVELS map.
+ * Lower = broader access.
+ */
+export const ROLE_LEVELS: Record<string, number> = {
+    system_admin: 1,
+    admin: 2,
+    tenant_admin: 2,
+    hq_admin: 3,
+    hq_manager: 4,
+    branch_admin: 5,
+    store_owner: 5,
+    branch_manager: 6,
+    manager: 6,
+    store_manager: 6,
+    cashier: 7,
+    staff: 7,
+    kitchen_staff: 7,
+    waiter: 7,
+    inventory_staff: 7,
+};
 
 interface User {
     id: string;
@@ -24,6 +46,8 @@ interface User {
     phone?: string;
     isSuperAdmin?: boolean;
     permissions?: string[];
+    /** Numeric role level 1-7. Computed client-side from role name. */
+    roleLevel?: number;
 }
 
 // Store access interface
@@ -112,10 +136,23 @@ function createAuthStore() {
         
         isLoading = false;
 
-        // Auto-refresh permissions if user is logged in but has no permissions stored
-        // (happens when role was seeded with empty permissions before fix was applied)
-        if (parsedUser && accessToken && (!parsedUser.permissions || parsedUser.permissions.length === 0)) {
-            setTimeout(() => refreshProfile(), 100);
+        // On page reload, refresh permissions + rules only if token is still valid.
+        // Skipping when expired prevents the afterResponse hook from triggering a 401
+        // redirect cascade that wipes localStorage mid-flight (erasing other in-flight tokens).
+        const storedToken = localStorage.getItem(ACCESS_TOKEN_KEY);
+        if (parsedUser && storedToken) {
+            try {
+                const payload = JSON.parse(atob(storedToken.split('.')[1]));
+                const tokenExpiry = (payload.exp || 0) * 1000;
+                const tokenValid = tokenExpiry > Date.now() + 30_000;
+                if (tokenValid) {
+                    setTimeout(() => Promise.all([refreshProfile(), loadRules()]), 300);
+                }
+                // If expired, do nothing — ky's afterResponse hook will redirect on the
+                // next authenticated request the user actually triggers.
+            } catch {
+                // malformed JWT — ignore
+            }
         }
     }
 
@@ -139,6 +176,17 @@ function createAuthStore() {
         return grouped;
     });
 
+    // Derived: numeric role level for the current user
+    const roleLevel = $derived(
+        user?.isSuperAdmin ? 1 : (user ? (ROLE_LEVELS[user.role] ?? 7) : 7)
+    );
+
+    // Derived: true if user can see all branches (system_admin or tenant_admin)
+    const canSeeAllBranches = $derived(user?.isSuperAdmin === true || roleLevel <= 2);
+
+    // Derived: true if user is at HQ level (can see child branches)
+    const isHQLevel = $derived(roleLevel <= 4);
+
     async function login(email: string, password: string): Promise<boolean | string> {
         try {
             isLoading = true;
@@ -155,9 +203,8 @@ function createAuthStore() {
                     localStorage.setItem(USER_KEY, JSON.stringify(response.data.user));
                 }
                 
-                // Load accessible stores and rules after login
-                await loadStoreContext();
-                await loadRules();
+                // Load accessible stores, rules and fresh permissions after login
+                await Promise.all([loadStoreContext(), loadRules(), refreshProfile()]);
 
                 return true;
             }
@@ -266,7 +313,7 @@ function createAuthStore() {
     // Check branch access
     function hasBranchAccess(branchId: string): boolean {
         if (!user) return false;
-        if (user.role === 'admin' || user.role === 'superadmin') return true;
+        if (user.isSuperAdmin || roleLevel <= 2) return true;
         return accessibleBranchIds.includes(branchId) || user.branchId === branchId;
     }
 
@@ -451,10 +498,10 @@ function createAuthStore() {
         }
     }
 
-    // Check if user can access admin features
+    // Check if user can access admin features (level 5 / branch_admin or higher)
     function canAccessAdmin(): boolean {
         if (!user) return false;
-        return user.isSuperAdmin || ['admin', 'store_owner', 'branch_admin'].includes(user.role);
+        return user.isSuperAdmin || roleLevel <= 5;
     }
 
     // Check if user is cashier (limited access)
@@ -469,7 +516,7 @@ function createAuthStore() {
         get user() { return user; },
         get isAuthenticated() { return isAuthenticated; },
         get isLoading() { return isLoading; },
-        
+
         // Store context
         get accessibleStores() { return accessibleStores; },
         get activeStoreId() { return activeStoreId; },
@@ -477,6 +524,11 @@ function createAuthStore() {
         get activeStore() { return activeStore; },
         get accessibleBranchIds() { return accessibleBranchIds; },
         get storesByBranch() { return storesByBranch; },
+
+        // Role hierarchy
+        get roleLevel() { return roleLevel; },
+        get canSeeAllBranches() { return canSeeAllBranches; },
+        get isHQLevel() { return isHQLevel; },
 
         // Rules (RBAC)
         get userRules() { return userRules; },

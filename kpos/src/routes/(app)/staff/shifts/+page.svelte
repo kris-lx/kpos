@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
     import { cn, formatDateTime, formatTime } from "$utils";
@@ -270,15 +270,15 @@
 
     function getStatusColor(status: string): string {
         return status === "OPEN"
-            ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
+            ? "bg-success-100 text-success-700 dark:bg-success-900/30 dark:text-success-400"
             : "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300";
     }
 
     function getDifferenceColor(diff: number): string {
         if (diff > 0)
-            return "text-green-600 dark:text-green-400";
+            return "text-success-600 dark:text-success-400";
         if (diff < 0)
-            return "text-red-600 dark:text-red-400";
+            return "text-danger-600 dark:text-danger-400";
         return "text-gray-600 dark:text-gray-400";
     }
 
@@ -298,10 +298,10 @@
     function getMovementColor(type: string): string {
         switch (type) {
             case "FLOAT":
-                return "text-green-600 dark:text-green-400";
+                return "text-success-600 dark:text-success-400";
             case "PICKUP":
             case "PAYOUT":
-                return "text-red-600 dark:text-red-400";
+                return "text-danger-600 dark:text-danger-400";
             default:
                 return "text-gray-600 dark:text-gray-400";
         }
@@ -339,7 +339,7 @@
                     onclick={() => (showCloseModal = true)}
                     class={cn(
                         "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all",
-                        "bg-red-600 text-white hover:bg-red-700",
+                        "bg-danger-600 text-white hover:bg-danger-700",
                     )}
                 >
                     <Square class="w-4 h-4" />
@@ -363,35 +363,72 @@
     <!-- Current Shift Card -->
     {#if currentShift}
         <div class="bg-gradient-to-r from-primary-600 to-primary-700 rounded-xl p-6 mb-6 text-white shadow-lg">
-            <div class="flex flex-col md:flex-row md:items-center md:justify-between">
+            <!-- Header row: title + badge + End Work button -->
+            <div class="flex items-center justify-between mb-4">
                 <div class="flex items-center gap-4">
                     <div class="p-3 bg-white/20 rounded-xl">
                         <Clock class="w-8 h-8" />
                     </div>
                     <div>
-                        <h2 class="text-xl font-bold">{t("shifts.currentShift")}</h2>
+                        <div class="flex items-center gap-2">
+                            <h2 class="text-xl font-bold">{t("shifts.currentShift")}</h2>
+                            <span class="px-2 py-0.5 bg-success-400/30 border border-success-300/50 rounded-full text-xs font-medium text-success-100 animate-pulse">● ກຳລັງເຮັດວຽກ</span>
+                        </div>
                         <p class="text-primary-100">{currentShift.shiftNo}</p>
                     </div>
                 </div>
-                <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4 md:mt-0">
-                    <div class="text-center md:text-right">
-                        <p class="text-primary-100 text-sm">{t("shifts.openedAt")}</p>
-                        <p class="font-semibold">{formatDateTime(currentShift.openedAt)}</p>
-                    </div>
-                    <div class="text-center md:text-right">
-                        <p class="text-primary-100 text-sm">{t("shifts.openingBalance")}</p>
-                        <p class="font-semibold">{formatCurrency(currentShift.openingBalance)}</p>
-                    </div>
-                    <div class="text-center md:text-right">
-                        <p class="text-primary-100 text-sm">{t("shifts.transactions")}</p>
-                        <p class="font-semibold">{currentShift.transactions?.length || 0}</p>
-                    </div>
-                    <div class="text-center md:text-right">
-                        <p class="text-primary-100 text-sm">{t("shifts.cashMovements")}</p>
-                        <p class="font-semibold">{currentShift.cashMovements?.length || 0}</p>
-                    </div>
+                <div class="flex items-center gap-2">
+                    <button
+                        onclick={() => (showCashMovementModal = true)}
+                        class="flex items-center gap-2 px-4 py-2 bg-white/20 hover:bg-white/30 rounded-xl text-sm font-medium transition-colors"
+                    >
+                        <DollarSign class="w-4 h-4" />
+                        {t("shifts.cashMovement")}
+                    </button>
+                    <button
+                        onclick={() => (showCloseModal = true)}
+                        class="flex items-center gap-2 px-5 py-2.5 bg-danger-500 hover:bg-danger-600 rounded-xl text-sm font-semibold transition-colors shadow-lg"
+                    >
+                        <Square class="w-4 h-4" />
+                        ຈົບການເຮັດວຽກ
+                    </button>
                 </div>
             </div>
+            <!-- Stats row -->
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div class="text-center bg-white/10 rounded-xl p-3">
+                    <p class="text-primary-100 text-sm">{t("shifts.openedAt")}</p>
+                    <p class="font-semibold">{formatDateTime(currentShift.openedAt)}</p>
+                </div>
+                <div class="text-center bg-white/10 rounded-xl p-3">
+                    <p class="text-primary-100 text-sm">{t("shifts.openingBalance")}</p>
+                    <p class="font-semibold">{formatCurrency(currentShift.openingBalance)}</p>
+                </div>
+                <div class="text-center bg-white/10 rounded-xl p-3">
+                    <p class="text-primary-100 text-sm">{t("shifts.transactions")}</p>
+                    <p class="font-semibold">{currentShift.transactions?.length || 0}</p>
+                </div>
+                <div class="text-center bg-white/10 rounded-xl p-3">
+                    <p class="text-primary-100 text-sm">{t("shifts.cashMovements")}</p>
+                    <p class="font-semibold">{currentShift.cashMovements?.length || 0}</p>
+                </div>
+            </div>
+        </div>
+    {:else}
+        <!-- No active shift — start work banner -->
+        <div class="bg-white dark:bg-gray-800 border-2 border-dashed border-gray-200 dark:border-gray-700 rounded-xl p-8 mb-6 text-center">
+            <div class="w-16 h-16 mx-auto rounded-full bg-primary-50 dark:bg-primary-900/30 flex items-center justify-center mb-4">
+                <Play class="w-8 h-8 text-primary-500" />
+            </div>
+            <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-1">ຍັງບໍ່ໄດ້ເລີ່ມກະ</h3>
+            <p class="text-sm text-gray-500 dark:text-gray-400 mb-5">ກົດ "ເລີ່ມການເຮັດວຽກ" ເພື່ອເລີ່ມກະວຽກ</p>
+            <button
+                onclick={() => (showOpenModal = true)}
+                class="inline-flex items-center gap-2 px-6 py-3 bg-primary-600 text-white rounded-xl font-semibold hover:bg-primary-700 transition-colors shadow-lg"
+            >
+                <Play class="w-5 h-5" />
+                ເລີ່ມການເຮັດວຽກ
+            </button>
         </div>
     {/if}
 
@@ -414,8 +451,8 @@
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-xl p-4 shadow-sm">
             <div class="flex items-center gap-3">
-                <div class="p-2 bg-green-50 dark:bg-green-900/20 rounded-lg">
-                    <Play class="w-5 h-5 text-green-500" />
+                <div class="p-2 bg-success-50 dark:bg-success-900/20 rounded-lg">
+                    <Play class="w-5 h-5 text-success-500" />
                 </div>
                 <div>
                     <p class="text-2xl font-bold text-gray-900 dark:text-white">
@@ -818,7 +855,7 @@
                 <button
                     onclick={closeShift}
                     disabled={isSubmitting}
-                    class="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    class="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-danger-600 text-white rounded-lg hover:bg-danger-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                     {#if isSubmitting}
                         <Loader2 class="w-4 h-4 animate-spin" />
@@ -876,10 +913,10 @@
                                     "flex flex-col items-center gap-2 p-3 rounded-lg border-2 transition-all",
                                     movementType === type.key
                                         ? type.color === "green"
-                                            ? "border-green-500 bg-green-50 dark:bg-green-900/20"
+                                            ? "border-success-500 bg-success-50 dark:bg-success-900/20"
                                             : type.color === "blue"
                                             ? "border-blue-500 bg-blue-50 dark:bg-blue-900/20"
-                                            : "border-red-500 bg-red-50 dark:bg-red-900/20"
+                                            : "border-danger-500 bg-danger-50 dark:bg-danger-900/20"
                                         : "border-gray-200 dark:border-gray-600 hover:border-gray-300 dark:hover:border-gray-500",
                                 )}
                             >
@@ -888,10 +925,10 @@
                                     class={cn(
                                         "w-6 h-6",
                                         type.color === "green"
-                                            ? "text-green-600 dark:text-green-400"
+                                            ? "text-success-600 dark:text-success-400"
                                             : type.color === "blue"
                                             ? "text-blue-600 dark:text-blue-400"
-                                            : "text-red-600 dark:text-red-400",
+                                            : "text-danger-600 dark:text-danger-400",
                                     )}
                                 />
                                 <span class="text-sm font-medium text-gray-700 dark:text-gray-300">

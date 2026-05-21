@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { createQuery, createMutation, useQueryClient } from "@tanstack/svelte-query";
     import { get } from "svelte/store";
     import { api } from "$lib/api";
@@ -37,7 +37,8 @@
         Sparkles,
         Lock,
         Unlock,
-        Check
+        Check,
+        Info
     } from "lucide-svelte";
 
     import { auth } from "$lib/stores/auth.svelte";
@@ -352,7 +353,7 @@
         switch (name) {
             case 'superadmin': return 'from-amber-500 to-orange-500';
             case 'admin': return 'from-violet-500 to-purple-500';
-            case 'store_owner': return 'from-emerald-500 to-green-500';
+            case 'store_owner': return 'from-emerald-500 to-success-500';
             case 'branch_admin': return 'from-blue-500 to-cyan-500';
             case 'manager': return 'from-pink-500 to-rose-500';
             case 'cashier': return 'from-teal-500 to-cyan-500';
@@ -461,7 +462,7 @@
                 </div>
                 <div class="bg-white dark:bg-gray-800/50 rounded-2xl p-5 border border-gray-100 dark:border-gray-700/50 shadow-lg">
                     <div class="flex items-center gap-3">
-                        <div class="w-12 h-12 bg-gradient-to-br from-emerald-500 to-green-500 rounded-xl flex items-center justify-center shadow-lg shadow-emerald-500/30">
+                        <div class="w-12 h-12 bg-gradient-to-br from-emerald-500 to-success-500 rounded-xl flex items-center justify-center shadow-lg shadow-emerald-500/30">
                             <Unlock class="w-6 h-6 text-white" />
                         </div>
                         <div>
@@ -545,7 +546,7 @@
                                             {#if !role.isSystem}
                                                 <button 
                                                     onclick={() => openDeleteModal(role)}
-                                                    class="w-8 h-8 bg-red-100 dark:bg-red-900/30 hover:bg-red-200 dark:hover:bg-red-900/50 rounded-lg flex items-center justify-center text-red-600 dark:text-red-400 transition-colors"
+                                                    class="w-8 h-8 bg-danger-100 dark:bg-danger-900/30 hover:bg-danger-200 dark:hover:bg-danger-900/50 rounded-lg flex items-center justify-center text-danger-600 dark:text-danger-400 transition-colors"
                                                     title="ລຶບ"
                                                 >
                                                     <Trash2 class="w-4 h-4" />
@@ -631,129 +632,20 @@
                         </div>
                     {/if}
 
-                    <!-- Menu Permissions (Tree Nodes) -->
-                    <div>
-                        <div class="flex items-center justify-between mb-4">
-                            <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
-                                ສິດເຂົ້າເຖິງເມນູ ({formData.permissions.length} ເລືອກແລ້ວ)
-                            </label>
-                            <div class="flex items-center gap-2">
-                                <button 
-                                    type="button"
-                                    onclick={clearAllMenus}
-                                    class="text-sm text-gray-500 dark:text-gray-400 hover:text-red-500 hover:underline"
-                                >
-                                    ຍົກເລີກທັງໝົດ
-                                </button>
-                                <span class="text-gray-300 dark:text-gray-600">|</span>
-                                <button 
-                                    type="button"
-                                    onclick={selectAllMenus}
-                                    class="text-sm text-pink-600 dark:text-pink-400 hover:underline"
-                                >
-                                    ເລືອກທັງໝົດ
-                                </button>
-                            </div>
-                        </div>
-                        
-                        <div class="space-y-2 max-h-80 overflow-y-auto pr-2 border border-gray-200 dark:border-gray-600 rounded-xl p-3 bg-gray-50 dark:bg-gray-800/50">
-                            {#if $menuPermissionsQuery.isLoading}
-                                <div class="text-center py-4">
-                                    <Loader2 class="w-6 h-6 animate-spin mx-auto text-pink-500" />
-                                </div>
-                            {:else}
-                                {#each $menuPermissionsQuery.data || [] as menu (menu.key)}
-                                    {@const MenuIcon = getGroupIcon(menu.icon)}
-                                    {@const isExpanded = expandedMenus[menu.key]}
-                                    {@const hasChildren = menu.children && menu.children.length > 0}
-                                    {@const isFullySelected = isMenuFullySelected(menu.key, menu.children)}
-                                    {@const isPartiallySelected = isMenuPartiallySelected(menu.key, menu.children)}
-                                    
-                                    <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-100 dark:border-gray-700 overflow-hidden">
-                                        <!-- Parent Menu -->
-                                        <div class="flex items-center gap-2 p-2.5 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
-                                            {#if hasChildren}
-                                                <button 
-                                                    type="button"
-                                                    onclick={() => toggleMenuExpand(menu.key)}
-                                                    class="w-6 h-6 flex items-center justify-center text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                                                >
-                                                    <ChevronRight class={cn("w-4 h-4 transition-transform", isExpanded && "rotate-90")} />
-                                                </button>
-                                            {:else}
-                                                <div class="w-6"></div>
-                                            {/if}
-                                            
-                                            <button 
-                                                type="button"
-                                                onclick={() => hasChildren ? toggleMenuPermission(menu.key, menu.children) : toggleSingleMenuPermission(menu.key)}
-                                                class={cn(
-                                                    "w-5 h-5 rounded border-2 flex items-center justify-center transition-all shrink-0",
-                                                    isFullySelected 
-                                                        ? "bg-pink-500 border-pink-500 text-white" 
-                                                        : isPartiallySelected 
-                                                            ? "bg-pink-200 dark:bg-pink-900/50 border-pink-400" 
-                                                            : "border-gray-300 dark:border-gray-500 hover:border-pink-400"
-                                                )}
-                                            >
-                                                {#if isFullySelected}
-                                                    <Check class="w-3 h-3" />
-                                                {:else if isPartiallySelected}
-                                                    <div class="w-2 h-2 bg-pink-500 rounded-sm"></div>
-                                                {/if}
-                                            </button>
-                                            
-                                            <div class="w-8 h-8 rounded-lg flex items-center justify-center bg-gradient-to-br from-pink-500 to-rose-500 shrink-0">
-                                                <MenuIcon class="w-4 h-4 text-white" />
-                                            </div>
-                                            
-                                            <div class="flex-1 min-w-0">
-                                                <span class="font-medium text-gray-900 dark:text-white text-sm">{menu.labelLao || menu.label}</span>
-                                                {#if hasChildren}
-                                                    <span class="text-xs text-gray-400 ml-2">({menu.children.length})</span>
-                                                {/if}
-                                            </div>
-                                        </div>
-                                        
-                                        <!-- Children Menus -->
-                                        {#if hasChildren && isExpanded}
-                                            <div class="border-t border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/30 pl-8">
-                                                {#each menu.children as child (child.key)}
-                                                    {@const ChildIcon = getGroupIcon(child.icon)}
-                                                    {@const isChildSelected = formData.permissions.includes(child.key)}
-                                                    
-                                                    <div class="flex items-center gap-2 p-2 hover:bg-gray-100 dark:hover:bg-gray-700/50 transition-colors border-b border-gray-100 dark:border-gray-700 last:border-b-0">
-                                                        <div class="w-6 flex justify-center">
-                                                            <div class="w-px h-4 bg-gray-300 dark:bg-gray-600"></div>
-                                                        </div>
-                                                        
-                                                        <button 
-                                                            type="button"
-                                                            onclick={() => toggleSingleMenuPermission(child.key)}
-                                                            class={cn(
-                                                                "w-4 h-4 rounded border-2 flex items-center justify-center transition-all shrink-0",
-                                                                isChildSelected 
-                                                                    ? "bg-pink-500 border-pink-500 text-white" 
-                                                                    : "border-gray-300 dark:border-gray-500 hover:border-pink-400"
-                                                            )}
-                                                        >
-                                                            {#if isChildSelected}
-                                                                <Check class="w-2.5 h-2.5" />
-                                                            {/if}
-                                                        </button>
-                                                        
-                                                        <div class="w-6 h-6 rounded flex items-center justify-center bg-gray-200 dark:bg-gray-700 shrink-0">
-                                                            <ChildIcon class="w-3 h-3 text-gray-500 dark:text-gray-400" />
-                                                        </div>
-                                                        
-                                                        <span class="text-sm text-gray-700 dark:text-gray-300">{child.labelLao || child.label}</span>
-                                                    </div>
-                                                {/each}
-                                            </div>
-                                        {/if}
-                                    </div>
-                                {/each}
-                            {/if}
+                    <!-- Menu Access Info -->
+                    <div class="flex items-start gap-3 p-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-xl">
+                        <Info class="w-5 h-5 text-blue-500 dark:text-blue-400 shrink-0 mt-0.5" />
+                        <div class="flex-1 min-w-0">
+                            <p class="text-sm font-medium text-blue-800 dark:text-blue-300">ສິດການເຂົ້າເຖິງເມນູ</p>
+                            <p class="text-sm text-blue-700 dark:text-blue-400 mt-0.5">
+                                ສິດການເຂົ້າເຖິງເມນູຖືກຄວບຄຸມໂດຍ <strong>Rules Management</strong> ແຍກຕ່າງຫາກ
+                            </p>
+                            <a
+                                href="/admin/rules"
+                                class="inline-flex items-center gap-1 mt-2 text-sm font-medium text-blue-600 dark:text-blue-400 hover:underline"
+                            >
+                                ໄປຫາ Rules Management →
+                            </a>
                         </div>
                     </div>
                 </form>
@@ -788,7 +680,7 @@
         <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
             <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showDeleteModal = false}></div>
             <div class="relative bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
-                <div class="bg-gradient-to-r from-red-500 to-rose-500 p-6 text-white">
+                <div class="bg-gradient-to-r from-danger-500 to-rose-500 p-6 text-white">
                     <div class="flex items-center gap-3">
                         <AlertTriangle class="w-8 h-8" />
                         <div>
@@ -820,7 +712,7 @@
                     <button 
                         onclick={handleDelete}
                         disabled={$deleteMutationFn.isPending}
-                        class="flex-1 px-4 py-3 bg-red-500 hover:bg-red-600 text-white font-medium rounded-xl shadow-lg shadow-red-500/30 transition-all flex items-center justify-center gap-2"
+                        class="flex-1 px-4 py-3 bg-danger-500 hover:bg-danger-600 text-white font-medium rounded-xl shadow-lg shadow-danger-500/30 transition-all flex items-center justify-center gap-2"
                     >
                         {#if $deleteMutationFn.isPending}
                             <Loader2 class="w-5 h-5 animate-spin" />

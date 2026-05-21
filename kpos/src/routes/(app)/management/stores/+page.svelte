@@ -1,4 +1,4 @@
-<!-- ═══════════════════════════════════════════════════════════════════════════
+﻿<!-- ═══════════════════════════════════════════════════════════════════════════
      Stores Management Page - KPOS Multi-Store System
      ═══════════════════════════════════════════════════════════════════════════ -->
 <script lang="ts">
@@ -247,10 +247,10 @@
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
             <div class="flex items-center justify-between">
-                <div class="p-2 bg-green-100 dark:bg-green-900/50 rounded-lg">
-                    <Store class="w-5 h-5 text-green-600 dark:text-green-400" />
+                <div class="p-2 bg-success-100 dark:bg-success-900/50 rounded-lg">
+                    <Store class="w-5 h-5 text-success-600 dark:text-success-400" />
                 </div>
-                <span class="text-2xl font-bold text-green-600 dark:text-green-400">{$storesQuery.data?.filter((s: any) => s.isActive !== false).length || 0}</span>
+                <span class="text-2xl font-bold text-success-600 dark:text-success-400">{$storesQuery.data?.filter((s: any) => s.isActive !== false).length || 0}</span>
             </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">{t("stores.activeStores")}</p>
         </div>
@@ -268,7 +268,7 @@
                 <div class="p-2 bg-purple-100 dark:bg-purple-900/50 rounded-lg">
                     <Users class="w-5 h-5 text-purple-600 dark:text-purple-400" />
                 </div>
-                <span class="text-2xl font-bold text-purple-600 dark:text-purple-400">{$storesQuery.data?.reduce((sum: number, s: any) => sum + (s._count?.userAccess || 0), 0) || 0}</span>
+                <span class="text-2xl font-bold text-purple-600 dark:text-purple-400">{$storesQuery.data?.reduce((sum: number, s: any) => sum + (s.userCount || 0), 0) || 0}</span>
             </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">{t("stores.staffCount")}</p>
         </div>
@@ -376,7 +376,7 @@
                         <div class="pt-3 border-t border-gray-200 dark:border-gray-700 flex items-center gap-4">
                             <div class="flex items-center gap-1.5 text-sm text-gray-500 dark:text-gray-400">
                                 <Users class="w-4 h-4" />
-                                <span>{store._count?.userAccess || 0}</span>
+                                <span>{store.userCount || 0}</span>
                             </div>
                             <div class="flex items-center gap-1.5 text-sm text-gray-500 dark:text-gray-400">
                                 <Package class="w-4 h-4" />
@@ -399,7 +399,7 @@
                         {#if canDelete}
                         <button
                             onclick={() => handleDelete(store)}
-                            class="p-2 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg"
+                            class="p-2 text-danger-600 hover:bg-danger-50 dark:hover:bg-danger-900/30 rounded-lg"
                             title={t("stores.deleteStore")}
                             disabled={$deleteStoreMutation.isPending}
                         >

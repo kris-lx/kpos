@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { cn, formatCurrency } from "$utils";
     import { api } from "$api";
     import { t } from "$lib/i18n/index.svelte";
@@ -217,11 +217,11 @@ ${filteredProducts.map((p, i) => `<tr><td>${i + 1}</td><td>${p.name || ''}</td><
                 {#if showExportMenu}
                     <div class="absolute right-0 mt-2 w-48 bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 z-50 overflow-hidden">
                         <button onclick={() => exportToExcel()} class="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300">
-                            <FileSpreadsheet class="w-5 h-5 text-green-600" />
+                            <FileSpreadsheet class="w-5 h-5 text-success-600" />
                             <span>{t("reports.exportExcel")}</span>
                         </button>
                         <button onclick={() => exportToPdf()} class="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300">
-                            <FileType class="w-5 h-5 text-red-600" />
+                            <FileType class="w-5 h-5 text-danger-600" />
                             <span>{t("reports.exportPdf")}</span>
                         </button>
                         <button onclick={() => exportToWord()} class="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300">
@@ -247,10 +247,10 @@ ${filteredProducts.map((p, i) => `<tr><td>${i + 1}</td><td>${p.name || ''}</td><
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
             <div class="flex items-center justify-between">
-                <div class="p-2 bg-green-100 dark:bg-green-900/50 rounded-lg">
-                    <ShoppingCart class="w-5 h-5 text-green-600 dark:text-green-400" />
+                <div class="p-2 bg-success-100 dark:bg-success-900/50 rounded-lg">
+                    <ShoppingCart class="w-5 h-5 text-success-600 dark:text-success-400" />
                 </div>
-                <span class="text-2xl font-bold text-green-600 dark:text-green-400">{stats.totalSales}</span>
+                <span class="text-2xl font-bold text-success-600 dark:text-success-400">{stats.totalSales}</span>
             </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">ຂາຍລວມ</p>
         </div>
@@ -328,12 +328,12 @@ ${filteredProducts.map((p, i) => `<tr><td>${i + 1}</td><td>${p.name || ''}</td><
                                 <td class="px-6 py-4">
                                     <div class="flex justify-center">
                                         {#if (product.trend || 0) > 0}
-                                            <span class="inline-flex items-center gap-1 text-green-600 dark:text-green-400 text-sm">
+                                            <span class="inline-flex items-center gap-1 text-success-600 dark:text-success-400 text-sm">
                                                 <ArrowUpRight class="w-4 h-4" />
                                                 +{product.trend}%
                                             </span>
                                         {:else if (product.trend || 0) < 0}
-                                            <span class="inline-flex items-center gap-1 text-red-600 dark:text-red-400 text-sm">
+                                            <span class="inline-flex items-center gap-1 text-danger-600 dark:text-danger-400 text-sm">
                                                 <ArrowDownRight class="w-4 h-4" />
                                                 {product.trend}%
                                             </span>

@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
@@ -60,11 +60,11 @@
         switch (status) {
             case "confirmed":
                 return {
-                    bg: "bg-green-100 dark:bg-green-900/50",
-                    text: "text-green-700 dark:text-green-400",
+                    bg: "bg-success-100 dark:bg-success-900/50",
+                    text: "text-success-700 dark:text-success-400",
                     icon: CheckCircle,
                     label: t("restaurant.confirmed"),
-                    dot: "bg-green-500",
+                    dot: "bg-success-500",
                 };
             case "pending":
                 return {
@@ -92,11 +92,11 @@
                 };
             case "cancelled":
                 return {
-                    bg: "bg-red-100 dark:bg-red-900/50",
-                    text: "text-red-700 dark:text-red-400",
+                    bg: "bg-danger-100 dark:bg-danger-900/50",
+                    text: "text-danger-700 dark:text-danger-400",
                     icon: XCircle,
                     label: t("restaurant.cancelled"),
-                    dot: "bg-red-500",
+                    dot: "bg-danger-500",
                 };
             case "no-show":
                 return {
@@ -305,10 +305,10 @@
         
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
             <div class="flex items-center justify-between">
-                <div class="p-2 bg-green-100 dark:bg-green-900/50 rounded-lg">
-                    <CheckCircle class="w-5 h-5 text-green-600 dark:text-green-400" />
+                <div class="p-2 bg-success-100 dark:bg-success-900/50 rounded-lg">
+                    <CheckCircle class="w-5 h-5 text-success-600 dark:text-success-400" />
                 </div>
-                <span class="text-2xl font-bold text-green-600 dark:text-green-400">{stats.confirmed}</span>
+                <span class="text-2xl font-bold text-success-600 dark:text-success-400">{stats.confirmed}</span>
             </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">{t("restaurant.confirmed")}</p>
         </div>
@@ -511,7 +511,7 @@
                             {#if r.status === "pending"}
                                 <button
                                     onclick={() => updateStatus(r.id, "confirmed")}
-                                    class="px-3 py-1.5 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 transition-all flex items-center gap-1.5"
+                                    class="px-3 py-1.5 bg-success-600 text-white rounded-lg text-sm font-medium hover:bg-success-700 transition-all flex items-center gap-1.5"
                                 >
                                     <CheckCircle class="w-4 h-4" />
                                     {t("common.confirm")}
@@ -528,7 +528,7 @@
                             {#if r.status !== "cancelled" && r.status !== "completed"}
                                 <button
                                     onclick={() => handleDelete(r.id)}
-                                    class="p-2 text-red-500 hover:bg-red-100 dark:hover:bg-red-900/30 rounded-lg transition-all"
+                                    class="p-2 text-danger-500 hover:bg-danger-100 dark:hover:bg-danger-900/30 rounded-lg transition-all"
                                 >
                                     <Trash2 class="w-4 h-4" />
                                 </button>

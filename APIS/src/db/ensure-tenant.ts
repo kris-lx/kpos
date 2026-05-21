@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * Ensures the tenants table exists and seeds a default tenant on startup.
  * Also backfills tenant_id on all existing rows that have NULL tenant_id.

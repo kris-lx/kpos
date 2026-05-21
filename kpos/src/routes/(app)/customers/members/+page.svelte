@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
@@ -48,6 +48,7 @@
 
     // Data
     let members = $state<any[]>([]);
+    let membershipTiers = $state<any[]>([]);
 
     // Form (matches Prisma Customer schema)
     let formData = $state({
@@ -61,20 +62,26 @@
         isActive: true,
     });
 
-    function computeTier(totalSpent: number): string {
-        if (totalSpent > 5000000) return "platinum";
-        if (totalSpent > 1000000) return "gold";
-        if (totalSpent > 500000) return "silver";
+    function computeTier(points: number): string {
+        if (membershipTiers.length > 0) {
+            const sorted = [...membershipTiers].sort((a, b) => b.minPoints - a.minPoints);
+            const tier = sorted.find((t) => points >= t.minPoints);
+            return tier ? tier.name.toLowerCase() : "bronze";
+        }
+        // fallback while tiers load
+        if (points >= 5000) return "platinum";
+        if (points >= 2000) return "gold";
+        if (points >= 500) return "silver";
         return "bronze";
     }
 
     // Stats
     let stats = $derived({
         total: members.length,
-        platinum: members.filter((m) => computeTier(m.totalSpent || 0) === "platinum").length,
-        gold: members.filter((m) => computeTier(m.totalSpent || 0) === "gold").length,
-        silver: members.filter((m) => computeTier(m.totalSpent || 0) === "silver").length,
-        bronze: members.filter((m) => computeTier(m.totalSpent || 0) === "bronze").length,
+        platinum: members.filter((m) => computeTier(m.points || 0) === "platinum").length,
+        gold: members.filter((m) => computeTier(m.points || 0) === "gold").length,
+        silver: members.filter((m) => computeTier(m.points || 0) === "silver").length,
+        bronze: members.filter((m) => computeTier(m.points || 0) === "bronze").length,
         totalPoints: members.reduce((sum, m) => sum + (m.points || 0), 0),
     });
 
@@ -125,6 +132,17 @@
             members = [];
         } finally {
             isLoading = false;
+        }
+    }
+
+    async function loadMembershipTiers() {
+        try {
+            const res = await api.get("customers/loyalty").json<any>();
+            if (res.success && Array.isArray(res.data?.tiers)) {
+                membershipTiers = res.data.tiers;
+            }
+        } catch {
+            // keep fallback computeTier logic
         }
     }
 
@@ -202,7 +220,7 @@
                 member.email?.toLowerCase().includes(searchQuery.toLowerCase()) ||
                 member.memberCode?.includes(searchQuery);
 
-            const matchTier = !tierFilter || computeTier(member.totalSpent || 0) === tierFilter;
+            const matchTier = !tierFilter || computeTier(member.points || 0) === tierFilter;
 
             return matchSearch && matchTier;
         });
@@ -222,7 +240,31 @@
         }
     }
 
-    onMount(() => loadData());
+    function exportToCSV() {
+        const rows = [
+            ["ລະຫັດ", "ຊື່", "ເບີໂທ", "ອີເມລ", "ຄະແນນ", "ຍອດໃຊ້ຈ່າຍ", "ລະດັບ", "ສະຖານະ"],
+            ...filteredMembers.map((m) => [
+                m.memberCode || m.id.slice(-8).toUpperCase(),
+                m.name || "",
+                m.phone || "",
+                m.email || "",
+                m.points || 0,
+                m.totalSpent || 0,
+                computeTier(m.points || 0),
+                m.isActive ? "ໃຊ້ງານ" : "ປິດ",
+            ]),
+        ];
+        const csv = rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+        const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `members-${new Date().toISOString().slice(0, 10)}.csv`;
+        a.click();
+        URL.revokeObjectURL(url);
+    }
+
+    onMount(() => { loadData(); loadMembershipTiers(); });
 </script>
 
 <svelte:head>
@@ -249,9 +291,9 @@
         </div>
 
         <div class="flex items-center gap-3">
-            <button class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-700 transition-all">
+            <button onclick={exportToCSV} class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-700 transition-all">
                 <Download class="w-4 h-4" />
-                ສົ່ງອອກ
+                ສົ່ງອອກ CSV
             </button>
             <button
                 onclick={() => {
@@ -383,7 +425,7 @@
     {:else}
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {#each paginatedMembers as member (member.id)}
-                {@const tierConfig = getTierConfig(computeTier(member.totalSpent || 0))}
+                {@const tierConfig = getTierConfig(computeTier(member.points || 0))}
                 {@const TierIcon = tierConfig.icon}
 
                 <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden hover:shadow-md transition-all">
@@ -457,7 +499,7 @@
                             </button>
                             <button
                                 onclick={() => handleDelete(member)}
-                                class="p-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg transition-all"
+                                class="p-2 text-danger-500 hover:bg-danger-50 dark:hover:bg-danger-900/30 rounded-lg transition-all"
                             >
                                 <Trash2 class="w-4 h-4" />
                             </button>
@@ -622,7 +664,7 @@
 
 <!-- View Modal -->
 {#if showViewModal && viewingMember}
-    {@const tierConfig = getTierConfig(computeTier(viewingMember.totalSpent || 0))}
+    {@const tierConfig = getTierConfig(computeTier(viewingMember.points || 0))}
     {@const TierIcon = tierConfig.icon}
 
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">

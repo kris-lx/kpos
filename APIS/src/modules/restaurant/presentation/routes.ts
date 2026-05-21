@@ -4,15 +4,18 @@
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { authenticate, authorize, branchFilter, ensureScopeAccess, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
-import { 
-    tableService, 
-    orderService, 
-    reservationService, 
-    eMenuService 
+import {
+    tableService,
+    orderService,
+    reservationService,
+    eMenuService
 } from '../application/services';
 import { TableStatus } from '../domain/entities/Table';
 import { OrderStatus, OrderItemStatus } from '../domain/entities/Order';
 import { ReservationStatus } from '../domain/entities/Reservation';
+import { db } from '@/config/database.config';
+import { branches } from '@/db/schema/tables';
+import { eq } from 'drizzle-orm';
 
 export const restaurantRoutes = Router();
 
@@ -449,14 +452,20 @@ restaurantRoutes.get('/e-menu', async (req: Request, res: Response, next: NextFu
 // Create order from e-menu (public)
 restaurantRoutes.post('/e-menu/order', async (req: Request, res: Response, next: NextFunction) => {
     try {
-        const { branchId, tableNumber, items } = req.body;
+        let { branchId, tableNumber, items } = req.body;
 
-        if (!branchId || !items || items.length === 0) {
-            res.status(400).json({ 
-                success: false, 
-                error: { code: 'RES_004', message: 'branchId and items are required' } 
+        if (!items || items.length === 0) {
+            res.status(400).json({
+                success: false,
+                error: { code: 'RES_004', message: 'items are required' }
             });
             return;
+        }
+
+        // Fall back to the default branch if none supplied
+        if (!branchId) {
+            const defaultBranch = await db.query.branches.findFirst({ where: eq(branches.isMain, true) });
+            branchId = defaultBranch?.id;
         }
 
         const result = await eMenuService.createOrder(branchId, tableNumber, items);

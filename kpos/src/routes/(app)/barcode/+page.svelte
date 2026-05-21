@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
     import { api } from "$api";
@@ -237,7 +237,7 @@
             });
         } catch (error) {
             console.error("Failed to generate barcode:", error);
-            container.innerHTML = `<span class="text-red-500 text-xs">Invalid barcode</span>`;
+            container.innerHTML = `<span class="text-danger-500 text-xs">Invalid barcode</span>`;
         }
     }
 
@@ -648,12 +648,12 @@
                     </div>
                 {:else if error}
                     <div class="flex flex-col items-center justify-center py-12 text-center">
-                        <AlertCircle class="w-12 h-12 text-red-500 mb-3" />
-                        <h3 class="text-lg font-semibold text-red-700 dark:text-red-400 mb-2">{t("common.error")}</h3>
-                        <p class="text-red-600 dark:text-red-300 mb-4">{error}</p>
+                        <AlertCircle class="w-12 h-12 text-danger-500 mb-3" />
+                        <h3 class="text-lg font-semibold text-danger-700 dark:text-danger-400 mb-2">{t("common.error")}</h3>
+                        <p class="text-danger-600 dark:text-danger-300 mb-4">{error}</p>
                         <button
                             onclick={() => loadProducts()}
-                            class="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+                            class="flex items-center gap-2 px-4 py-2 bg-danger-600 text-white rounded-lg hover:bg-danger-700 transition-colors"
                         >
                             <RefreshCw class="w-4 h-4" />
                             {t("common.retry")}

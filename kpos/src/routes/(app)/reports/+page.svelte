@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { t } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
     import { cn, formatCurrency, formatDateTime } from "$lib/utils";
@@ -417,14 +417,14 @@ ${lines.map(l => l === divider ? '<div class="divider"></div>' : `<div${l === 'K
                             onclick={() => exportToExcel()}
                             class="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300"
                         >
-                            <FileSpreadsheet class="w-5 h-5 text-green-600" />
+                            <FileSpreadsheet class="w-5 h-5 text-success-600" />
                             <span>{t("reports.exportExcel")}</span>
                         </button>
                         <button
                             onclick={() => exportToPdf()}
                             class="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300"
                         >
-                            <FileType class="w-5 h-5 text-red-600" />
+                            <FileType class="w-5 h-5 text-danger-600" />
                             <span>{t("reports.exportPdf")}</span>
                         </button>
                         <button
@@ -461,7 +461,7 @@ ${lines.map(l => l === divider ? '<div class="divider"></div>' : `<div${l === 'K
         </div>
     {:else if error}
         <div class="text-center py-12 bg-white dark:bg-gray-800 rounded-xl">
-            <AlertCircle class="w-12 h-12 mx-auto text-red-400" />
+            <AlertCircle class="w-12 h-12 mx-auto text-danger-400" />
             <p class="mt-4 text-gray-700 dark:text-gray-300">{error}</p>
             <button
                 onclick={() => loadData()}
@@ -478,7 +478,7 @@ ${lines.map(l => l === divider ? '<div class="divider"></div>' : `<div${l === 'K
                     <div class="w-12 h-12 rounded-xl bg-primary-100 dark:bg-primary-900/30 flex items-center justify-center">
                         <DollarSign class="w-6 h-6 text-primary-600" />
                     </div>
-                    <div class="flex items-center gap-1 text-green-500 text-sm">
+                    <div class="flex items-center gap-1 text-success-500 text-sm">
                         <TrendingUp class="w-4 h-4" />
                         <span>+12.5%</span>
                     </div>
@@ -491,10 +491,10 @@ ${lines.map(l => l === divider ? '<div class="divider"></div>' : `<div${l === 'K
 
             <div class="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
                 <div class="flex items-center justify-between mb-4">
-                    <div class="w-12 h-12 rounded-xl bg-green-100 dark:bg-green-900/30 flex items-center justify-center">
-                        <ShoppingCart class="w-6 h-6 text-green-600" />
+                    <div class="w-12 h-12 rounded-xl bg-success-100 dark:bg-success-900/30 flex items-center justify-center">
+                        <ShoppingCart class="w-6 h-6 text-success-600" />
                     </div>
-                    <div class="flex items-center gap-1 text-green-500 text-sm">
+                    <div class="flex items-center gap-1 text-success-500 text-sm">
                         <TrendingUp class="w-4 h-4" />
                         <span>+8.2%</span>
                     </div>
@@ -667,7 +667,7 @@ ${lines.map(l => l === divider ? '<div class="divider"></div>' : `<div${l === 'K
                 <p class="text-sm text-gray-500">{t("reports.warehouseDesc")}</p>
             </a>
             <a href="/reports/financial" class="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700 hover:border-primary-500 transition-colors">
-                <DollarSign class="w-8 h-8 text-green-500 mb-3" />
+                <DollarSign class="w-8 h-8 text-success-500 mb-3" />
                 <p class="font-medium text-gray-900 dark:text-white">{t("reports.financial")}</p>
                 <p class="text-sm text-gray-500">{t("reports.financialDesc")}</p>
             </a>

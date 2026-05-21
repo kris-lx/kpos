@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { i18n } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
     import { onMount } from "svelte";
@@ -234,7 +234,7 @@
 
     function getCategoryColor(category: string): string {
         const colors: Record<string, string> = {
-            payment: "bg-green-100 dark:bg-green-900/50 text-green-700 dark:text-green-300",
+            payment: "bg-success-100 dark:bg-success-900/50 text-success-700 dark:text-success-300",
             delivery: "bg-orange-100 dark:bg-orange-900/50 text-orange-700 dark:text-orange-300",
             messaging: "bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300",
             reporting: "bg-purple-100 dark:bg-purple-900/50 text-purple-700 dark:text-purple-300",
@@ -348,7 +348,7 @@
                                     </div>
                                 </td>
                                 <td class="px-4 py-3">
-                                    <span class="px-2 py-1 text-xs rounded-full {key.isActive ? 'bg-green-100 dark:bg-green-900/50 text-green-700 dark:text-green-400' : 'bg-gray-100 dark:bg-gray-700 text-gray-500'}">
+                                    <span class="px-2 py-1 text-xs rounded-full {key.isActive ? 'bg-success-100 dark:bg-success-900/50 text-success-700 dark:text-success-400' : 'bg-gray-100 dark:bg-gray-700 text-gray-500'}">
                                         {key.isActive ? t("integrations.connected") : t("integrations.disconnected")}
                                     </span>
                                 </td>
@@ -357,7 +357,7 @@
                                         <button onclick={() => openKeyModal(key)} class="p-1.5 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">
                                             <Edit class="w-4 h-4" />
                                         </button>
-                                        <button onclick={() => deleteKey(key)} class="p-1.5 text-red-500 hover:bg-red-100 dark:hover:bg-red-900/30 rounded-lg">
+                                        <button onclick={() => deleteKey(key)} class="p-1.5 text-danger-500 hover:bg-danger-100 dark:hover:bg-danger-900/30 rounded-lg">
                                             <Trash2 class="w-4 h-4" />
                                         </button>
                                     </div>
@@ -390,7 +390,7 @@
                         )}
                         {#if integration}
                             <div
-                                class="bg-white dark:bg-gray-800 rounded-lg border-2 border-green-200 dark:border-green-800 p-4"
+                                class="bg-white dark:bg-gray-800 rounded-lg border-2 border-success-200 dark:border-success-800 p-4"
                             >
                                 <div class="flex items-start justify-between">
                                     <div class="flex items-center gap-3">
@@ -403,7 +403,7 @@
                                             >
                                                 {integration.name}
                                             </h3>
-                                            <span class="text-xs text-green-600 dark:text-green-400"
+                                            <span class="text-xs text-success-600 dark:text-success-400"
                                                 >● ເຊື່ອມຕໍ່ແລ້ວ</span
                                             >
                                         </div>
@@ -425,7 +425,7 @@
                                     <button
                                         onclick={() =>
                                             disconnect(integration.id)}
-                                        class="px-3 py-1 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 rounded flex items-center gap-1"
+                                        class="px-3 py-1 text-sm text-danger-600 dark:text-danger-400 hover:bg-danger-50 dark:hover:bg-danger-900/30 rounded flex items-center gap-1"
                                     >
                                         <X class="w-3 h-3" />
                                         ຍົກເລີກ
@@ -496,44 +496,107 @@
 </div>
 
 {#if showKeyModal}
-    <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-        <div class="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-md">
-            <div class="flex items-center justify-between px-6 py-4 border-b border-gray-200 dark:border-gray-700">
-                <h2 class="text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2">
-                    <Key class="w-5 h-5" />
-                    {editingKey ? t("integrations.editKey") : t("integrations.addKey")}
-                </h2>
-                <button onclick={() => (showKeyModal = false)} class="p-1.5 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">
-                    <X class="w-5 h-5 text-gray-500" />
+    <div class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+        <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-lg border border-gray-200 dark:border-gray-700">
+            <!-- Header -->
+            <div class="flex items-center justify-between px-6 py-5 border-b border-gray-200 dark:border-gray-700">
+                <div class="flex items-center gap-3">
+                    <div class="p-2 bg-primary-100 dark:bg-primary-900/50 rounded-xl">
+                        <Key class="w-5 h-5 text-primary-600 dark:text-primary-400" />
+                    </div>
+                    <div>
+                        <h2 class="text-base font-bold text-gray-900 dark:text-white">
+                            {editingKey ? t("integrations.editKey") : t("integrations.addKey")}
+                        </h2>
+                        <p class="text-xs text-gray-500 dark:text-gray-400">ຈັດການ credentials ສຳລັບບໍລິການພາຍນອກ</p>
+                    </div>
+                </div>
+                <button onclick={() => (showKeyModal = false)} class="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl transition-colors">
+                    <X class="w-4 h-4 text-gray-500" />
                 </button>
             </div>
-            <div class="p-6 space-y-4">
-                <div>
-                    <label for="key-name" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t("integrations.keyName")} *</label>
-                    <input id="key-name" type="text" bind:value={keyForm.name} placeholder="ຊື່ Key" class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm" />
-                </div>
-                <div>
-                    <label for="key-service" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t("integrations.service")}</label>
-                    <input id="key-service" type="text" bind:value={keyForm.service} placeholder="ເຊັ່ນ: BCEL, LINE, Shopee" class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm" />
-                </div>
-                <div>
-                    <label for="key-apikey" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t("integrations.keyValue")} *</label>
-                    <input id="key-apikey" type="text" bind:value={keyForm.apiKey} placeholder="API Key" class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm font-mono" />
-                </div>
-                <div>
-                    <label for="key-secret" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t("integrations.keySecret")}</label>
-                    <input id="key-secret" type="password" bind:value={keyForm.secretKey} placeholder="Secret Key (ຖ້າມີ)" class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm font-mono" />
-                </div>
-                <label class="flex items-center gap-2 cursor-pointer">
-                    <input type="checkbox" bind:checked={keyForm.isActive} class="rounded border-gray-300 dark:border-gray-600" />
-                    <span class="text-sm text-gray-700 dark:text-gray-300">{t("common.enabled")}</span>
-                </label>
+
+            <!-- Security banner -->
+            <div class="mx-6 mt-5 flex items-start gap-3 px-4 py-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl">
+                <Shield class="w-4 h-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+                <p class="text-xs text-amber-700 dark:text-amber-300">API Keys ຖືກເຂົ້າລະຫັດກ່ອນເກັບໄວ້. ຢ່າແບ່ງປັນ credentials ກັບຜູ້ອື່ນ.</p>
             </div>
-            <div class="flex justify-end gap-3 px-6 py-4 border-t border-gray-200 dark:border-gray-700">
-                <button onclick={() => (showKeyModal = false)} class="px-4 py-2 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg text-sm">
+
+            <div class="px-6 py-5 space-y-4">
+                <!-- Name + Service row -->
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label for="key-name" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                            {t("integrations.keyName")} <span class="text-danger-500">*</span>
+                        </label>
+                        <input id="key-name" type="text" bind:value={keyForm.name} placeholder="ເຊັ່ນ: BCEL Production"
+                            class="w-full px-3 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none transition-all" />
+                    </div>
+                    <div>
+                        <label for="key-service" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                            {t("integrations.service")}
+                        </label>
+                        <select id="key-service" bind:value={keyForm.service}
+                            class="w-full px-3 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none transition-all">
+                            <option value="">-- ເລືອກ --</option>
+                            <option value="BCEL">BCEL One</option>
+                            <option value="LDB">LDB Bank</option>
+                            <option value="OnePay">OnePay</option>
+                            <option value="LINE">LINE Official</option>
+                            <option value="GrabFood">GrabFood</option>
+                            <option value="Google Sheets">Google Sheets</option>
+                            <option value="other">ອື່ນໆ</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- API Key -->
+                <div>
+                    <label for="key-apikey" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                        {t("integrations.keyValue")} <span class="text-danger-500">*</span>
+                    </label>
+                    <div class="relative">
+                        <input id="key-apikey" type="text" bind:value={keyForm.apiKey} placeholder="sk_live_xxxxxxxxxx"
+                            class="w-full pl-3 pr-10 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white text-sm font-mono focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none transition-all" />
+                        {#if keyForm.apiKey}
+                            <button onclick={() => copyKey(keyForm.apiKey)} class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-primary-600 transition-colors" title="ຄັດລອກ">
+                                <Copy class="w-4 h-4" />
+                            </button>
+                        {/if}
+                    </div>
+                </div>
+
+                <!-- Secret Key -->
+                <div>
+                    <label for="key-secret" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                        {t("integrations.keySecret")}
+                        <span class="ml-1 text-xs text-gray-400">(optional)</span>
+                    </label>
+                    <input id="key-secret" type="password" bind:value={keyForm.secretKey} placeholder="Secret / Client Secret"
+                        class="w-full px-3 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white text-sm font-mono focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none transition-all" />
+                </div>
+
+                <!-- Status toggle -->
+                <div class="flex items-center justify-between px-4 py-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
+                    <div>
+                        <p class="text-sm font-medium text-gray-700 dark:text-gray-300">{t("common.enabled")}</p>
+                        <p class="text-xs text-gray-500 dark:text-gray-400">ໃຊ້ API Key ນີ້ສຳລັບການເຊື່ອມຕໍ່</p>
+                    </div>
+                    <button
+                        onclick={() => (keyForm.isActive = !keyForm.isActive)}
+                        class="relative w-11 h-6 rounded-full transition-colors {keyForm.isActive ? 'bg-primary-600' : 'bg-gray-300 dark:bg-gray-600'}"
+                    >
+                        <span class="absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform {keyForm.isActive ? 'translate-x-6' : 'translate-x-1'}"></span>
+                    </button>
+                </div>
+            </div>
+
+            <div class="flex justify-end gap-3 px-6 py-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 rounded-b-2xl">
+                <button onclick={() => (showKeyModal = false)} class="px-4 py-2 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-xl text-sm font-medium transition-colors">
                     {t("common.cancel")}
                 </button>
-                <button onclick={saveKey} disabled={keySaving} class="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 text-sm disabled:opacity-50">
+                <button onclick={saveKey} disabled={keySaving || !keyForm.name || !keyForm.apiKey}
+                    class="flex items-center gap-2 px-5 py-2 bg-primary-600 text-white rounded-xl hover:bg-primary-700 text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm">
                     {#if keySaving}<Loader2 class="w-4 h-4 animate-spin" />{:else}<Save class="w-4 h-4" />{/if}
                     {t("common.save")}
                 </button>

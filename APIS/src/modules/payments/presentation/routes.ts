@@ -371,8 +371,9 @@ paymentRoutes.get('/settlements', authenticate, branchFilter(), async (req, res,
         const branchId = filter?.branchIds?.[0] || req.authUser?.activeBranchId || req.user?.branchId;
 
         const sConditions: any[] = [];
+        const stlTenantId = req.authUser?.tenantId || filter?.tenantId;
+        if (stlTenantId && !req.authUser?.isSuperAdmin) sConditions.push(eq(settlements.tenantId, stlTenantId));
         if (branchId) sConditions.push(eq(settlements.branchId, branchId));
-        if (filter?.tenantId) sConditions.push(eq(settlements.tenantId, filter.tenantId));
         if (filter?.storeIds?.length) sConditions.push(inArray(settlements.storeId, filter.storeIds));
         if (status) sConditions.push(eq(settlements.status, String(status)));
         if (dateFrom) sConditions.push(gte(settlements.settlementDate, new Date(String(dateFrom))));

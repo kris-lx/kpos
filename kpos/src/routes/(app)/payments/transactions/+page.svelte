@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
     import { cn, formatCurrency, formatDate } from "$utils";
@@ -52,11 +52,11 @@
     function getStatusConfig(status: string) {
         switch (status) {
             case "completed":
-                return { bg: "bg-green-100 dark:bg-green-900/50", text: "text-green-700 dark:text-green-400", label: "ສຳເລັດ", icon: CheckCircle };
+                return { bg: "bg-success-100 dark:bg-success-900/50", text: "text-success-700 dark:text-success-400", label: "ສຳເລັດ", icon: CheckCircle };
             case "pending":
                 return { bg: "bg-amber-100 dark:bg-amber-900/50", text: "text-amber-700 dark:text-amber-400", label: "ລໍຖ້າ", icon: Clock };
             case "failed":
-                return { bg: "bg-red-100 dark:bg-red-900/50", text: "text-red-700 dark:text-red-400", label: "ລົ້ມເຫລວ", icon: XCircle };
+                return { bg: "bg-danger-100 dark:bg-danger-900/50", text: "text-danger-700 dark:text-danger-400", label: "ລົ້ມເຫລວ", icon: XCircle };
             default:
                 return { bg: "bg-gray-100 dark:bg-gray-700", text: "text-gray-600 dark:text-gray-400", label: status, icon: Clock };
         }
@@ -65,7 +65,7 @@
     function getMethodConfig(method: string) {
         switch (method) {
             case "cash":
-                return { icon: Banknote, label: "ເງິນສົດ", color: "text-green-600 dark:text-green-400" };
+                return { icon: Banknote, label: "ເງິນສົດ", color: "text-success-600 dark:text-success-400" };
             case "card":
                 return { icon: CreditCard, label: "ບັດ", color: "text-blue-600 dark:text-blue-400" };
             case "mobile":
@@ -248,10 +248,10 @@
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
             <div class="flex items-center justify-between">
-                <div class="p-2 bg-green-100 dark:bg-green-900/50 rounded-lg">
-                    <CheckCircle class="w-5 h-5 text-green-600 dark:text-green-400" />
+                <div class="p-2 bg-success-100 dark:bg-success-900/50 rounded-lg">
+                    <CheckCircle class="w-5 h-5 text-success-600 dark:text-success-400" />
                 </div>
-                <span class="text-2xl font-bold text-green-600 dark:text-green-400">{stats.completed}</span>
+                <span class="text-2xl font-bold text-success-600 dark:text-success-400">{stats.completed}</span>
             </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">ສຳເລັດ</p>
         </div>
@@ -266,10 +266,10 @@
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
             <div class="flex items-center justify-between">
-                <div class="p-2 bg-red-100 dark:bg-red-900/50 rounded-lg">
-                    <XCircle class="w-5 h-5 text-red-600 dark:text-red-400" />
+                <div class="p-2 bg-danger-100 dark:bg-danger-900/50 rounded-lg">
+                    <XCircle class="w-5 h-5 text-danger-600 dark:text-danger-400" />
                 </div>
-                <span class="text-2xl font-bold text-red-600 dark:text-red-400">{stats.failed}</span>
+                <span class="text-2xl font-bold text-danger-600 dark:text-danger-400">{stats.failed}</span>
             </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">ລົ້ມເຫລວ</p>
         </div>

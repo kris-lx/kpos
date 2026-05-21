@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
@@ -55,19 +55,51 @@
     // Stats
     let stats = $derived({
         total: totalItems,
-        pending: transfers.filter((t) => t.status === "pending").length,
-        completed: transfers.filter((t) => t.status === "completed").length,
-        totalQty: transfers.reduce((sum, t) => sum + (t.quantity || 0), 0),
+        pending: transfers.filter((t) => t.status === "PENDING").length,
+        completed: transfers.filter((t) => t.status === "COMPLETED").length,
+        rejected: transfers.filter((t) => t.status === "REJECTED").length,
+        totalQty: transfers.reduce((sum, t) => sum + ((t.items || []).reduce((s: number, i: any) => s + (i.quantity || 0), 0)), 0),
     });
 
+    const canApprove = $derived(
+        auth.hasPermission('inventory:update') &&
+        (auth.roleLevel <= 5 || auth.user?.isSuperAdmin)
+    );
+
     function getStatusConfig(status: string) {
-        switch (status) {
-            case "completed":
-                return { bg: "bg-green-100 dark:bg-green-900/50", text: "text-green-700 dark:text-green-400", label: "ສຳເລັດ" };
-            case "pending":
-                return { bg: "bg-amber-100 dark:bg-amber-900/50", text: "text-amber-700 dark:text-amber-400", label: "ລໍຖ້າ" };
+        switch (status?.toUpperCase()) {
+            case "COMPLETED":
+                return { bg: "bg-success-100 dark:bg-success-900/50", text: "text-success-700 dark:text-success-400", label: "ສຳເລັດ" };
+            case "PENDING":
+                return { bg: "bg-amber-100 dark:bg-amber-900/50", text: "text-amber-700 dark:text-amber-400", label: "ລໍຖ້າອະນຸມັດ" };
+            case "REJECTED":
+                return { bg: "bg-error-100 dark:bg-error-900/50", text: "text-error-700 dark:text-error-400", label: "ປະຕິເສດ" };
             default:
                 return { bg: "bg-gray-100 dark:bg-gray-700", text: "text-gray-600 dark:text-gray-400", label: status };
+        }
+    }
+
+    async function approveTransfer(id: string) {
+        try {
+            await api.patch(`inventory/transfers/${id}/approve`, { json: {} }).json();
+            toast.success('ອະນຸມັດການໂອນສຳເລັດ — ສະຕ໋ອກໄດ້ຖືກໂອນແລ້ວ');
+            loadData();
+        } catch (e: any) {
+            const msg = await e?.response?.json?.().catch(() => null);
+            toast.error(msg?.error?.message || 'ບໍ່ສາມາດອະນຸມັດໄດ້');
+        }
+    }
+
+    async function rejectTransfer(id: string) {
+        const reason = prompt('ເຫດຜົນໃນການປະຕິເສດ (ທາງເລືອກ):');
+        if (reason === null) return; // cancelled
+        try {
+            await api.patch(`inventory/transfers/${id}/reject`, { json: { reason } }).json();
+            toast.success('ປະຕິເສດການໂອນແລ້ວ');
+            loadData();
+        } catch (e: any) {
+            const msg = await e?.response?.json?.().catch(() => null);
+            toast.error(msg?.error?.message || 'ບໍ່ສາມາດປະຕິເສດໄດ້');
         }
     }
 
@@ -164,6 +196,34 @@
         }
     }
 
+    function downloadFile(content: string, filename: string, type: string) {
+        const blob = new Blob([content], { type });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
+    function exportToCsv() {
+        let csv = '﻿';
+        csv += 'ວັນທີ,ສາຂາຕົ້ນທາງ,ສາຂາປາຍທາງ,ສິນຄ້າ,ຈຳນວນ,ໝາຍເຫດ,ສະຖານະ\n';
+        for (const tr of transfers) {
+            const fromName = getBranchName(tr.fromBranchId);
+            const toName = getBranchName(tr.toBranchId);
+            const itemSummary = (tr.items || []).map((i: any) => `${getProductName(i.productId)} x${i.quantity}`).join('; ');
+            const totalQty = (tr.items || []).reduce((s: number, i: any) => s + (i.quantity || 0), 0);
+            const statusLabel = tr.status === 'completed' ? 'ສຳເລັດ' : tr.status === 'pending' ? 'ລໍຖ້າ' : tr.status;
+            const date = tr.createdAt ? new Date(tr.createdAt).toLocaleDateString('lo-LA') : '';
+            csv += `"${date}","${fromName}","${toName}","${itemSummary}","${totalQty}","${tr.notes || ''}","${statusLabel}"\n`;
+        }
+        downloadFile(csv, `transfers-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
+        toast.success('ສົ່ງອອກ CSV ສຳເລັດ');
+    }
+
     $effect(() => {
         auth.activeStoreId;
         loadData();
@@ -190,7 +250,7 @@
         </div>
 
         <div class="flex items-center gap-3">
-            <button class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium">
+            <button onclick={exportToCsv} class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium">
                 <Download class="w-4 h-4" />
                 ສົ່ງອອກ
             </button>
@@ -226,10 +286,10 @@
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
             <div class="flex items-center justify-between">
-                <div class="p-2 bg-green-100 dark:bg-green-900/50 rounded-lg">
-                    <Check class="w-5 h-5 text-green-600 dark:text-green-400" />
+                <div class="p-2 bg-success-100 dark:bg-success-900/50 rounded-lg">
+                    <Check class="w-5 h-5 text-success-600 dark:text-success-400" />
                 </div>
-                <span class="text-2xl font-bold text-green-600 dark:text-green-400">{stats.completed}</span>
+                <span class="text-2xl font-bold text-success-600 dark:text-success-400">{stats.completed}</span>
             </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">ສຳເລັດ</p>
         </div>
@@ -285,22 +345,35 @@
                             <th class="text-center px-6 py-4 text-xs font-semibold text-gray-500 uppercase">ຈາກ → ໄປ</th>
                             <th class="text-right px-6 py-4 text-xs font-semibold text-gray-500 uppercase">ຈຳນວນ</th>
                             <th class="text-center px-6 py-4 text-xs font-semibold text-gray-500 uppercase">ສະຖານະ</th>
+                            <th class="text-center px-6 py-4 text-xs font-semibold text-gray-500 uppercase">ດຳເນີນການ</th>
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-gray-200 dark:divide-gray-700">
                         {#each transfers as transfer (transfer.id)}
                             {@const statusConfig = getStatusConfig(transfer.status)}
+                            {@const itemList = transfer.items || []}
+                            {@const totalQty = itemList.reduce((s: number, i: any) => s + (i.quantity || 0), 0)}
                             <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-all">
                                 <td class="px-6 py-4">
                                     <div class="flex items-center gap-2 text-gray-600 dark:text-gray-400">
                                         <Calendar class="w-4 h-4" />
                                         <span>{formatDate(transfer.date || transfer.createdAt)}</span>
                                     </div>
+                                    {#if transfer.transferNo}
+                                        <div class="text-xs text-gray-400 mt-0.5">{transfer.transferNo}</div>
+                                    {/if}
                                 </td>
                                 <td class="px-6 py-4">
-                                    <div class="flex items-center gap-2">
-                                        <Package class="w-4 h-4 text-gray-400" />
-                                        <span class="font-medium text-gray-900 dark:text-white">{getProductName(transfer.productId)}</span>
+                                    <div class="space-y-1">
+                                        {#each itemList as item (item.id)}
+                                            <div class="flex items-center gap-2">
+                                                <Package class="w-4 h-4 text-gray-400 shrink-0" />
+                                                <span class="font-medium text-gray-900 dark:text-white text-sm">{item.productName || getProductName(item.productId)}</span>
+                                                <span class="text-gray-500 text-sm">×{item.quantity}</span>
+                                            </div>
+                                        {:else}
+                                            <span class="text-gray-400 text-sm">{getProductName(transfer.productId)}</span>
+                                        {/each}
                                     </div>
                                 </td>
                                 <td class="px-6 py-4">
@@ -311,12 +384,36 @@
                                     </div>
                                 </td>
                                 <td class="px-6 py-4 text-right">
-                                    <span class="font-bold text-gray-900 dark:text-white">{transfer.quantity}</span>
+                                    <span class="font-bold text-gray-900 dark:text-white">{totalQty || transfer.quantity || 0}</span>
                                 </td>
                                 <td class="px-6 py-4 text-center">
                                     <span class={cn("px-2.5 py-1 rounded-full text-xs font-medium", statusConfig.bg, statusConfig.text)}>
                                         {statusConfig.label}
                                     </span>
+                                </td>
+                                <td class="px-6 py-4 text-center">
+                                    {#if transfer.status === 'PENDING' && canApprove}
+                                        <div class="flex items-center justify-center gap-2">
+                                            <button
+                                                onclick={() => approveTransfer(transfer.id)}
+                                                class="p-1.5 rounded-lg bg-success-100 hover:bg-success-200 text-success-700 transition-colors"
+                                                title="ອະນຸມັດ"
+                                            >
+                                                <Check class="w-4 h-4" />
+                                            </button>
+                                            <button
+                                                onclick={() => rejectTransfer(transfer.id)}
+                                                class="p-1.5 rounded-lg bg-error-100 hover:bg-error-200 text-error-700 transition-colors"
+                                                title="ປະຕິເສດ"
+                                            >
+                                                <X class="w-4 h-4" />
+                                            </button>
+                                        </div>
+                                    {:else if transfer.status === 'COMPLETED'}
+                                        <span class="text-xs text-gray-400">ໂດຍ: {transfer.approvedBy ? transfer.approvedBy.slice(-6) : '—'}</span>
+                                    {:else}
+                                        <span class="text-gray-400">—</span>
+                                    {/if}
                                 </td>
                             </tr>
                         {/each}

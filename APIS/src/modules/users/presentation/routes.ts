@@ -5,8 +5,8 @@
 import { Router } from 'express';
 import { authenticate, authorize, branchFilter, ensureScopeAccess } from '@/infrastructure/http/middleware/auth.middleware';
 import { db } from '@/config/database.config';
-import { users, userStores, branches, transactions, menuPermissions, rules, roleRules } from '@/db/schema/tables';
-import { eq, and, or, ilike, inArray, notInArray, desc, asc, count } from 'drizzle-orm';
+import { users, userStores, branches, transactions, menuPermissions, rules, roleRules, roles } from '@/db/schema/tables';
+import { eq, and, or, ilike, inArray, notInArray, desc, asc, count, isNull } from 'drizzle-orm';
 import argon2 from 'argon2';
 
 export const userRoutes = Router();
@@ -273,8 +273,7 @@ userRoutes.delete('/:id', authenticate, authorize('users:delete'), async (req, r
         }
 
         // Prevent self-deletion
-        const currentUser = (req as any).user;
-        if (currentUser?.id === id) {
+        if (req.authUser!.userId === id) {
             return res.status(400).json({
                 success: false,
                 error: { code: 'SELF_DELETE', message: 'Cannot delete your own account' }
@@ -604,53 +603,92 @@ userRoutes.get('/permissions/all', authenticate, authorize('users:read'), async 
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// GET CURRENT USER'S MENU (filtered by permissions)
+// GET CURRENT USER'S MENU (filtered by roleRules.canRead — Level 2 of permission model)
 // ═══════════════════════════════════════════════════════════════════════════
 userRoutes.get('/me/menu', authenticate, async (req, res) => {
     try {
-        const authUser = (req as any).user;
-        const userPermissions: string[] = authUser.permissions || [];
+        const authUser = req.authUser!;
         const isSuperAdmin = authUser.isSuperAdmin === true;
 
-        // Helper: check if user has a permission (with :view/:read equivalence)
+        // Build permitted permission set from roleRules (canRead=true) — this is the authoritative check
+        const rulePermSet = new Set<string>();
+        if (!isSuperAdmin) {
+            const dbUser = await db.query.users.findFirst({
+                where: eq(users.id, authUser.userId),
+                columns: { roleId: true, role: true },
+            });
+
+            let rrRows: any[] = [];
+            if (dbUser?.roleId) {
+                rrRows = await db.query.roleRules.findMany({
+                    where: and(eq(roleRules.roleId, dbUser.roleId), eq(roleRules.canRead, true)),
+                    with: { rule: true },
+                });
+                // Fallback: if tenant role has no rules, inherit from the global role of same name
+                if (rrRows.length === 0 && dbUser.role) {
+                    const globalRole = await db.query.roles.findFirst({
+                        where: and(eq(roles.name, dbUser.role), isNull(roles.tenantId)),
+                    });
+                    if (globalRole) {
+                        rrRows = await db.query.roleRules.findMany({
+                            where: and(eq(roleRules.roleId, globalRole.id), eq(roleRules.canRead, true)),
+                            with: { rule: true },
+                        });
+                    }
+                }
+            }
+            // Collect all permission strings from canRead rules
+            for (const rr of rrRows) {
+                if (rr.rule?.permissions?.length) {
+                    for (const p of rr.rule.permissions) rulePermSet.add(p);
+                }
+                // Also add rule name as a shorthand (e.g. 'products' covers 'products:view')
+                if (rr.rule?.name) rulePermSet.add(rr.rule.name);
+            }
+        }
+
+        // Legacy permissions array (for backward compat with roles that haven't been migrated to roleRules)
+        const legacyPerms: string[] = authUser.permissions || [];
+
         function hasPermission(perm: string): boolean {
             if (isSuperAdmin) return true;
-            if (userPermissions.includes('*')) return true;
-            if (userPermissions.includes(perm)) return true;
-            // :view/:read equivalence
-            if (perm.endsWith(':view')) {
-                return userPermissions.includes(perm.replace(':view', ':read'));
-            }
-            if (perm.endsWith(':read')) {
-                return userPermissions.includes(perm.replace(':read', ':view'));
-            }
+            // Primary check: rule-based permissions (canRead=true grants menu visibility)
+            if (rulePermSet.has(perm)) return true;
+            // Shorthand: if perm starts with a rule name we have canRead for
+            const module = perm.split(':')[0];
+            if (module && rulePermSet.has(module)) return true;
+            // Legacy fallback: permissions array on the role object
+            if (legacyPerms.includes('*')) return true;
+            if (legacyPerms.includes(perm)) return true;
+            if (perm.endsWith(':view')) return legacyPerms.includes(perm.replace(':view', ':read'));
+            if (perm.endsWith(':read')) return legacyPerms.includes(perm.replace(':read', ':view'));
             return false;
         }
 
-        // Try to load from DB
+        // Load active menu items from DB
         let menus = await db.query.menuPermissions.findMany({
-            where: and(eq(menuPermissions.isActive, true), eq(menuPermissions.parentId, null as any)),
+            where: and(eq(menuPermissions.isActive, true), isNull(menuPermissions.parentId)),
             orderBy: asc(menuPermissions.order),
             with: { children: true },
         });
-        // Filter children to only active
-        menus = menus.map(m => ({ ...m, children: (m.children || []).filter((c: any) => c.isActive).sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0)) }));
+        menus = menus.map(m => ({
+            ...m,
+            children: (m.children || []).filter((c: any) => c.isActive).sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0)),
+        }));
 
         if (menus.length === 0) {
-            // No DB data — return empty (admin must seed first)
             return res.json({ success: true, data: [] });
         }
 
-        // Filter menus by user permissions
         const filteredMenus = menus
             .filter(menu => !menu.requiredPermission || hasPermission(menu.requiredPermission))
             .map(menu => ({
                 ...menu,
                 children: (menu.children || []).filter(
-                    child => !child.requiredPermission || hasPermission(child.requiredPermission)
-                )
+                    child => !child.requiredPermission || hasPermission(child.requiredPermission),
+                ),
             }))
-            .filter(menu => menu.children.length > 0 || menu.path); // Remove empty parents
+            .filter(menu => menu.children.length > 0 || menu.path);
 
         res.json({ success: true, data: filteredMenus });
     } catch (error) {
@@ -696,10 +734,29 @@ userRoutes.get('/me/rules', authenticate, async (req, res) => {
         }
 
         // Load role's rules with CRUD flags
-        const rrRows = await db.query.roleRules.findMany({
+        let rrRows = await db.query.roleRules.findMany({
             where: eq(roleRules.roleId, user.roleId),
             with: { rule: true },
         });
+
+        // Fallback: if this tenant-specific role has no rules, inherit from the global role of the same name
+        if (rrRows.length === 0) {
+            const userRole = await db.query.users.findFirst({
+                where: eq(users.id, authUser.userId),
+                columns: { role: true },
+            });
+            if (userRole?.role) {
+                const globalRole = await db.query.roles.findFirst({
+                    where: and(eq(roles.name, userRole.role), isNull(roles.tenantId)),
+                });
+                if (globalRole) {
+                    rrRows = await db.query.roleRules.findMany({
+                        where: eq(roleRules.roleId, globalRole.id),
+                        with: { rule: true },
+                    });
+                }
+            }
+        }
 
         const data = rrRows
             .filter(rr => rr.rule?.isActive)

@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
@@ -435,10 +435,10 @@
     }
 
     function getMarginColor(margin: number): string {
-        if (margin >= 50) return "text-green-600 dark:text-green-400";
+        if (margin >= 50) return "text-success-600 dark:text-success-400";
         if (margin >= 20) return "text-amber-600 dark:text-amber-400";
         if (margin >= 0) return "text-orange-600 dark:text-orange-400";
-        return "text-red-600 dark:text-red-400";
+        return "text-danger-600 dark:text-danger-400";
     }
 </script>
 
@@ -493,8 +493,8 @@
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700">
             <div class="flex items-center gap-3">
-                <div class="p-2 bg-green-100 dark:bg-green-900/50 rounded-lg">
-                    <Check class="w-5 h-5 text-green-600 dark:text-green-400" />
+                <div class="p-2 bg-success-100 dark:bg-success-900/50 rounded-lg">
+                    <Check class="w-5 h-5 text-success-600 dark:text-success-400" />
                 </div>
                 <div>
                     <p class="text-2xl font-bold text-gray-900 dark:text-white">{stats.active}</p>
@@ -565,14 +565,14 @@
 
     <!-- Error State -->
     {#if error && !loading}
-        <div class="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl p-6 mb-6">
+        <div class="bg-danger-50 dark:bg-danger-900/20 border border-danger-200 dark:border-danger-800 rounded-xl p-6 mb-6">
             <div class="flex flex-col items-center justify-center text-center">
-                <AlertCircle class="w-12 h-12 text-red-500 mb-3" />
-                <h3 class="text-lg font-semibold text-red-700 dark:text-red-400 mb-2">ເກີດຂໍ້ຜິດພາດ</h3>
-                <p class="text-red-600 dark:text-red-300 mb-4">{error}</p>
+                <AlertCircle class="w-12 h-12 text-danger-500 mb-3" />
+                <h3 class="text-lg font-semibold text-danger-700 dark:text-danger-400 mb-2">ເກີດຂໍ້ຜິດພາດ</h3>
+                <p class="text-danger-600 dark:text-danger-300 mb-4">{error}</p>
                 <button
                     onclick={() => loadData()}
-                    class="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+                    class="flex items-center gap-2 px-4 py-2 bg-danger-600 text-white rounded-lg hover:bg-danger-700 transition-colors"
                 >
                     <RefreshCw class="w-4 h-4" />
                     ລອງໃໝ່
@@ -710,7 +710,7 @@
                                     <button
                                         onclick={() => toggleStatus(variant)}
                                         class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-colors {variant.isActive
-                                            ? 'bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-400 hover:bg-green-200'
+                                            ? 'bg-success-100 text-success-700 dark:bg-success-900/50 dark:text-success-400 hover:bg-success-200'
                                             : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400 hover:bg-gray-200'}"
                                     >
                                         {variant.isActive ? "ເປີດ" : "ປິດ"}
@@ -734,7 +734,7 @@
                                         </button>
                                         <button
                                             onclick={() => deleteVariant(variant)}
-                                            class="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
+                                            class="p-2 text-gray-400 hover:text-danger-600 hover:bg-danger-50 dark:hover:bg-danger-900/20 rounded-lg transition-colors"
                                             title="ລົບ"
                                         >
                                             <Trash2 class="w-4 h-4" />
@@ -842,7 +842,7 @@
                 <!-- Product Selection -->
                 <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                        ສິນຄ້າ <span class="text-red-500">*</span>
+                        ສິນຄ້າ <span class="text-danger-500">*</span>
                     </label>
                     <select
                         bind:value={formData.productId}
@@ -860,7 +860,7 @@
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                            SKU <span class="text-red-500">*</span>
+                            SKU <span class="text-danger-500">*</span>
                         </label>
                         <div class="flex gap-2">
                             <input
@@ -958,7 +958,7 @@
                                         <button
                                             type="button"
                                             onclick={() => removeAttribute(key)}
-                                            class="text-primary-500 hover:text-red-500"
+                                            class="text-primary-500 hover:text-danger-500"
                                         >
                                             <X class="w-3.5 h-3.5" />
                                         </button>
@@ -1130,15 +1130,15 @@
                 </div>
 
                 <div class="grid grid-cols-2 gap-4">
-                    <div class="p-4 bg-red-50 dark:bg-red-900/20 rounded-xl">
-                        <p class="text-sm text-red-600 dark:text-red-400">ຕົ້ນທຶນ</p>
-                        <p class="text-xl font-bold text-red-700 dark:text-red-300">
+                    <div class="p-4 bg-danger-50 dark:bg-danger-900/20 rounded-xl">
+                        <p class="text-sm text-danger-600 dark:text-danger-400">ຕົ້ນທຶນ</p>
+                        <p class="text-xl font-bold text-danger-700 dark:text-danger-300">
                             {formatCurrency(selectedVariant.unitCost || selectedVariant.cost || 0)}
                         </p>
                     </div>
-                    <div class="p-4 bg-green-50 dark:bg-green-900/20 rounded-xl">
-                        <p class="text-sm text-green-600 dark:text-green-400">ລາຄາຂາຍ</p>
-                        <p class="text-xl font-bold text-green-700 dark:text-green-300">
+                    <div class="p-4 bg-success-50 dark:bg-success-900/20 rounded-xl">
+                        <p class="text-sm text-success-600 dark:text-success-400">ລາຄາຂາຍ</p>
+                        <p class="text-xl font-bold text-success-700 dark:text-success-300">
                             {formatCurrency(selectedVariant.sellingPrice || selectedVariant.price || 0)}
                         </p>
                     </div>
@@ -1161,7 +1161,7 @@
                     <span class="text-gray-600 dark:text-gray-400">ສະຖານະ</span>
                     <span
                         class="px-3 py-1 rounded-full text-sm font-medium {selectedVariant.isActive
-                            ? 'bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-400'
+                            ? 'bg-success-100 text-success-700 dark:bg-success-900/50 dark:text-success-400'
                             : 'bg-gray-200 text-gray-600 dark:bg-gray-600 dark:text-gray-400'}"
                     >
                         {selectedVariant.isActive ? "ເປີດໃຊ້ງານ" : "ປິດການໃຊ້ງານ"}

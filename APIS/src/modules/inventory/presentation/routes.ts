@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, branchFilter, ensureScopeAccess, buildScopeCondition, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, branchFilter, ensureScopeAccess, buildScopeCondition, buildBranchIdScope, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { queryCache } from '@/infrastructure/http/middleware/cache.middleware';
 import { db, dbRead } from '@/config/database.config';
 import { products, categories, inventory, stockMovements, vendors, purchaseOrders, purchaseOrderItems, stockTransfers, stockTransferItems, stockCounts, stockCountItems, branches, stores } from '@/db/schema/tables';
@@ -49,9 +49,9 @@ inventoryRoutes.get('/', authenticate, branchFilter(), async (req, res, next) =>
         if (tenantId && !req.authUser?.isSuperAdmin) {
             prodConds.push(eq(products.tenantId, tenantId));
         }
-        const prodScope = buildScopeCondition(filter, { branchId: products.branchId }, 'branchId');
+        const prodScope = buildBranchIdScope(filter, products.branchId);
         if (prodScope) prodConds.push(prodScope);
-        if (!filter && userBranchId) prodConds.push(eq(products.branchId, userBranchId));
+        else if (!filter && userBranchId) prodConds.push(eq(products.branchId, userBranchId));
         if (search) {
             const s = String(search);
             prodConds.push(or(ilike(products.name, `%${s}%`), ilike(products.sku, `%${s}%`), ilike(products.barcode, `%${s}%`)));
@@ -69,9 +69,18 @@ inventoryRoutes.get('/', authenticate, branchFilter(), async (req, res, next) =>
             db.select({ value: count() }).from(products).where(prodWhere),
         ]);
 
+        // Determine which branchIds are in scope so each product's inventory
+        // is not cross-contaminated between branches that share a product.
+        const scopedBranchIds = filter?.branchIds?.length
+            ? filter.branchIds
+            : (userBranchId ? [userBranchId] : null);
+
         // Transform data to include stock from inventory
         let productsWithStock = productRows.map(product => {
-            const totalStock = product.inventory?.reduce((sum, inv) => sum + inv.quantity, 0) || 0;
+            const relevantInv = scopedBranchIds
+                ? (product.inventory || []).filter((inv: any) => scopedBranchIds.includes(inv.branchId))
+                : (product.inventory || []);
+            const totalStock = relevantInv.reduce((sum: number, inv: any) => sum + inv.quantity, 0);
             return {
                 id: product.id,
                 name: product.name,
@@ -140,8 +149,15 @@ inventoryRoutes.get('/stats', authenticate, branchFilter(), queryCache(30, 'inve
         let outOfStockCount = 0;
         let totalValue = 0;
         
+        const statsScopedBranchIds = filter?.branchIds?.length
+            ? filter.branchIds
+            : (userBranchId ? [userBranchId] : null);
+
         statsProducts.forEach(product => {
-            const totalStock = product.inventory?.reduce((sum, inv) => sum + inv.quantity, 0) || 0;
+            const statsRelevantInv = statsScopedBranchIds
+                ? (product.inventory || []).filter((inv: any) => statsScopedBranchIds.includes(inv.branchId))
+                : (product.inventory || []);
+            const totalStock = statsRelevantInv.reduce((sum: number, inv: any) => sum + inv.quantity, 0);
             const minStock = product.lowStockThreshold || 5;
             const cost = product.cost || product.price;
             
@@ -204,12 +220,18 @@ inventoryRoutes.get('/movements', authenticate, branchFilter(), async (req, res,
 });
 
 // Adjust inventory
-inventoryRoutes.put('/adjust', authenticate, authorize('inventory:update'), async (req, res, next) => {
+inventoryRoutes.put('/adjust', authenticate, branchFilter(), authorize('inventory:update'), async (req, res, next) => {
     try {
         const { productId, quantity, type, reason, reference } = req.body;
         const userId = req.user!.userId;
         // Get branchId from request body or from user's assigned branch
-        const branchId = req.body.branchId || (req.user as any)?.branchId;
+        const branchId = req.body.branchId || req.authUser?.activeBranchId || (req.user as any)?.branchId;
+        const adjFilter = req.branchFilter;
+        if (adjFilter && branchId && !req.authUser?.isSuperAdmin && (req.authUser?.roleLevel ?? 7) > 2) {
+            if (!adjFilter.branchIds.includes(branchId)) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+            }
+        }
         
         if (!branchId) {
             return res.status(400).json({ 
@@ -371,17 +393,19 @@ inventoryRoutes.post('/transfer', authenticate, authorize('inventory:transfer'),
 // Out of stock items
 inventoryRoutes.get('/out-of-stock', authenticate, branchFilter(), async (req, res, next) => {
     try {
-        const { search, page = 1, limit = 20 } = req.query;
+        const { search, page = 1, limit = 20, branchId: qBranchId } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
         const filter = req.branchFilter;
-        const branchId = filter?.branchIds?.[0] || req.user?.branchId;
 
         const oosConds: any[] = [lte(inventory.quantity, 0)];
         // BE-76: Tenant isolation
         const oosTenantId = req.authUser?.tenantId;
         if (oosTenantId && !req.authUser?.isSuperAdmin) oosConds.push(eq(inventory.tenantId, oosTenantId));
-        if (filter?.branchIds?.length) oosConds.push(inArray(inventory.branchId, filter.branchIds));
-        else if (branchId) oosConds.push(eq(inventory.branchId, branchId));
+        if (qBranchId && filter?.branchIds?.includes(String(qBranchId))) {
+            oosConds.push(eq(inventory.branchId, String(qBranchId)));
+        } else if (filter?.branchIds?.length) {
+            oosConds.push(inArray(inventory.branchId, filter.branchIds));
+        }
 
         let outOfStockItems = await db.query.inventory.findMany({
             where: and(...oosConds),
@@ -658,7 +682,7 @@ inventoryRoutes.get('/purchase-orders/:id', authenticate, async (req, res, next)
 });
 
 // Create purchase order
-inventoryRoutes.post('/purchase-orders', authenticate, authorize('inventory:create'), async (req, res, next) => {
+inventoryRoutes.post('/purchase-orders', authenticate, branchFilter(), authorize('inventory:create'), async (req, res, next) => {
     try {
         const { items, ...orderData } = req.body;
         const userId = req.user!.userId;
@@ -671,13 +695,27 @@ inventoryRoutes.post('/purchase-orders', authenticate, authorize('inventory:crea
         const discount = orderData.discount || 0;
         const total = subtotal + tax - discount;
 
-        // BE-76: Inject tenantId
+        // BE-76: Inject tenantId + validate branchId scope
         const poCreateTenantId = req.authUser?.tenantId || req.user?.tenantId;
+        if (!orderData.branchId) {
+            orderData.branchId = req.authUser?.activeBranchId || req.authUser?.branchId || req.user?.branchId;
+        }
+        const filter = req.branchFilter;
+        if (filter && orderData.branchId && !req.authUser?.isSuperAdmin && (req.authUser?.roleLevel ?? 7) > 2) {
+            if (!filter.branchIds.includes(orderData.branchId)) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+            }
+        }
         const [po] = await db.insert(purchaseOrders).values({ ...orderData, tenantId: poCreateTenantId, poNumber, subtotal, tax, discount, total, createdBy: userId }).returning();
-        if (items.length > 0) {
+        if (items && items.length > 0) {
             await db.insert(purchaseOrderItems).values(items.map((item: any) => ({
-                purchaseOrderId: po.id, productId: item.productId, productName: item.productName,
-                quantity: item.quantity, unitCost: item.unitCost, total: item.quantity * item.unitCost,
+                purchaseOrderId: po.id,
+                tenantId: poCreateTenantId,
+                productId: item.productId,
+                productName: item.productName || item.name || 'Unknown',
+                quantity: Number(item.quantity),
+                unitCost: Number(item.unitCost || item.cost || 0),
+                total: Number(item.quantity) * Number(item.unitCost || item.cost || 0),
             })));
         }
         const order = await db.query.purchaseOrders.findFirst({ where: eq(purchaseOrders.id, po.id), with: { vendor: true, items: true } });
@@ -858,14 +896,127 @@ inventoryRoutes.post('/stock-transfers', authenticate, authorize('inventory:upda
         const [{ value: stCnt }] = await db.select({ value: count() }).from(stockTransfers);
         const transferNo = `TRF-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(stCnt + 1).padStart(4, '0')}`;
 
-        // BE-76: Inject tenantId
         const stCreateTenantId = req.authUser?.tenantId || req.user?.tenantId;
-        const [st] = await db.insert(stockTransfers).values({ ...transferData, tenantId: stCreateTenantId, fromBranchId, toBranchId, transferNo, requestedBy: userId }).returning();
+        const [st] = await db.insert(stockTransfers).values({
+            ...transferData,
+            tenantId: stCreateTenantId,
+            fromBranchId, toBranchId, transferNo,
+            requestedBy: userId,
+            status: 'PENDING',  // stock only moves on approval
+        }).returning();
         if (items.length > 0) {
-            await db.insert(stockTransferItems).values(items.map((item: any) => ({ transferId: st.id, productId: item.productId, productName: item.productName, quantity: item.quantity })));
+            await db.insert(stockTransferItems).values(
+                items.map((item: any) => ({ transferId: st.id, productId: item.productId, productName: item.productName, quantity: item.quantity }))
+            );
         }
+
+        queueActivityLog(userId, 'transfer_created', 'inventory', `ສ້າງການໂອນ ${transferNo}`, { transferId: st.id }, req).catch(() => {});
         const transfer = await db.query.stockTransfers.findFirst({ where: eq(stockTransfers.id, st.id), with: { items: true } });
         res.status(201).json({ success: true, data: transfer });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// ─── Approve a stock transfer (deduct from source, add to destination) ───────
+inventoryRoutes.patch('/stock-transfers/:id/approve', authenticate, authorize('inventory:update'), async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const userId = req.user!.userId;
+        const tenantId = req.authUser?.tenantId;
+
+        const transfer = await db.query.stockTransfers.findFirst({
+            where: eq(stockTransfers.id, id),
+            with: { items: true },
+        });
+
+        if (!transfer) {
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Transfer not found' } });
+        }
+        if (transfer.status !== 'PENDING') {
+            return res.status(400).json({ success: false, error: { code: 'INVALID_STATE', message: `Transfer is already ${transfer.status}` } });
+        }
+        // Tenant guard
+        if (tenantId && transfer.tenantId && transfer.tenantId !== tenantId) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Access denied' } });
+        }
+
+        // Re-validate stock availability before committing
+        for (const item of transfer.items) {
+            const inv = await db.query.inventory.findFirst({
+                where: and(eq(inventory.productId, item.productId), eq(inventory.branchId, transfer.fromBranchId)),
+            });
+            if (!inv || inv.quantity < item.quantity) {
+                return res.status(400).json({
+                    success: false,
+                    error: {
+                        code: 'INSUFFICIENT_STOCK',
+                        message: `ສິນຄ້າ ${item.productName} ມີສະຕອກບໍ່ພຽງພໍ (ມີ: ${inv?.quantity || 0}, ຕ້ອງການ: ${item.quantity})`,
+                    },
+                });
+            }
+        }
+
+        // Move stock
+        for (const item of transfer.items) {
+            const qty = Number(item.quantity);
+            const [fromInv, toInv] = await Promise.all([
+                db.query.inventory.findFirst({ where: and(eq(inventory.productId, item.productId), eq(inventory.branchId, transfer.fromBranchId)) }),
+                db.query.inventory.findFirst({ where: and(eq(inventory.productId, item.productId), eq(inventory.branchId, transfer.toBranchId)) }),
+            ]);
+            const fromPrev = fromInv?.quantity || 0;
+            const toPrev = toInv?.quantity || 0;
+
+            await db.insert(stockMovements).values([
+                { tenantId, productId: item.productId, branchId: transfer.fromBranchId, quantity: -qty, previousQty: fromPrev, newQty: fromPrev - qty, type: 'TRANSFER_OUT', reason: `ໂອນໄປ ${transfer.toBranchId}`, reference: transfer.transferNo, userId },
+                { tenantId, productId: item.productId, branchId: transfer.toBranchId, quantity: qty, previousQty: toPrev, newQty: toPrev + qty, type: 'TRANSFER_IN', reason: `ໂອນຈາກ ${transfer.fromBranchId}`, reference: transfer.transferNo, userId },
+            ]);
+
+            if (fromInv) {
+                await db.update(inventory).set({ quantity: fromInv.quantity - qty }).where(eq(inventory.id, fromInv.id));
+            }
+            if (toInv) {
+                await db.update(inventory).set({ quantity: toInv.quantity + qty }).where(eq(inventory.id, toInv.id));
+            } else {
+                await db.insert(inventory).values({ tenantId, productId: item.productId, branchId: transfer.toBranchId, quantity: qty });
+            }
+        }
+
+        await db.update(stockTransfers).set({ status: 'COMPLETED', approvedBy: userId, approvedAt: new Date(), completedBy: userId, completedAt: new Date() }).where(eq(stockTransfers.id, id));
+        invalidateQueryCache('inventory*').catch(() => {});
+        queueActivityLog(userId, 'transfer_approved', 'inventory', `ອະນຸມັດການໂອນ ${transfer.transferNo}`, { transferId: id }, req).catch(() => {});
+
+        const updated = await db.query.stockTransfers.findFirst({ where: eq(stockTransfers.id, id), with: { items: true } });
+        res.json({ success: true, data: updated });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// ─── Reject a stock transfer ──────────────────────────────────────────────────
+inventoryRoutes.patch('/stock-transfers/:id/reject', authenticate, authorize('inventory:update'), async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const { reason } = req.body;
+        const userId = req.user!.userId;
+        const tenantId = req.authUser?.tenantId;
+
+        const transfer = await db.query.stockTransfers.findFirst({ where: eq(stockTransfers.id, id) });
+        if (!transfer) {
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Transfer not found' } });
+        }
+        if (transfer.status !== 'PENDING') {
+            return res.status(400).json({ success: false, error: { code: 'INVALID_STATE', message: `Transfer is already ${transfer.status}` } });
+        }
+        if (tenantId && transfer.tenantId && transfer.tenantId !== tenantId) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Access denied' } });
+        }
+
+        await db.update(stockTransfers).set({ status: 'REJECTED', approvedBy: userId, approvedAt: new Date(), notes: reason ? String(reason) : transfer.notes }).where(eq(stockTransfers.id, id));
+        queueActivityLog(userId, 'transfer_rejected', 'inventory', `ປະຕິເສດການໂອນ ${transfer.transferNo}`, { transferId: id, reason }, req).catch(() => {});
+
+        const updated = await db.query.stockTransfers.findFirst({ where: eq(stockTransfers.id, id), with: { items: true } });
+        res.json({ success: true, data: updated });
     } catch (error) {
         next(error);
     }
@@ -884,8 +1035,11 @@ inventoryRoutes.get('/expiring', authenticate, branchFilter(), async (req, res, 
         // BE-76: Tenant isolation
         const expTenantId = req.authUser?.tenantId;
         if (expTenantId && !req.authUser?.isSuperAdmin) expConds.push(eq(inventory.tenantId, expTenantId));
-        if (branchId) expConds.push(eq(inventory.branchId, String(branchId)));
-        else if (scopeFilter?.branchIds?.length) expConds.push(inArray(inventory.branchId, scopeFilter.branchIds));
+        if (branchId && scopeFilter?.branchIds?.includes(String(branchId))) {
+            expConds.push(eq(inventory.branchId, String(branchId)));
+        } else if (scopeFilter?.branchIds?.length) {
+            expConds.push(inArray(inventory.branchId, scopeFilter.branchIds));
+        }
 
         let expiringItems = await db.query.inventory.findMany({
             where: and(...expConds),
@@ -956,7 +1110,7 @@ inventoryRoutes.get('/expiring', authenticate, branchFilter(), async (req, res, 
 // Get stock in records
 inventoryRoutes.get('/stock-in', authenticate, branchFilter(), async (req, res, next) => {
     try {
-        const { search, page = 1, limit = 10 } = req.query;
+        const { search, page = 1, limit = 10, branchId: qBranchId } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
         const filter = req.branchFilter;
 
@@ -964,7 +1118,12 @@ inventoryRoutes.get('/stock-in', authenticate, branchFilter(), async (req, res, 
         // BE-76: Tenant isolation
         const siTenantId = req.authUser?.tenantId;
         if (siTenantId && !req.authUser?.isSuperAdmin) siConds.push(eq(stockMovements.tenantId, siTenantId));
-        if (filter?.branchIds?.length) siConds.push(inArray(stockMovements.branchId, filter.branchIds));
+        // Narrow to specific branch if requested and within user scope
+        if (qBranchId && filter?.branchIds?.includes(String(qBranchId))) {
+            siConds.push(eq(stockMovements.branchId, String(qBranchId)));
+        } else if (filter?.branchIds?.length) {
+            siConds.push(inArray(stockMovements.branchId, filter.branchIds));
+        }
         if (search) {
             const s = String(search);
             siConds.push(or(ilike(stockMovements.reference, `%${s}%`), ilike(stockMovements.supplier, `%${s}%`), ilike(stockMovements.batchNumber, `%${s}%`)));
@@ -993,7 +1152,7 @@ inventoryRoutes.get('/stock-in', authenticate, branchFilter(), async (req, res, 
 // Get stock out records
 inventoryRoutes.get('/stock-out', authenticate, branchFilter(), async (req, res, next) => {
     try {
-        const { search, page = 1, limit = 10 } = req.query;
+        const { search, page = 1, limit = 10, branchId: qBranchId } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
         const filter = req.branchFilter;
 
@@ -1001,7 +1160,11 @@ inventoryRoutes.get('/stock-out', authenticate, branchFilter(), async (req, res,
         // BE-76: Tenant isolation
         const soTenantId = req.authUser?.tenantId;
         if (soTenantId && !req.authUser?.isSuperAdmin) soConds.push(eq(stockMovements.tenantId, soTenantId));
-        if (filter?.branchIds?.length) soConds.push(inArray(stockMovements.branchId, filter.branchIds));
+        if (qBranchId && filter?.branchIds?.includes(String(qBranchId))) {
+            soConds.push(eq(stockMovements.branchId, String(qBranchId)));
+        } else if (filter?.branchIds?.length) {
+            soConds.push(inArray(stockMovements.branchId, filter.branchIds));
+        }
         if (search) {
             const s = String(search);
             soConds.push(or(ilike(stockMovements.reference, `%${s}%`), ilike(stockMovements.reason, `%${s}%`)));
@@ -1221,7 +1384,7 @@ inventoryRoutes.delete('/stock-out/:id', authenticate, authorize('inventory:dele
 // Get adjustments
 inventoryRoutes.get('/adjustments', authenticate, branchFilter(), async (req, res, next) => {
     try {
-        const { search, page = 1, limit = 50 } = req.query;
+        const { search, page = 1, limit = 50, branchId: qBranchId } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
         const scopeFilter = req.branchFilter;
 
@@ -1229,7 +1392,11 @@ inventoryRoutes.get('/adjustments', authenticate, branchFilter(), async (req, re
         // BE-76: Tenant isolation
         const adjTenantId = req.authUser?.tenantId;
         if (adjTenantId && !req.authUser?.isSuperAdmin) adjConds.push(eq(stockMovements.tenantId, adjTenantId));
-        if (scopeFilter?.branchIds?.length) adjConds.push(inArray(stockMovements.branchId, scopeFilter.branchIds));
+        if (qBranchId && scopeFilter?.branchIds?.includes(String(qBranchId))) {
+            adjConds.push(eq(stockMovements.branchId, String(qBranchId)));
+        } else if (scopeFilter?.branchIds?.length) {
+            adjConds.push(inArray(stockMovements.branchId, scopeFilter.branchIds));
+        }
         if (search) {
             const s = String(search);
             adjConds.push(or(ilike(stockMovements.reference, `%${s}%`), ilike(stockMovements.reason, `%${s}%`)));
@@ -1263,7 +1430,7 @@ inventoryRoutes.get('/adjustments', authenticate, branchFilter(), async (req, re
 // Get transfers
 inventoryRoutes.get('/transfers', authenticate, branchFilter(), async (req, res, next) => {
     try {
-        const { search, status, page = 1, limit = 50 } = req.query;
+        const { search, status, page = 1, limit = 50, branchId: qBranchId } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
         const scopeFilter = req.branchFilter;
 
@@ -1271,7 +1438,9 @@ inventoryRoutes.get('/transfers', authenticate, branchFilter(), async (req, res,
         // BE-76: Tenant isolation
         const trTenantId = req.authUser?.tenantId;
         if (trTenantId && !req.authUser?.isSuperAdmin) trConds.push(eq(stockTransfers.tenantId, trTenantId));
-        if (scopeFilter?.branchIds?.length) {
+        if (qBranchId && scopeFilter?.branchIds?.includes(String(qBranchId))) {
+            trConds.push(or(eq(stockTransfers.fromBranchId, String(qBranchId)), eq(stockTransfers.toBranchId, String(qBranchId))));
+        } else if (scopeFilter?.branchIds?.length) {
             trConds.push(or(inArray(stockTransfers.fromBranchId, scopeFilter.branchIds), inArray(stockTransfers.toBranchId, scopeFilter.branchIds)));
         }
         if (status) trConds.push(eq(stockTransfers.status, String(status)));
@@ -1315,28 +1484,80 @@ inventoryRoutes.post('/transfers', authenticate, authorize('inventory:update'), 
         const [{ value: trCnt }] = await db.select({ value: count() }).from(stockTransfers);
         const transferNo = `TRF-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(trCnt + 1).padStart(4, '0')}`;
 
-        // BE-76: Inject tenantId
         const trCreateTenantId = req.authUser?.tenantId || req.user?.tenantId;
-        const [tr] = await db.insert(stockTransfers).values({ tenantId: trCreateTenantId, transferNo, fromBranchId, toBranchId, status: 'completed', notes, requestedBy: userId }).returning();
+        // Create as PENDING — stock only moves on approval
+        const [tr] = await db.insert(stockTransfers).values({ tenantId: trCreateTenantId, transferNo, fromBranchId, toBranchId, status: 'PENDING', notes, requestedBy: userId }).returning();
         await db.insert(stockTransferItems).values([{ transferId: tr.id, productId, productName: product?.name || '', quantity: qty }]);
 
-        await db.insert(stockMovements).values([
-            { productId, branchId: fromBranchId, quantity: -qty, previousQty: fromPreviousQty, newQty: fromPreviousQty - qty, type: 'TRANSFER_OUT', reason: `ໂອນໄປ ${toBranchId}`, reference: transferNo, userId },
-            { productId, branchId: toBranchId, quantity: qty, previousQty: toPreviousQty, newQty: toPreviousQty + qty, type: 'TRANSFER_IN', reason: `ໂອນມາຈາກ ${fromBranchId}`, reference: transferNo, userId },
-        ]);
-
-        if (fromInv) await db.update(inventory).set({ quantity: fromInv.quantity - qty }).where(eq(inventory.id, fromInv.id));
-        if (toInv) {
-            await db.update(inventory).set({ quantity: toInv.quantity + qty }).where(eq(inventory.id, toInv.id));
-        } else {
-            await db.insert(inventory).values({ productId, branchId: toBranchId, quantity: qty });
-        }
-
+        queueActivityLog(userId, 'transfer_created', 'inventory', `ສ້າງການໂອນ ${transferNo}`, { transferId: tr.id }, req).catch(() => {});
         const transfer = await db.query.stockTransfers.findFirst({ where: eq(stockTransfers.id, tr.id), with: { items: true } });
         res.status(201).json({ success: true, data: transfer });
     } catch (error) {
         next(error);
     }
+});
+
+// Approve a simple transfer (deduct from source, credit destination)
+inventoryRoutes.patch('/transfers/:id/approve', authenticate, authorize('inventory:update'), async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const userId = req.user!.userId;
+        const tenantId = req.authUser?.tenantId;
+
+        const transfer = await db.query.stockTransfers.findFirst({ where: eq(stockTransfers.id, id), with: { items: true } });
+        if (!transfer) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Transfer not found' } });
+        if (transfer.status !== 'PENDING') return res.status(400).json({ success: false, error: { code: 'INVALID_STATE', message: `Transfer is already ${transfer.status}` } });
+        if (tenantId && transfer.tenantId && transfer.tenantId !== tenantId) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Access denied' } });
+
+        for (const item of transfer.items) {
+            const qty = Number(item.quantity);
+            const [fromInv, toInv] = await Promise.all([
+                db.query.inventory.findFirst({ where: and(eq(inventory.productId, item.productId), eq(inventory.branchId, transfer.fromBranchId)) }),
+                db.query.inventory.findFirst({ where: and(eq(inventory.productId, item.productId), eq(inventory.branchId, transfer.toBranchId)) }),
+            ]);
+            if (!fromInv || fromInv.quantity < qty) {
+                return res.status(400).json({ success: false, error: { code: 'INSUFFICIENT_STOCK', message: `ສິນຄ້າ ${item.productName} ສະຕອກບໍ່ພຽງພໍ (ມີ: ${fromInv?.quantity || 0}, ຕ້ອງການ: ${qty})` } });
+            }
+            const fromPrev = fromInv.quantity;
+            const toPrev = toInv?.quantity || 0;
+            await db.insert(stockMovements).values([
+                { tenantId, productId: item.productId, branchId: transfer.fromBranchId, quantity: -qty, previousQty: fromPrev, newQty: fromPrev - qty, type: 'TRANSFER_OUT', reason: `ໂອນໄປ ${transfer.toBranchId}`, reference: transfer.transferNo, userId },
+                { tenantId, productId: item.productId, branchId: transfer.toBranchId, quantity: qty, previousQty: toPrev, newQty: toPrev + qty, type: 'TRANSFER_IN', reason: `ໂອນຈາກ ${transfer.fromBranchId}`, reference: transfer.transferNo, userId },
+            ]);
+            await db.update(inventory).set({ quantity: fromInv.quantity - qty }).where(eq(inventory.id, fromInv.id));
+            if (toInv) {
+                await db.update(inventory).set({ quantity: toInv.quantity + qty }).where(eq(inventory.id, toInv.id));
+            } else {
+                await db.insert(inventory).values({ tenantId, productId: item.productId, branchId: transfer.toBranchId, quantity: qty });
+            }
+        }
+
+        await db.update(stockTransfers).set({ status: 'COMPLETED', approvedBy: userId, approvedAt: new Date(), completedBy: userId, completedAt: new Date() }).where(eq(stockTransfers.id, id));
+        invalidateQueryCache('inventory*').catch(() => {});
+        queueActivityLog(userId, 'transfer_approved', 'inventory', `ອະນຸມັດ ${transfer.transferNo}`, { transferId: id }, req).catch(() => {});
+        const updated = await db.query.stockTransfers.findFirst({ where: eq(stockTransfers.id, id), with: { items: true } });
+        res.json({ success: true, data: updated });
+    } catch (error) { next(error); }
+});
+
+// Reject a simple transfer
+inventoryRoutes.patch('/transfers/:id/reject', authenticate, authorize('inventory:update'), async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const { reason } = req.body;
+        const userId = req.user!.userId;
+        const tenantId = req.authUser?.tenantId;
+
+        const transfer = await db.query.stockTransfers.findFirst({ where: eq(stockTransfers.id, id) });
+        if (!transfer) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Transfer not found' } });
+        if (transfer.status !== 'PENDING') return res.status(400).json({ success: false, error: { code: 'INVALID_STATE', message: `Transfer is already ${transfer.status}` } });
+        if (tenantId && transfer.tenantId && transfer.tenantId !== tenantId) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Access denied' } });
+
+        await db.update(stockTransfers).set({ status: 'REJECTED', approvedBy: userId, approvedAt: new Date(), notes: reason ? String(reason) : transfer.notes }).where(eq(stockTransfers.id, id));
+        queueActivityLog(userId, 'transfer_rejected', 'inventory', `ປະຕິເສດ ${transfer.transferNo}`, { transferId: id, reason }, req).catch(() => {});
+        const updated = await db.query.stockTransfers.findFirst({ where: eq(stockTransfers.id, id), with: { items: true } });
+        res.json({ success: true, data: updated });
+    } catch (error) { next(error); }
 });
 
 // Get stock counts
@@ -1397,6 +1618,83 @@ inventoryRoutes.post('/stock-counts', authenticate, authorize('inventory:adjust'
         }
         const stockCount = await db.query.stockCounts.findFirst({ where: eq(stockCounts.id, sc.id), with: { items: true } });
         res.status(201).json({ success: true, data: stockCount });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Approve stock count (maker/checker) — only roleLevel ≤ 4 (hq_admin, hq_manager) or admin
+inventoryRoutes.patch('/stock-counts/:id/approve', authenticate, authorize('inventory:adjust'), async (req, res, next) => {
+    try {
+        const userId = req.authUser?.userId || req.user?.userId;
+        const roleLevel = req.authUser?.roleLevel ?? 7;
+        if (!req.authUser?.isSuperAdmin && roleLevel > 4) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Only HQ admins or above can approve stock counts' } });
+        }
+
+        const scTenantId = req.authUser?.tenantId;
+        const scConds: any[] = [eq(stockCounts.id, req.params.id)];
+        if (scTenantId && !req.authUser?.isSuperAdmin) scConds.push(eq(stockCounts.tenantId, scTenantId));
+        const sc = await db.query.stockCounts.findFirst({ where: and(...scConds), with: { items: true } });
+
+        if (!sc) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Stock count not found' } });
+        if (sc.status !== 'pending') {
+            return res.status(400).json({ success: false, error: { code: 'INVALID_STATE', message: `Stock count is already ${sc.status}` } });
+        }
+
+        // Apply inventory adjustments for items with discrepancies
+        for (const item of (sc.items || [])) {
+            if (item.difference === 0) continue;
+            const inv = await db.query.inventory.findFirst({ where: and(eq(inventory.productId, item.productId), eq(inventory.branchId, sc.branchId)) });
+            const prevQty = inv?.quantity || 0;
+            const newQty = Math.max(0, prevQty + item.difference);
+            if (inv) {
+                await db.update(inventory).set({ quantity: newQty, available: Math.max(0, newQty - (inv.reserved || 0)) }).where(eq(inventory.id, inv.id));
+            } else {
+                await db.insert(inventory).values({ tenantId: scTenantId, productId: item.productId, branchId: sc.branchId, quantity: newQty, available: newQty, reserved: 0 });
+            }
+            await db.insert(stockMovements).values({
+                tenantId: scTenantId, productId: item.productId, branchId: sc.branchId,
+                quantity: Math.abs(item.difference), previousQty: prevQty, newQty,
+                type: 'ADJUSTMENT', reason: `Stock count ${sc.countNo} approved`, referenceType: 'STOCK_COUNT',
+                reference: sc.countNo, userId,
+            });
+        }
+
+        await db.update(stockCounts).set({ status: 'approved', approvedBy: userId, approvedAt: new Date() }).where(and(...scConds));
+        queueActivityLog(userId!, 'stock_count_approved', 'inventory', `ອະນຸມັດການນັບສະຕອກ ${sc.countNo}`, { countId: sc.id }, req).catch(() => {});
+        invalidateQueryCache('inventory*').catch(() => {});
+
+        res.json({ success: true, data: { message: 'Stock count approved', countNo: sc.countNo } });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Reject stock count (maker/checker)
+inventoryRoutes.patch('/stock-counts/:id/reject', authenticate, authorize('inventory:adjust'), async (req, res, next) => {
+    try {
+        const userId = req.authUser?.userId || req.user?.userId;
+        const roleLevel = req.authUser?.roleLevel ?? 7;
+        if (!req.authUser?.isSuperAdmin && roleLevel > 4) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Only HQ admins or above can reject stock counts' } });
+        }
+
+        const { reason } = req.body;
+        const scTenantId = req.authUser?.tenantId;
+        const scConds: any[] = [eq(stockCounts.id, req.params.id)];
+        if (scTenantId && !req.authUser?.isSuperAdmin) scConds.push(eq(stockCounts.tenantId, scTenantId));
+        const sc = await db.query.stockCounts.findFirst({ where: and(...scConds) });
+
+        if (!sc) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Stock count not found' } });
+        if (sc.status !== 'pending') {
+            return res.status(400).json({ success: false, error: { code: 'INVALID_STATE', message: `Stock count is already ${sc.status}` } });
+        }
+
+        await db.update(stockCounts).set({ status: 'rejected', approvedBy: userId, approvedAt: new Date(), notes: reason ? String(reason) : sc.notes }).where(and(...scConds));
+        queueActivityLog(userId!, 'stock_count_rejected', 'inventory', `ປະຕິເສດການນັບສະຕອກ ${sc.countNo}`, { countId: sc.id, reason }, req).catch(() => {});
+
+        res.json({ success: true, data: { message: 'Stock count rejected', countNo: sc.countNo } });
     } catch (error) {
         next(error);
     }

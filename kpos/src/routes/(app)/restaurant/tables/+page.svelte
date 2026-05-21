@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
@@ -26,6 +26,11 @@
         RectangleHorizontal,
         Settings,
     } from "lucide-svelte";
+
+    // CRUD guards
+    const canCreateTable = $derived(auth.canCreate('restaurant'));
+    const canUpdateTable = $derived(auth.canUpdate('restaurant'));
+    const canDeleteTable = $derived(auth.canDelete('restaurant'));
 
     // State
     let tables = $state<any[]>([]);
@@ -156,7 +161,7 @@
         switch (status) {
             case "available":
                 return {
-                    bg: "bg-gradient-to-br from-emerald-50 to-green-100 dark:from-emerald-900/20 dark:to-green-900/30",
+                    bg: "bg-gradient-to-br from-emerald-50 to-success-100 dark:from-emerald-900/20 dark:to-success-900/30",
                     border: "border-emerald-300 dark:border-emerald-700",
                     dot: "bg-emerald-500",
                     text: "text-emerald-700 dark:text-emerald-400",
@@ -164,7 +169,7 @@
                 };
             case "occupied":
                 return {
-                    bg: "bg-gradient-to-br from-rose-50 to-red-100 dark:from-rose-900/20 dark:to-red-900/30",
+                    bg: "bg-gradient-to-br from-rose-50 to-danger-100 dark:from-rose-900/20 dark:to-danger-900/30",
                     border: "border-rose-300 dark:border-rose-700",
                     dot: "bg-rose-500 animate-pulse",
                     text: "text-rose-700 dark:text-rose-400",
@@ -203,9 +208,9 @@
         const colors: Record<string, string> = {
             blue: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
             purple: "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400",
-            green: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
+            green: "bg-success-100 text-success-700 dark:bg-success-900/30 dark:text-success-400",
             amber: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
-            red: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
+            red: "bg-danger-100 text-danger-700 dark:bg-danger-900/30 dark:text-danger-400",
             gray: "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-400",
         };
         return colors[color] || colors.gray;
@@ -279,6 +284,7 @@
             </button>
             
             <!-- Add Table -->
+            {#if canCreateTable}
             <button
                 onclick={() => { resetForm(); showModal = true; }}
                 class="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-primary-500 to-primary-600 text-white rounded-xl text-sm font-medium hover:from-primary-600 hover:to-primary-700 transition-all shadow-md"
@@ -286,6 +292,7 @@
                 <Plus class="w-4 h-4" />
                 {t("restaurant.addTable")}
             </button>
+            {/if}
         </div>
     </div>
 
@@ -565,18 +572,22 @@
                                 </td>
                                 <td class="px-4 py-3">
                                     <div class="flex items-center justify-end gap-2">
+                                        {#if canUpdateTable}
                                         <button
                                             onclick={() => editTable(table)}
                                             class="p-2 text-gray-400 hover:text-primary-500 hover:bg-primary-50 dark:hover:bg-primary-900/20 rounded-lg transition-colors"
                                         >
                                             <Edit3 class="w-4 h-4" />
                                         </button>
+                                        {/if}
+                                        {#if canDeleteTable}
                                         <button
                                             onclick={() => handleDelete(table.id)}
-                                            class="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
+                                            class="p-2 text-gray-400 hover:text-danger-500 hover:bg-danger-50 dark:hover:bg-danger-900/20 rounded-lg transition-colors"
                                         >
                                             <Trash2 class="w-4 h-4" />
                                         </button>
+                                        {/if}
                                     </div>
                                 </td>
                             </tr>
@@ -805,7 +816,7 @@
                         <button
                             type="button"
                             onclick={() => handleDelete(editingId!)}
-                            class="flex items-center gap-2 px-4 py-2.5 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded-xl text-sm font-medium hover:bg-red-100 dark:hover:bg-red-900/30 transition-colors"
+                            class="flex items-center gap-2 px-4 py-2.5 bg-danger-50 dark:bg-danger-900/20 text-danger-600 dark:text-danger-400 rounded-xl text-sm font-medium hover:bg-danger-100 dark:hover:bg-danger-900/30 transition-colors"
                         >
                             <Trash2 class="w-4 h-4" />
                             {t("common.delete")}

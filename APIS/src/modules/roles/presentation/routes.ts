@@ -3,10 +3,10 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, ROLE_LEVELS } from '@/infrastructure/http/middleware/auth.middleware';
 import { db } from '@/config/database.config';
-import { roles, users } from '@/db/schema/tables';
-import { eq, and, or, ilike, notInArray, isNull, desc, count } from 'drizzle-orm';
+import { roles, users, permissionGroups, permissions } from '@/db/schema/tables';
+import { eq, and, or, ilike, notInArray, isNull, desc, count, asc } from 'drizzle-orm';
 
 export const roleRoutes = Router();
 
@@ -156,35 +156,72 @@ const ALL_PERMISSIONS = [
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════
-// GET ALL AVAILABLE PERMISSIONS
+// GET ALL AVAILABLE PERMISSIONS — DB-driven, falls back to hardcoded list
 // ═══════════════════════════════════════════════════════════════════════════
 roleRoutes.get('/permissions', authenticate, authorize('roles:read'), async (_req, res) => {
     try {
-        // Group permissions by module
-        const grouped: Record<string, string[]> = {};
+        // Try to load from DB (permission_groups + permissions tables)
+        const groups = await db.query.permissionGroups.findMany({
+            where: eq(permissionGroups.isActive, true),
+            orderBy: asc(permissionGroups.order),
+            with: {
+                permissions: {
+                    where: eq(permissions.isActive, true),
+                    orderBy: asc(permissions.order),
+                },
+            },
+        });
 
+        if (groups.length > 0) {
+            const grouped: Record<string, { key: string; label: string; icon?: string; permissions: { key: string; label: string }[] }> = {};
+            const all: string[] = [];
+
+            for (const group of groups) {
+                grouped[group.key] = {
+                    key: group.key,
+                    label: group.label,
+                    icon: group.icon ?? undefined,
+                    permissions: group.permissions.map(p => ({ key: p.key, label: p.label })),
+                };
+                all.push(...group.permissions.map(p => p.key));
+            }
+
+            return res.json({ success: true, data: { all, grouped } });
+        }
+
+        // Fallback: derive from hardcoded list grouped by module prefix
+        const grouped: Record<string, string[]> = {};
         ALL_PERMISSIONS.forEach(perm => {
             const [module] = perm.split(':');
-            if (!grouped[module]) {
-                grouped[module] = [];
-            }
+            if (!grouped[module]) grouped[module] = [];
             grouped[module].push(perm);
         });
 
-        res.json({
-            success: true,
-            data: {
-                all: ALL_PERMISSIONS,
-                grouped
-            }
-        });
+        res.json({ success: true, data: { all: ALL_PERMISSIONS, grouped } });
     } catch (error) {
         console.error('Get permissions error:', error);
-        res.status(500).json({
-            success: false,
-            error: { code: 'SERVER_ERROR', message: 'Failed to get permissions' }
-        });
+        res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Failed to get permissions' } });
     }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GET ROLE LEVELS — returns the 7-level hierarchy for UI dropdowns
+// ═══════════════════════════════════════════════════════════════════════════
+roleRoutes.get('/levels', authenticate, async (req, res) => {
+    const authUser = req.authUser!;
+    const userLevel = authUser.isSuperAdmin ? 1 : (ROLE_LEVELS[authUser.role] ?? 7);
+
+    const levels = [
+        { level: 1, name: 'system_admin', displayName: 'System Admin', description: 'Full platform access across all tenants' },
+        { level: 2, name: 'tenant_admin', displayName: 'Tenant Admin', description: 'All branches within tenant' },
+        { level: 3, name: 'hq_admin', displayName: 'HQ Admin', description: 'HQ + all child branches (full access)' },
+        { level: 4, name: 'hq_manager', displayName: 'HQ Manager', description: 'HQ + all child branches (reports only)' },
+        { level: 5, name: 'branch_admin', displayName: 'Branch Admin', description: 'Own branch only (full CRUD)' },
+        { level: 6, name: 'branch_manager', displayName: 'Branch Manager', description: 'Own branch only (limited CRUD)' },
+        { level: 7, name: 'staff', displayName: 'Staff / Cashier', description: 'Own store/POS only' },
+    ].filter(l => l.level >= userLevel); // users cannot assign roles above their own level
+
+    res.json({ success: true, data: levels });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -196,8 +233,8 @@ roleRoutes.get('/', authenticate, authorize('roles:read'), async (req, res) => {
         const skip = (parseInt(page as string) - 1) * parseInt(limit as string);
         const authUser = req.authUser!;
         const isSuperAdmin = authUser.isSuperAdmin;
-        const isAdmin = isSuperAdmin || authUser.role === 'admin';
-        const isStoreOwner = authUser.role === 'store_owner';
+        const isAdmin = isSuperAdmin || ['admin', 'hq_admin', 'hq_manager', 'store_owner'].includes(authUser.role);
+        const isStoreOwner = false; // absorbed into isAdmin above
 
         const conditions: any[] = [];
         // BE-60: Tenant-scoped role list
@@ -208,14 +245,10 @@ roleRoutes.get('/', authenticate, authorize('roles:read'), async (req, res) => {
         }
 
         if (isSuperAdmin || isAdmin) {
-            // See all roles (within tenant scope above)
-        } else if (isStoreOwner) {
-            // Store owner sees all non-privileged roles (including system roles like cashier, manager)
-            conditions.push(notInArray(roles.name, ['super_admin', 'admin', 'store_owner']));
+            // Admins (hq+, store_owner) see all roles within tenant scope
         } else {
-            // Other roles: only non-system, non-privileged
-            conditions.push(notInArray(roles.name, ['super_admin', 'admin', 'store_owner']));
-            conditions.push(eq(roles.isSystem, false));
+            // branch_admin / store_manager: see system assignable + tenant custom, not high-privilege
+            conditions.push(notInArray(roles.name, ['super_admin', 'admin', 'hq_admin', 'hq_manager', 'store_owner']));
         }
         if (search) {
             conditions.push(or(ilike(roles.name, `%${search}%`), ilike(roles.displayName, `%${search}%`)));
@@ -311,6 +344,17 @@ roleRoutes.post('/', authenticate, authorize('roles:create'), async (req, res) =
             });
         }
 
+        // Privilege escalation guard: cannot create a role at a higher level than caller
+        if (!req.authUser?.isSuperAdmin && (req.authUser?.roleLevel ?? 7) > 2) {
+            const targetLevel = ROLE_LEVELS[name] ?? 7;
+            if (targetLevel < (req.authUser?.roleLevel ?? 7)) {
+                return res.status(403).json({
+                    success: false,
+                    error: { code: 'FORBIDDEN', message: 'Cannot create a role with higher privileges than your own' }
+                });
+            }
+        }
+
         // Check if role name already exists within tenant
         const dupConds: any[] = [or(eq(roles.name, name), eq(roles.displayName, displayName || name))];
         if (tenantId) dupConds.push(eq(roles.tenantId, tenantId));
@@ -384,6 +428,19 @@ roleRoutes.put('/:id', authenticate, authorize('roles:update'), async (req, res)
                 success: false,
                 error: { code: 'FORBIDDEN', message: 'Cannot modify system roles' }
             });
+        }
+
+        // Privilege escalation guard: cannot update to a role level higher than caller
+        if (!req.authUser?.isSuperAdmin && (req.authUser?.roleLevel ?? 7) > 2) {
+            const targetName = name || existing.name;
+            const targetLevel = ROLE_LEVELS[targetName] ?? 7;
+            const existingLevel = ROLE_LEVELS[existing.name] ?? 7;
+            if (targetLevel < (req.authUser?.roleLevel ?? 7) || existingLevel < (req.authUser?.roleLevel ?? 7)) {
+                return res.status(403).json({
+                    success: false,
+                    error: { code: 'FORBIDDEN', message: 'Cannot modify a role with higher privileges than your own' }
+                });
+            }
         }
 
         // Check if new name conflicts with another role

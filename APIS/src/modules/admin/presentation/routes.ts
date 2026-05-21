@@ -3,12 +3,12 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, requireSuperAdmin, requireAdmin, isSuperAdmin, isAdmin, invalidateRoleRulesCache, invalidateAllUserStoreCache, invalidateUserStoreCache, branchFilter, buildTenantCondition } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, requireSuperAdmin, requireAdmin, requireTenantAdmin, isSuperAdmin, isAdmin, invalidateRoleRulesCache, invalidateAllUserStoreCache, invalidateUserStoreCache, branchFilter, buildTenantCondition } from '@/infrastructure/http/middleware/auth.middleware';
 import { db } from '@/config/database.config';
 import { publish, QUEUES, isRabbitMQConnected } from '@/config/rabbitmq.config';
 import argon2 from 'argon2';
 import { tenants, users, sessions, roles, rules, roleRules, permissionGroups, permissions, menuPermissions, stores, userStores, productStores, storeRequests, branches, activityLogs, transactions, transactionItems, transactionPayments, heldSales, orders, orderItems, reservations, tables, cashMovements, shifts, cashRegisters, stockTransferItems, stockTransfers, stockMovements, stockCounts, stockCountItems, inventory, purchaseOrderItems, purchaseOrders, vendors, billOfMaterials, productPriceLevels, skuVariants, products, categories, priceLevels, pointsHistory, customers, pointHistory, members, membershipTiers, pointSettings, promotions, coupons, paymentMethods, discounts, systemEnums } from '@/db/schema/tables';
-import { eq, and, or, ne, ilike, inArray, notInArray, gte, lte, desc, asc, count, sql, isNull, isNotNull } from 'drizzle-orm';
+import { eq, and, or, ne, ilike, inArray, notInArray, gte, lte, desc, asc, count, sum, sql, isNull, isNotNull } from 'drizzle-orm';
 import { ENUM_SEED_DATA } from '@/modules/settings/presentation/routes';
 
 export const adminRoutes = Router();
@@ -145,7 +145,7 @@ adminRoutes.post('/register-and-apply', async (req, res, next) => {
  * GET /admin/requests/count - Get count of pending requests (for notification badge)
  * Must be before /requests/:id to avoid route conflict
  */
-adminRoutes.get('/requests/count', authenticate, requireAdmin(), branchFilter(), async (req, res, next) => {
+adminRoutes.get('/requests/count', authenticate, requireTenantAdmin(), branchFilter(), async (req, res, next) => {
     try {
         const countConds: any[] = [eq(storeRequests.status, 'pending')];
         const tenantScope = buildTenantCondition(req.branchFilter, storeRequests.tenantId);
@@ -160,7 +160,7 @@ adminRoutes.get('/requests/count', authenticate, requireAdmin(), branchFilter(),
 /**
  * GET /admin/requests - Get all store/branch requests (Super Admin only)
  */
-adminRoutes.get('/requests', authenticate, requireAdmin(), branchFilter(), async (req, res, next) => {
+adminRoutes.get('/requests', authenticate, requireTenantAdmin(), branchFilter(), async (req, res, next) => {
     try {
         const { status, type, search, page = 1, limit = 20 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
@@ -230,7 +230,7 @@ adminRoutes.get('/requests', authenticate, requireAdmin(), branchFilter(), async
 /**
  * GET /admin/requests/:id - Get single request details
  */
-adminRoutes.get('/requests/:id', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.get('/requests/:id', authenticate, requireTenantAdmin(), async (req, res, next) => {
     try {
         const { id } = req.params;
 
@@ -362,6 +362,7 @@ adminRoutes.post('/requests/:id/approve', authenticate, requireAdmin(), async (r
             let storeOwnerRole = await db.query.roles.findFirst({
                 where: and(eq(roles.name, 'store_owner'), eq(roles.tenantId, tenantId)),
             });
+            let isNewRole = false;
             if (!storeOwnerRole) {
                 const [created] = await db.insert(roles).values({
                     tenantId,
@@ -371,6 +372,35 @@ adminRoutes.post('/requests/:id/approve', authenticate, requireAdmin(), async (r
                     isSystem: true,
                 }).returning();
                 storeOwnerRole = created;
+                isNewRole = true;
+            }
+
+            // Seed roleRules for new store_owner role so CRUD operations work after first login
+            if (isNewRole) {
+                const storeOwnerRuleMap = DEFAULT_ROLE_RULES['store_owner'] || {};
+                const ruleNames = Object.keys(storeOwnerRuleMap);
+                if (ruleNames.length > 0) {
+                    const existingRules = await db.query.rules.findMany({
+                        where: inArray(rules.name, ruleNames),
+                    });
+                    const ruleNameToId: Record<string, string> = {};
+                    for (const r of existingRules) { ruleNameToId[r.name] = r.id; }
+
+                    const roleRuleValues = ruleNames
+                        .filter(ruleName => ruleNameToId[ruleName])
+                        .map(ruleName => {
+                            const crud = storeOwnerRuleMap[ruleName];
+                            return {
+                                roleId: storeOwnerRole!.id,
+                                ruleId: ruleNameToId[ruleName],
+                                canRead: crud.r, canCreate: crud.c, canUpdate: crud.u, canDelete: crud.d,
+                            };
+                        });
+
+                    if (roleRuleValues.length > 0) {
+                        await db.insert(roleRules).values(roleRuleValues);
+                    }
+                }
             }
 
             // Activate user + assign to new tenant + role + branch
@@ -456,7 +486,7 @@ adminRoutes.post('/requests/:id/reject', authenticate, requireAdmin(), async (re
 /**
  * GET /admin/branches - Get all branches with full details
  */
-adminRoutes.get('/branches', authenticate, requireAdmin(), branchFilter(), async (req, res, next) => {
+adminRoutes.get('/branches', authenticate, requireTenantAdmin(), branchFilter(), async (req, res, next) => {
     try {
         const { search, isActive, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
@@ -476,9 +506,30 @@ adminRoutes.get('/branches', authenticate, requireAdmin(), branchFilter(), async
             db.select({ value: count() }).from(branches).where(brWhere),
         ]);
 
+        // Attach store, user, and product counts per branch
+        const branchIds = branchList.map(b => b.id);
+        let storeCountMap: Record<string, number> = {};
+        let userCountMap: Record<string, number> = {};
+        let productCountMap: Record<string, number> = {};
+        if (branchIds.length > 0) {
+            const [storeCounts, userCounts, productCounts] = await Promise.all([
+                db.select({ branchId: stores.branchId, cnt: count() }).from(stores).where(inArray(stores.branchId, branchIds)).groupBy(stores.branchId),
+                db.select({ branchId: users.branchId, cnt: count() }).from(users).where(and(inArray(users.branchId, branchIds), eq(users.isActive, true))).groupBy(users.branchId),
+                db.select({ branchId: products.branchId, cnt: count() }).from(products).where(and(inArray(products.branchId, branchIds), eq(products.isActive, true))).groupBy(products.branchId),
+            ]);
+            storeCounts.forEach(r => { if (r.branchId) storeCountMap[r.branchId] = Number(r.cnt); });
+            userCounts.forEach(r => { if (r.branchId) userCountMap[r.branchId] = Number(r.cnt); });
+            productCounts.forEach(r => { if (r.branchId) productCountMap[r.branchId] = Number(r.cnt); });
+        }
+
+        const dataWithCounts = branchList.map(b => ({
+            ...b,
+            _count: { stores: storeCountMap[b.id] ?? 0, users: userCountMap[b.id] ?? 0, products: productCountMap[b.id] ?? 0 },
+        }));
+
         res.json({
             success: true,
-            data: branchList,
+            data: dataWithCounts,
             meta: {
                 page: Number(page),
                 limit: Number(limit),
@@ -494,7 +545,7 @@ adminRoutes.get('/branches', authenticate, requireAdmin(), branchFilter(), async
 /**
  * POST /admin/branches - Create a new branch (Super Admin only)
  */
-adminRoutes.post('/branches', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.post('/branches', authenticate, requireTenantAdmin(), async (req, res, next) => {
     try {
         const { name, code, address, phone, email, taxId, logo, isMain, settings } = req.body;
 
@@ -535,7 +586,7 @@ adminRoutes.post('/branches', authenticate, requireAdmin(), async (req, res, nex
 /**
  * PUT /admin/branches/:id - Update a branch
  */
-adminRoutes.put('/branches/:id', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.put('/branches/:id', authenticate, requireTenantAdmin(), async (req, res, next) => {
     try {
         const { id } = req.params;
         const { name, code, address, phone, email, taxId, logo, isMain, isActive, settings } = req.body;
@@ -573,7 +624,7 @@ adminRoutes.put('/branches/:id', authenticate, requireAdmin(), async (req, res, 
 /**
  * DELETE /admin/branches/:id - Deactivate a branch
  */
-adminRoutes.delete('/branches/:id', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.delete('/branches/:id', authenticate, requireTenantAdmin(), async (req, res, next) => {
     try {
         const { id } = req.params;
 
@@ -608,7 +659,7 @@ adminRoutes.delete('/branches/:id', authenticate, requireAdmin(), async (req, re
 /**
  * GET /admin/stores - Get all stores
  */
-adminRoutes.get('/stores', authenticate, requireAdmin(), branchFilter(), async (req, res, next) => {
+adminRoutes.get('/stores', authenticate, requireTenantAdmin(), branchFilter(), async (req, res, next) => {
     try {
         const { search, branchId, isActive, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
@@ -647,7 +698,7 @@ adminRoutes.get('/stores', authenticate, requireAdmin(), branchFilter(), async (
 /**
  * POST /admin/stores - Create a new store
  */
-adminRoutes.post('/stores', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.post('/stores', authenticate, requireTenantAdmin(), async (req, res, next) => {
     try {
         const { name, code, branchId, address, phone, email, settings } = req.body;
 
@@ -672,7 +723,7 @@ adminRoutes.post('/stores', authenticate, requireAdmin(), async (req, res, next)
 /**
  * PUT /admin/stores/:id - Update a store
  */
-adminRoutes.put('/stores/:id', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.put('/stores/:id', authenticate, requireTenantAdmin(), async (req, res, next) => {
     try {
         const { id } = req.params;
         const { name, code, branchId, address, phone, email, isActive, settings } = req.body;
@@ -707,7 +758,7 @@ adminRoutes.put('/stores/:id', authenticate, requireAdmin(), async (req, res, ne
 /**
  * DELETE /admin/stores/:id - Deactivate a store
  */
-adminRoutes.delete('/stores/:id', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.delete('/stores/:id', authenticate, requireTenantAdmin(), async (req, res, next) => {
     try {
         const { id } = req.params;
 
@@ -856,7 +907,7 @@ adminRoutes.put('/stores/:id/update', authenticate, async (req, res, next) => {
 /**
  * GET /admin/dashboard - System overview statistics (scoped to tenant)
  */
-adminRoutes.get('/dashboard', authenticate, requireAdmin(), branchFilter(), async (req, res, next) => {
+adminRoutes.get('/dashboard', authenticate, requireTenantAdmin(), branchFilter(), async (req, res, next) => {
     try {
         // Build tenant-scoped conditions for each table via centralized scope helper
         const branchTenant = buildTenantCondition(req.branchFilter, branches.tenantId);
@@ -914,7 +965,7 @@ adminRoutes.get('/dashboard', authenticate, requireAdmin(), branchFilter(), asyn
 /**
  * GET /admin/dashboard/chart-data - Chart data for Pie, Column, Line charts
  */
-adminRoutes.get('/dashboard/chart-data', authenticate, requireAdmin(), branchFilter(), async (req, res, next) => {
+adminRoutes.get('/dashboard/chart-data', authenticate, requireTenantAdmin(), branchFilter(), async (req, res, next) => {
     try {
         const tenantCond = buildTenantCondition(req.branchFilter, users.tenantId);
         const storeTenantCond = buildTenantCondition(req.branchFilter, stores.tenantId);
@@ -990,9 +1041,111 @@ adminRoutes.get('/dashboard/chart-data', authenticate, requireAdmin(), branchFil
 });
 
 /**
+ * GET /admin/stores-overview
+ * Returns branches grouped by tenant with per-branch stats (products, categories, stock, users).
+ * Super admin: all tenants. Tenant admin: own tenant only.
+ */
+adminRoutes.get('/stores-overview', authenticate, requireTenantAdmin(), branchFilter(), async (req, res, next) => {
+    try {
+        const authUser = req.authUser!;
+        const filter = req.branchFilter;
+
+        // Fetch branches scoped to tenant
+        const branchConds: any[] = [eq(branches.isActive, true)];
+        if (!authUser.isSuperAdmin && filter?.tenantId) {
+            branchConds.push(eq(branches.tenantId, filter.tenantId));
+        }
+        const allBranches = await db.query.branches.findMany({
+            where: and(...branchConds),
+            columns: { id: true, name: true, code: true, logo: true, tenantId: true, isMain: true, address: true, phone: true },
+            orderBy: asc(branches.name),
+        });
+
+        if (allBranches.length === 0) {
+            return res.json({ success: true, data: [] });
+        }
+
+        const branchIds = allBranches.map(b => b.id);
+        const tenantIds = [...new Set(allBranches.map(b => b.tenantId).filter(Boolean))];
+
+        // Fetch tenants for grouping
+        const tenantRows = tenantIds.length > 0
+            ? await db.query.tenants.findMany({ where: inArray(tenants.id, tenantIds as string[]), columns: { id: true, name: true, logo: true, plan: true, isActive: true } })
+            : [];
+        const tenantMap = new Map(tenantRows.map(t => [t.id, t]));
+
+        // Per-branch counts in parallel
+        const [productCounts, categoryCounts, stockCounts2, userCounts, storeCounts] = await Promise.all([
+            // products per branch (via inventory)
+            db.select({ branchId: inventory.branchId, cnt: count() })
+                .from(inventory).where(inArray(inventory.branchId, branchIds))
+                .groupBy(inventory.branchId),
+            // categories per branch (via products → categories)
+            db.selectDistinct({ branchId: inventory.branchId, categoryId: products.categoryId })
+                .from(inventory)
+                .innerJoin(products, eq(inventory.productId, products.id))
+                .where(and(inArray(inventory.branchId, branchIds), isNotNull(products.categoryId))),
+            // stock value per branch
+            db.select({ branchId: inventory.branchId, qty: sum(inventory.quantity), val: sql<number>`sum(${inventory.quantity} * COALESCE(${products.cost}, ${products.price}, 0))` })
+                .from(inventory)
+                .innerJoin(products, eq(inventory.productId, products.id))
+                .where(inArray(inventory.branchId, branchIds))
+                .groupBy(inventory.branchId),
+            // users per branch
+            db.select({ branchId: users.branchId, cnt: count() })
+                .from(users).where(and(inArray(users.branchId, branchIds), eq(users.isActive, true)))
+                .groupBy(users.branchId),
+            // stores per branch
+            db.select({ branchId: stores.branchId, cnt: count() })
+                .from(stores).where(and(inArray(stores.branchId, branchIds), eq(stores.isActive, true)))
+                .groupBy(stores.branchId),
+        ]);
+
+        const productCountMap = new Map(productCounts.map(r => [r.branchId, r.cnt]));
+        const categoryCountMap = new Map<string, Set<string>>();
+        for (const r of categoryCounts) {
+            if (!categoryCountMap.has(r.branchId)) categoryCountMap.set(r.branchId, new Set());
+            if (r.categoryId) categoryCountMap.get(r.branchId)!.add(r.categoryId);
+        }
+        const stockMap = new Map(stockCounts2.map(r => [r.branchId, { qty: Number(r.qty || 0), val: Number(r.val || 0) }]));
+        const userCountMap = new Map(userCounts.map(r => [r.branchId, r.cnt]));
+        const storeCountMap = new Map(storeCounts.map(r => [r.branchId, r.cnt]));
+
+        // Enrich branches
+        const enrichedBranches = allBranches.map(b => ({
+            ...b,
+            stats: {
+                productCount: productCountMap.get(b.id) || 0,
+                categoryCount: categoryCountMap.get(b.id)?.size || 0,
+                stockQty: stockMap.get(b.id)?.qty || 0,
+                stockValue: stockMap.get(b.id)?.val || 0,
+                userCount: userCountMap.get(b.id) || 0,
+                storeCount: storeCountMap.get(b.id) || 0,
+            },
+        }));
+
+        // Group by tenant
+        const grouped: any[] = [];
+        for (const [tenantId, tenant] of tenantMap) {
+            grouped.push({
+                tenant,
+                branches: enrichedBranches.filter(b => b.tenantId === tenantId),
+            });
+        }
+        // Branches without tenant
+        const orphaned = enrichedBranches.filter(b => !b.tenantId);
+        if (orphaned.length > 0) grouped.push({ tenant: null, branches: orphaned });
+
+        res.json({ success: true, data: grouped });
+    } catch (error) {
+        next(error);
+    }
+});
+
+/**
  * POST /admin/users - Create a new user (Super Admin / Admin)
  */
-adminRoutes.post('/users', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.post('/users', authenticate, requireTenantAdmin(), async (req, res, next) => {
     try {
         const { email, password, name, phone, avatar, role, roleId, branchId, permissions, isActive = true } = req.body;
 
@@ -1049,7 +1202,7 @@ adminRoutes.post('/users', authenticate, requireAdmin(), async (req, res, next) 
 /**
  * GET /admin/users - List all users (Super Admin)
  */
-adminRoutes.get('/users', authenticate, requireAdmin(), branchFilter(), async (req, res, next) => {
+adminRoutes.get('/users', authenticate, requireTenantAdmin(), branchFilter(), async (req, res, next) => {
     try {
         const { search, branchId, isActive, isSuperAdmin, page = 1, limit = 20 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
@@ -1071,7 +1224,7 @@ adminRoutes.get('/users', authenticate, requireAdmin(), branchFilter(), async (r
                 where: uWhere,
                 offset: skip,
                 limit: Number(limit),
-                columns: { id: true, email: true, name: true, phone: true, role: true, isActive: true, isSuperAdmin: true, lastLoginAt: true, createdAt: true },
+                columns: { id: true, email: true, name: true, phone: true, role: true, roleId: true, permissions: true, isActive: true, isSuperAdmin: true, lastLoginAt: true, createdAt: true },
                 with: {
                     branch: { columns: { id: true, name: true, code: true } },
                     roleRelation: { columns: { id: true, name: true, displayName: true } },
@@ -1249,7 +1402,7 @@ adminRoutes.get('/check-super-admin', authenticate, async (req, res) => {
 /**
  * GET /admin/permissions - Get all permission groups (dynamic from database or default)
  */
-adminRoutes.get('/permissions', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.get('/permissions', authenticate, requireTenantAdmin(), async (req, res, next) => {
     try {
         const dbPermissions = await db.query.permissionGroups.findMany({
             where: eq(permissionGroups.isActive, true),
@@ -1279,7 +1432,7 @@ adminRoutes.get('/permissions', authenticate, requireAdmin(), async (req, res, n
 /**
  * POST /admin/permissions - Create/Update permission groups (Super Admin only)
  */
-adminRoutes.post('/permissions', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.post('/permissions', authenticate, requireTenantAdmin(), async (req, res, next) => {
     try {
         const { groups } = req.body;
 
@@ -1308,12 +1461,16 @@ adminRoutes.post('/permissions', authenticate, requireAdmin(), async (req, res, 
 /**
  * GET /admin/roles - Get all roles
  */
-adminRoutes.get('/roles', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.get('/roles', authenticate, requireTenantAdmin(), async (req, res, next) => {
     try {
         const { search, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
 
         const rConds: any[] = [];
+        // Non-super-admins only see their tenant's roles; super-admin sees all
+        if (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) {
+            rConds.push(eq(roles.tenantId, req.authUser.tenantId));
+        }
         if (search) {
             const s = String(search);
             rConds.push(or(ilike(roles.name, `%${s}%`), ilike(roles.displayName, `%${s}%`)));
@@ -1339,7 +1496,7 @@ adminRoutes.get('/roles', authenticate, requireAdmin(), async (req, res, next) =
  * GET /admin/roles/templates - Get default role templates
  * MUST be before /roles/:id to prevent Express matching 'templates' as :id
  */
-adminRoutes.get('/roles/templates', authenticate, requireAdmin(), async (req, res) => {
+adminRoutes.get('/roles/templates', authenticate, requireTenantAdmin(), async (req, res) => {
     res.json({ success: true, data: DEFAULT_ROLES });
 });
 
@@ -1377,7 +1534,7 @@ adminRoutes.post('/roles/seed', authenticate, requireAdmin(), async (req, res, n
 /**
  * GET /admin/roles/:id - Get single role
  */
-adminRoutes.get('/roles/:id', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.get('/roles/:id', authenticate, requireTenantAdmin(), async (req, res, next) => {
     try {
         const { id } = req.params;
 
@@ -1399,19 +1556,22 @@ adminRoutes.get('/roles/:id', authenticate, requireAdmin(), async (req, res, nex
 /**
  * POST /admin/roles - Create a new role
  */
-adminRoutes.post('/roles', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.post('/roles', authenticate, requireTenantAdmin(), async (req, res, next) => {
     try {
         const { name, displayName, description, permissions } = req.body;
 
-        const existing = await db.query.roles.findFirst({ where: eq(roles.name, name) });
+        // Super-admin creates global roles (tenantId=null); others create tenant-scoped roles
+        const roleTenantId = req.authUser?.isSuperAdmin ? null : (req.authUser?.tenantId || req.user?.tenantId || null);
+        const dupCond = roleTenantId
+            ? and(eq(roles.name, name), eq(roles.tenantId, roleTenantId))
+            : and(eq(roles.name, name), isNull(roles.tenantId));
+        const existing = await db.query.roles.findFirst({ where: dupCond });
         if (existing) {
             return res.status(400).json({
                 success: false,
                 error: { code: 'DUPLICATE', message: 'Role name already exists' }
             });
         }
-
-        const roleTenantId = req.authUser?.tenantId || req.user?.tenantId;
         const [role] = await db.insert(roles).values({ tenantId: roleTenantId, name, displayName, description, permissions: permissions || [], isSystem: false }).returning();
 
         // Log activity
@@ -1426,7 +1586,7 @@ adminRoutes.post('/roles', authenticate, requireAdmin(), async (req, res, next) 
 /**
  * PATCH /admin/roles/:id - Update a role
  */
-adminRoutes.patch('/roles/:id', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.patch('/roles/:id', authenticate, requireTenantAdmin(), async (req, res, next) => {
     try {
         const { id } = req.params;
         const { name, displayName, description, permissions } = req.body;
@@ -1440,7 +1600,11 @@ adminRoutes.patch('/roles/:id', authenticate, requireAdmin(), async (req, res, n
         }
 
         if (name && name !== existing.name) {
-            const duplicate = await db.query.roles.findFirst({ where: eq(roles.name, name) });
+            // Scope duplicate check to the same tenantId as the existing role
+            const dupWhere = existing.tenantId
+                ? and(eq(roles.name, name), eq(roles.tenantId, existing.tenantId))
+                : and(eq(roles.name, name), isNull(roles.tenantId));
+            const duplicate = await db.query.roles.findFirst({ where: dupWhere });
             if (duplicate) {
                 return res.status(400).json({
                     success: false,
@@ -1468,7 +1632,7 @@ adminRoutes.patch('/roles/:id', authenticate, requireAdmin(), async (req, res, n
 /**
  * DELETE /admin/roles/:id - Delete a role
  */
-adminRoutes.delete('/roles/:id', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.delete('/roles/:id', authenticate, requireTenantAdmin(), async (req, res, next) => {
     try {
         const { id } = req.params;
 
@@ -1554,7 +1718,7 @@ async function logActivity(
 /**
  * GET /admin/activity - Get recent activity (for dashboard)
  */
-adminRoutes.get('/activity', authenticate, requireAdmin(), branchFilter(), async (req, res, next) => {
+adminRoutes.get('/activity', authenticate, requireTenantAdmin(), branchFilter(), async (req, res, next) => {
     try {
         const { limit = 10 } = req.query;
 
@@ -1577,7 +1741,7 @@ adminRoutes.get('/activity', authenticate, requireAdmin(), branchFilter(), async
 /**
  * GET /admin/audit - Get audit logs with filtering
  */
-adminRoutes.get('/audit', authenticate, requireAdmin(), branchFilter(), async (req, res, next) => {
+adminRoutes.get('/audit', authenticate, requireTenantAdmin(), branchFilter(), async (req, res, next) => {
     try {
         const { search, action, userId, dateFrom, dateTo, page = 1, limit = 20 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
@@ -1633,7 +1797,7 @@ adminRoutes.get('/audit', authenticate, requireAdmin(), branchFilter(), async (r
 /**
  * GET /admin/audit/export - Export audit logs as CSV
  */
-adminRoutes.get('/audit/export', authenticate, requireAdmin(), branchFilter(), async (req, res, next) => {
+adminRoutes.get('/audit/export', authenticate, requireTenantAdmin(), branchFilter(), async (req, res, next) => {
     try {
         const { action, userId, dateFrom, dateTo } = req.query;
 
@@ -1668,6 +1832,55 @@ adminRoutes.get('/audit/export', authenticate, requireAdmin(), branchFilter(), a
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SYSTEM HEALTH
+/**
+ * POST /admin/system/fix-role-permissions
+ * Applies the latest default permission sets for system roles (store_owner, hq_admin, admin).
+ * Safe to call multiple times (idempotent). Super admin only.
+ */
+adminRoutes.post('/system/fix-role-permissions', authenticate, requireSuperAdmin(), async (req, res, next) => {
+    try {
+        const branchPerms = ['branches:view', 'branches:create', 'branches:update', 'branches:delete'];
+        const roleUpdates: { name: string; addPerms: string[]; removeRuleNames: string[] }[] = [
+            { name: 'store_owner', addPerms: branchPerms, removeRuleNames: [] },
+            { name: 'hq_admin',   addPerms: branchPerms, removeRuleNames: [] },
+            { name: 'admin',      addPerms: [], removeRuleNames: ['sales'] },
+        ];
+
+        const report: string[] = [];
+
+        for (const update of roleUpdates) {
+            const affectedRoles = await db.query.roles.findMany({ where: eq(roles.name, update.name) });
+            for (const role of affectedRoles) {
+                const current: string[] = Array.isArray(role.permissions) ? (role.permissions as string[]) : [];
+                let updated = [...current];
+                for (const p of update.addPerms) {
+                    if (!updated.includes(p)) updated.push(p);
+                }
+                await db.update(roles).set({ permissions: updated }).where(eq(roles.id, role.id));
+
+                // Remove roleRules for sales from admin roles
+                if (update.removeRuleNames.length > 0) {
+                    const rulesToRemove = await db.query.rules.findMany({
+                        where: inArray(rules.name, update.removeRuleNames),
+                    });
+                    for (const rule of rulesToRemove) {
+                        await db.delete(roleRules).where(and(eq(roleRules.roleId, role.id), eq(roleRules.ruleId, rule.id)));
+                    }
+                }
+                report.push(`Updated ${update.name} (tenant: ${role.tenantId || 'system'})`);
+            }
+        }
+
+        // Invalidate all rule caches
+        await invalidateRoleRulesCache('*');
+        await invalidateAllUserStoreCache();
+
+        res.json({ success: true, data: { updated: report.length, details: report } });
+    } catch (error) {
+        next(error);
+    }
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
@@ -1735,7 +1948,7 @@ adminRoutes.get('/system/health', authenticate, requireAdmin(), async (req, res,
 /**
  * GET /admin/users/:id - Get single user details
  */
-adminRoutes.get('/users/:id', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.get('/users/:id', authenticate, requireTenantAdmin(), async (req, res, next) => {
     try {
         const { id } = req.params;
 
@@ -1778,7 +1991,7 @@ adminRoutes.get('/users/:id', authenticate, requireAdmin(), async (req, res, nex
 /**
  * PATCH /admin/users/:id - Update user
  */
-adminRoutes.patch('/users/:id', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.patch('/users/:id', authenticate, requireTenantAdmin(), async (req, res, next) => {
     try {
         const { id } = req.params;
         const { name, email, phone, roleId, branchId, permissions, isActive } = req.body;
@@ -1853,7 +2066,7 @@ adminRoutes.patch('/users/:id', authenticate, requireAdmin(), async (req, res, n
 /**
  * DELETE /admin/users/:id - Deactivate user
  */
-adminRoutes.delete('/users/:id', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.delete('/users/:id', authenticate, requireTenantAdmin(), async (req, res, next) => {
     try {
         const { id } = req.params;
 
@@ -2329,7 +2542,7 @@ const DEFAULT_MENU_STRUCTURE = [
         requiredPermission: "documents:view",
         children: [
             { key: "documents.receipts", label: "Receipts", labelLao: "ໃບບິນ", icon: "Receipt", path: "/documents", requiredPermission: "documents:view" },
-            { key: "documents.design", label: "Receipt Design", labelLao: "ອອກແບບໃບບິນ", icon: "Printer", path: "/documents/design", requiredPermission: "settings:update" },
+            { key: "documents.design", label: "Receipt Design", labelLao: "ອອກແບບໃບບິນ", icon: "Printer", path: "/documents/design", requiredPermission: "documents:update" },
             { key: "documents.invoices", label: "Invoices", labelLao: "ໃບແຈ້ງໜີ້", icon: "FileText", path: "/documents/invoices", requiredPermission: "documents:view" },
             { key: "documents.tax", label: "Tax Invoices", labelLao: "ໃບກຳກັບພາສີ", icon: "FileSpreadsheet", path: "/documents/tax-invoices", requiredPermission: "documents:view" },
         ]
@@ -2386,15 +2599,15 @@ const DEFAULT_MENU_STRUCTURE = [
         label: "Super Admin",
         labelLao: "Super Admin",
         icon: "ShieldCheck",
-        requiredPermission: "*",
+        requiredPermission: "admin:view",
         children: [
-            { key: "super-admin.dashboard", label: "Admin Dashboard", labelLao: "ແຜງຄວບຄຸມ", icon: "Shield", path: "/admin", requiredPermission: "*" },
-            { key: "super-admin.requests", label: "Store Requests", labelLao: "ຄຳຂໍເປີດຮ້ານ", icon: "FileCheck", path: "/admin/requests", requiredPermission: "*" },
-            { key: "super-admin.branches", label: "All Branches", labelLao: "ຈັດການສາຂາ", icon: "Building2", path: "/admin/branches", requiredPermission: "*" },
-            { key: "super-admin.users", label: "All Users", labelLao: "ຈັດການຜູ້ໃຊ້", icon: "Users", path: "/admin/users", requiredPermission: "*" },
-            { key: "super-admin.roles", label: "System Roles", labelLao: "ຈັດການບົດບາດ", icon: "Key", path: "/admin/roles", requiredPermission: "*" },
-            { key: "super-admin.permissions", label: "Permissions", labelLao: "ຈັດການສິດ", icon: "Shield", path: "/admin/permissions", requiredPermission: "*" },
-            { key: "super-admin.audit", label: "Audit Log", labelLao: "ປະຫວັດການໃຊ້ງານ", icon: "History", path: "/admin/audit", requiredPermission: "*" },
+            { key: "super-admin.dashboard", label: "Admin Dashboard", labelLao: "ແຜງຄວບຄຸມ", icon: "Shield", path: "/admin", requiredPermission: "admin:view" },
+            { key: "super-admin.requests", label: "Store Requests", labelLao: "ຄຳຂໍເປີດຮ້ານ", icon: "FileCheck", path: "/admin/requests", requiredPermission: "admin:view" },
+            { key: "super-admin.branches", label: "All Branches", labelLao: "ຈັດການສາຂາ", icon: "Building2", path: "/admin/branches", requiredPermission: "admin:view" },
+            { key: "super-admin.users", label: "All Users", labelLao: "ຈັດການຜູ້ໃຊ້", icon: "Users", path: "/admin/users", requiredPermission: "admin:view" },
+            { key: "super-admin.roles", label: "System Roles", labelLao: "ຈັດການບົດບາດ", icon: "Key", path: "/admin/roles", requiredPermission: "admin:manage" },
+            { key: "super-admin.permissions", label: "Permissions", labelLao: "ຈັດການສິດ", icon: "Shield", path: "/admin/permissions", requiredPermission: "admin:manage" },
+            { key: "super-admin.audit", label: "Audit Log", labelLao: "ປະຫວັດການໃຊ້ງານ", icon: "History", path: "/admin/audit", requiredPermission: "admin:view" },
         ]
     },
     {
@@ -2483,7 +2696,8 @@ const DEFAULT_ROLES = [
             "reports:view", "reports:sales", "reports:inventory", "reports:financial", "reports:staff",
             "staff:view", "staff:create", "staff:update", "staff:delete",
             "roles:view", "roles:create", "roles:update", "roles:delete",
-            "stores:view", "stores:update",
+            "branches:view", "branches:create", "branches:update", "branches:delete",
+            "stores:view", "stores:create", "stores:update", "stores:delete",
             "settings:view", "settings:update",
             "restaurant:view", "restaurant:manage", "tables:create", "tables:update", "tables:delete",
         ],
@@ -2671,14 +2885,25 @@ const DEFAULT_RULES = [
         isSystem: true,
     },
     {
+        name: "branches",
+        displayName: "ຈັດການສາຂາ",
+        description: "ສາຂາ, ຂໍ້ມູນສາຂາ, ໂລໂກ້",
+        module: "branches",
+        icon: "Building2",
+        routes: ["/branches"],
+        permissions: ["branches:view", "branches:create", "branches:update", "branches:delete"],
+        order: 10,
+        isSystem: true,
+    },
+    {
         name: "management.stores",
-        displayName: "ຈັດການຮ້ານ/ສາຂາ",
-        description: "ຮ້ານ, ສາຂາ, ຄຳຂໍເປີດຮ້ານ",
+        displayName: "ຈັດການຮ້ານຄ້າ",
+        description: "ຮ້ານຄ້າ, ຈຸດຂາຍ",
         module: "management.stores",
         icon: "Store",
-        routes: ["/branches", "/management/stores", "/my-store", "/store-request"],
-        permissions: ["branches:view", "branches:create", "branches:update", "branches:delete", "stores:view", "stores:create", "stores:update", "stores:delete"],
-        order: 10,
+        routes: ["/management/stores", "/my-store", "/store-request"],
+        permissions: ["stores:view", "stores:create", "stores:update", "stores:delete"],
+        order: 11,
         isSystem: true,
     },
     {
@@ -2731,7 +2956,7 @@ const DEFAULT_RULES = [
         description: "ແຜງຄວບຄຸມລະບົບ, ຄຳຂໍເປີດຮ້ານ, ຈັດການທຸກຢ່າງ",
         module: "admin",
         icon: "ShieldCheck",
-        routes: ["/admin", "/admin/requests", "/admin/branches", "/admin/users", "/admin/roles", "/admin/rules", "/admin/permissions", "/admin/audit"],
+        routes: ["/admin", "/admin/requests", "/admin/branches", "/admin/users", "/admin/roles", "/admin/positions", "/admin/rules", "/admin/permissions", "/admin/audit", "/admin/enums"],
         permissions: ["*"],
         order: 12,
         isSystem: true,
@@ -2744,117 +2969,99 @@ const DEFAULT_RULES = [
  */
 const DEFAULT_ROLE_RULES: Record<string, Record<string, { r: boolean; c: boolean; u: boolean; d: boolean }>> = {
     super_admin: {
-        dashboard: { r: true, c: true, u: true, d: true },
-        sales: { r: true, c: true, u: true, d: true },
-        products: { r: true, c: true, u: true, d: true },
-        inventory: { r: true, c: true, u: true, d: true },
-        restaurant: { r: true, c: true, u: true, d: true },
-        promotions: { r: true, c: true, u: true, d: true },
-        customers: { r: true, c: true, u: true, d: true },
-        payments: { r: true, c: true, u: true, d: true },
-        documents: { r: true, c: true, u: true, d: true },
-        reports: { r: true, c: true, u: true, d: true },
-        "management.stores": { r: true, c: true, u: true, d: true },
-        "management.staff": { r: true, c: true, u: true, d: true },
-        "management.roles": { r: true, c: true, u: true, d: true },
-        "management.operations": { r: true, c: true, u: true, d: true },
-        settings: { r: true, c: true, u: true, d: true },
+        dashboard: { r: true, c: true, u: true, d: true }, sales: { r: true, c: true, u: true, d: true },
+        products: { r: true, c: true, u: true, d: true }, inventory: { r: true, c: true, u: true, d: true },
+        restaurant: { r: true, c: true, u: true, d: true }, promotions: { r: true, c: true, u: true, d: true },
+        customers: { r: true, c: true, u: true, d: true }, payments: { r: true, c: true, u: true, d: true },
+        documents: { r: true, c: true, u: true, d: true }, reports: { r: true, c: true, u: true, d: true },
+        branches: { r: true, c: true, u: true, d: true },
+        'management.stores': { r: true, c: true, u: true, d: true }, 'management.staff': { r: true, c: true, u: true, d: true },
+        'management.roles': { r: true, c: true, u: true, d: true }, settings: { r: true, c: true, u: true, d: true },
         admin: { r: true, c: true, u: true, d: true },
     },
     admin: {
-        dashboard: { r: true, c: true, u: true, d: true },
-        sales: { r: true, c: true, u: true, d: true },
-        products: { r: true, c: true, u: true, d: true },
-        inventory: { r: true, c: true, u: true, d: true },
-        restaurant: { r: true, c: true, u: true, d: true },
-        promotions: { r: true, c: true, u: true, d: true },
-        customers: { r: true, c: true, u: true, d: true },
-        payments: { r: true, c: true, u: true, d: true },
-        documents: { r: true, c: true, u: true, d: true },
-        reports: { r: true, c: true, u: true, d: true },
-        "management.stores": { r: true, c: true, u: true, d: true },
-        "management.staff": { r: true, c: true, u: true, d: true },
-        "management.roles": { r: true, c: true, u: true, d: true },
-        "management.operations": { r: true, c: true, u: true, d: true },
-        settings: { r: true, c: true, u: true, d: true },
+        dashboard: { r: true, c: true, u: true, d: true }, sales: { r: true, c: true, u: true, d: true },
+        products: { r: true, c: true, u: true, d: true }, inventory: { r: true, c: true, u: true, d: true },
+        restaurant: { r: true, c: true, u: true, d: true }, promotions: { r: true, c: true, u: true, d: true },
+        customers: { r: true, c: true, u: true, d: true }, payments: { r: true, c: true, u: true, d: true },
+        documents: { r: true, c: true, u: true, d: true }, reports: { r: true, c: true, u: true, d: true },
+        branches: { r: true, c: true, u: true, d: true },
+        'management.stores': { r: true, c: true, u: true, d: true }, 'management.staff': { r: true, c: true, u: true, d: true },
+        'management.roles': { r: true, c: true, u: true, d: true }, settings: { r: true, c: true, u: true, d: true },
     },
-    store_owner: {
-        dashboard: { r: true, c: false, u: false, d: false },
-        sales: { r: true, c: true, u: true, d: true },
-        products: { r: true, c: true, u: true, d: true },
-        inventory: { r: true, c: true, u: true, d: false },
-        restaurant: { r: true, c: true, u: true, d: false },
-        promotions: { r: true, c: true, u: true, d: true },
-        customers: { r: true, c: true, u: true, d: false },
-        payments: { r: true, c: true, u: false, d: false },
-        documents: { r: true, c: true, u: false, d: false },
-        reports: { r: true, c: false, u: false, d: false },
-        "management.stores": { r: true, c: true, u: true, d: true },
-        "management.staff": { r: true, c: true, u: true, d: true },
-        "management.roles": { r: true, c: false, u: false, d: false },
-        "management.operations": { r: true, c: true, u: true, d: false },
-        settings: { r: true, c: false, u: true, d: false },
+    hq_admin: {
+        dashboard: { r: true, c: true, u: true, d: true }, sales: { r: true, c: true, u: true, d: true },
+        products: { r: true, c: true, u: true, d: true }, inventory: { r: true, c: true, u: true, d: true },
+        restaurant: { r: true, c: true, u: true, d: true }, promotions: { r: true, c: true, u: true, d: true },
+        customers: { r: true, c: true, u: true, d: true }, payments: { r: true, c: true, u: true, d: true },
+        documents: { r: true, c: true, u: true, d: true }, reports: { r: true, c: true, u: true, d: true },
+        branches: { r: true, c: true, u: true, d: true },
+        'management.stores': { r: true, c: true, u: true, d: true }, 'management.staff': { r: true, c: true, u: true, d: true },
+        'management.roles': { r: true, c: false, u: false, d: false }, settings: { r: true, c: true, u: true, d: true },
     },
-    branch_admin: {
-        dashboard: { r: true, c: false, u: false, d: false },
-        sales: { r: true, c: true, u: true, d: false },
-        products: { r: true, c: true, u: true, d: false },
-        inventory: { r: true, c: true, u: true, d: false },
-        restaurant: { r: true, c: true, u: true, d: false },
-        promotions: { r: true, c: true, u: false, d: false },
-        customers: { r: true, c: true, u: true, d: false },
-        payments: { r: true, c: true, u: false, d: false },
-        documents: { r: true, c: true, u: false, d: false },
-        reports: { r: true, c: false, u: false, d: false },
-        "management.stores": { r: true, c: true, u: true, d: false },
-        "management.staff": { r: true, c: true, u: true, d: false },
-        "management.roles": { r: true, c: false, u: false, d: false },
-        "management.operations": { r: true, c: true, u: true, d: false },
-        settings: { r: true, c: false, u: true, d: false },
-    },
-    store_manager: {
-        dashboard: { r: true, c: false, u: false, d: false },
-        sales: { r: true, c: true, u: true, d: false },
-        products: { r: true, c: true, u: true, d: false },
-        inventory: { r: true, c: true, u: true, d: false },
-        promotions: { r: true, c: true, u: false, d: false },
-        customers: { r: true, c: true, u: true, d: false },
-        payments: { r: true, c: true, u: false, d: false },
-        documents: { r: true, c: true, u: false, d: false },
-        reports: { r: true, c: false, u: false, d: false },
-        "management.stores": { r: true, c: false, u: false, d: false },
-        "management.staff": { r: true, c: true, u: true, d: false },
-        "management.roles": { r: false, c: false, u: false, d: false },
-        "management.operations": { r: true, c: true, u: true, d: false },
+    hq_manager: {
+        dashboard: { r: true, c: false, u: false, d: false }, sales: { r: true, c: false, u: false, d: false },
+        products: { r: true, c: false, u: false, d: false }, inventory: { r: true, c: true, u: true, d: false },
+        restaurant: { r: true, c: false, u: false, d: false }, promotions: { r: true, c: false, u: false, d: false },
+        customers: { r: true, c: false, u: false, d: false }, payments: { r: true, c: false, u: false, d: false },
+        documents: { r: true, c: false, u: false, d: false }, reports: { r: true, c: false, u: false, d: false },
+        branches: { r: true, c: false, u: false, d: false },
+        'management.stores': { r: true, c: false, u: false, d: false }, 'management.staff': { r: true, c: false, u: false, d: false },
         settings: { r: true, c: false, u: false, d: false },
     },
+    store_owner: {
+        dashboard: { r: true, c: false, u: false, d: false }, sales: { r: true, c: true, u: true, d: true },
+        products: { r: true, c: true, u: true, d: true }, inventory: { r: true, c: true, u: true, d: false },
+        restaurant: { r: true, c: true, u: true, d: false }, promotions: { r: true, c: true, u: true, d: true },
+        customers: { r: true, c: true, u: true, d: false }, payments: { r: true, c: true, u: false, d: false },
+        documents: { r: true, c: true, u: false, d: false }, reports: { r: true, c: false, u: false, d: false },
+        branches: { r: true, c: false, u: true, d: false },
+        'management.stores': { r: true, c: true, u: true, d: true }, 'management.staff': { r: true, c: true, u: true, d: true },
+        'management.roles': { r: true, c: false, u: false, d: false }, settings: { r: true, c: false, u: true, d: false },
+    },
+    branch_admin: {
+        dashboard: { r: true, c: false, u: false, d: false }, sales: { r: true, c: true, u: true, d: false },
+        products: { r: true, c: true, u: true, d: false }, inventory: { r: true, c: true, u: true, d: false },
+        restaurant: { r: true, c: true, u: true, d: false }, promotions: { r: true, c: true, u: true, d: false },
+        customers: { r: true, c: true, u: true, d: false }, payments: { r: true, c: true, u: false, d: false },
+        documents: { r: true, c: true, u: false, d: false }, reports: { r: true, c: false, u: false, d: false },
+        branches: { r: true, c: false, u: true, d: false },
+        'management.stores': { r: true, c: false, u: true, d: false }, 'management.staff': { r: true, c: true, u: true, d: false },
+        settings: { r: true, c: false, u: true, d: false },
+    },
+    branch_manager: {
+        dashboard: { r: true, c: false, u: false, d: false }, sales: { r: true, c: true, u: true, d: false },
+        products: { r: true, c: true, u: true, d: false }, inventory: { r: true, c: true, u: true, d: false },
+        restaurant: { r: true, c: true, u: true, d: false }, promotions: { r: true, c: false, u: false, d: false },
+        customers: { r: true, c: true, u: true, d: false }, payments: { r: true, c: true, u: false, d: false },
+        documents: { r: true, c: true, u: false, d: false }, reports: { r: true, c: false, u: false, d: false },
+        'management.staff': { r: true, c: false, u: false, d: false },
+    },
+    store_manager: {
+        dashboard: { r: true, c: false, u: false, d: false }, sales: { r: true, c: true, u: true, d: false },
+        products: { r: true, c: true, u: true, d: false }, inventory: { r: true, c: true, u: true, d: false },
+        restaurant: { r: true, c: true, u: true, d: false }, promotions: { r: true, c: false, u: false, d: false },
+        customers: { r: true, c: true, u: true, d: false }, payments: { r: true, c: true, u: false, d: false },
+        documents: { r: true, c: true, u: false, d: false }, reports: { r: true, c: false, u: false, d: false },
+        'management.staff': { r: true, c: true, u: false, d: false }, settings: { r: true, c: false, u: false, d: false },
+    },
     cashier: {
-        dashboard: { r: true, c: false, u: false, d: false },
-        sales: { r: true, c: true, u: false, d: false },
-        products: { r: true, c: false, u: false, d: false },
-        customers: { r: true, c: false, u: false, d: false },
-        payments: { r: true, c: true, u: false, d: false },
-        documents: { r: true, c: false, u: false, d: false },
+        dashboard: { r: true, c: false, u: false, d: false }, sales: { r: true, c: true, u: false, d: false },
+        products: { r: true, c: false, u: false, d: false }, customers: { r: true, c: false, u: false, d: false },
+        payments: { r: true, c: true, u: false, d: false }, documents: { r: true, c: false, u: false, d: false },
     },
     inventory_staff: {
-        dashboard: { r: true, c: false, u: false, d: false },
-        products: { r: true, c: false, u: false, d: false },
-        inventory: { r: true, c: true, u: true, d: false },
-        reports: { r: true, c: false, u: false, d: false },
+        dashboard: { r: true, c: false, u: false, d: false }, products: { r: true, c: false, u: false, d: false },
+        inventory: { r: true, c: true, u: true, d: false }, reports: { r: true, c: false, u: false, d: false },
     },
-    kitchen_staff: {
-        restaurant: { r: true, c: true, u: true, d: false },
-    },
-    waiter: {
-        restaurant: { r: true, c: true, u: true, d: false },
-        sales: { r: true, c: true, u: false, d: false },
-    },
+    kitchen_staff: { restaurant: { r: true, c: true, u: true, d: false } },
+    waiter: { restaurant: { r: true, c: true, u: true, d: false }, sales: { r: true, c: true, u: false, d: false } },
 };
 
 /**
  * GET /admin/menu-permissions - Get menu structure for role assignment
  */
-adminRoutes.get('/menu-permissions', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.get('/menu-permissions', authenticate, requireTenantAdmin(), async (req, res, next) => {
     try {
         // Try to get from database first
         const dbMenus = await db.query.menuPermissions.findMany({
@@ -2961,7 +3168,7 @@ adminRoutes.post('/rules/seed', authenticate, requireAdmin(), async (req, res, n
 /**
  * GET /admin/rules - Get all rules
  */
-adminRoutes.get('/rules', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.get('/rules', authenticate, requireTenantAdmin(), async (req, res, next) => {
     try {
         const allRules = await db.query.rules.findMany({
             where: eq(rules.isActive, true),
@@ -2977,7 +3184,7 @@ adminRoutes.get('/rules', authenticate, requireAdmin(), async (req, res, next) =
 /**
  * GET /admin/roles/:id/rules - Get rules for a specific role with CRUD flags
  */
-adminRoutes.get('/roles/:id/rules', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.get('/roles/:id/rules', authenticate, requireTenantAdmin(), async (req, res, next) => {
     try {
         const rrList = await db.query.roleRules.findMany({
             where: eq(roleRules.roleId, req.params.id),
@@ -2993,7 +3200,7 @@ adminRoutes.get('/roles/:id/rules', authenticate, requireAdmin(), async (req, re
  * PUT /admin/roles/:id/rules - Update rules for a specific role
  * Body: { rules: [{ ruleId, canRead, canCreate, canUpdate, canDelete }] }
  */
-adminRoutes.put('/roles/:id/rules', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.put('/roles/:id/rules', authenticate, requireTenantAdmin(), async (req, res, next) => {
     try {
         const { id: roleId } = req.params;
         const { rules } = req.body;
@@ -3031,7 +3238,7 @@ adminRoutes.put('/roles/:id/rules', authenticate, requireAdmin(), async (req, re
  * GET /admin/rules/matrix - Get the full CRUD matrix in one call
  * Returns: { roles, rules, matrix: { [roleId]: { [ruleId]: { r, c, u, d } } } }
  */
-adminRoutes.get('/rules/matrix', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.get('/rules/matrix', authenticate, requireTenantAdmin(), async (req, res, next) => {
     try {
         const [matrixRules, matrixRoles, matrixRoleRules] = await Promise.all([
             db.query.rules.findMany({ where: eq(rules.isActive, true), orderBy: asc(rules.order) }),
@@ -3083,7 +3290,7 @@ adminRoutes.get('/rules/matrix', authenticate, requireAdmin(), async (req, res, 
  * PUT /admin/rules/matrix - Batch save the entire CRUD matrix in one call
  * Body: { matrix: { [roleId]: { [ruleId]: { r, c, u, d } } } }
  */
-adminRoutes.put('/rules/matrix', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.put('/rules/matrix', authenticate, requireTenantAdmin(), async (req, res, next) => {
     try {
         const { matrix } = req.body;
         if (!matrix || typeof matrix !== 'object') {
@@ -3094,7 +3301,7 @@ adminRoutes.put('/rules/matrix', authenticate, requireAdmin(), async (req, res, 
 
         let count = 0;
         const entries: { roleId: string; ruleId: string; canRead: boolean; canCreate: boolean; canUpdate: boolean; canDelete: boolean }[] = [];
-        
+
         for (const [roleId, ruleMap] of Object.entries(matrix) as [string, Record<string, { r: boolean; c: boolean; u: boolean; d: boolean }>][]) {
             for (const [ruleId, crud] of Object.entries(ruleMap)) {
                 if (crud.r || crud.c || crud.u || crud.d) {
@@ -3106,6 +3313,32 @@ adminRoutes.put('/rules/matrix', authenticate, requireAdmin(), async (req, res, 
         for (const entry of entries) {
             await db.insert(roleRules).values(entry);
             count++;
+        }
+
+        // Propagate global role rules (tenantId=null) to all tenant roles with the same name.
+        // This ensures super-admin edits in the matrix take effect for all tenant users immediately.
+        const globalRolesList = await db.query.roles.findMany({ where: isNull(roles.tenantId) });
+        const globalRulesByRoleId: Record<string, typeof entries> = {};
+        for (const gr of globalRolesList) {
+            globalRulesByRoleId[gr.id] = entries.filter(e => e.roleId === gr.id);
+        }
+
+        for (const gr of globalRolesList) {
+            const globalEntries = globalRulesByRoleId[gr.id];
+            if (!globalEntries || globalEntries.length === 0) continue;
+            // Find tenant-specific roles with the same name
+            const tenantRoles = await db.query.roles.findMany({
+                where: and(eq(roles.name, gr.name), isNotNull(roles.tenantId)),
+            });
+            for (const tr of tenantRoles) {
+                // Skip if this tenant role is already in the matrix (explicitly managed)
+                if (matrix[tr.id]) continue;
+                // Copy global rules to this tenant role
+                for (const ge of globalEntries) {
+                    await db.insert(roleRules).values({ ...ge, roleId: tr.id });
+                    count++;
+                }
+            }
         }
 
         await logActivity(req.authUser!.userId, 'rules_matrix_saved', `ບັນທຶກ CRUD matrix: ${count} role-rules`, {}, req);
@@ -3123,7 +3356,7 @@ adminRoutes.put('/rules/matrix', authenticate, requireAdmin(), async (req, res, 
  * POST /admin/roles/:id/copy-rules - Copy rules from one role to another
  * Body: { sourceRoleId: string }
  */
-adminRoutes.post('/roles/:id/copy-rules', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.post('/roles/:id/copy-rules', authenticate, requireTenantAdmin(), async (req, res, next) => {
     try {
         const targetRoleId = req.params.id;
         const { sourceRoleId } = req.body;

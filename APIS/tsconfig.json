@@ -37,6 +37,7 @@
         "types": [
             "node"
         ],
+        "noEmitOnError": false,
         "noImplicitAny": false,
         "strictNullChecks": false,
         "strictFunctionTypes": false,

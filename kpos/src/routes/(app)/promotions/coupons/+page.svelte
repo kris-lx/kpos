@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
     import { api } from "$api";
@@ -64,7 +64,7 @@
     let stats = $derived({
         total: coupons.length,
         active: coupons.filter((c) => getStatus(c) === "active").length,
-        totalUsage: coupons.reduce((sum, c) => sum + (c.usedCount || 0), 0),
+        totalUsage: coupons.reduce((sum, c) => sum + (c.usageCount || 0), 0),
         totalSaved: coupons.reduce((sum, c) => sum + (c.totalSaved || 0), 0),
     });
 
@@ -75,7 +75,7 @@
         if (!item.isActive) return "paused";
         if (end && end < now) return "expired";
         if (start > now) return "scheduled";
-        if (item.usageLimit > 0 && item.usedCount >= item.usageLimit) return "exhausted";
+        if (item.usageLimit > 0 && item.usageCount >= item.usageLimit) return "exhausted";
         return "active";
     }
 
@@ -83,9 +83,9 @@
         switch (status) {
             case "active":
                 return {
-                    bg: "bg-green-100 dark:bg-green-900/50",
-                    text: "text-green-700 dark:text-green-400",
-                    dot: "bg-green-500",
+                    bg: "bg-success-100 dark:bg-success-900/50",
+                    text: "text-success-700 dark:text-success-400",
+                    dot: "bg-success-500",
                     label: "ໃຊ້ງານໄດ້",
                 };
             case "scheduled":
@@ -111,9 +111,9 @@
                 };
             case "exhausted":
                 return {
-                    bg: "bg-red-100 dark:bg-red-900/50",
-                    text: "text-red-700 dark:text-red-400",
-                    dot: "bg-red-500",
+                    bg: "bg-danger-100 dark:bg-danger-900/50",
+                    text: "text-danger-700 dark:text-danger-400",
+                    dot: "bg-danger-500",
                     label: "ໃຊ້ໝົດແລ້ວ",
                 };
             default:
@@ -330,10 +330,10 @@
 
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
             <div class="flex items-center justify-between">
-                <div class="p-2 bg-green-100 dark:bg-green-900/50 rounded-lg">
-                    <Check class="w-5 h-5 text-green-600 dark:text-green-400" />
+                <div class="p-2 bg-success-100 dark:bg-success-900/50 rounded-lg">
+                    <Check class="w-5 h-5 text-success-600 dark:text-success-400" />
                 </div>
-                <span class="text-2xl font-bold text-green-600 dark:text-green-400">{stats.active}</span>
+                <span class="text-2xl font-bold text-success-600 dark:text-success-400">{stats.active}</span>
             </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">ເປີດໃຊ້ງານ</p>
         </div>
@@ -449,9 +449,9 @@
                                     <span class="font-bold text-purple-600 dark:text-purple-400">{coupon.value}%</span>
                                 </div>
                             {:else}
-                                <div class="flex items-center gap-1 px-3 py-1.5 bg-green-100 dark:bg-green-900/50 rounded-lg">
-                                    <Tag class="w-4 h-4 text-green-600 dark:text-green-400" />
-                                    <span class="font-bold text-green-600 dark:text-green-400">{formatCurrency(coupon.value)}</span>
+                                <div class="flex items-center gap-1 px-3 py-1.5 bg-success-100 dark:bg-success-900/50 rounded-lg">
+                                    <Tag class="w-4 h-4 text-success-600 dark:text-success-400" />
+                                    <span class="font-bold text-success-600 dark:text-success-400">{formatCurrency(coupon.value)}</span>
                                 </div>
                             {/if}
 
@@ -478,19 +478,19 @@
                                 <div class="flex items-center justify-between text-xs mb-1">
                                     <span class="text-gray-500 dark:text-gray-400">ໃຊ້ແລ້ວ</span>
                                     <span class="font-medium text-gray-900 dark:text-white">
-                                        {coupon.usedCount || 0} / {coupon.usageLimit}
+                                        {coupon.usageCount || 0} / {coupon.usageLimit}
                                     </span>
                                 </div>
                                 <div class="h-1.5 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden">
                                     <div
                                         class="h-full bg-gradient-to-r from-purple-500 to-violet-500 rounded-full transition-all"
-                                        style="width: {Math.min(100, ((coupon.usedCount || 0) / coupon.usageLimit) * 100)}%"
+                                        style="width: {Math.min(100, ((coupon.usageCount || 0) / coupon.usageLimit) * 100)}%"
                                     ></div>
                                 </div>
                             </div>
                         {:else}
                             <div class="text-xs text-gray-500 dark:text-gray-400 mb-3">
-                                ໃຊ້ແລ້ວ: {coupon.usedCount || 0} ຄັ້ງ (ບໍ່ຈຳກັດ)
+                                ໃຊ້ແລ້ວ: {coupon.usageCount || 0} ຄັ້ງ (ບໍ່ຈຳກັດ)
                             </div>
                         {/if}
                     </div>
@@ -503,7 +503,7 @@
                                 "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all",
                                 coupon.isActive
                                     ? "text-amber-600 hover:bg-amber-100 dark:text-amber-400 dark:hover:bg-amber-900/30"
-                                    : "text-green-600 hover:bg-green-100 dark:text-green-400 dark:hover:bg-green-900/30"
+                                    : "text-success-600 hover:bg-success-100 dark:text-success-400 dark:hover:bg-success-900/30"
                             )}
                         >
                             {#if coupon.isActive}
@@ -523,7 +523,7 @@
                             </button>
                             <button
                                 onclick={() => handleDelete(coupon)}
-                                class="p-2 text-red-500 hover:bg-red-100 dark:hover:bg-red-900/30 rounded-lg transition-all"
+                                class="p-2 text-danger-500 hover:bg-danger-100 dark:hover:bg-danger-900/30 rounded-lg transition-all"
                             >
                                 <Trash2 class="w-4 h-4" />
                             </button>

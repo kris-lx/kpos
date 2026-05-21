@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { i18n } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
     import { formatNumber, formatDate } from "$lib/utils";
@@ -29,16 +29,34 @@
     const pageSizeOptions = [5, 10, 20, 30, 50, 70, 100];
     let searchTimeout: ReturnType<typeof setTimeout>;
 
-    const pointsConfig = $state({
-        earnRate: 1, // 1 point per 1000 LAK
-        redeemRate: 100, // 100 points = 1000 LAK
+    let pointsConfig = $state({
+        earnRate: 1,
+        redeemRate: 100,
         minRedeem: 100,
         expiryDays: 365,
     });
 
     onMount(() => {
         loadCustomers();
+        loadPointsConfig();
     });
+
+    async function loadPointsConfig() {
+        try {
+            const res = await api.get('customers/loyalty/settings').json<any>();
+            if (res.success && res.data) {
+                const d = res.data;
+                pointsConfig = {
+                    earnRate: d.pointsPerCurrency ?? pointsConfig.earnRate,
+                    redeemRate: d.redemptionRate ?? pointsConfig.redeemRate,
+                    minRedeem: d.minPointsToRedeem ?? pointsConfig.minRedeem,
+                    expiryDays: d.expiryMonths ? d.expiryMonths * 30 : pointsConfig.expiryDays,
+                };
+            }
+        } catch {
+            // keep defaults if settings unavailable
+        }
+    }
 
     async function loadCustomers() {
         loading = true;
@@ -161,11 +179,11 @@
 
     function getTypeColor(type: string): string {
         const colors: Record<string, string> = {
-            earn: "text-green-600",
+            earn: "text-success-600",
             redeem: "text-orange-600",
             bonus: "text-purple-600",
             adjust: "text-blue-600",
-            expire: "text-red-600",
+            expire: "text-danger-600",
         };
         return colors[type] || "text-gray-600";
     }
@@ -198,10 +216,10 @@
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-lg border dark:border-gray-700 p-4">
             <div class="flex items-center gap-2">
-                <Sparkles class="h-4 w-4 text-green-500" />
+                <Sparkles class="h-4 w-4 text-success-500" />
                 <p class="text-sm text-gray-500 dark:text-gray-400">ຄະແນນທັງໝົດໃນລະບົບ</p>
             </div>
-            <p class="text-2xl font-bold text-green-600 dark:text-green-400">
+            <p class="text-2xl font-bold text-success-600 dark:text-success-400">
                 {formatNumber(customers.reduce((sum, c) => sum + (c.points || 0), 0))}
             </p>
         </div>
@@ -247,7 +265,7 @@
                 </div>
             {:else if error}
                 <div class="text-center py-8 px-4">
-                    <AlertCircle class="h-10 w-10 mx-auto text-red-500 dark:text-red-400 mb-3" />
+                    <AlertCircle class="h-10 w-10 mx-auto text-danger-500 dark:text-danger-400 mb-3" />
                     <p class="text-sm text-gray-700 dark:text-gray-300 mb-3">{error}</p>
                     <button
                         onclick={loadCustomers}
@@ -337,7 +355,7 @@
                             <p class="text-xs text-gray-500 dark:text-gray-400">ຄະແນນປັດຈຸບັນ</p>
                         </div>
                         <div class="text-center">
-                            <p class="text-2xl font-bold text-green-600 dark:text-green-400">
+                            <p class="text-2xl font-bold text-success-600 dark:text-success-400">
                                 ₭{formatNumber(selectedCustomer.totalSpent || 0)}
                             </p>
                             <p class="text-xs text-gray-500 dark:text-gray-400">ຈຳນວນທຸລະກຳ</p>
@@ -358,11 +376,11 @@
                             {#each pointsHistory as history (history.id)}
                                 <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
                                     <div class="flex items-center gap-3">
-                                        <span class="w-8 h-8 flex items-center justify-center rounded-full {history.points > 0 ? 'bg-green-100 dark:bg-green-900/50' : 'bg-red-100 dark:bg-red-900/50'}">
+                                        <span class="w-8 h-8 flex items-center justify-center rounded-full {history.points > 0 ? 'bg-success-100 dark:bg-success-900/50' : 'bg-danger-100 dark:bg-danger-900/50'}">
                                             {#if history.points > 0}
-                                                <ArrowUpRight class="h-4 w-4 text-green-600 dark:text-green-400" />
+                                                <ArrowUpRight class="h-4 w-4 text-success-600 dark:text-success-400" />
                                             {:else}
-                                                <ArrowDownRight class="h-4 w-4 text-red-600 dark:text-red-400" />
+                                                <ArrowDownRight class="h-4 w-4 text-danger-600 dark:text-danger-400" />
                                             {/if}
                                         </span>
                                         <div>
@@ -417,12 +435,12 @@
                     <div class="flex gap-4">
                         <label class="flex items-center gap-2 cursor-pointer">
                             <input type="radio" bind:group={adjustForm.type} value="add" class="text-primary-600" />
-                            <Plus class="h-4 w-4 text-green-500" />
+                            <Plus class="h-4 w-4 text-success-500" />
                             <span class="text-gray-700 dark:text-gray-300">ເພີ່ມ</span>
                         </label>
                         <label class="flex items-center gap-2 cursor-pointer">
                             <input type="radio" bind:group={adjustForm.type} value="deduct" class="text-primary-600" />
-                            <Minus class="h-4 w-4 text-red-500" />
+                            <Minus class="h-4 w-4 text-danger-500" />
                             <span class="text-gray-700 dark:text-gray-300">ຫັກ</span>
                         </label>
                     </div>

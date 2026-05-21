@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { cart, auth } from "$stores";
     import { cn, formatCurrency } from "$utils";
     import { t } from "$lib/i18n/index.svelte";
@@ -282,6 +282,8 @@
 
     // Add-to-cart fly animation
     let flyingItems = $state<Array<{id: string; x: number; y: number; name: string}>>([]);
+    // Track product ids that are in the "skeleton flash" state after being added
+    let skeletonStockIds = $state<Set<string>>(new Set());
 
     function addToCart(product: any, event?: MouseEvent) {
         const result = cart.addItem(product);
@@ -289,6 +291,12 @@
             toast.error(result.message);
             return;
         }
+
+        // Brief skeleton flash on the stock badge to signal the decrement
+        skeletonStockIds = new Set([...skeletonStockIds, product.id]);
+        setTimeout(() => {
+            skeletonStockIds = new Set([...skeletonStockIds].filter(id => id !== product.id));
+        }, 350);
 
         // Trigger fly animation from product card to cart
         if (event) {
@@ -545,6 +553,8 @@
                     {#each filteredProducts as product (product.id)}
                         {@const cartItem = cart.items.find(item => item.product.id === product.id)}
                         {@const isInCart = !!cartItem}
+                        {@const displayStock = Math.max(0, (product.stock ?? 0) - (cartItem?.quantity ?? 0))}
+                        {@const isSkeletonStock = skeletonStockIds.has(product.id)}
                         <button
                             onclick={(e) => addToCart(product, e)}
                             class={cn(
@@ -554,10 +564,10 @@
                                 isInCart
                                     ? "border-primary-500 ring-2 ring-primary-200 dark:ring-primary-800"
                                     : "border-gray-200 dark:border-gray-700",
-                                product.stock <= 0 &&
+                                displayStock <= 0 &&
                                     "opacity-50 cursor-not-allowed",
                             )}
-                            disabled={product.stock <= 0}
+                            disabled={displayStock <= 0}
                         >
                             <!-- Quantity Badge -->
                             {#if isInCart && cartItem}
@@ -597,20 +607,24 @@
                                 <span class="font-bold text-primary-600"
                                     >{formatCurrency(product.price)}</span
                                 >
-                                <span
-                                    class={cn(
-                                        "text-xs px-2 py-0.5 rounded-full",
-                                        product.stock > 10
-                                            ? "bg-success-100 text-success-700"
-                                            : product.stock > 0
-                                              ? "bg-warning-100 text-warning-700"
-                                              : "bg-error-100 text-error-700",
-                                    )}
-                                >
-                                    {product.stock > 0
-                                        ? `${product.stock} ${t('pos.unit')}`
-                                        : t('pos.outOfStock')}
-                                </span>
+                                {#if isSkeletonStock}
+                                    <span class="h-5 w-12 bg-gray-200 dark:bg-gray-600 rounded-full animate-pulse inline-block"></span>
+                                {:else}
+                                    <span
+                                        class={cn(
+                                            "text-xs px-2 py-0.5 rounded-full transition-all duration-200",
+                                            displayStock > 10
+                                                ? "bg-success-100 text-success-700"
+                                                : displayStock > 0
+                                                  ? "bg-warning-100 text-warning-700"
+                                                  : "bg-error-100 text-error-700",
+                                        )}
+                                    >
+                                        {displayStock > 0
+                                            ? `${displayStock} ${t('pos.unit')}`
+                                            : t('pos.outOfStock')}
+                                    </span>
+                                {/if}
                             </div>
                         </button>
                     {/each}
@@ -1032,12 +1046,12 @@
                                 </div>
                             </div>
                         {:else}
-                            <div class="p-4 bg-green-50 dark:bg-green-900/20 rounded-xl border border-green-200 dark:border-green-800">
+                            <div class="p-4 bg-success-50 dark:bg-success-900/20 rounded-xl border border-success-200 dark:border-success-800">
                                 <div class="flex items-center gap-3">
-                                    <User class="w-5 h-5 text-green-600 dark:text-green-400" />
+                                    <User class="w-5 h-5 text-success-600 dark:text-success-400" />
                                     <div>
-                                        <p class="font-medium text-green-800 dark:text-green-200">{cart.customer.name}</p>
-                                        <p class="text-sm text-green-600 dark:text-green-400">{cart.customer.phone || 'ບໍ່ມີເບີໂທ'}</p>
+                                        <p class="font-medium text-success-800 dark:text-success-200">{cart.customer.name}</p>
+                                        <p class="text-sm text-success-600 dark:text-success-400">{cart.customer.phone || 'ບໍ່ມີເບີໂທ'}</p>
                                     </div>
                                 </div>
                             </div>
@@ -1083,7 +1097,7 @@
                             </div>
                             <div class="flex justify-between text-sm">
                                 <span class="text-gray-600 dark:text-gray-400">ເງີນມັດຈຳ</span>
-                                <span class="font-medium text-green-600">{formatCurrency(creditInitialPayment)}</span>
+                                <span class="font-medium text-success-600">{formatCurrency(creditInitialPayment)}</span>
                             </div>
                             <div class="flex justify-between text-sm font-bold border-t dark:border-gray-700 pt-2">
                                 <span class="text-orange-600">ຍອດເຊື່ອ</span>

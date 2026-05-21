@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { createQuery, createMutation, useQueryClient } from "@tanstack/svelte-query";
     import { get } from "svelte/store";
     import { api } from "$lib/api";
@@ -63,7 +63,7 @@
             userStoreId = (user as any).storeId || null;
             
             // Super Admin, Admin ຈັດການທຸກຜູ້ໃຊ້; Shop Admin, Manager ຈັດການຜູ້ໃຊ້ໃນຮ້ານ/ສາຂາຕົນເອງ
-            if (user.isSuperAdmin || ['admin', 'store_owner', 'branch_admin', 'store_manager'].includes(user.role)) {
+            if (user.isSuperAdmin || ['admin', 'hq_admin', 'hq_manager', 'store_owner', 'branch_admin', 'store_manager'].includes(user.role)) {
                 canAccess = true;
             } else {
                 toast.error("ທ່ານບໍ່ມີສິດເຂົ້າເຖິງໜ້ານີ້");
@@ -198,7 +198,7 @@
             key: "pos",
             label: "ຂາຍໜ້າຮ້ານ (POS)",
             icon: "ShoppingCart",
-            color: "from-emerald-500 to-green-500",
+            color: "from-emerald-500 to-success-500",
             permissions: [
                 { key: "pos.view", label: "ເບິ່ງໜ້າ POS" },
                 { key: "pos.sale", label: "ຂາຍສິນຄ້າ" },
@@ -325,14 +325,15 @@
 
     function openEditModal(user: any) {
         selectedUser = user;
+        const permArr: string[] = Array.isArray(user.permissions) ? user.permissions : [];
         formData = {
             name: user.name || "",
             email: user.email || "",
             phone: user.phone || "",
-            roleId: user.roleId || user.role?.id || "",
+            roleId: user.roleId || user.roleRelation?.id || "",
             branchId: user.branchId || user.branch?.id || "",
             isActive: user.isActive !== false,
-            permissions: user.permissions || {}
+            permissions: Object.fromEntries(permArr.map((p: string) => [p, true]))
         };
         openPermissionGroups = {};
         showFormModal = true;
@@ -353,10 +354,14 @@
             toast.error("ກະລຸນາປ້ອນຊື່ຜູ້ໃຊ້");
             return;
         }
+        const permissionsArray = Object.entries(formData.permissions as Record<string, boolean>)
+            .filter(([, v]) => v)
+            .map(([k]) => k);
+        const submitData = { ...formData, permissions: permissionsArray };
         if (selectedUser) {
-            $updateMutationFn.mutate({ id: selectedUser.id, data: formData });
+            $updateMutationFn.mutate({ id: selectedUser.id, data: submitData });
         } else {
-            $createMutationFn.mutate(formData);
+            $createMutationFn.mutate(submitData);
         }
     }
 
@@ -379,7 +384,7 @@
         const colors = [
             "from-violet-500 to-purple-500",
             "from-blue-500 to-cyan-500",
-            "from-emerald-500 to-green-500",
+            "from-emerald-500 to-success-500",
             "from-amber-500 to-orange-500",
             "from-pink-500 to-rose-500",
             "from-indigo-500 to-blue-500",
@@ -546,10 +551,10 @@
                                             </div>
                                         </td>
                                         <td class="px-6 py-4">
-                                            {#if user.role}
+                                            {#if user.roleRelation || user.role}
                                                 <span class="inline-flex items-center gap-1.5 px-2.5 py-1 bg-violet-100 dark:bg-violet-900/30 text-violet-600 dark:text-violet-400 rounded-full text-xs font-medium">
                                                     <Shield class="w-3 h-3" />
-                                                    {user.role.name}
+                                                    {user.roleRelation?.displayName || user.roleRelation?.name || user.role}
                                                 </span>
                                             {:else}
                                                 <span class="text-gray-400">-</span>
@@ -575,7 +580,7 @@
                                                 "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium",
                                                 user.isActive !== false
                                                     ? "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400"
-                                                    : "bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400"
+                                                    : "bg-danger-100 dark:bg-danger-900/30 text-danger-600 dark:text-danger-400"
                                             )}>
                                                 {#if user.isActive !== false}
                                                     <UserCheck class="w-3 h-3" />
@@ -588,9 +593,9 @@
                                         </td>
                                         <td class="px-6 py-4">
                                             <div class="flex justify-center">
-                                                <button 
-                                                    onclick={() => toggleSuperAdmin(user)}
-                                                    disabled={$toggleSuperAdminMutation.isPending}
+                                                <button
+                                                    onclick={() => isSuperAdmin && toggleSuperAdmin(user)}
+                                                    disabled={!isSuperAdmin || $toggleSuperAdminMutation.isPending}
                                                     class={cn(
                                                         "w-12 h-7 rounded-full relative transition-all",
                                                         user.isSuperAdmin 
@@ -613,7 +618,7 @@
                                                 <button onclick={() => openEditModal(user)} class="w-9 h-9 bg-emerald-500 hover:bg-emerald-600 rounded-lg flex items-center justify-center text-white shadow-lg shadow-emerald-500/30 transition-all hover:scale-105">
                                                     <Pencil class="w-4 h-4" />
                                                 </button>
-                                                <button onclick={() => openDeleteModal(user)} class="w-9 h-9 bg-red-500 hover:bg-red-600 rounded-lg flex items-center justify-center text-white shadow-lg shadow-red-500/30 transition-all hover:scale-105">
+                                                <button onclick={() => openDeleteModal(user)} class="w-9 h-9 bg-danger-500 hover:bg-danger-600 rounded-lg flex items-center justify-center text-white shadow-lg shadow-danger-500/30 transition-all hover:scale-105">
                                                     <Trash2 class="w-4 h-4" />
                                                 </button>
                                             </div>
@@ -653,7 +658,7 @@
                                                 "inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs",
                                                 user.isActive !== false
                                                     ? "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400"
-                                                    : "bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400"
+                                                    : "bg-danger-100 dark:bg-danger-900/30 text-danger-600 dark:text-danger-400"
                                             )}>
                                                 {user.isActive !== false ? "ເປີດໃຊ້" : "ປິດໃຊ້"}
                                             </span>
@@ -661,9 +666,10 @@
                                     </div>
                                 </div>
                                 <div class="flex justify-between items-center mt-4">
-                                    <button 
-                                        onclick={() => toggleSuperAdmin(user)}
-                                        class="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400"
+                                    <button
+                                        onclick={() => isSuperAdmin && toggleSuperAdmin(user)}
+                                        disabled={!isSuperAdmin}
+                                        class="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 disabled:opacity-40 disabled:cursor-not-allowed"
                                     >
                                         <span class={cn(
                                             "w-10 h-6 rounded-full relative transition-all",
@@ -685,7 +691,7 @@
                                         <button onclick={() => openEditModal(user)} class="px-3 py-2 bg-emerald-500 text-white rounded-lg text-sm font-medium">
                                             ແກ້ໄຂ
                                         </button>
-                                        <button onclick={() => openDeleteModal(user)} class="px-3 py-2 bg-red-500 text-white rounded-lg text-sm font-medium">
+                                        <button onclick={() => openDeleteModal(user)} class="px-3 py-2 bg-danger-500 text-white rounded-lg text-sm font-medium">
                                             ລຶບ
                                         </button>
                                     </div>
@@ -758,7 +764,7 @@
                                 "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-sm font-medium",
                                 selectedUser.isActive !== false 
                                     ? "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400"
-                                    : "bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400"
+                                    : "bg-danger-100 dark:bg-danger-900/30 text-danger-600 dark:text-danger-400"
                             )}>
                                 {#if selectedUser.isActive !== false}
                                     <CheckCircle class="w-4 h-4" />
@@ -836,7 +842,7 @@
     {/if}
 
     <!-- Form Modal -->
-    {#if showFormModal && selectedUser}
+    {#if showFormModal}
         <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
             <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showFormModal = false}></div>
             <div class="relative bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden max-h-[90vh] overflow-y-auto">
@@ -847,8 +853,8 @@
                     <div class="flex items-center gap-3">
                         <Sparkles class="w-8 h-8" />
                         <div>
-                            <h3 class="text-xl font-bold">ແກ້ໄຂຜູ້ໃຊ້</h3>
-                            <p class="text-sm opacity-90">ອັບເດດຂໍ້ມູນຜູ້ໃຊ້</p>
+                            <h3 class="text-xl font-bold">{selectedUser ? 'ແກ້ໄຂຜູ້ໃຊ້' : 'ເພີ່ມຜູ້ໃຊ້ໃໝ່'}</h3>
+                            <p class="text-sm opacity-90">{selectedUser ? 'ອັບເດດຂໍ້ມູນຜູ້ໃຊ້' : 'ສ້າງບັນຊີຜູ້ໃຊ້ໃໝ່'}</p>
                         </div>
                     </div>
                 </div>
@@ -920,80 +926,50 @@
                         <label for="isActive" class="text-sm font-medium text-gray-700 dark:text-gray-300">ເປີດໃຊ້ງານ</label>
                     </div>
 
-                    <!-- Permissions Accordion -->
-                    <div class="border-t border-gray-200 dark:border-gray-700 pt-4 mt-4">
-                        <h4 class="text-sm font-semibold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
-                            <Shield class="w-4 h-4 text-emerald-500" />
-                            ກຳນົດສິດ
-                        </h4>
-                        <div class="space-y-2">
-                            {#each permissionGroups as group (group.key)}
-                                {@const GroupIcon = typeof group.icon === 'string' ? getIcon(group.icon) : group.icon}
-                                {@const isOpen = openPermissionGroups[group.key]}
-                                {@const checkedCount = group.permissions.filter((p: any) => formData.permissions[p.key]).length}
-                                <div class="border border-gray-200 dark:border-gray-600 rounded-xl overflow-hidden">
-                                    <!-- Accordion Header -->
-                                    <button
-                                        type="button"
-                                        onclick={() => togglePermissionGroup(group.key)}
-                                        class="w-full flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-                                    >
-                                        <div class="flex items-center gap-3">
-                                            <div class={cn("w-8 h-8 rounded-lg flex items-center justify-center bg-gradient-to-br", group.color)}>
-                                                <GroupIcon class="w-4 h-4 text-white" />
-                                            </div>
-                                            <span class="font-medium text-gray-900 dark:text-white text-sm">{group.label}</span>
-                                            {#if checkedCount > 0}
-                                                <span class="px-2 py-0.5 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 text-xs rounded-full font-medium">
-                                                    {checkedCount}/{group.permissions.length}
-                                                </span>
-                                            {/if}
-                                        </div>
-                                        <ChevronDown class={cn("w-5 h-5 text-gray-400 transition-transform", isOpen && "rotate-180")} />
-                                    </button>
-                                    <!-- Accordion Content -->
-                                    {#if isOpen}
-                                        <div class="p-3 bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-600 space-y-2">
-                                            <button
-                                                type="button"
-                                                onclick={() => toggleAllInGroup(group.key, group.permissions)}
-                                                class="text-xs text-emerald-600 dark:text-emerald-400 hover:underline mb-2"
-                                            >
-                                                {group.permissions.every(p => formData.permissions[p.key]) ? "ຍົກເລີກທັງໝົດ" : "ເລືອກທັງໝົດ"}
-                                            </button>
-                                            <div class="grid grid-cols-2 gap-2">
-                                                {#each group.permissions as permission (permission.key)}
-                                                    <label class="flex items-center gap-2 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer transition-colors">
-                                                        <input
-                                                            type="checkbox"
-                                                            checked={formData.permissions[permission.key] || false}
-                                                            onchange={() => togglePermission(permission.key)}
-                                                            class="w-4 h-4 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500"
-                                                        />
-                                                        <span class="text-xs text-gray-700 dark:text-gray-300">{permission.label}</span>
-                                                    </label>
-                                                {/each}
-                                            </div>
-                                        </div>
-                                    {/if}
-                                </div>
-                            {/each}
+                    {#if !selectedUser}
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ລະຫັດຜ່ານ *</label>
+                            <input
+                                type="password"
+                                bind:value={(formData as any).password}
+                                placeholder="ລະຫັດຜ່ານ"
+                                class="w-full px-4 py-3 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-transparent text-gray-900 dark:text-white"
+                            />
                         </div>
-                    </div>
+                    {/if}
+
+                    {#if selectedUser}
+                        <div class="border-t border-gray-200 dark:border-gray-700 pt-4">
+                            <div class="flex items-center justify-between">
+                                <div class="flex items-center gap-2">
+                                    <Shield class="w-4 h-4 text-emerald-500" />
+                                    <span class="text-sm font-semibold text-gray-900 dark:text-white">ສິດການເຂົ້າເຖິງ</span>
+                                    <span class="text-xs text-gray-500 dark:text-gray-400">(ເພີ່ມເຕີມຈາກ Role)</span>
+                                </div>
+                                <a
+                                    href="/staff/{selectedUser.id}/permissions"
+                                    onclick={() => showFormModal = false}
+                                    class="flex items-center gap-1 text-sm text-emerald-600 dark:text-emerald-400 hover:underline font-medium"
+                                >
+                                    ຈັດການສິດ →
+                                </a>
+                            </div>
+                        </div>
+                    {/if}
 
                     <div class="flex gap-3 pt-4">
                         <button type="button" onclick={() => showFormModal = false} class="flex-1 px-4 py-3 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 font-medium rounded-xl hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">
                             ຍົກເລີກ
                         </button>
-                        <button 
+                        <button
                             type="submit"
-                            disabled={$updateMutationFn.isPending}
+                            disabled={$updateMutationFn.isPending || $createMutationFn.isPending}
                             class="flex-1 px-4 py-3 bg-emerald-500 hover:bg-emerald-600 text-white font-medium rounded-xl shadow-lg shadow-emerald-500/30 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
                         >
-                            {#if $updateMutationFn.isPending}
+                            {#if $updateMutationFn.isPending || $createMutationFn.isPending}
                                 <Loader2 class="w-5 h-5 animate-spin" />
                             {/if}
-                            ບັນທຶກ
+                            {selectedUser ? 'ບັນທຶກ' : 'ສ້າງ'}
                         </button>
                     </div>
                 </form>
@@ -1007,8 +983,8 @@
             <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showDeleteModal = false}></div>
             <div class="relative bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
                 <div class="p-6 text-center">
-                    <div class="w-16 h-16 bg-red-100 dark:bg-red-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
-                        <AlertTriangle class="w-8 h-8 text-red-600 dark:text-red-400" />
+                    <div class="w-16 h-16 bg-danger-100 dark:bg-danger-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <AlertTriangle class="w-8 h-8 text-danger-600 dark:text-danger-400" />
                     </div>
                     <h3 class="text-xl font-bold text-gray-900 dark:text-white mb-2">ລຶບຜູ້ໃຊ້?</h3>
                     <p class="text-gray-500 dark:text-gray-400 mb-4">ທ່ານແນ່ໃຈບໍ່ວ່າຕ້ອງການລຶບຜູ້ໃຊ້ <span class="font-semibold text-gray-900 dark:text-white">"{selectedUser.name}"</span>? ການດຳເນີນການນີ້ບໍ່ສາມາດຍ້ອນກັບໄດ້.</p>
@@ -1020,7 +996,7 @@
                     <button 
                         onclick={handleDelete}
                         disabled={$deleteMutationFn.isPending}
-                        class="flex-1 px-4 py-3 bg-red-500 hover:bg-red-600 text-white font-medium rounded-xl shadow-lg shadow-red-500/30 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                        class="flex-1 px-4 py-3 bg-danger-500 hover:bg-danger-600 text-white font-medium rounded-xl shadow-lg shadow-danger-500/30 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
                     >
                         {#if $deleteMutationFn.isPending}
                             <Loader2 class="w-5 h-5 animate-spin" />

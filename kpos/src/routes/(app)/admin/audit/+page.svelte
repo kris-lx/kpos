@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { createQuery, useQueryClient } from "@tanstack/svelte-query";
     import { get } from "svelte/store";
     import { api } from "$lib/api";
@@ -54,8 +54,8 @@
                 goto("/login");
                 return;
             }
-            // ສະເພາະ Super Admin ແລະ Admin ເທົ່ານັ້ນທີ່ເບິ່ງ Audit Logs ໄດ້
-            if (user.isSuperAdmin || user.role === 'admin') {
+            const auditRoles = ['admin', 'hq_admin', 'hq_manager', 'branch_admin', 'store_owner'];
+            if (user.isSuperAdmin || auditRoles.includes(user.role)) {
                 canAccess = true;
             } else {
                 toast.error("ທ່ານບໍ່ມີສິດເຂົ້າເຖິງໜ້ານີ້");
@@ -158,7 +158,7 @@
     function getActionColor(action: string | undefined) {
         if (!action) return 'text-gray-500 bg-gray-100 dark:bg-gray-700';
         if (action.includes('created') || action === 'login') return 'text-emerald-500 bg-emerald-100 dark:bg-emerald-900/30';
-        if (action.includes('deleted') || action === 'logout' || action.includes('failed') || action.includes('voided')) return 'text-red-500 bg-red-100 dark:bg-red-900/30';
+        if (action.includes('deleted') || action === 'logout' || action.includes('failed') || action.includes('voided')) return 'text-danger-500 bg-danger-100 dark:bg-danger-900/30';
         if (action.includes('updated')) return 'text-blue-500 bg-blue-100 dark:bg-blue-900/30';
         return 'text-gray-500 bg-gray-100 dark:bg-gray-700';
     }
@@ -310,7 +310,7 @@
                 </div>
                 <div class="bg-white dark:bg-gray-800/50 rounded-2xl p-5 border border-gray-100 dark:border-gray-700/50 shadow-lg">
                     <div class="flex items-center gap-3">
-                        <div class="w-12 h-12 bg-gradient-to-br from-emerald-500 to-green-500 rounded-xl flex items-center justify-center shadow-lg shadow-emerald-500/30">
+                        <div class="w-12 h-12 bg-gradient-to-br from-emerald-500 to-success-500 rounded-xl flex items-center justify-center shadow-lg shadow-emerald-500/30">
                             <Unlock class="w-6 h-6 text-white" />
                         </div>
                         <div>
@@ -332,7 +332,7 @@
                 </div>
                 <div class="bg-white dark:bg-gray-800/50 rounded-2xl p-5 border border-gray-100 dark:border-gray-700/50 shadow-lg">
                     <div class="flex items-center gap-3">
-                        <div class="w-12 h-12 bg-gradient-to-br from-red-500 to-rose-500 rounded-xl flex items-center justify-center shadow-lg shadow-red-500/30">
+                        <div class="w-12 h-12 bg-gradient-to-br from-danger-500 to-rose-500 rounded-xl flex items-center justify-center shadow-lg shadow-danger-500/30">
                             <AlertTriangle class="w-6 h-6 text-white" />
                         </div>
                         <div>
@@ -379,7 +379,7 @@
                     {#if searchQuery || actionFilter || userFilter || dateFrom || dateTo}
                         <button 
                             onclick={clearFilters}
-                            class="flex items-center gap-2 px-4 py-2.5 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-xl text-sm text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/50 transition-all"
+                            class="flex items-center gap-2 px-4 py-2.5 bg-danger-50 dark:bg-danger-900/30 border border-danger-200 dark:border-danger-800 rounded-xl text-sm text-danger-600 dark:text-danger-400 hover:bg-danger-100 dark:hover:bg-danger-900/50 transition-all"
                         >
                             <X class="w-4 h-4" />
                             ລ້າງ

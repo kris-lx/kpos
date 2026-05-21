@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { createQuery, createMutation, useQueryClient } from "@tanstack/svelte-query";
     import { get } from "svelte/store";
     import { api } from "$api";
@@ -16,6 +16,12 @@
         Trash2,
         X,
         Loader2,
+        Camera,
+        ChevronDown,
+        ChevronUp,
+        Globe,
+        Hash,
+        User,
     } from "lucide-svelte";
 
     const queryClient = useQueryClient();
@@ -33,8 +39,45 @@
         address: "",
         phone: "",
         email: "",
+        taxId: "",
+        logo: "",
+        ownerName: "",
+        ownerPhone: "",
+        ownerEmail: "",
+        registrationNo: "",
+        website: "",
         isMain: false,
     });
+
+    let isUploadingLogo = $state(false);
+    let showIdentitySection = $state(false);
+
+    async function handleLogoUpload(event: Event) {
+        const input = event.target as HTMLInputElement;
+        const file = input.files?.[0];
+        if (!file) return;
+        if (file.size > 2 * 1024 * 1024) { toast.error('ຮູບຕ້ອງນ້ອຍກວ່າ 2MB'); return; }
+        isUploadingLogo = true;
+        try {
+            const base64 = await new Promise<string>((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = (e) => resolve(e.target?.result as string);
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+            try {
+                const res = await api.post('upload/single', { json: { image: base64, folder: 'logos' } }).json<any>();
+                formData.logo = res.success && res.data?.url ? res.data.url : base64;
+            } catch {
+                formData.logo = base64;
+            }
+            toast.success('ອັບໂຫຼດໂລໂກ້ສຳເລັດ');
+        } catch {
+            toast.error('ອັບໂຫຼດໂລໂກ້ລົ້ມເຫຼວ');
+        } finally {
+            isUploadingLogo = false;
+        }
+    }
 
     const branchesQuery = createQuery({
         queryKey: ["branches"],
@@ -98,10 +141,11 @@
     
     function openCreate() {
         editingBranch = null;
-        formData = { name: "", code: "", address: "", phone: "", email: "", isMain: false };
+        formData = { name: "", code: "", address: "", phone: "", email: "", taxId: "", logo: "", ownerName: "", ownerPhone: "", ownerEmail: "", registrationNo: "", website: "", isMain: false };
+        showIdentitySection = false;
         showModal = true;
     }
-    
+
     function openEdit(branch: any) {
         editingBranch = branch;
         formData = {
@@ -110,8 +154,16 @@
             address: branch.address || "",
             phone: branch.phone || "",
             email: branch.email || "",
+            taxId: branch.taxId || "",
+            logo: branch.logo || "",
+            ownerName: branch.ownerName || "",
+            ownerPhone: branch.ownerPhone || "",
+            ownerEmail: branch.ownerEmail || "",
+            registrationNo: branch.registrationNo || "",
+            website: branch.website || "",
             isMain: branch.isMain || false,
         };
+        showIdentitySection = !!(branch.ownerName || branch.registrationNo || branch.website);
         showModal = true;
     }
     
@@ -232,18 +284,20 @@
                         {#if auth.hasPermission("branches:delete")}
                         <button
                             onclick={() => openDelete(branch)}
-                            class="p-2 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg"
+                            class="p-2 hover:bg-danger-50 dark:hover:bg-danger-900/30 rounded-lg"
                         >
-                            <Trash2 class="w-4 h-4 text-red-500" />
+                            <Trash2 class="w-4 h-4 text-danger-500" />
                         </button>
                         {/if}
                     </div>
 
                     <div class="flex items-center gap-4 mb-4">
-                        <div
-                            class="w-14 h-14 rounded-xl bg-primary-100 dark:bg-primary-900/30 flex items-center justify-center"
-                        >
-                            <Building2 class="w-7 h-7 text-primary-600" />
+                        <div class="w-14 h-14 rounded-xl overflow-hidden bg-primary-100 dark:bg-primary-900/30 flex items-center justify-center shrink-0">
+                            {#if branch.logo}
+                                <img src={branch.logo} alt={branch.name} class="w-full h-full object-cover" />
+                            {:else}
+                                <Building2 class="w-7 h-7 text-primary-600" />
+                            {/if}
                         </div>
                         <div>
                             <h3
@@ -301,71 +355,146 @@
             </button>
         </div>
         
-        <form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }} class="space-y-4">
+        <form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }} class="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
+            <!-- Logo Upload -->
+            <div class="flex items-center gap-4">
+                <div class="relative group shrink-0">
+                    <div class="w-20 h-20 rounded-xl border-2 border-dashed border-gray-300 dark:border-gray-600 flex items-center justify-center overflow-hidden bg-gray-50 dark:bg-gray-800">
+                        {#if formData.logo}
+                            <img src={formData.logo} alt="Logo" class="w-full h-full object-cover" />
+                        {:else}
+                            <Building2 class="w-8 h-8 text-gray-300 dark:text-gray-600" />
+                        {/if}
+                    </div>
+                    <label class="absolute inset-0 flex items-center justify-center bg-black/40 rounded-xl opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer">
+                        {#if isUploadingLogo}
+                            <Loader2 class="w-5 h-5 text-white animate-spin" />
+                        {:else}
+                            <Camera class="w-5 h-5 text-white" />
+                        {/if}
+                        <input type="file" accept="image/*" class="hidden" onchange={handleLogoUpload} />
+                    </label>
+                </div>
+                <div class="flex-1">
+                    <p class="text-sm font-medium text-gray-700 dark:text-gray-300">ໂລໂກ້ສາຂາ</p>
+                    <p class="text-xs text-gray-400 mt-0.5">ສະແດງໃນໃບບິນ ແລະ ລາຍງານ (ສູງສຸດ 2MB)</p>
+                    {#if formData.logo}
+                        <button type="button" onclick={() => formData.logo = ""} class="text-xs text-danger-500 hover:underline mt-1">ລຶບໂລໂກ້</button>
+                    {/if}
+                </div>
+            </div>
+
+            <!-- Basic Info -->
             <div class="grid grid-cols-2 gap-4">
                 <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ຊື່ສາຂາ *</label>
-                    <input
-                        type="text"
-                        bind:value={formData.name}
+                    <input type="text" bind:value={formData.name}
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800 focus:ring-2 focus:ring-primary-500"
-                        placeholder="ສາຂາໃຫຍ່"
-                        required
-                    />
+                        placeholder="ສາຂາໃຫຍ່" required />
                 </div>
                 <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ລະຫັດສາຂາ *</label>
-                    <input
-                        type="text"
-                        bind:value={formData.code}
+                    <input type="text" bind:value={formData.code}
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800 focus:ring-2 focus:ring-primary-500"
-                        placeholder="HQ"
-                        required
-                    />
+                        placeholder="HQ" required />
                 </div>
             </div>
-            
+
             <div>
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ທີ່ຢູ່</label>
-                <input
-                    type="text"
-                    bind:value={formData.address}
+                <input type="text" bind:value={formData.address}
                     class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800 focus:ring-2 focus:ring-primary-500"
-                    placeholder="ນະຄອນຫຼວງວຽງຈັນ"
-                />
+                    placeholder="ນະຄອນຫຼວງວຽງຈັນ" />
             </div>
-            
+
             <div class="grid grid-cols-2 gap-4">
                 <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ເບີໂທ</label>
-                    <input
-                        type="text"
-                        bind:value={formData.phone}
+                    <input type="text" bind:value={formData.phone}
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800 focus:ring-2 focus:ring-primary-500"
-                        placeholder="+856 20 1234 5678"
-                    />
+                        placeholder="+856 20 1234 5678" />
                 </div>
                 <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ອີເມວ</label>
-                    <input
-                        type="email"
-                        bind:value={formData.email}
+                    <input type="email" bind:value={formData.email}
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800 focus:ring-2 focus:ring-primary-500"
-                        placeholder="branch@kpos.la"
-                    />
+                        placeholder="branch@kpos.la" />
                 </div>
             </div>
-            
+
+            <div>
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ເລກທີພາສີ (Tax ID)</label>
+                <input type="text" bind:value={formData.taxId}
+                    class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800 focus:ring-2 focus:ring-primary-500"
+                    placeholder="0101234567890" />
+            </div>
+
+            <!-- Identity / Owner section (collapsible) -->
+            <div class="border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden">
+                <button type="button"
+                    onclick={() => showIdentitySection = !showIdentitySection}
+                    class="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                >
+                    <div class="flex items-center gap-2">
+                        <User class="w-4 h-4" />
+                        <span>ຂໍ້ມູນເຈົ້າຂອງ / ທຸລະກິດ</span>
+                    </div>
+                    {#if showIdentitySection}
+                        <ChevronUp class="w-4 h-4 text-gray-400" />
+                    {:else}
+                        <ChevronDown class="w-4 h-4 text-gray-400" />
+                    {/if}
+                </button>
+                {#if showIdentitySection}
+                    <div class="px-4 pb-4 space-y-3 border-t border-gray-100 dark:border-gray-700 pt-3">
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">ຊື່ເຈົ້າຂອງ</label>
+                                <input type="text" bind:value={formData.ownerName}
+                                    class="w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 dark:bg-gray-800 text-sm focus:ring-2 focus:ring-primary-500"
+                                    placeholder="ທ. ສົມໄຊ" />
+                            </div>
+                            <div>
+                                <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">ເບີໂທເຈົ້າຂອງ</label>
+                                <input type="text" bind:value={formData.ownerPhone}
+                                    class="w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 dark:bg-gray-800 text-sm focus:ring-2 focus:ring-primary-500"
+                                    placeholder="020 1234 5678" />
+                            </div>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">ອີເມວເຈົ້າຂອງ</label>
+                            <input type="email" bind:value={formData.ownerEmail}
+                                class="w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 dark:bg-gray-800 text-sm focus:ring-2 focus:ring-primary-500"
+                                placeholder="owner@kpos.la" />
+                        </div>
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                                    <Hash class="w-3 h-3 inline" /> ເລກທະບຽນ
+                                </label>
+                                <input type="text" bind:value={formData.registrationNo}
+                                    class="w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 dark:bg-gray-800 text-sm focus:ring-2 focus:ring-primary-500"
+                                    placeholder="REG-001" />
+                            </div>
+                            <div>
+                                <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                                    <Globe class="w-3 h-3 inline" /> ເວັບໄຊ
+                                </label>
+                                <input type="url" bind:value={formData.website}
+                                    class="w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 dark:bg-gray-800 text-sm focus:ring-2 focus:ring-primary-500"
+                                    placeholder="www.kpos.la" />
+                            </div>
+                        </div>
+                    </div>
+                {/if}
+            </div>
+
             <div class="flex items-center gap-2">
-                <input
-                    type="checkbox"
-                    id="isMain"
-                    bind:checked={formData.isMain}
-                    class="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                />
+                <input type="checkbox" id="isMain" bind:checked={formData.isMain}
+                    class="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
                 <label for="isMain" class="text-sm text-gray-700 dark:text-gray-300">ສາຂາຫຼັກ</label>
             </div>
-            
+
             <div class="flex gap-3 pt-4">
                 <button
                     type="button"
@@ -395,8 +524,8 @@
 <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onclick={closeDeleteModal}>
     <div class="bg-white dark:bg-gray-900 rounded-2xl w-full max-w-md mx-4 p-6" onclick={(e) => e.stopPropagation()}>
         <div class="text-center">
-            <div class="w-16 h-16 mx-auto mb-4 rounded-full bg-red-100 dark:bg-red-900/30 flex items-center justify-center">
-                <Trash2 class="w-8 h-8 text-red-500" />
+            <div class="w-16 h-16 mx-auto mb-4 rounded-full bg-danger-100 dark:bg-danger-900/30 flex items-center justify-center">
+                <Trash2 class="w-8 h-8 text-danger-500" />
             </div>
             <h2 class="text-xl font-bold text-gray-900 dark:text-white mb-2">ຢືນຢັນການລົບ</h2>
             <p class="text-gray-500 mb-6">
@@ -413,7 +542,7 @@
                 <button
                     onclick={handleDelete}
                     disabled={$deleteMut.isPending}
-                    class="flex-1 px-4 py-2.5 rounded-xl bg-red-500 text-white hover:bg-red-600 disabled:opacity-50 flex items-center justify-center gap-2"
+                    class="flex-1 px-4 py-2.5 rounded-xl bg-danger-500 text-white hover:bg-danger-600 disabled:opacity-50 flex items-center justify-center gap-2"
                 >
                     {#if $deleteMut.isPending}
                         <Loader2 class="w-4 h-4 animate-spin" />

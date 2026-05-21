@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount, onDestroy } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
@@ -147,7 +147,7 @@
         switch (status) {
             case "available":
                 return {
-                    bg: "bg-gradient-to-br from-emerald-50 to-green-100 dark:from-emerald-900/20 dark:to-green-900/30",
+                    bg: "bg-gradient-to-br from-emerald-50 to-success-100 dark:from-emerald-900/20 dark:to-success-900/30",
                     border: "border-emerald-300 dark:border-emerald-700",
                     dot: "bg-emerald-500",
                     text: "text-emerald-700 dark:text-emerald-400",
@@ -155,7 +155,7 @@
                 };
             case "occupied":
                 return {
-                    bg: "bg-gradient-to-br from-rose-50 to-red-100 dark:from-rose-900/20 dark:to-red-900/30",
+                    bg: "bg-gradient-to-br from-rose-50 to-danger-100 dark:from-rose-900/20 dark:to-danger-900/30",
                     border: "border-rose-300 dark:border-rose-700",
                     dot: "bg-rose-500 animate-pulse",
                     text: "text-rose-700 dark:text-rose-400",
@@ -199,15 +199,15 @@
     }
 
     function getElapsedColor(minutes: number): string {
-        if (minutes < 10) return "text-green-600 dark:text-green-400";
+        if (minutes < 10) return "text-success-600 dark:text-success-400";
         if (minutes < 20) return "text-amber-600 dark:text-amber-400";
-        return "text-red-600 dark:text-red-400";
+        return "text-danger-600 dark:text-danger-400";
     }
 
     function getElapsedBg(minutes: number): string {
-        if (minutes < 10) return "bg-green-100 dark:bg-green-900/30";
+        if (minutes < 10) return "bg-success-100 dark:bg-success-900/30";
         if (minutes < 20) return "bg-amber-100 dark:bg-amber-900/30";
-        return "bg-red-100 dark:bg-red-900/30";
+        return "bg-danger-100 dark:bg-danger-900/30";
     }
 
     async function updateItemStatus(orderId: string, itemIndex: number) {
@@ -257,7 +257,7 @@
     <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between mb-6 gap-4">
         <div>
             <div class="flex items-center gap-3">
-                <div class="p-2.5 bg-gradient-to-br from-orange-500 to-red-600 rounded-xl shadow-lg">
+                <div class="p-2.5 bg-gradient-to-br from-orange-500 to-danger-600 rounded-xl shadow-lg">
                     <UtensilsCrossed class="w-6 h-6 text-white" />
                 </div>
                 <div>
@@ -301,7 +301,7 @@
                     class={cn(
                         "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all",
                         activeView === "kitchen"
-                            ? "bg-gradient-to-r from-orange-500 to-red-600 text-white shadow-md"
+                            ? "bg-gradient-to-r from-orange-500 to-danger-600 text-white shadow-md"
                             : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white",
                     )}
                 >
@@ -392,12 +392,12 @@
         </div>
         
         <!-- Ready -->
-        <div class="bg-white dark:bg-gray-800 rounded-xl p-4 shadow-sm border border-green-100 dark:border-green-900/30">
+        <div class="bg-white dark:bg-gray-800 rounded-xl p-4 shadow-sm border border-success-100 dark:border-success-900/30">
             <div class="flex items-center justify-between">
-                <div class="p-2 bg-green-100 dark:bg-green-900/30 rounded-lg">
-                    <Bell class="w-5 h-5 text-green-600 dark:text-green-400" />
+                <div class="p-2 bg-success-100 dark:bg-success-900/30 rounded-lg">
+                    <Bell class="w-5 h-5 text-success-600 dark:text-success-400" />
                 </div>
-                <span class="text-2xl font-bold text-green-600 dark:text-green-400">{stats.readyOrders}</span>
+                <span class="text-2xl font-bold text-success-600 dark:text-success-400">{stats.readyOrders}</span>
             </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">{t("restaurant.ready")}</p>
         </div>
@@ -572,7 +572,7 @@
                                 {#if table.status === "available"}
                                     <button
                                         onclick={() => updateTableStatus(table.id, 'occupied')}
-                                        class="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-emerald-500 to-green-600 text-white rounded-xl text-sm font-medium hover:from-emerald-600 hover:to-green-700 transition-all shadow-md"
+                                        class="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-emerald-500 to-success-600 text-white rounded-xl text-sm font-medium hover:from-emerald-600 hover:to-success-700 transition-all shadow-md"
                                     >
                                         <Users class="w-4 h-4" />
                                         {t("restaurant.openTable")}
@@ -594,7 +594,7 @@
                                         <Plus class="w-4 h-4" />
                                         {t("restaurant.addItems")}
                                     </button>
-                                    <button class="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-green-500 to-emerald-600 text-white rounded-xl text-sm font-medium hover:from-green-600 hover:to-emerald-700 transition-all shadow-md">
+                                    <button class="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-success-500 to-emerald-600 text-white rounded-xl text-sm font-medium hover:from-success-600 hover:to-emerald-700 transition-all shadow-md">
                                         <DollarSign class="w-4 h-4" />
                                         {t("restaurant.checkout")}
                                     </button>
@@ -602,14 +602,14 @@
                                 {#if table.status === "reserved"}
                                     <button
                                         onclick={() => updateTableStatus(table.id, 'occupied')}
-                                        class="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-emerald-500 to-green-600 text-white rounded-xl text-sm font-medium hover:from-emerald-600 hover:to-green-700 transition-all shadow-md"
+                                        class="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-emerald-500 to-success-600 text-white rounded-xl text-sm font-medium hover:from-emerald-600 hover:to-success-700 transition-all shadow-md"
                                     >
                                         <Check class="w-4 h-4" />
                                         {t("restaurant.checkIn")}
                                     </button>
                                     <button
                                         onclick={() => updateTableStatus(table.id, 'available')}
-                                        class="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-rose-500 to-red-600 text-white rounded-xl text-sm font-medium hover:from-rose-600 hover:to-red-700 transition-all shadow-md"
+                                        class="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-rose-500 to-danger-600 text-white rounded-xl text-sm font-medium hover:from-rose-600 hover:to-danger-700 transition-all shadow-md"
                                     >
                                         <X class="w-4 h-4" />
                                         {t("restaurant.cancelReservation")}
@@ -618,7 +618,7 @@
                                 {#if table.status === "cleaning"}
                                     <button
                                         onclick={() => updateTableStatus(table.id, 'available')}
-                                        class="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-emerald-500 to-green-600 text-white rounded-xl text-sm font-medium hover:from-emerald-600 hover:to-green-700 transition-all shadow-md"
+                                        class="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-emerald-500 to-success-600 text-white rounded-xl text-sm font-medium hover:from-emerald-600 hover:to-success-700 transition-all shadow-md"
                                     >
                                         <CheckCircle class="w-4 h-4" />
                                         {t("restaurant.markReady")}
@@ -655,7 +655,7 @@
                                 <div class={cn(
                                     "rounded-xl border-2 overflow-hidden transition-all",
                                     order.priority === "high"
-                                        ? "border-rose-300 dark:border-rose-800 bg-gradient-to-br from-rose-50 to-red-50 dark:from-rose-900/20 dark:to-red-900/20"
+                                        ? "border-rose-300 dark:border-rose-800 bg-gradient-to-br from-rose-50 to-danger-50 dark:from-rose-900/20 dark:to-danger-900/20"
                                         : "border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800"
                                 )}>
                                     <div class="p-3 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
@@ -758,7 +758,7 @@
                                                 </div>
                                                 <button
                                                     onclick={() => updateItemStatus(order.id, order.items.indexOf(item))}
-                                                    class="shrink-0 px-3 py-1.5 bg-gradient-to-r from-green-500 to-emerald-600 text-white rounded-lg text-xs font-medium hover:from-green-600 hover:to-emerald-700 transition-all shadow-sm"
+                                                    class="shrink-0 px-3 py-1.5 bg-gradient-to-r from-success-500 to-emerald-600 text-white rounded-lg text-xs font-medium hover:from-success-600 hover:to-emerald-700 transition-all shadow-sm"
                                                 >
                                                     <Check class="w-3.5 h-3.5 inline mr-1" />
                                                     {t("restaurant.markReady")}
@@ -780,18 +780,18 @@
                 </div>
 
                 <!-- Ready Orders Column -->
-                <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-green-100 dark:border-green-900/30 overflow-hidden">
-                    <div class="p-4 border-b border-green-100 dark:border-green-900/30 bg-gradient-to-r from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20">
+                <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-success-100 dark:border-success-900/30 overflow-hidden">
+                    <div class="p-4 border-b border-success-100 dark:border-success-900/30 bg-gradient-to-r from-success-50 to-emerald-50 dark:from-success-900/20 dark:to-emerald-900/20">
                         <div class="flex items-center justify-between">
                             <div class="flex items-center gap-2">
-                                <div class="p-2 bg-green-200 dark:bg-green-900/50 rounded-lg">
-                                    <Bell class="w-5 h-5 text-green-600 dark:text-green-400" />
+                                <div class="p-2 bg-success-200 dark:bg-success-900/50 rounded-lg">
+                                    <Bell class="w-5 h-5 text-success-600 dark:text-success-400" />
                                 </div>
                                 <h3 class="font-semibold text-gray-900 dark:text-white">
                                     {t("restaurant.readyToServe")}
                                 </h3>
                             </div>
-                            <span class="px-3 py-1 bg-green-200 dark:bg-green-900/50 rounded-full text-sm font-bold text-green-700 dark:text-green-400">
+                            <span class="px-3 py-1 bg-success-200 dark:bg-success-900/50 rounded-full text-sm font-bold text-success-700 dark:text-success-400">
                                 {stats.readyOrders}
                             </span>
                         </div>
@@ -799,8 +799,8 @@
                     <div class="p-4 space-y-3 max-h-[calc(100vh-350px)] overflow-y-auto">
                         {#each kitchenOrders as order (order.id)}
                             {#if order.items.some((i: any) => i.status === "ready")}
-                                <div class="rounded-xl border-2 border-green-200 dark:border-green-800/30 bg-gradient-to-br from-green-50 to-emerald-50 dark:from-green-900/10 dark:to-emerald-900/10 overflow-hidden">
-                                    <div class="p-3 border-b border-green-100 dark:border-green-800/30 flex items-center justify-between">
+                                <div class="rounded-xl border-2 border-success-200 dark:border-success-800/30 bg-gradient-to-br from-success-50 to-emerald-50 dark:from-success-900/10 dark:to-emerald-900/10 overflow-hidden">
+                                    <div class="p-3 border-b border-success-100 dark:border-success-800/30 flex items-center justify-between">
                                         <span class="font-bold text-gray-900 dark:text-white">{order.table}</span>
                                         <button class="px-3 py-1.5 bg-gradient-to-r from-primary-500 to-primary-600 text-white rounded-lg text-xs font-medium hover:from-primary-600 hover:to-primary-700 transition-all shadow-sm flex items-center gap-1">
                                             <Bell class="w-3.5 h-3.5" />
@@ -811,12 +811,12 @@
                                         {#each order.items.filter((i: any) => i.status === "ready") as item (item.id)}
                                             <div class="flex items-center justify-between gap-2 p-2 rounded-lg bg-white/50 dark:bg-gray-800/50">
                                                 <div class="flex items-center gap-2">
-                                                    <span class="w-6 h-6 flex items-center justify-center bg-green-200 dark:bg-green-900/50 rounded text-xs font-bold text-green-700 dark:text-green-400">
+                                                    <span class="w-6 h-6 flex items-center justify-center bg-success-200 dark:bg-success-900/50 rounded text-xs font-bold text-success-700 dark:text-success-400">
                                                         {item.quantity}
                                                     </span>
                                                     <span class="font-medium text-gray-900 dark:text-white">{item.name}</span>
                                                 </div>
-                                                <span class="flex items-center gap-1 text-green-600 dark:text-green-400 text-xs font-medium">
+                                                <span class="flex items-center gap-1 text-success-600 dark:text-success-400 text-xs font-medium">
                                                     <CheckCircle class="w-4 h-4" />
                                                     {t("restaurant.ready")}
                                                 </span>

@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { i18n } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
     import { auth } from "$lib/stores/auth.svelte";
@@ -26,66 +26,47 @@
     let pageSize = $state(10);
     const pageSizeOptions = [10, 25, 50, 100];
 
-    const allPermissions = [
-        {
-            category: "ການຂາຍ",
-            permissions: [
-                { key: "pos:access", label: "ເຂົ້າໃຊ້ໜ້າຂາຍ" },
-                { key: "pos:void", label: "ຍົກເລີກລາຍການ" },
-                { key: "pos:discount", label: "ໃຫ້ສ່ວນຫຼຸດ" },
-                { key: "pos:refund", label: "ຄືນເງິນ" },
-                { key: "pos:credit", label: "ຂາຍເຊື່ອ" },
-            ],
-        },
-        {
-            category: "ສິນຄ້າ",
-            permissions: [
-                { key: "products:read", label: "ເບິ່ງສິນຄ້າ" },
-                { key: "products:create", label: "ເພີ່ມສິນຄ້າ" },
-                { key: "products:update", label: "ແກ້ໄຂສິນຄ້າ" },
-                { key: "products:delete", label: "ລົບສິນຄ້າ" },
-            ],
-        },
-        {
-            category: "ສາງ",
-            permissions: [
-                { key: "inventory:read", label: "ເບິ່ງສາງ" },
-                { key: "inventory:stockin", label: "ນຳເຂົ້າສາງ" },
-                { key: "inventory:stockout", label: "ນຳອອກສາງ" },
-                { key: "inventory:adjust", label: "ປັບປ່ຽນຍອດ" },
-                { key: "inventory:transfer", label: "ໂອນຍ້າຍ" },
-            ],
-        },
-        {
-            category: "ລາຍງານ",
-            permissions: [
-                { key: "reports:sales", label: "ລາຍງານຂາຍ" },
-                { key: "reports:inventory", label: "ລາຍງານສາງ" },
-                { key: "reports:financial", label: "ລາຍງານການເງິນ" },
-                { key: "reports:staff", label: "ລາຍງານພະນັກງານ" },
-            ],
-        },
-        {
-            category: "ພະນັກງານ",
-            permissions: [
-                { key: "staff:read", label: "ເບິ່ງພະນັກງານ" },
-                { key: "staff:create", label: "ເພີ່ມພະນັກງານ" },
-                { key: "staff:update", label: "ແກ້ໄຂພະນັກງານ" },
-                { key: "staff:delete", label: "ລົບພະນັກງານ" },
-            ],
-        },
-        {
-            category: "ຕັ້ງຄ່າ",
-            permissions: [
-                { key: "settings:read", label: "ເບິ່ງການຕັ້ງຄ່າ" },
-                { key: "settings:update", label: "ແກ້ໄຂການຕັ້ງຄ່າ" },
-            ],
-        },
+    // Fallback permission groups (shown while API loads or if API returns nothing)
+    const fallbackPermissions = [
+        { category: "ການຂາຍ", permissions: [{ key: "pos:access", label: "ເຂົ້າໃຊ້ໜ້າຂາຍ" }, { key: "pos:void", label: "ຍົກເລີກລາຍການ" }, { key: "pos:discount", label: "ໃຫ້ສ່ວນຫຼຸດ" }, { key: "pos:refund", label: "ຄືນເງິນ" }, { key: "pos:credit", label: "ຂາຍເຊື່ອ" }] },
+        { category: "ສິນຄ້າ", permissions: [{ key: "products:read", label: "ເບິ່ງສິນຄ້າ" }, { key: "products:create", label: "ເພີ່ມສິນຄ້າ" }, { key: "products:update", label: "ແກ້ໄຂສິນຄ້າ" }, { key: "products:delete", label: "ລົບສິນຄ້າ" }] },
+        { category: "ສາງ", permissions: [{ key: "inventory:read", label: "ເບິ່ງສາງ" }, { key: "inventory:stockin", label: "ນຳເຂົ້າສາງ" }, { key: "inventory:stockout", label: "ນຳອອກສາງ" }, { key: "inventory:adjust", label: "ປັບປ່ຽນຍອດ" }, { key: "inventory:transfer", label: "ໂອນຍ້າຍ" }] },
+        { category: "ລາຍງານ", permissions: [{ key: "reports:sales", label: "ລາຍງານຂາຍ" }, { key: "reports:inventory", label: "ລາຍງານສາງ" }, { key: "reports:financial", label: "ລາຍງານການເງິນ" }, { key: "reports:staff", label: "ລາຍງານພະນັກງານ" }] },
+        { category: "ພະນັກງານ", permissions: [{ key: "staff:read", label: "ເບິ່ງພະນັກງານ" }, { key: "staff:create", label: "ເພີ່ມພະນັກງານ" }, { key: "staff:update", label: "ແກ້ໄຂພະນັກງານ" }, { key: "staff:delete", label: "ລົບພະນັກງານ" }] },
+        { category: "ຕັ້ງຄ່າ", permissions: [{ key: "settings:read", label: "ເບິ່ງການຕັ້ງຄ່າ" }, { key: "settings:update", label: "ແກ້ໄຂການຕັ້ງຄ່າ" }] },
     ];
+
+    let apiRules = $state<any[]>([]);
+
+    // Build permission groups from API rules; fall back to hardcoded if API returns nothing
+    let allPermissions = $derived.by(() => {
+        if (apiRules.length === 0) return fallbackPermissions;
+        const grouped: Record<string, { key: string; label: string }[]> = {};
+        for (const rule of apiRules) {
+            const cat = rule.displayName || rule.module || rule.name;
+            if (!grouped[cat]) grouped[cat] = [];
+            for (const key of (rule.permissions || [])) {
+                grouped[cat].push({ key, label: key });
+            }
+        }
+        return Object.entries(grouped).map(([category, permissions]) => ({ category, permissions }));
+    });
 
     onMount(() => {
         loadRoles();
+        loadRulesFromApi();
     });
+
+    async function loadRulesFromApi() {
+        try {
+            const res = await api.get("admin/rules").json<any>();
+            if (res.success && Array.isArray(res.data) && res.data.length > 0) {
+                apiRules = res.data;
+            }
+        } catch {
+            // keep fallback permission list
+        }
+    }
 
     async function loadRoles() {
         loading = true;
@@ -224,7 +205,7 @@
         </div>
     {:else if error}
         <div class="flex flex-col items-center justify-center py-12 bg-white dark:bg-gray-800 rounded-lg shadow-sm">
-            <AlertCircle class="w-12 h-12 text-red-500 dark:text-red-400 mb-4" />
+            <AlertCircle class="w-12 h-12 text-danger-500 dark:text-danger-400 mb-4" />
             <p class="text-gray-700 dark:text-gray-300 mb-4">{error}</p>
             <button
                 onclick={() => loadRoles()}
@@ -300,7 +281,7 @@
                         {#if !role.isSystem}
                             <button
                                 onclick={() => deleteRole(role)}
-                                class="flex items-center gap-1 px-3 py-1 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded"
+                                class="flex items-center gap-1 px-3 py-1 text-sm text-danger-600 dark:text-danger-400 hover:bg-danger-50 dark:hover:bg-danger-900/20 rounded"
                             >
                                 <Trash2 class="w-3 h-3" />
                                 ລົບ

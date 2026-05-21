@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { i18n } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
     import { onMount } from "svelte";
@@ -154,8 +154,8 @@
 
     function getStatusColor(status: string): string {
         return status === "online"
-            ? "bg-green-100 dark:bg-green-900/50 text-green-700 dark:text-green-300"
-            : "bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-300";
+            ? "bg-success-100 dark:bg-success-900/50 text-success-700 dark:text-success-300"
+            : "bg-danger-100 dark:bg-danger-900/50 text-danger-700 dark:text-danger-300";
     }
 
     function getTypeIcon(type: string): string {
@@ -199,8 +199,8 @@
         </div>
     {:else if error}
         <div class="flex flex-col items-center justify-center py-12 text-center">
-            <AlertCircle class="h-12 w-12 text-red-500 mb-4" />
-            <p class="text-red-600 dark:text-red-400 mb-4">{error}</p>
+            <AlertCircle class="h-12 w-12 text-danger-500 mb-4" />
+            <p class="text-danger-600 dark:text-danger-400 mb-4">{error}</p>
             <button
                 onclick={() => loadPrinters()}
                 class="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 flex items-center gap-2"
@@ -275,7 +275,7 @@
                         <button
                             onclick={() => testPrint(printer)}
                             disabled={testingPrinter === printer.id}
-                            class="px-3 py-1 text-sm bg-green-50 dark:bg-green-900/30 text-green-600 dark:text-green-400 hover:bg-green-100 dark:hover:bg-green-900/50 rounded disabled:opacity-50 flex items-center gap-1"
+                            class="px-3 py-1 text-sm bg-success-50 dark:bg-success-900/30 text-success-600 dark:text-success-400 hover:bg-success-100 dark:hover:bg-success-900/50 rounded disabled:opacity-50 flex items-center gap-1"
                         >
                             {#if testingPrinter === printer.id}
                                 <Loader2 class="w-3 h-3 animate-spin" />
@@ -294,7 +294,7 @@
                         </button>
                         <button
                             onclick={() => deletePrinter(printer)}
-                            class="px-3 py-1 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 rounded flex items-center gap-1"
+                            class="px-3 py-1 text-sm text-danger-600 dark:text-danger-400 hover:bg-danger-50 dark:hover:bg-danger-900/30 rounded flex items-center gap-1"
                         >
                             <Trash2 class="w-3 h-3" />
                             ລົບ

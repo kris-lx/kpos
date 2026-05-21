@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { t } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
     import { formatCurrency, formatNumber, formatDate } from "$lib/utils";
@@ -7,6 +7,7 @@
     import { Plus, X, Loader2, Trash2, Edit, Settings, Gift, Star, Sparkles, ChevronLeft, ChevronRight, AlertTriangle, AlertCircle, RefreshCw } from "lucide-svelte";
 
     let tiers = $state<any[]>([]);
+    let sortedTiers = $derived([...tiers].sort((a, b) => (a.minPoints || 0) - (b.minPoints || 0)));
     let loading = $state(true);
     let error = $state<string | null>(null);
     let showModal = $state(false);
@@ -227,11 +228,11 @@
                 <span class="text-sm font-medium text-gray-700 dark:text-gray-300">ສະຖານະ</span>
                 <button
                     onclick={() => (programSettings.isActive = !programSettings.isActive)}
-                    class="relative w-14 h-7 rounded-full transition-colors {programSettings.isActive ? 'bg-gradient-to-r from-green-400 to-emerald-500' : 'bg-gray-300 dark:bg-gray-600'}"
+                    class="relative w-14 h-7 rounded-full transition-colors {programSettings.isActive ? 'bg-gradient-to-r from-success-400 to-emerald-500' : 'bg-gray-300 dark:bg-gray-600'}"
                 >
                     <div class="absolute top-1 w-5 h-5 rounded-full bg-white shadow-md transform transition-transform {programSettings.isActive ? 'left-8' : 'left-1'}"></div>
                 </button>
-                <span class="text-xs font-semibold {programSettings.isActive ? 'text-green-600 dark:text-green-400' : 'text-gray-500'}">
+                <span class="text-xs font-semibold {programSettings.isActive ? 'text-success-600 dark:text-success-400' : 'text-gray-500'}">
                     {programSettings.isActive ? 'ເປີດ' : 'ປິດ'}
                 </span>
             </div>
@@ -272,10 +273,10 @@
         
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
             <div class="flex items-center justify-between">
-                <div class="p-2 bg-green-100 dark:bg-green-900/50 rounded-lg">
-                    <Gift class="w-5 h-5 text-green-600 dark:text-green-400" />
+                <div class="p-2 bg-success-100 dark:bg-success-900/50 rounded-lg">
+                    <Gift class="w-5 h-5 text-success-600 dark:text-success-400" />
                 </div>
-                <span class="text-2xl font-bold text-green-600 dark:text-green-400">{programSettings.welcomeBonus}</span>
+                <span class="text-2xl font-bold text-success-600 dark:text-success-400">{programSettings.welcomeBonus}</span>
             </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">ໂບນັດຕ້ອນຮັບ</p>
         </div>
@@ -346,14 +347,14 @@
                         <h3 class="font-semibold text-gray-900 dark:text-white">ໂບນັດພິເສດ</h3>
                     </div>
                     <div class="grid grid-cols-3 gap-2">
-                        <div class="text-center p-3 bg-green-50 dark:bg-green-900/30 rounded-xl">
+                        <div class="text-center p-3 bg-success-50 dark:bg-success-900/30 rounded-xl">
                             <input
                                 type="number"
                                 bind:value={programSettings.welcomeBonus}
                                 min="0"
-                                class="w-full text-center text-lg font-bold bg-transparent text-green-600 dark:text-green-400 border-none focus:ring-0"
+                                class="w-full text-center text-lg font-bold bg-transparent text-success-600 dark:text-success-400 border-none focus:ring-0"
                             />
-                            <p class="text-xs text-green-600/70 dark:text-green-400/70">ສະມັກໃໝ່</p>
+                            <p class="text-xs text-success-600/70 dark:text-success-400/70">ສະມັກໃໝ່</p>
                         </div>
                         <div class="text-center p-3 bg-pink-50 dark:bg-pink-900/30 rounded-xl">
                             <input
@@ -410,7 +411,7 @@
                 </div>
             {:else if error}
                 <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-12 text-center shadow-sm">
-                    <AlertCircle class="h-12 w-12 mx-auto text-red-500 dark:text-red-400 mb-4" />
+                    <AlertCircle class="h-12 w-12 mx-auto text-danger-500 dark:text-danger-400 mb-4" />
                     <p class="text-gray-700 dark:text-gray-300 mb-4">{error}</p>
                     <button
                         onclick={loadLoyaltyProgram}
@@ -435,7 +436,7 @@
                 </div>
             {:else}
                 <div class="grid gap-4 md:grid-cols-2">
-                    {#each tiers.sort((a, b) => (a.minPoints || 0) - (b.minPoints || 0)) as tier (tier.id)}
+                    {#each sortedTiers as tier (tier.id)}
                         <div
                             class="bg-white dark:bg-gray-800 rounded-2xl border-2 border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden hover:shadow-lg transition-all"
                             style="border-left: 6px solid {tier.color}"
@@ -466,11 +467,11 @@
                             <!-- Stats -->
                             <div class="px-4 pb-4">
                                 <div class="grid grid-cols-3 gap-2">
-                                    <div class="text-center p-3 bg-green-50 dark:bg-green-900/30 rounded-xl">
-                                        <p class="text-xl font-bold text-green-600 dark:text-green-400">
+                                    <div class="text-center p-3 bg-success-50 dark:bg-success-900/30 rounded-xl">
+                                        <p class="text-xl font-bold text-success-600 dark:text-success-400">
                                             {tier.discountPercent || 0}%
                                         </p>
-                                        <p class="text-xs text-green-600/70 dark:text-green-400/70">ສ່ວນຫຼຸດ</p>
+                                        <p class="text-xs text-success-600/70 dark:text-success-400/70">ສ່ວນຫຼຸດ</p>
                                     </div>
                                     <div class="text-center p-3 bg-blue-50 dark:bg-blue-900/30 rounded-xl">
                                         <p class="text-xl font-bold text-blue-600 dark:text-blue-400">
@@ -516,7 +517,7 @@
                                 </button>
                                 <button
                                     onclick={() => deleteTier(tier)}
-                                    class="flex-1 flex items-center justify-center gap-1.5 py-2 text-sm font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg transition-all"
+                                    class="flex-1 flex items-center justify-center gap-1.5 py-2 text-sm font-medium text-danger-600 dark:text-danger-400 hover:bg-danger-50 dark:hover:bg-danger-900/30 rounded-lg transition-all"
                                 >
                                     <Trash2 class="h-4 w-4" />
                                     ລົບ
@@ -670,7 +671,7 @@
                                 <button
                                     type="button"
                                     onclick={() => removeBenefit(index)}
-                                    class="w-4 h-4 flex items-center justify-center rounded-full bg-red-100 dark:bg-red-900/50 text-red-500 hover:bg-red-200 dark:hover:bg-red-900 transition-all"
+                                    class="w-4 h-4 flex items-center justify-center rounded-full bg-danger-100 dark:bg-danger-900/50 text-danger-500 hover:bg-danger-200 dark:hover:bg-danger-900 transition-all"
                                 >
                                     ×
                                 </button>
@@ -709,8 +710,8 @@
         <div class="bg-white dark:bg-gray-800 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden">
             <div class="p-6">
                 <div class="flex items-center gap-4 mb-4">
-                    <div class="p-3 bg-red-100 dark:bg-red-900/30 rounded-xl">
-                        <AlertTriangle class="h-6 w-6 text-red-600 dark:text-red-400" />
+                    <div class="p-3 bg-danger-100 dark:bg-danger-900/30 rounded-xl">
+                        <AlertTriangle class="h-6 w-6 text-danger-600 dark:text-danger-400" />
                     </div>
                     <div>
                         <h2 class="text-xl font-bold text-gray-900 dark:text-white">ຢືນຢັນການລົບ</h2>
@@ -732,7 +733,7 @@
                 <button
                     onclick={confirmDelete}
                     disabled={isDeleting}
-                    class="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-red-500 to-red-600 text-white rounded-xl font-semibold hover:from-red-600 hover:to-red-700 transition-all shadow-lg disabled:opacity-50"
+                    class="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-danger-500 to-danger-600 text-white rounded-xl font-semibold hover:from-danger-600 hover:to-danger-700 transition-all shadow-lg disabled:opacity-50"
                 >
                     {#if isDeleting}
                         <Loader2 class="h-4 w-4 animate-spin" />

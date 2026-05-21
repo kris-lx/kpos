@@ -1,4 +1,4 @@
-<!-- ═══════════════════════════════════════════════════════════════════════════
+﻿<!-- ═══════════════════════════════════════════════════════════════════════════
      Store Selector Component - Multi-store/branch switching
      ═══════════════════════════════════════════════════════════════════════════ -->
 <script lang="ts">
@@ -51,10 +51,10 @@
     }
 
     function getAccessBadge(store: StoreAccess) {
-        if (store.canManage) return { icon: ShieldCheck, label: 'ຈັດການ', color: 'text-green-500' };
+        if (store.canManage) return { icon: ShieldCheck, label: 'ຈັດການ', color: 'text-success-500' };
         if (store.canWrite) return { icon: Shield, label: 'ແກ້ໄຂ', color: 'text-blue-500' };
         if (store.canRead) return { icon: Shield, label: 'ອ່ານ', color: 'text-gray-500' };
-        return { icon: ShieldX, label: 'ບໍ່ມີ', color: 'text-red-500' };
+        return { icon: ShieldX, label: 'ບໍ່ມີ', color: 'text-danger-500' };
     }
 
     // Close on click outside

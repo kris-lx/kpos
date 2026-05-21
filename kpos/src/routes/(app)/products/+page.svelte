@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
@@ -99,6 +99,7 @@
         active: products.filter((p) => p.isActive !== false).length,
         lowStock: products.filter((p) => p.stock <= (p.minStock || 5) && p.stock > 0).length,
         outOfStock: products.filter((p) => p.stock <= 0).length,
+        totalValue: products.reduce((sum, p) => sum + ((p.price || 0) * (p.stock || 0)), 0),
     });
 
     function getStockStatus(product: any) {
@@ -111,8 +112,8 @@
         switch (status) {
             case "instock":
                 return {
-                    bg: "bg-green-100 dark:bg-green-900/50",
-                    text: "text-green-700 dark:text-green-400",
+                    bg: "bg-success-100 dark:bg-success-900/50",
+                    text: "text-success-700 dark:text-success-400",
                     label: "ມີສິນຄ້າ",
                 };
             case "lowstock":
@@ -123,8 +124,8 @@
                 };
             case "outofstock":
                 return {
-                    bg: "bg-red-100 dark:bg-red-900/50",
-                    text: "text-red-700 dark:text-red-400",
+                    bg: "bg-danger-100 dark:bg-danger-900/50",
+                    text: "text-danger-700 dark:text-danger-400",
                     label: "ໝົດສິນຄ້າ",
                 };
             default:
@@ -418,6 +419,30 @@
 
     let totalPages = $derived(Math.ceil(filteredProducts.length / itemsPerPage));
 
+    function downloadFile(content: string, filename: string, type: string) {
+        const blob = new Blob([content], { type });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
+    function exportToCsv() {
+        let csv = '﻿';
+        csv += 'ຊື່ສິນຄ້າ,SKU,ບາໂຄດ,ໝວດໝູ່,ລາຄາຂາຍ,ລາຄາທຶນ,ສະຕ໋ອກ,ສະຖານະ\n';
+        for (const p of filteredProducts) {
+            const status = getStockStatus(p);
+            const statusLabel = status === 'outofstock' ? 'ໝົດສິນຄ້າ' : status === 'lowstock' ? 'ໃກ້ໝົດ' : 'ມີສິນຄ້າ';
+            csv += `"${p.name || ''}","${p.sku || ''}","${p.barcode || ''}","${getCategoryName(p.categoryId)}","${p.price || 0}","${p.cost || 0}","${p.stock ?? 0}","${statusLabel}"\n`;
+        }
+        downloadFile(csv, `products-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
+        toast.success('ສົ່ງອອກ CSV ສຳເລັດ');
+    }
+
     // Reload when active store switches
     $effect(() => {
         auth.activeStoreId; // track dependency
@@ -457,6 +482,7 @@
                 ນຳເຂົ້າ
             </button>
             <button
+                onclick={exportToCsv}
                 class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-700 transition-all"
             >
                 <Download class="w-4 h-4" />
@@ -478,7 +504,7 @@
     </div>
 
     <!-- Stats Cards -->
-    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
             <div class="flex items-center justify-between">
                 <div class="p-2 bg-blue-100 dark:bg-blue-900/50 rounded-lg">
@@ -491,10 +517,10 @@
 
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
             <div class="flex items-center justify-between">
-                <div class="p-2 bg-green-100 dark:bg-green-900/50 rounded-lg">
-                    <Check class="w-5 h-5 text-green-600 dark:text-green-400" />
+                <div class="p-2 bg-success-100 dark:bg-success-900/50 rounded-lg">
+                    <Check class="w-5 h-5 text-success-600 dark:text-success-400" />
                 </div>
-                <span class="text-2xl font-bold text-green-600 dark:text-green-400">{stats.active}</span>
+                <span class="text-2xl font-bold text-success-600 dark:text-success-400">{stats.active}</span>
             </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">ເປີດຂາຍ</p>
         </div>
@@ -511,12 +537,21 @@
 
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
             <div class="flex items-center justify-between">
-                <div class="p-2 bg-red-100 dark:bg-red-900/50 rounded-lg">
-                    <Box class="w-5 h-5 text-red-600 dark:text-red-400" />
+                <div class="p-2 bg-danger-100 dark:bg-danger-900/50 rounded-lg">
+                    <Box class="w-5 h-5 text-danger-600 dark:text-danger-400" />
                 </div>
-                <span class="text-2xl font-bold text-red-600 dark:text-red-400">{stats.outOfStock}</span>
+                <span class="text-2xl font-bold text-danger-600 dark:text-danger-400">{stats.outOfStock}</span>
             </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">ໝົດສະຕ໋ອກ</p>
+        </div>
+        <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
+            <div class="flex items-center justify-between">
+                <div class="p-2 bg-purple-100 dark:bg-purple-900/50 rounded-lg">
+                    <DollarSign class="w-5 h-5 text-purple-600 dark:text-purple-400" />
+                </div>
+            </div>
+            <p class="text-lg font-bold text-purple-600 dark:text-purple-400 mt-1">{formatCurrency(stats.totalValue)}</p>
+            <p class="text-xs text-gray-500 dark:text-gray-400">ມູນຄ່າສະຕ໋ອກ</p>
         </div>
     </div>
 
@@ -656,9 +691,9 @@
                             </button>
                             <button
                                 onclick={(e) => { e.stopPropagation(); handleDelete(product); }}
-                                class="p-2 bg-white/90 dark:bg-gray-800/90 rounded-lg shadow hover:bg-red-50 dark:hover:bg-red-900/30 transition-all"
+                                class="p-2 bg-white/90 dark:bg-gray-800/90 rounded-lg shadow hover:bg-danger-50 dark:hover:bg-danger-900/30 transition-all"
                             >
-                                <Trash2 class="w-4 h-4 text-red-500" />
+                                <Trash2 class="w-4 h-4 text-danger-500" />
                             </button>
                         </div>
                         {/if}
@@ -783,7 +818,7 @@
                                         </button>
                                         <button
                                             onclick={() => handleDelete(product)}
-                                            class="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg transition-all"
+                                            class="p-2 text-gray-400 hover:text-danger-500 hover:bg-danger-50 dark:hover:bg-danger-900/30 rounded-lg transition-all"
                                         >
                                             <Trash2 class="w-4 h-4" />
                                         </button>
@@ -909,7 +944,7 @@
                                 />
                                 {#if showSkuDropdown && filteredSkuList.length > 0}
                                     <div class="absolute z-50 w-full mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-lg max-h-48 overflow-y-auto">
-                                        {#each filteredSkuList as item (item.sku)}
+                                        {#each filteredSkuList as item (item.value)}
                                             <button
                                                 type="button"
                                                 class="w-full px-4 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-900 dark:text-white flex items-center justify-between"
@@ -954,7 +989,7 @@
                                 />
                                 {#if showBarcodeDropdown && filteredBarcodeList.length > 0}
                                     <div class="absolute z-50 w-full mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-lg max-h-48 overflow-y-auto">
-                                        {#each filteredBarcodeList as item (item.barcode)}
+                                        {#each filteredBarcodeList as item (item.value)}
                                             <button
                                                 type="button"
                                                 class="w-full px-4 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-900 dark:text-white flex items-center justify-between"
@@ -1174,9 +1209,9 @@
                         <p class="text-xs text-blue-600/70 dark:text-blue-400/70 mb-0.5">ລາຄາຂາຍ</p>
                         <p class="text-lg font-bold text-blue-600 dark:text-blue-400">{formatCurrency(selectedProduct.price)}</p>
                     </div>
-                    <div class="p-3 bg-green-50 dark:bg-green-900/30 rounded-xl">
-                        <p class="text-xs text-green-600/70 dark:text-green-400/70 mb-0.5">ລາຄາທຶນ</p>
-                        <p class="text-lg font-bold text-green-600 dark:text-green-400">{formatCurrency(selectedProduct.cost || 0)}</p>
+                    <div class="p-3 bg-success-50 dark:bg-success-900/30 rounded-xl">
+                        <p class="text-xs text-success-600/70 dark:text-success-400/70 mb-0.5">ລາຄາທຶນ</p>
+                        <p class="text-lg font-bold text-success-600 dark:text-success-400">{formatCurrency(selectedProduct.cost || 0)}</p>
                     </div>
                     <div class="p-3 bg-purple-50 dark:bg-purple-900/30 rounded-xl">
                         <p class="text-xs text-purple-600/70 dark:text-purple-400/70 mb-0.5">ສະຕ໋ອກ</p>
@@ -1200,7 +1235,7 @@
                     </button>
                     <button
                         onclick={() => { showDetailModal = false; handleDelete(selectedProduct); }}
-                        class="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 font-medium transition-all"
+                        class="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-danger-500 hover:bg-danger-50 dark:hover:bg-danger-900/30 font-medium transition-all"
                     >
                         <Trash2 class="w-4 h-4" />
                         ລຶບ

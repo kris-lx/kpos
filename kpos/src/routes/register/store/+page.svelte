@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { themeStore } from "$stores";
     import { goto } from "$app/navigation";
     import { api } from "$lib/api";
@@ -24,6 +24,21 @@
     let isSubmitted = $state(false);
     let error = $state("");
     let submittedUserId = $state("");
+
+    // Password strength
+    let passwordStrength = $derived.by(() => {
+        const p = form.password;
+        if (!p) return { score: 0, label: '', color: '' };
+        let score = 0;
+        if (p.length >= 8) score++;
+        if (p.length >= 12) score++;
+        if (/[A-Z]/.test(p)) score++;
+        if (/[0-9]/.test(p)) score++;
+        if (/[^A-Za-z0-9]/.test(p)) score++;
+        if (score <= 1) return { score, label: 'ອ່ອນ', color: 'bg-danger-500' };
+        if (score <= 3) return { score, label: 'ປານກາງ', color: 'bg-amber-500' };
+        return { score, label: 'ແຂງແຮງ', color: 'bg-success-500' };
+    });
 
     // Form data
     let form = $state({
@@ -81,12 +96,15 @@
         } catch {}
     });
 
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
     function validateStep(): boolean {
         error = "";
         if (currentStep === 1) {
             if (!form.name.trim()) { error = "ກະລຸນາໃສ່ຊື່-ນາມສະກຸນ"; return false; }
-            if (!form.email.trim() || !form.email.includes("@")) { error = "ກະລຸນາໃສ່ອີເມວທີ່ຖືກຕ້ອງ"; return false; }
+            if (!form.email.trim() || !emailRegex.test(form.email)) { error = "ກະລຸນາໃສ່ອີເມວທີ່ຖືກຕ້ອງ (ຕົວຢ່າງ: name@example.com)"; return false; }
             if (form.password.length < 8) { error = "ລະຫັດຜ່ານຕ້ອງມີຢ່າງໜ້ອຍ 8 ຕົວ"; return false; }
+            if (passwordStrength.score < 2) { error = "ລະຫັດຜ່ານອ່ອນເກີນໄປ — ຕ້ອງມີຕົວໃຫຍ່, ຕົວເລກ ຫຼື ອັກຂະລະພິເສດ"; return false; }
             if (form.password !== form.confirmPassword) { error = "ລະຫັດຜ່ານບໍ່ຕົງກັນ"; return false; }
             if (!form.phone.trim()) { error = "ກະລຸນາໃສ່ເບີໂທ"; return false; }
             if (!isValidLaoPhone(form.phone)) { error = "ເບີໂທບໍ່ຖືກຕ້ອງ (ຮູບແບບ: 20xxxxxxxx, 10 ຕົວເລກ)"; return false; }
@@ -100,6 +118,7 @@
         }
         if (currentStep === 3) {
             if (!form.ownerIdNumber.trim()) { error = "ກະລຸນາໃສ່ເລກທີ່ບັດ/ໜັງສືຜ່ານແດນ"; return false; }
+            if (form.documents.length === 0) { error = "ກະລຸນາອັບໂຫລດເອກະສານຢ່າງໜ້ອຍ 1 ໄຟລ໌ (ບັດປະຈຳຕົວ ຫຼື ໜັງສືຜ່ານແດນ)"; return false; }
         }
         return true;
     }
@@ -213,8 +232,8 @@
         {#if isSubmitted}
             <!-- Success State -->
             <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-xl p-8 text-center">
-                <div class="inline-flex items-center justify-center w-20 h-20 rounded-full bg-green-100 dark:bg-green-900/30 mb-6">
-                    <CheckCircle2 class="w-10 h-10 text-green-500" />
+                <div class="inline-flex items-center justify-center w-20 h-20 rounded-full bg-success-100 dark:bg-success-900/30 mb-6">
+                    <CheckCircle2 class="w-10 h-10 text-success-500" />
                 </div>
                 <h2 class="text-2xl font-bold text-gray-900 dark:text-white mb-3">ສົ່ງຄຳຮ້ອງສຳເລັດ!</h2>
                 <p class="text-gray-600 dark:text-gray-400 mb-2">ຄຳຮ້ອງຂອງທ່ານຖືກສົ່ງເຂົ້າລະບົບແລ້ວ</p>
@@ -259,7 +278,7 @@
         <!-- Form Card -->
         <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-xl p-8">
             {#if error}
-                <div class="mb-6 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl text-red-600 dark:text-red-400 text-sm">
+                <div class="mb-6 p-4 bg-danger-50 dark:bg-danger-900/20 border border-danger-200 dark:border-danger-800 rounded-xl text-danger-600 dark:text-danger-400 text-sm">
                     {error}
                 </div>
             {/if}
@@ -300,6 +319,19 @@
                                 {#if showPassword}<EyeOff class="w-5 h-5" />{:else}<Eye class="w-5 h-5" />{/if}
                             </button>
                         </div>
+                        {#if form.password}
+                            <div class="mt-2">
+                                <div class="flex gap-1 mb-1">
+                                    {#each [1,2,3,4,5] as i}
+                                        <div class={cn("h-1.5 flex-1 rounded-full transition-colors", i <= passwordStrength.score ? passwordStrength.color : 'bg-gray-200 dark:bg-gray-600')}></div>
+                                    {/each}
+                                </div>
+                                <p class="text-xs {passwordStrength.score <= 1 ? 'text-danger-500' : passwordStrength.score <= 3 ? 'text-amber-500' : 'text-success-600'}">
+                                    ຄວາມເຂັ້ມຂຸ້ນ: {passwordStrength.label}
+                                    {#if passwordStrength.score < 3} — ໃຊ້ຕົວໃຫຍ່, ຕົວເລກ ແລະ ສັນຍາລັກເພື່ອເພີ່ມຄວາມປອດໄພ{/if}
+                                </p>
+                            </div>
+                        {/if}
                     </div>
                     <div>
                         <label for="s1-cpw" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ຢືນຢັນລະຫັດຜ່ານ *</label>
@@ -408,7 +440,7 @@
                         </div>
                     </div>
                     <div>
-                        <label for="doc-upload" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ອັບໂຫລດເອກະສານ (PDF, JPG, PNG - ສູງສຸດ 5MB ຕໍ່ໄຟລ໌)</label>
+                        <label for="doc-upload" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ອັບໂຫລດເອກະສານ * <span class="text-danger-500">(ຕ້ອງການ)</span> — PDF, JPG, PNG ສູງສຸດ 5MB ຕໍ່ໄຟລ໌</label>
                         <div class="mb-2 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg text-xs text-blue-700 dark:text-blue-300">
                             <p class="font-medium mb-1">ເອກະສານທີ່ຕ້ອງອັບໂຫລດ:</p>
                             <ul class="list-disc list-inside space-y-0.5">
@@ -427,7 +459,7 @@
                                 {#each form.documents as file, i}
                                     <div class="flex items-center justify-between p-2 bg-gray-50 dark:bg-gray-700 rounded-lg">
                                         <span class="text-sm text-gray-700 dark:text-gray-300 truncate">{file.name}</span>
-                                        <button type="button" onclick={() => removeFile(i)} class="ml-2 text-red-500 hover:text-red-600"><X class="w-4 h-4" /></button>
+                                        <button type="button" onclick={() => removeFile(i)} class="ml-2 text-danger-500 hover:text-danger-600"><X class="w-4 h-4" /></button>
                                     </div>
                                 {/each}
                             </div>

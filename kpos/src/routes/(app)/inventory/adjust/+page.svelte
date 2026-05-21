@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
@@ -78,17 +78,19 @@
     async function loadData() {
         isLoading = true;
         try {
+            const activeBranchId = auth.activeBranchId;
             const params = new URLSearchParams({
                 page: currentPage.toString(),
                 limit: itemsPerPage.toString(),
+                ...(activeBranchId && { branchId: activeBranchId }),
             });
             if (searchQuery.trim()) {
                 params.append("search", searchQuery.trim());
             }
             const [adjRes, prodRes, invRes] = await Promise.all([
                 api.get(`inventory/adjustments?${params}`).json<any>(),
-                api.get("products?limit=1000").json<any>(),
-                api.get("inventory?limit=1000").json<any>(),
+                api.get(`products?limit=1000${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>(),
+                api.get(`inventory?limit=1000${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>(),
             ]);
             adjustments = adjRes.data || [];
             totalItems = adjRes.meta?.total || 0;
@@ -151,6 +153,39 @@
         }
     }
 
+    function downloadFile(content: string, filename: string, type: string) {
+        const blob = new Blob([content], { type });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
+    async function exportToCsv() {
+        try {
+            const activeBranchId = auth.activeBranchId;
+            const res = await api.get(`inventory/adjustments?limit=10000${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>();
+            const rows: any[] = res.data || [];
+            let csv = '﻿';
+            csv += 'ວັນທີ,ຊື່ສິນຄ້າ,ປະເພດ,ຈຳນວນ,ເຫດຜົນ,ເລກອ້າງອີງ\n';
+            for (const item of rows) {
+                const productName = products.find((p: any) => p.id === item.productId)?.name || item.productId;
+                const typeLabel = item.adjustmentType === 'increase' ? 'ເພີ່ມ' : 'ຫຼຸດ';
+                const reasonLabel = adjustReasons.find((r: any) => r.value === item.reason)?.labelLao || item.reason || '';
+                const date = item.createdAt ? new Date(item.createdAt).toLocaleDateString('lo-LA') : '';
+                csv += `"${date}","${productName}","${typeLabel}","${item.quantity || 0}","${reasonLabel}","${item.reference || ''}"\n`;
+            }
+            downloadFile(csv, `adjustments-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
+            toast.success('ສົ່ງອອກ CSV ສຳເລັດ');
+        } catch {
+            toast.error('ສົ່ງອອກລົ້ມເຫລວ');
+        }
+    }
+
     $effect(() => {
         auth.activeStoreId;
         loadEnums();
@@ -167,7 +202,7 @@
     <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between mb-6 gap-4">
         <div>
             <div class="flex items-center gap-3">
-                <div class="p-2.5 bg-gradient-to-br from-orange-500 to-red-600 rounded-xl shadow-lg">
+                <div class="p-2.5 bg-gradient-to-br from-orange-500 to-danger-600 rounded-xl shadow-lg">
                     <TrendingUp class="w-6 h-6 text-white" />
                 </div>
                 <div>
@@ -178,14 +213,14 @@
         </div>
 
         <div class="flex items-center gap-3">
-            <button class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-700">
+            <button onclick={exportToCsv} class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-700">
                 <Download class="w-4 h-4" />
                 ສົ່ງອອກ
             </button>
             {#if canCreateAdjust}
             <button
                 onclick={() => { resetForm(); showModal = true; }}
-                class="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-orange-500 to-red-600 text-white rounded-xl text-sm font-semibold shadow-lg hover:from-orange-600 hover:to-red-700"
+                class="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-orange-500 to-danger-600 text-white rounded-xl text-sm font-semibold shadow-lg hover:from-orange-600 hover:to-danger-700"
             >
                 <Plus class="w-5 h-5" />
                 ປັບສະຕ໋ອກ
@@ -207,19 +242,19 @@
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
             <div class="flex items-center justify-between">
-                <div class="p-2 bg-green-100 dark:bg-green-900/50 rounded-lg">
-                    <TrendingUp class="w-5 h-5 text-green-600 dark:text-green-400" />
+                <div class="p-2 bg-success-100 dark:bg-success-900/50 rounded-lg">
+                    <TrendingUp class="w-5 h-5 text-success-600 dark:text-success-400" />
                 </div>
-                <span class="text-2xl font-bold text-green-600 dark:text-green-400">{stats.increase}</span>
+                <span class="text-2xl font-bold text-success-600 dark:text-success-400">{stats.increase}</span>
             </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">ເພີ່ມ</p>
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
             <div class="flex items-center justify-between">
-                <div class="p-2 bg-red-100 dark:bg-red-900/50 rounded-lg">
-                    <TrendingDown class="w-5 h-5 text-red-600 dark:text-red-400" />
+                <div class="p-2 bg-danger-100 dark:bg-danger-900/50 rounded-lg">
+                    <TrendingDown class="w-5 h-5 text-danger-600 dark:text-danger-400" />
                 </div>
-                <span class="text-2xl font-bold text-red-600 dark:text-red-400">{stats.decrease}</span>
+                <span class="text-2xl font-bold text-danger-600 dark:text-danger-400">{stats.decrease}</span>
             </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">ຫຼຸດ</p>
         </div>
@@ -228,7 +263,7 @@
                 <div class="p-2 bg-blue-100 dark:bg-blue-900/50 rounded-lg">
                     <Package class="w-5 h-5 text-blue-600 dark:text-blue-400" />
                 </div>
-                <span class={cn("text-2xl font-bold", stats.totalQty >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400")}>
+                <span class={cn("text-2xl font-bold", stats.totalQty >= 0 ? "text-success-600 dark:text-success-400" : "text-danger-600 dark:text-danger-400")}>
                     {stats.totalQty >= 0 ? "+" : ""}{stats.totalQty}
                 </span>
             </div>
@@ -296,17 +331,17 @@
                                 </td>
                                 <td class="px-6 py-4 text-center">
                                     {#if adj.adjustmentType === "increase"}
-                                        <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-green-100 dark:bg-green-900/50 text-green-700 dark:text-green-400">
+                                        <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-success-100 dark:bg-success-900/50 text-success-700 dark:text-success-400">
                                             <TrendingUp class="w-3 h-3" /> ເພີ່ມ
                                         </span>
                                     {:else}
-                                        <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-400">
+                                        <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-danger-100 dark:bg-danger-900/50 text-danger-700 dark:text-danger-400">
                                             <TrendingDown class="w-3 h-3" /> ຫຼຸດ
                                         </span>
                                     {/if}
                                 </td>
                                 <td class="px-6 py-4 text-right">
-                                    <span class={cn("font-bold", adj.adjustmentType === "increase" ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400")}>
+                                    <span class={cn("font-bold", adj.adjustmentType === "increase" ? "text-success-600 dark:text-success-400" : "text-danger-600 dark:text-danger-400")}>
                                         {adj.adjustmentType === "increase" ? "+" : "-"}{adj.quantity}
                                     </span>
                                 </td>
@@ -352,7 +387,7 @@
 {#if showModal}
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
         <div class="w-full max-w-lg bg-white dark:bg-gray-800 rounded-2xl shadow-2xl overflow-hidden">
-            <div class="px-6 py-4 bg-gradient-to-r from-orange-500 to-red-600 flex items-center justify-between">
+            <div class="px-6 py-4 bg-gradient-to-r from-orange-500 to-danger-600 flex items-center justify-between">
                 <h2 class="text-xl font-bold text-white">ປັບສະຕ໋ອກ</h2>
                 <button onclick={() => (showModal = false)} class="p-1.5 hover:bg-white/20 rounded-lg">
                     <X class="w-5 h-5 text-white" />
@@ -406,7 +441,7 @@
 
                 <div class="flex justify-end gap-3 pt-4">
                     <button type="button" onclick={() => (showModal = false)} class="px-5 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 font-medium">ຍົກເລີກ</button>
-                    <button type="submit" class="px-5 py-2.5 bg-gradient-to-r from-orange-500 to-red-600 text-white rounded-xl font-medium shadow-lg">ບັນທຶກ</button>
+                    <button type="submit" class="px-5 py-2.5 bg-gradient-to-r from-orange-500 to-danger-600 text-white rounded-xl font-medium shadow-lg">ບັນທຶກ</button>
                 </div>
             </form>
         </div>

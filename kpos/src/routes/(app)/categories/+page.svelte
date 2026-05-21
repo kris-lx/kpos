@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import {
         createQuery,
         createMutation,
@@ -12,7 +12,7 @@
     import { cn } from "$utils";
     import { toast } from "svelte-sonner";
     import { t } from "$lib/i18n/index.svelte";
-    import { Plus, Search, Pencil, Trash2, Tags, X, ChevronLeft, ChevronRight, Loader2 } from "lucide-svelte";
+    import { Plus, Search, Pencil, Trash2, Tags, X, ChevronLeft, ChevronRight, Loader2, AlertCircle, RefreshCw } from "lucide-svelte";
 
     const queryClient = useQueryClient();
 
@@ -229,6 +229,23 @@
                     <div class="h-4 bg-gray-200 dark:bg-gray-700 rounded w-1/2"></div>
                 </div>
             {/each}
+        {:else if $categoriesQuery.isError}
+            <div class="col-span-full flex flex-col items-center justify-center py-16 gap-4">
+                <div class="p-4 bg-danger-50 dark:bg-danger-900/30 rounded-full">
+                    <AlertCircle class="w-10 h-10 text-danger-500 dark:text-danger-400" />
+                </div>
+                <div class="text-center">
+                    <p class="font-semibold text-gray-900 dark:text-white">ໂຫຼດໝວດໝູ່ບໍ່ສຳເລັດ</p>
+                    <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">ກວດສອບການເຊື່ອມຕໍ່ ແລ້ວລອງໃໝ່</p>
+                </div>
+                <button
+                    onclick={() => $categoriesQuery.refetch()}
+                    class="flex items-center gap-2 px-4 py-2 bg-purple-500 text-white rounded-xl text-sm font-medium hover:bg-purple-600 transition-all"
+                >
+                    <RefreshCw class="w-4 h-4" />
+                    ລອງໃໝ່
+                </button>
+            </div>
         {:else if paginatedCategories.length === 0}
             <div class="col-span-full text-center py-12 text-gray-500">
                 <Tags class="w-16 h-16 mx-auto mb-4 text-gray-300 dark:text-gray-600" />
@@ -256,10 +273,10 @@
                         {#if canDeleteCat}
                         <button
                             onclick={() => confirmDelete(category)}
-                            class="p-2 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg transition-all"
+                            class="p-2 hover:bg-danger-50 dark:hover:bg-danger-900/30 rounded-lg transition-all"
                             title={t("common.delete")}
                         >
-                            <Trash2 class="w-4 h-4 text-gray-500 dark:text-gray-400 hover:text-red-500" />
+                            <Trash2 class="w-4 h-4 text-gray-500 dark:text-gray-400 hover:text-danger-500" />
                         </button>
                         {/if}
                     </div>

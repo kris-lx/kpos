@@ -5,7 +5,7 @@
 import { Router } from 'express';
 import { authenticate, authorize, branchFilter, buildScopeCondition, ensureScopeAccess, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { db, dbRead } from '@/config/database.config';
-import { categories, products } from '@/db/schema/tables';
+import { categories, products, stores } from '@/db/schema/tables';
 import { eq, and, or, asc, isNull, inArray } from 'drizzle-orm';
 
 export const categoryRoutes = Router();
@@ -27,9 +27,28 @@ categoryRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => 
                 conditions.push(eq(categories.tenantId, filter.tenantId));
             }
             conditions.push(or(...scopeConds));
+        } else if (filter?.tenantId && filter.branchIds && filter.branchIds.length > 0) {
+            // Branch-scoped user: find stores under accessible branches, then filter categories
+            const branchStores = await db.query.stores.findMany({
+                where: inArray(stores.branchId, filter.branchIds),
+                columns: { id: true },
+            });
+            const branchStoreIds = branchStores.map((s: any) => s.id);
+            if (branchStoreIds.length > 0) {
+                // Show categories for these stores + global (storeId=NULL) within tenant
+                conditions.push(eq(categories.tenantId, filter.tenantId));
+                conditions.push(or(
+                    inArray(categories.storeId, branchStoreIds),
+                    isNull(categories.storeId)
+                ));
+            } else {
+                // No stores found — show only tenant-global categories (no storeId)
+                conditions.push(eq(categories.tenantId, filter.tenantId));
+                conditions.push(isNull(categories.storeId));
+            }
         } else if (filter?.tenantId) {
-            // Non-store-scoped user (e.g. branch admin) sees tenant's categories + global (no tenant) categories
-            conditions.push(or(eq(categories.tenantId, filter.tenantId), isNull(categories.tenantId)));
+            // HQ/tenant admin: sees all tenant categories
+            conditions.push(eq(categories.tenantId, filter.tenantId));
         } else if (filter && !filter.tenantId) {
             // If user has no tenantId (e.g., new store admin), still show global categories
             conditions.push(isNull(categories.storeId));

@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount } from "svelte";
     import { goto } from "$app/navigation";
     import { t } from "$lib/i18n/index.svelte";
@@ -132,6 +132,8 @@
             if (searchQuery) {
                 params.append("search", searchQuery);
             }
+            const staffBranchId = auth.activeBranchId;
+            if (staffBranchId && !auth.isSuperAdmin) params.append("branchId", staffBranchId);
 
             const response = await api.get(`staff?${params}`).json<any>();
             if (response.success && response.data) {
@@ -271,7 +273,7 @@
             case "manager":
                 return "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400";
             case "cashier":
-                return "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400";
+                return "bg-success-100 text-success-700 dark:bg-success-900/30 dark:text-success-400";
             case "kitchen":
                 return "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400";
             default:
@@ -281,8 +283,8 @@
 
     function getStatusColor(status: string): string {
         return status === "active"
-            ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
-            : "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400";
+            ? "bg-success-100 text-success-700 dark:bg-success-900/30 dark:text-success-400"
+            : "bg-danger-100 text-danger-700 dark:bg-danger-900/30 dark:text-danger-400";
     }
 
     function getInitials(name: string): string {
@@ -360,8 +362,8 @@
             class="bg-white dark:bg-gray-800 rounded-xl p-4 shadow-sm"
         >
             <div class="flex items-center gap-3">
-                <div class="p-2 bg-green-50 dark:bg-green-900/20 rounded-lg">
-                    <UserCheck class="w-5 h-5 text-green-500" />
+                <div class="p-2 bg-success-50 dark:bg-success-900/20 rounded-lg">
+                    <UserCheck class="w-5 h-5 text-success-500" />
                 </div>
                 <div>
                     <p class="text-2xl font-bold text-gray-900 dark:text-white">
@@ -377,8 +379,8 @@
             class="bg-white dark:bg-gray-800 rounded-xl p-4 shadow-sm"
         >
             <div class="flex items-center gap-3">
-                <div class="p-2 bg-red-50 dark:bg-red-900/20 rounded-lg">
-                    <UserX class="w-5 h-5 text-red-500" />
+                <div class="p-2 bg-danger-50 dark:bg-danger-900/20 rounded-lg">
+                    <UserX class="w-5 h-5 text-danger-500" />
                 </div>
                 <div>
                     <p class="text-2xl font-bold text-gray-900 dark:text-white">
@@ -591,7 +593,7 @@
                                     {#if canDeleteStaff}
                                     <button
                                         onclick={() => confirmDelete(staff)}
-                                        class="p-2 text-gray-500 hover:text-red-600 dark:text-gray-400 dark:hover:text-red-400 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
+                                        class="p-2 text-gray-500 hover:text-danger-600 dark:text-gray-400 dark:hover:text-danger-400 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
                                         title={t("common.delete")}
                                     >
                                         <Trash2 class="w-4 h-4" />
@@ -677,7 +679,7 @@
             <form onsubmit={(e) => { e.preventDefault(); saveStaff(); }} class="p-6 space-y-4 overflow-y-auto max-h-[calc(90vh-180px)]">
                 <div>
                     <label for="staffName" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                        {t("staff.name")} <span class="text-red-500">*</span>
+                        {t("staff.name")} <span class="text-danger-500">*</span>
                     </label>
                     <input
                         id="staffName"
@@ -689,7 +691,7 @@
                 </div>
                 <div>
                     <label for="staffEmail" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                        {t("staff.email")} <span class="text-red-500">*</span>
+                        {t("staff.email")} <span class="text-danger-500">*</span>
                     </label>
                     <input
                         id="staffEmail"
@@ -701,7 +703,7 @@
                 </div>
                 <div>
                     <label for="staffPassword" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                        {t("staff.password")} {#if !selectedStaff}<span class="text-red-500">*</span>{/if}
+                        {t("staff.password")} {#if !selectedStaff}<span class="text-danger-500">*</span>{/if}
                     </label>
                     <input
                         id="staffPassword"
@@ -746,7 +748,7 @@
                 {/if}
                 <div>
                     <label for="staffBranch" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                        {t("staff.branch")} <span class="text-red-500">*</span>
+                        {t("staff.branch")} <span class="text-danger-500">*</span>
                     </label>
                     <select
                         id="staffBranch"
@@ -908,8 +910,8 @@
         
         <div class="relative bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-md">
             <div class="p-6 text-center">
-                <div class="w-16 h-16 mx-auto mb-4 rounded-full bg-red-100 dark:bg-red-900/20 flex items-center justify-center">
-                    <AlertTriangle class="w-8 h-8 text-red-600" />
+                <div class="w-16 h-16 mx-auto mb-4 rounded-full bg-danger-100 dark:bg-danger-900/20 flex items-center justify-center">
+                    <AlertTriangle class="w-8 h-8 text-danger-600" />
                 </div>
                 <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">
                     {t("staff.confirmDelete")}
@@ -929,7 +931,7 @@
                 <button
                     onclick={deleteStaff}
                     disabled={isSaving}
-                    class="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-red-600 text-white hover:bg-red-700 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                    class="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-danger-600 text-white hover:bg-danger-700 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                     {#if isSaving}
                         <Loader2 class="w-4 h-4 animate-spin" />

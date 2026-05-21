@@ -3,6 +3,9 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { Product, Customer } from '$api';
+import { api } from '$api';
+import { browser } from '$app/environment';
+import { LOCAL_STORAGE_KEYS } from '$lib/config';
 
 export interface CartItem {
     product: Product;
@@ -17,6 +20,25 @@ function createCartStore() {
     let discountType = $state<'PERCENTAGE' | 'FIXED' | null>(null);
     let discountValue = $state(0);
     let notes = $state('');
+    let taxRate = $state(0); // loaded from settings API on first use
+
+    async function loadTaxRate() {
+        if (taxRate !== 0) return;
+        try {
+            const res = await api.get('settings/receipt').json<{ success: boolean; data: Record<string, unknown> }>();
+            if (res.success) {
+                const rate = Number((res.data as any)?.defaultTaxRate ?? (res.data as any)?.pos?.defaultTaxRate ?? 0);
+                if (!isNaN(rate)) taxRate = rate;
+            }
+        } catch {
+            // keep 0 if settings unavailable
+        }
+    }
+
+    // Eagerly load tax rate only when authenticated
+    if (browser && localStorage.getItem(LOCAL_STORAGE_KEYS.ACCESS_TOKEN)) {
+        loadTaxRate();
+    }
 
     // Computed values
     const itemCount = $derived(items.reduce((sum, item) => sum + item.quantity, 0));
@@ -38,8 +60,8 @@ function createCartStore() {
         return discountValue;
     });
 
-    const taxRate = 7; // 7% VAT
     const taxAmount = $derived.by(() => {
+        if (!taxRate) return 0;
         const afterDiscount = subtotal - discountAmount;
         return (afterDiscount * taxRate) / 100;
     });
@@ -156,6 +178,7 @@ function createCartStore() {
         get subtotal() { return subtotal; },
         get discountAmount() { return discountAmount; },
         get taxAmount() { return taxAmount; },
+        get taxRate() { return taxRate; },
         get total() { return total; },
         addItem,
         updateQuantity,
@@ -166,6 +189,7 @@ function createCartStore() {
         setNotes,
         clear,
         toSaleInput,
+        loadTaxRate,
     };
 }
 

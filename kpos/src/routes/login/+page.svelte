@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { auth, themeStore } from "$stores";
     import { i18n, t } from "$lib/i18n/index.svelte";
     import { goto } from "$app/navigation";
@@ -108,7 +108,7 @@
 
             {#if error}
                 <div
-                    class="mb-4 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl text-red-600 dark:text-red-400 text-sm"
+                    class="mb-4 p-4 bg-danger-50 dark:bg-danger-900/20 border border-danger-200 dark:border-danger-800 rounded-xl text-danger-600 dark:text-danger-400 text-sm"
                 >
                     {error}
                 </div>

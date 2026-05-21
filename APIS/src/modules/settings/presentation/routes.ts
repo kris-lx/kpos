@@ -5,7 +5,7 @@
 import { Router } from 'express';
 import { authenticate, authorize } from '@/infrastructure/http/middleware/auth.middleware';
 import { db } from '@/config/database.config';
-import { settings, documents, documentTemplates, notifications, systemEnums } from '@/db/schema/tables';
+import { settings, documents, documentTemplates, notifications, systemEnums, branches } from '@/db/schema/tables';
 import { eq, and, or, isNull, inArray, desc, asc, count, sql } from 'drizzle-orm';
 
 export const settingRoutes = Router();
@@ -25,21 +25,21 @@ async function upsertSetting(category: string, key: string, value: any, branchId
 }
 
 // Helper: get settings with branch fallback (global + branch-specific)
-async function getSettingsForBranch(category: string, branchId: string, tenantId?: string) {
-    const conds: any[] = [
-        eq(settings.category, category),
-        or(isNull(settings.branchId), eq(settings.branchId, branchId)),
-    ];
+async function getSettingsForBranch(category: string, branchId: string | undefined, tenantId?: string) {
+    const branchFilter = branchId
+        ? or(isNull(settings.branchId), eq(settings.branchId, branchId))
+        : isNull(settings.branchId);
+    const conds: any[] = [eq(settings.category, category), branchFilter];
     if (tenantId) conds.push(or(isNull(settings.tenantId), eq(settings.tenantId, tenantId)));
     return db.query.settings.findMany({ where: and(...conds) });
 }
 
 // Helper: get settings for multiple categories with branch fallback
-async function getSettingsForBranchMultiCategory(categories: string[], branchId: string, tenantId?: string) {
-    const conds: any[] = [
-        inArray(settings.category, categories),
-        or(isNull(settings.branchId), eq(settings.branchId, branchId)),
-    ];
+async function getSettingsForBranchMultiCategory(categories: string[], branchId: string | undefined, tenantId?: string) {
+    const branchFilter = branchId
+        ? or(isNull(settings.branchId), eq(settings.branchId, branchId))
+        : isNull(settings.branchId);
+    const conds: any[] = [inArray(settings.category, categories), branchFilter];
     if (tenantId) conds.push(or(isNull(settings.tenantId), eq(settings.tenantId, tenantId)));
     return db.query.settings.findMany({ where: and(...conds) });
 }
@@ -232,7 +232,10 @@ settingRoutes.get('/', authenticate, async (req, res, next) => {
         const { category, branchId } = req.query;
         const targetBranchId = branchId ? String(branchId) : req.user!.branchId;
 
-        const conditions: any[] = [or(isNull(settings.branchId), eq(settings.branchId, targetBranchId))];
+        const branchCond = targetBranchId
+            ? or(isNull(settings.branchId), eq(settings.branchId, targetBranchId))
+            : isNull(settings.branchId);
+        const conditions: any[] = [branchCond];
         // BE-76: Tenant isolation
         const tenantId = req.authUser?.tenantId;
         if (tenantId && !req.authUser?.isSuperAdmin) conditions.push(or(isNull(settings.tenantId), eq(settings.tenantId, tenantId)));
@@ -289,10 +292,10 @@ settingRoutes.get('/:category/:key', authenticate, async (req, res, next) => {
         const { category, key } = req.params;
         const branchId = req.query.branchId ? String(req.query.branchId) : req.user!.branchId;
 
-        // First try branch-specific, then fallback to global
-        let setting = await db.query.settings.findFirst({
+        // First try branch-specific (only when branchId is defined), then fallback to global
+        let setting = branchId ? await db.query.settings.findFirst({
             where: and(eq(settings.category, category), eq(settings.key, key), eq(settings.branchId, branchId)),
-        });
+        }) : undefined;
 
         if (!setting) {
             setting = await db.query.settings.findFirst({
@@ -371,8 +374,9 @@ settingRoutes.delete('/:category/:key', authenticate, authorize('settings:update
         const { category, key } = req.params;
         const branchId = req.query.branchId ? String(req.query.branchId) : req.user!.branchId;
 
+        const branchCond2 = branchId ? eq(settings.branchId, branchId) : isNull(settings.branchId);
         const existing = await db.query.settings.findFirst({
-            where: and(eq(settings.category, category), eq(settings.key, key), eq(settings.branchId, branchId)),
+            where: and(eq(settings.category, category), eq(settings.key, key), branchCond2),
         });
 
         if (!existing) {
@@ -473,12 +477,13 @@ settingRoutes.post('/initialize', authenticate, authorize('settings:update'), as
 
         for (const [category, values] of Object.entries(defaultSettings)) {
             for (const [key, value] of Object.entries(values)) {
+                const initBranchCond = branchId ? eq(settings.branchId, branchId) : isNull(settings.branchId);
                 const existing = await db.query.settings.findFirst({
-                    where: and(eq(settings.category, category), eq(settings.key, key), eq(settings.branchId, branchId)),
+                    where: and(eq(settings.category, category), eq(settings.key, key), initBranchCond),
                 });
 
                 if (!existing) {
-                    const [setting] = await db.insert(settings).values({ category, key, value: value as any, branchId }).returning();
+                    const [setting] = await db.insert(settings).values({ category, key, value: value as any, branchId: branchId ?? null }).returning();
                     results.push(setting);
                 }
             }
@@ -567,43 +572,203 @@ settingRoutes.put('/integrations/:integrationId', authenticate, authorize('setti
 // RECEIPT SETTINGS
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Get receipt settings
+// Get receipt settings — merged with branch identity fields
 settingRoutes.get('/receipt', authenticate, async (req, res, next) => {
     try {
-        const branchId = req.query.branchId ? String(req.query.branchId) : req.user!.branchId;
-        
+        const branchId = req.query.branchId ? String(req.query.branchId) : (req.authUser?.activeBranchId || req.user!.branchId);
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
-        const settingsRows = await getSettingsForBranch('receipt', branchId, tenantId);
-        
-        // Convert to object
+
+        const [settingsRows, branch] = await Promise.all([
+            getSettingsForBranch('receipt', branchId, tenantId),
+            branchId
+                ? db.query.branches.findFirst({
+                    where: eq(branches.id, branchId),
+                    columns: {
+                        id: true, name: true, logo: true, address: true,
+                        phone: true, email: true, taxId: true,
+                        ownerName: true, registrationNo: true, receiptSettings: true,
+                    },
+                })
+                : null,
+        ]);
+
         const receipt = settingsRows.reduce((acc, s) => {
             acc[s.key] = s.value;
             return acc;
         }, {} as Record<string, unknown>);
-        
-        res.json({ success: true, data: receipt });
+
+        // Merge branch identity into receipt settings so the frontend has everything
+        const merged = {
+            ...receipt,
+            branchLogo: branch?.logo ?? null,
+            branchName: branch?.name ?? null,
+            branchAddress: branch?.address ?? null,
+            branchPhone: branch?.phone ?? null,
+            branchEmail: branch?.email ?? null,
+            branchTaxId: branch?.taxId ?? null,
+            ownerName: branch?.ownerName ?? null,
+            registrationNo: branch?.registrationNo ?? null,
+            ...(branch?.receiptSettings as Record<string, unknown> ?? {}),
+        };
+
+        res.json({ success: true, data: merged });
     } catch (error) {
         next(error);
     }
 });
 
-// Update receipt settings
+// Update receipt settings (key-value pairs + receiptSettings JSONB on branch)
 settingRoutes.put('/receipt', authenticate, authorize('settings:update'), async (req, res, next) => {
     try {
-        const branchId = req.body.branchId || req.user!.branchId;
-        const receiptSettings = req.body;
-        
+        const branchId = req.body.branchId || req.authUser?.activeBranchId || req.user!.branchId;
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        const {
+            headerHtml, footerText, showLogo, showTaxDetails, showQrCode,
+            primaryColor, paperSize, showOwnerName, showRegistrationNo,
+            // branch identity updates (also written to branches table)
+            branchLogo, branchName, ownerName,
+            ...rest
+        } = req.body;
+
         const results = [];
-        
-        for (const [key, value] of Object.entries(receiptSettings)) {
-            if (key === 'branchId') continue;
-            
-            const tenantId2 = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
-            const setting = await upsertSetting('receipt', key, value as any, branchId, tenantId2);
+
+        // Persist receipt display settings to settings table
+        const receiptFields: Record<string, unknown> = {
+            headerHtml, footerText, showLogo, showTaxDetails, showQrCode,
+            primaryColor, paperSize, showOwnerName, showRegistrationNo, ...rest,
+        };
+        for (const [key, value] of Object.entries(receiptFields)) {
+            if (key === 'branchId' || value === undefined) continue;
+            const setting = await upsertSetting('receipt', key, value as any, branchId, tenantId);
             results.push(setting);
         }
-        
+
+        // Merge branding fields into branches.receipt_settings JSONB (preserve existing keys)
+        if (branchId) {
+            const branchUpdates: Record<string, unknown> = {};
+            if (headerHtml !== undefined) branchUpdates.headerHtml = headerHtml;
+            if (footerText !== undefined) branchUpdates.footerText = footerText;
+            if (showLogo !== undefined) branchUpdates.showLogo = showLogo;
+            if (primaryColor !== undefined) branchUpdates.primaryColor = primaryColor;
+            if (paperSize !== undefined) branchUpdates.paperSize = paperSize;
+            if (branchLogo !== undefined) branchUpdates.logo = branchLogo;
+            if (branchName !== undefined) branchUpdates.branchName = branchName;
+            if (ownerName !== undefined) branchUpdates.ownerName = ownerName;
+
+            if (Object.keys(branchUpdates).length > 0) {
+                const conds: any[] = [eq(branches.id, branchId)];
+                if (tenantId) conds.push(eq(branches.tenantId, tenantId));
+                // Fetch existing receiptSettings first so we don't clobber saved design/other keys
+                const existing = await db.query.branches.findFirst({
+                    where: and(...conds),
+                    columns: { receiptSettings: true },
+                });
+                const merged = { ...((existing?.receiptSettings as Record<string, unknown>) ?? {}), ...branchUpdates };
+                await db.update(branches)
+                    .set({ receiptSettings: merged as any, updatedAt: new Date() })
+                    .where(and(...conds));
+            }
+        }
+
         res.json({ success: true, data: results });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Preview receipt HTML — returns a rendered HTML snippet for the receipt template
+settingRoutes.get('/receipt/preview', authenticate, async (req, res, next) => {
+    try {
+        const branchId = req.query.branchId ? String(req.query.branchId) : (req.authUser?.activeBranchId || req.user!.branchId);
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+
+        const branch = branchId
+            ? await db.query.branches.findFirst({
+                where: eq(branches.id, branchId),
+                columns: { name: true, logo: true, address: true, phone: true, taxId: true, ownerName: true, receiptSettings: true },
+            })
+            : null;
+
+        const rs = (branch?.receiptSettings as Record<string, any>) ?? {};
+        const showLogo = rs.showLogo !== false;
+        const headerHtml = rs.headerHtml ?? '';
+        const footerText = rs.footerText ?? 'ຂອບໃຈທີ່ໃຊ້ບໍລິການ!';
+        const primaryColor = rs.primaryColor ?? '#3b82f6';
+        const paperSize = rs.paperSize ?? '80mm';
+
+        const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <style>
+    body{font-family:'Noto Sans Lao',sans-serif;width:${paperSize};margin:0 auto;padding:8px;font-size:12px;color:#111}
+    .header{text-align:center;margin-bottom:8px}
+    .logo{max-width:80px;max-height:80px;object-fit:contain}
+    .divider{border-top:1px dashed #999;margin:6px 0}
+    .row{display:flex;justify-content:space-between}
+    .footer{text-align:center;margin-top:8px;font-size:11px;color:#555}
+    h2{margin:2px 0;font-size:14px;color:${primaryColor}}
+    .sample-item{padding:4px 0}
+  </style>
+</head>
+<body>
+  <div class="header">
+    ${showLogo && branch?.logo ? `<img src="${branch.logo}" class="logo" alt="Logo"/>` : ''}
+    <h2>${branch?.name ?? 'Branch Name'}</h2>
+    ${branch?.address ? `<p>${branch.address}</p>` : ''}
+    ${branch?.phone ? `<p>Tel: ${branch.phone}</p>` : ''}
+    ${branch?.taxId ? `<p>Tax ID: ${branch.taxId}</p>` : ''}
+    ${branch?.ownerName ? `<p>Owner: ${branch.ownerName}</p>` : ''}
+    ${headerHtml ? `<div>${headerHtml}</div>` : ''}
+  </div>
+  <div class="divider"></div>
+  <div class="row"><span>#001</span><span>2024-01-01 10:00</span></div>
+  <div class="divider"></div>
+  <div class="sample-item"><div class="row"><span>Sample Product x2</span><span>20,000 ₭</span></div></div>
+  <div class="sample-item"><div class="row"><span>Another Item x1</span><span>15,000 ₭</span></div></div>
+  <div class="divider"></div>
+  <div class="row"><b>Total</b><b>35,000 ₭</b></div>
+  <div class="divider"></div>
+  <div class="footer">${footerText}</div>
+</body>
+</html>`;
+
+        res.setHeader('Content-Type', 'text/html');
+        res.send(html);
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Get receipt design (saved layout elements from documents/design page)
+settingRoutes.get('/receipt/design', authenticate, async (req, res, next) => {
+    try {
+        const branchId = req.query.branchId ? String(req.query.branchId) : (req.authUser?.activeBranchId || req.user!.branchId);
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+
+        const rows = await getSettingsForBranch('receipt', branchId, tenantId);
+        const designRow = rows.find(r => r.key === 'design');
+
+        if (!designRow) {
+            return res.json({ success: true, data: null });
+        }
+
+        const value = designRow.value as Record<string, unknown>;
+        res.json({ success: true, data: value });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Save receipt design (called from documents/design page)
+settingRoutes.put('/receipt/design', authenticate, authorize('documents:update'), async (req, res, next) => {
+    try {
+        const branchId = req.body.branchId || req.authUser?.activeBranchId || req.user!.branchId;
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        const { value } = req.body;
+
+        const setting = await upsertSetting('receipt', 'design', value, branchId, tenantId);
+        res.json({ success: true, data: setting });
     } catch (error) {
         next(error);
     }
@@ -1114,7 +1279,8 @@ settingRoutes.get('/api-keys', authenticate, authorize('settings:read'), async (
         const branchId = req.user!.branchId;
         // BE-76: Tenant isolation
         const tenantId = req.authUser?.tenantId;
-        const akConds: any[] = [eq(settings.category, 'api_key'), or(isNull(settings.branchId), eq(settings.branchId, branchId))];
+        const branchFilter2 = branchId ? or(isNull(settings.branchId), eq(settings.branchId, branchId)) : isNull(settings.branchId);
+        const akConds: any[] = [eq(settings.category, 'api_key'), branchFilter2];
         if (tenantId && !req.authUser?.isSuperAdmin) akConds.push(or(isNull(settings.tenantId), eq(settings.tenantId, tenantId)));
         const apiKeyRows = await db.query.settings.findMany({
             where: and(...akConds),
@@ -1148,7 +1314,8 @@ settingRoutes.post('/api-keys', authenticate, authorize('settings:update'), asyn
         const branchId = req.user!.branchId;
 
         const akTenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
-        const dupConds: any[] = [eq(settings.category, 'api_key'), eq(settings.key, name), eq(settings.branchId, branchId)];
+        const dupBranchCond = branchId ? eq(settings.branchId, branchId) : isNull(settings.branchId);
+        const dupConds: any[] = [eq(settings.category, 'api_key'), eq(settings.key, name), dupBranchCond];
         if (akTenantId) dupConds.push(eq(settings.tenantId, akTenantId));
         const existing = await db.query.settings.findFirst({ where: and(...dupConds) });
         if (existing) {
@@ -1245,7 +1412,8 @@ settingRoutes.post('/integrations/:id/disconnect', authenticate, authorize('sett
     try {
         const branchId = req.user!.branchId;
         const disTenantId = req.authUser?.tenantId;
-        const disConds: any[] = [eq(settings.category, 'integration'), eq(settings.key, req.params.id), eq(settings.branchId, branchId)];
+        const disBranchCond = branchId ? eq(settings.branchId, branchId) : isNull(settings.branchId);
+        const disConds: any[] = [eq(settings.category, 'integration'), eq(settings.key, req.params.id), disBranchCond];
         if (disTenantId && !req.authUser?.isSuperAdmin) disConds.push(eq(settings.tenantId, disTenantId));
         const existing = await db.query.settings.findFirst({ where: and(...disConds) });
         if (existing) {

@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount, onDestroy } from "svelte";
     import { i18n, t } from "$lib/i18n/index.svelte";
     import { themeStore, auth } from "$stores";
@@ -59,8 +59,8 @@
             value: formatCurrency(salesSummary.todaySales),
             change: salesSummary.salesGrowth,
             icon: DollarSign,
-            color: "text-green-500",
-            bgColor: "bg-green-50 dark:bg-green-900/20",
+            color: "text-success-500",
+            bgColor: "bg-success-50 dark:bg-success-900/20",
         },
         {
             title: t("dashboard.todayOrders"),
@@ -359,13 +359,13 @@
 
     <!-- Error Alert -->
     {#if loadError}
-        <div class="mb-6 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl flex items-center gap-3">
-            <AlertTriangle class="w-5 h-5 text-red-500 shrink-0" />
+        <div class="mb-6 p-4 bg-danger-50 dark:bg-danger-900/20 border border-danger-200 dark:border-danger-800 rounded-xl flex items-center gap-3">
+            <AlertTriangle class="w-5 h-5 text-danger-500 shrink-0" />
             <div class="flex-1">
-                <p class="text-sm font-medium text-red-800 dark:text-red-200">{t("common.error")}</p>
-                <p class="text-xs text-red-600 dark:text-red-400 mt-1">{loadError}</p>
+                <p class="text-sm font-medium text-danger-800 dark:text-danger-200">{t("common.error")}</p>
+                <p class="text-xs text-danger-600 dark:text-danger-400 mt-1">{loadError}</p>
             </div>
-            <button onclick={() => { loadError = ''; loadDashboardData(); }} class="text-sm text-red-600 dark:text-red-400 hover:underline">{t("common.retry") || 'ລອງໃໝ່'}</button>
+            <button onclick={() => { loadError = ''; loadDashboardData(); }} class="text-sm text-danger-600 dark:text-danger-400 hover:underline">{t("common.retry") || 'ລອງໃໝ່'}</button>
         </div>
     {/if}
 
@@ -384,8 +384,8 @@
                             class={cn(
                                 "flex items-center text-sm font-medium",
                                 card.change > 0
-                                    ? "text-green-500"
-                                    : "text-red-500",
+                                    ? "text-success-500"
+                                    : "text-danger-500",
                             )}
                         >
                             {#if card.change > 0}

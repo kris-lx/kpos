@@ -24,6 +24,51 @@ export interface JwtPayload {
     tenantId: string;
 }
 
+/**
+ * 7-level role hierarchy used for branch visibility scoping.
+ * Lower number = broader access.
+ *   1 = system_admin   → all tenants / all branches
+ *   2 = tenant_admin   → all branches within tenant
+ *   3 = hq_admin       → HQ branch + all child branches (full access)
+ *   4 = hq_manager     → HQ branch + all child branches (reports read-only)
+ *   5 = branch_admin   → own branch only (full CRUD)
+ *   6 = branch_manager → own branch only (limited CRUD)
+ *   7 = staff/cashier  → own store/POS only
+ */
+export const ROLE_LEVELS: Record<string, number> = {
+    system_admin: 1,
+    admin: 2,
+    tenant_admin: 2,
+    hq_admin: 3,
+    hq_manager: 4,
+    branch_admin: 5,
+    store_owner: 5,
+    branch_manager: 6,
+    manager: 6,
+    store_manager: 6,
+    cashier: 7,
+    staff: 7,
+    kitchen_staff: 7,
+    waiter: 7,
+    inventory_staff: 7,
+};
+
+export function getRoleLevel(role: string, isSuperAdmin: boolean): number {
+    if (isSuperAdmin) return 1;
+    return ROLE_LEVELS[role] ?? 7;
+}
+
+/** Returns true if the user can access branches beyond their own (HQ or above). */
+export function canAccessBranch(user: AuthenticatedUser, targetBranchPath: string): boolean {
+    if (user.isSuperAdmin || user.roleLevel <= 2) return true;
+    if (user.roleLevel <= 4) {
+        return user.accessibleBranchPaths.some(
+            p => targetBranchPath === p || targetBranchPath.startsWith(p + '.')
+        );
+    }
+    return user.accessibleBranchIds.some(id => targetBranchPath.includes(id));
+}
+
 /** Identity-only JWT payload (BE-02) */
 interface IdentityJwtPayload {
     sub: string;
@@ -65,6 +110,8 @@ export interface AuthenticatedUser extends JwtPayload {
     activeBranchPath?: string;
     isSuperAdmin: boolean;
     tenantId: string;
+    /** Numeric role level (1=system_admin … 7=staff). Lower = broader access. */
+    roleLevel: number;
 }
 
 declare global {
@@ -186,6 +233,7 @@ interface CachedAuthUser {
     permissions: string[];
     role: string;
     roleId: string | null;
+    roleLevel: number;
 }
 
 async function loadCachedAuthUser(userId: string): Promise<CachedAuthUser | null> {
@@ -249,6 +297,7 @@ async function loadCachedAuthUser(userId: string): Promise<CachedAuthUser | null
         permissions: [...new Set([...rolePerms, ...userPerms])],
         role: user.role,
         roleId: user.roleId,
+        roleLevel: getRoleLevel(user.role, user.isSuperAdmin),
     };
 
     await cache.set(cacheKey, result, CACHE_TTL);
@@ -348,7 +397,8 @@ export async function authenticate(
                 activeStoreId,
                 activeBranchId,
                 activeBranchPath,
-                isSuperAdmin: user.isSuperAdmin || false
+                isSuperAdmin: user.isSuperAdmin || false,
+                roleLevel: user.roleLevel,
             };
 
             next();
@@ -648,44 +698,43 @@ export interface ScopeFilter {
     activeStoreId?: string;
     /** true when user is scoped by store (store_owner with UserStore entries) */
     scopeByStore: boolean;
+    /**
+     * Branch paths for HQ-level users (roleLevel 3-4).
+     * When set, route handlers should use path-prefix matching instead of exact branchId matching.
+     * e.g. "root.hq" matches all branches where branchPath starts with "root.hq"
+     */
+    branchPaths?: string[];
+    /** Numeric role level, copied from authUser.roleLevel */
+    roleLevel: number;
 }
 
 // New middleware: Filter by accessible branches/stores
 export function branchFilter() {
     return (req: Request, _res: Response, next: NextFunction): void => {
         if (req.authUser) {
-            // Super Admin has global access to everything across all tenants
-            const isSuperAdmin = req.authUser.isSuperAdmin;
-            
-            // System Admin (Tenant Admin) has access to all branches/stores WITHIN THEIR TENANT
-            const isTenantAdmin = !isSuperAdmin && (req.authUser.role === 'admin' || req.authUser.permissions.includes('*'));
+            const { isSuperAdmin, roleLevel } = req.authUser;
 
             if (!isSuperAdmin) {
                 let branchIds = req.authUser.accessibleBranchIds;
                 let storeIds = req.authUser.accessibleStoreIds;
                 const hasStoreScope = storeIds.length > 0;
 
-                // If they are a tenant admin, we don't scope them by branch/store, ONLY by tenantId
-                if (isTenantAdmin) {
+                // Level 1-2 (system_admin, tenant_admin): tenant-only scope, no branch restriction
+                if (roleLevel <= 2) {
                     req.branchFilter = {
                         tenantId: req.authUser.tenantId,
                         branchIds: [],
                         storeIds: [],
                         activeBranchId: req.authUser.activeBranchId,
                         activeStoreId: req.authUser.activeStoreId,
-                        scopeByStore: false, // Tenant Admins are not store-scoped, they see the whole tenant
+                        scopeByStore: false,
+                        roleLevel,
                     };
-                } else {
-                    // Fallback: if no UserStore records, scope to user's own branchId
+                } else if (roleLevel <= 4) {
+                    // Level 3-4 (hq_admin, hq_manager): path-prefix scope for child branches
                     if (branchIds.length === 0 && req.authUser.branchId) {
                         branchIds = [req.authUser.branchId];
                     }
-                    // Fallback: if no storeIds but activeStoreId resolved from header, include it
-                    if (!hasStoreScope && req.authUser.activeStoreId) {
-                        storeIds = [req.authUser.activeStoreId];
-                    }
-
-                    // Store accessible branch/store IDs for route handlers to use
                     req.branchFilter = {
                         tenantId: req.authUser.tenantId,
                         branchIds,
@@ -693,7 +742,27 @@ export function branchFilter() {
                         activeBranchId: req.authUser.activeBranchId,
                         activeStoreId: req.authUser.activeStoreId,
                         scopeByStore: hasStoreScope,
-                    } satisfies ScopeFilter;
+                        branchPaths: req.authUser.accessibleBranchPaths,
+                        roleLevel,
+                    };
+                } else {
+                    // Level 5-7 (branch_admin, manager, staff): exact branch/store scope
+                    if (branchIds.length === 0 && req.authUser.branchId) {
+                        branchIds = [req.authUser.branchId];
+                    }
+                    if (!hasStoreScope && req.authUser.activeStoreId) {
+                        storeIds = [req.authUser.activeStoreId];
+                    }
+
+                    req.branchFilter = {
+                        tenantId: req.authUser.tenantId,
+                        branchIds,
+                        storeIds,
+                        activeBranchId: req.authUser.activeBranchId,
+                        activeStoreId: req.authUser.activeStoreId,
+                        scopeByStore: hasStoreScope,
+                        roleLevel,
+                    };
                 }
             }
         }
@@ -757,6 +826,42 @@ export function buildTenantCondition(
 ): SQL | undefined {
     if (!filter?.tenantId) return undefined;
     return eq(tenantIdColumn, filter.tenantId);
+}
+
+/**
+ * Build a branch-scope condition that handles HQ-level path-prefix matching.
+ * For HQ users (level 3-4): uses `branchId IN (SELECT id FROM branches WHERE path LIKE p.%)`
+ * For branch-level users (5-7): uses `branchId IN (exact list)`
+ * For tenant/system admins: returns undefined (no restriction beyond tenantId)
+ *
+ * Use this in product/inventory/customer/sales list routes instead of buildScopeCondition
+ * when the table has a branchId column but NOT a branchPath column.
+ */
+export function buildBranchIdScope(
+    filter: ScopeFilter | undefined,
+    branchIdColumn: PgColumn
+): SQL | undefined {
+    if (!filter) return undefined;
+
+    const { roleLevel = 7, branchPaths, branchIds } = filter;
+
+    // Tenant/system admins: no branch restriction
+    if (roleLevel <= 2) return undefined;
+
+    // HQ level (3-4): path-prefix sub-select against branches table
+    if (roleLevel <= 4 && branchPaths && branchPaths.length > 0) {
+        const pathClauses = branchPaths
+            .map(p => `(branch_path = '${p.replace(/'/g, "''")}' OR branch_path LIKE '${p.replace(/'/g, "''")}' || '.%')`)
+            .join(' OR ');
+        return sql`${branchIdColumn} IN (SELECT id FROM branches WHERE ${sql.raw(pathClauses)})`;
+    }
+
+    // Branch-level (5-7): exact IN list
+    if (branchIds.length > 0) {
+        return inArray(branchIdColumn, branchIds);
+    }
+
+    return undefined;
 }
 
 /**
@@ -919,6 +1024,29 @@ export function requireAdmin() {
 
             if (!req.authUser.isSuperAdmin && req.authUser.role !== 'admin') {
                 throw ApiError.forbidden('Admin access required');
+            }
+
+            next();
+        } catch (error) {
+            next(error);
+        }
+    };
+}
+
+/**
+ * Middleware to require Tenant Admin access (Super Admin, admin, hq_admin, hq_manager, branch_admin, store_owner)
+ * roleLevel <= 5. Use this for routes that tenant-level admins need to manage their own staff/roles/branches.
+ * Data scoping is enforced by buildTenantCondition / branchFilter — this only controls the role gate.
+ */
+export function requireTenantAdmin() {
+    return (req: Request, res: Response, next: NextFunction): void => {
+        try {
+            if (!req.authUser) {
+                throw ApiError.unauthorized('Not authenticated');
+            }
+
+            if (!req.authUser.isSuperAdmin && req.authUser.roleLevel > 5) {
+                throw ApiError.forbidden('Tenant admin access required');
             }
 
             next();

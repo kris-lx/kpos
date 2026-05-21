@@ -471,8 +471,17 @@ promotionRoutes.get('/:id', authenticate, async (req, res, next) => {
 // Create promotion
 promotionRoutes.post('/', authenticate, authorize('promotions:create'), async (req, res, next) => {
     try {
-        // Convert date strings to Date objects and sanitize
         const { id, _id, createdAt, updatedAt, ...body } = req.body;
+
+        if (!body.name || !body.type || body.value == null || !body.startDate) {
+            res.status(400).json({
+                success: false,
+                error: { code: 'VALIDATION_ERROR', message: 'name, type, value, and startDate are required' },
+            });
+            return;
+        }
+
+        // Convert date strings to Date objects and sanitize
         const data: Record<string, unknown> = {
             name: body.name,
             type: body.type || 'PERCENTAGE',

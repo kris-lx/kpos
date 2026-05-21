@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
@@ -306,8 +306,8 @@
     <div class="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 mb-6">
         <div>
             <h1 class="text-2xl font-bold text-gray-900 dark:text-white flex items-center gap-3">
-                <div class="p-2 bg-green-100 dark:bg-green-900/50 rounded-xl">
-                    <DollarSign class="w-6 h-6 text-green-600 dark:text-green-400" />
+                <div class="p-2 bg-success-100 dark:bg-success-900/50 rounded-xl">
+                    <DollarSign class="w-6 h-6 text-success-600 dark:text-success-400" />
                 </div>
                 ຈັດການລະດັບລາຄາ
             </h1>
@@ -325,7 +325,7 @@
             </button>
             <button
                 onclick={() => openLevelModal()}
-                class="flex items-center gap-2 px-4 py-2.5 bg-green-600 text-white rounded-xl hover:bg-green-700 transition-colors shadow-lg shadow-green-600/25"
+                class="flex items-center gap-2 px-4 py-2.5 bg-success-600 text-white rounded-xl hover:bg-success-700 transition-colors shadow-lg shadow-success-600/25"
             >
                 <Plus class="w-4 h-4" />
                 ເພີ່ມລະດັບລາຄາ
@@ -372,8 +372,8 @@
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700">
             <div class="flex items-center gap-3">
-                <div class="p-2 bg-green-100 dark:bg-green-900/50 rounded-lg">
-                    <TrendingUp class="w-5 h-5 text-green-600 dark:text-green-400" />
+                <div class="p-2 bg-success-100 dark:bg-success-900/50 rounded-lg">
+                    <TrendingUp class="w-5 h-5 text-success-600 dark:text-success-400" />
                 </div>
                 <div>
                     <p class="text-2xl font-bold text-gray-900 dark:text-white">{stats.productsWithPricing}</p>
@@ -385,14 +385,14 @@
 
     <!-- Error State -->
     {#if error && !loading}
-        <div class="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl p-6 mb-6">
+        <div class="bg-danger-50 dark:bg-danger-900/20 border border-danger-200 dark:border-danger-800 rounded-xl p-6 mb-6">
             <div class="flex flex-col items-center justify-center text-center">
-                <AlertCircle class="w-12 h-12 text-red-500 mb-3" />
-                <h3 class="text-lg font-semibold text-red-700 dark:text-red-400 mb-2">ເກີດຂໍ້ຜິດພາດ</h3>
-                <p class="text-red-600 dark:text-red-300 mb-4">{error}</p>
+                <AlertCircle class="w-12 h-12 text-danger-500 mb-3" />
+                <h3 class="text-lg font-semibold text-danger-700 dark:text-danger-400 mb-2">ເກີດຂໍ້ຜິດພາດ</h3>
+                <p class="text-danger-600 dark:text-danger-300 mb-4">{error}</p>
                 <button
                     onclick={() => loadData()}
-                    class="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+                    class="flex items-center gap-2 px-4 py-2 bg-danger-600 text-white rounded-lg hover:bg-danger-700 transition-colors"
                 >
                     <RefreshCw class="w-4 h-4" />
                     ລອງໃໝ່
@@ -404,7 +404,7 @@
     <!-- Loading State -->
     {#if loading}
         <div class="flex flex-col items-center justify-center py-20">
-            <Loader2 class="w-10 h-10 text-green-600 animate-spin mb-4" />
+            <Loader2 class="w-10 h-10 text-success-600 animate-spin mb-4" />
             <p class="text-gray-500 dark:text-gray-400">ກຳລັງໂຫລດຂໍ້ມູນ...</p>
         </div>
     {:else if filteredLevels.length === 0 && !error}
@@ -414,7 +414,7 @@
             <p class="text-gray-500 dark:text-gray-400 mb-6">ຍັງບໍ່ມີລະດັບລາຄາໃນລະບົບ ກະລຸນາເພີ່ມໃໝ່</p>
             <button
                 onclick={() => openLevelModal()}
-                class="inline-flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
+                class="inline-flex items-center gap-2 px-4 py-2 bg-success-600 text-white rounded-lg hover:bg-success-700"
             >
                 <Plus class="w-4 h-4" />
                 ເພີ່ມລະດັບລາຄາທຳອິດ
@@ -463,7 +463,7 @@
                                 {#if !level.isDefault}
                                     <button
                                         onclick={() => deleteLevel(level)}
-                                        class="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
+                                        class="p-2 text-gray-400 hover:text-danger-600 hover:bg-danger-50 dark:hover:bg-danger-900/20 rounded-lg transition-colors"
                                         title="ລົບ"
                                     >
                                         <Trash2 class="w-4 h-4" />
@@ -500,7 +500,7 @@
                                         <span class="text-sm text-gray-700 dark:text-gray-300 truncate max-w-[150px]">
                                             {productPrice.product?.name || "ສິນຄ້າ"}
                                         </span>
-                                        <span class="text-sm font-semibold text-green-600 dark:text-green-400">
+                                        <span class="text-sm font-semibold text-success-600 dark:text-success-400">
                                             {formatCurrency(productPrice.price)}
                                         </span>
                                     </div>
@@ -521,7 +521,7 @@
                         <!-- Actions -->
                         <button
                             onclick={() => openPriceModal(level)}
-                            class="w-full flex items-center justify-center gap-2 px-4 py-2.5 border-2 border-dashed border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400 rounded-xl hover:border-green-500 hover:text-green-600 dark:hover:text-green-400 transition-colors"
+                            class="w-full flex items-center justify-center gap-2 px-4 py-2.5 border-2 border-dashed border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400 rounded-xl hover:border-success-500 hover:text-success-600 dark:hover:text-success-400 transition-colors"
                         >
                             <Plus class="w-4 h-4" />
                             ເພີ່ມລາຄາສິນຄ້າ
@@ -573,13 +573,13 @@
             >
                 <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                        ຊື່ລະດັບລາຄາ <span class="text-red-500">*</span>
+                        ຊື່ລະດັບລາຄາ <span class="text-danger-500">*</span>
                     </label>
                     <input
                         type="text"
                         bind:value={levelFormData.name}
                         required
-                        class="w-full px-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-green-500"
+                        class="w-full px-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-success-500"
                         placeholder="ເຊັ່ນ: ລາຄາສະມາຊິກ, ລາຄາຂາຍສົ່ງ"
                     />
                 </div>
@@ -591,7 +591,7 @@
                     <textarea
                         bind:value={levelFormData.description}
                         rows="3"
-                        class="w-full px-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-green-500 resize-none"
+                        class="w-full px-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-success-500 resize-none"
                         placeholder="ອະທິບາຍລະດັບລາຄານີ້..."
                     ></textarea>
                 </div>
@@ -604,7 +604,7 @@
                     <label class="relative inline-flex items-center cursor-pointer">
                         <input type="checkbox" bind:checked={levelFormData.isDefault} class="sr-only peer" />
                         <div
-                            class="w-11 h-6 bg-gray-300 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-green-300 dark:peer-focus:ring-green-800 rounded-full peer dark:bg-gray-600 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:start-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-500 peer-checked:bg-green-600"
+                            class="w-11 h-6 bg-gray-300 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-success-300 dark:peer-focus:ring-success-800 rounded-full peer dark:bg-gray-600 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:start-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-500 peer-checked:bg-success-600"
                         ></div>
                     </label>
                 </div>
@@ -622,7 +622,7 @@
                     type="button"
                     onclick={saveLevel}
                     disabled={isSaving || !levelFormData.name.trim()}
-                    class="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-green-600 text-white hover:bg-green-700 font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    class="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-success-600 text-white hover:bg-success-700 font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
                     {#if isSaving}
                         <Loader2 class="w-4 h-4 animate-spin" />
@@ -668,12 +668,12 @@
             >
                 <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                        ເລືອກສິນຄ້າ <span class="text-red-500">*</span>
+                        ເລືອກສິນຄ້າ <span class="text-danger-500">*</span>
                     </label>
                     <select
                         bind:value={priceFormData.productId}
                         required
-                        class="w-full px-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-green-500"
+                        class="w-full px-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-success-500"
                     >
                         <option value="">-- ເລືອກສິນຄ້າ --</option>
                         {#each products as product (product.id)}
@@ -686,7 +686,7 @@
 
                 <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                        ລາຄາພິເສດ (₭) <span class="text-red-500">*</span>
+                        ລາຄາພິເສດ (₭) <span class="text-danger-500">*</span>
                     </label>
                     <div class="relative">
                         <DollarSign class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
@@ -694,7 +694,7 @@
                             bind:value={priceFormData.price}
                             min={0}
                             required
-                            class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-green-500"
+                            class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-success-500"
                         />
                     </div>
                 </div>
@@ -713,13 +713,13 @@
                             </div>
                             <div class="flex items-center justify-between mb-2">
                                 <span class="text-sm text-gray-600 dark:text-gray-400">ລາຄາພິເສດ</span>
-                                <span class="text-lg font-bold text-green-600 dark:text-green-400">
+                                <span class="text-lg font-bold text-success-600 dark:text-success-400">
                                     {formatCurrency(priceFormData.price)}
                                 </span>
                             </div>
                             <div class="flex items-center justify-between pt-2 border-t border-gray-200 dark:border-gray-600">
                                 <span class="text-sm text-gray-600 dark:text-gray-400">ສ່ວນຫຼຸດ</span>
-                                <span class="font-semibold {discount > 0 ? 'text-green-600 dark:text-green-400' : discount < 0 ? 'text-red-600 dark:text-red-400' : 'text-gray-600'}">
+                                <span class="font-semibold {discount > 0 ? 'text-success-600 dark:text-success-400' : discount < 0 ? 'text-danger-600 dark:text-danger-400' : 'text-gray-600'}">
                                     {discount > 0 ? "-" : discount < 0 ? "+" : ""}{Math.abs(discount)}%
                                 </span>
                             </div>
@@ -740,7 +740,7 @@
                     type="button"
                     onclick={saveProductPrice}
                     disabled={isSaving || !priceFormData.productId || priceFormData.price <= 0}
-                    class="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-green-600 text-white hover:bg-green-700 font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    class="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-success-600 text-white hover:bg-success-700 font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
                     {#if isSaving}
                         <Loader2 class="w-4 h-4 animate-spin" />

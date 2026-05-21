@@ -1,11 +1,11 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount } from "svelte";
     import { i18n } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
     import { formatCurrency, formatDate } from "$lib/utils";
     import { toast } from "svelte-sonner";
     import { auth } from "$stores";
-    import { Minus, Search, Package, X, ChevronLeft, ChevronRight, Loader2, Trash2, AlertCircle, Pencil } from "lucide-svelte";
+    import { Minus, Search, Package, X, ChevronLeft, ChevronRight, Loader2, Trash2, AlertCircle, Pencil, Download } from "lucide-svelte";
 
     const t = i18n.t;
 
@@ -60,16 +60,18 @@
         loading = true;
         loadError = null;
         try {
+            const activeBranchId = auth.activeBranchId;
             const searchParams = new URLSearchParams({
                 page: currentPage.toString(),
                 limit: pageSize.toString(),
                 ...(searchQuery && { search: searchQuery }),
+                ...(activeBranchId && { branchId: activeBranchId }),
             });
-            
+
             const [stockRes, prodRes, invRes] = await Promise.all([
                 api.get(`inventory/stock-out?${searchParams}`).json<any>(),
-                api.get("products?limit=1000").json<any>(),
-                api.get("inventory?limit=1000").json<any>(),
+                api.get(`products?limit=1000${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>(),
+                api.get(`inventory?limit=1000${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>(),
             ]);
             stockOuts = stockRes.data || [];
             totalItems = stockRes.meta?.total || stockRes.total || stockOuts.length;
@@ -193,6 +195,38 @@
         return pages;
     });
 
+    function downloadFile(content: string, filename: string, type: string) {
+        const blob = new Blob([content], { type });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
+    async function exportToCsv() {
+        try {
+            const activeBranchId = auth.activeBranchId;
+            const res = await api.get(`inventory/stock-out?limit=10000${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>();
+            const rows: any[] = res.data || [];
+            let csv = '﻿';
+            csv += 'ວັນທີ,ຊື່ສິນຄ້າ,ຈຳນວນ,ເຫດຜົນ,ເລກອ້າງອີງ,ໝາຍເຫດ\n';
+            for (const item of rows) {
+                const productName = products.find((p: any) => p.id === item.productId)?.name || item.productId;
+                const reasonLabel = reasons.find((r: any) => r.value === item.reason)?.labelLao || item.reason || '';
+                const date = item.createdAt ? new Date(item.createdAt).toLocaleDateString('lo-LA') : '';
+                csv += `"${date}","${productName}","${Math.abs(item.quantity || 0)}","${reasonLabel}","${item.reference || ''}","${item.notes || ''}"\n`;
+            }
+            downloadFile(csv, `stockout-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
+            toast.success('ສົ່ງອອກ CSV ສຳເລັດ');
+        } catch {
+            toast.error('ສົ່ງອອກລົ້ມເຫລວ');
+        }
+    }
+
     $effect(() => {
         auth.activeStoreId;
         loadEnums();
@@ -208,15 +242,24 @@
             </h1>
             <p class="text-sm text-gray-500 dark:text-gray-400">{t("inventory.stockOutDesc")}</p>
         </div>
-        {#if canCreateStockOut}
-        <button
-            onclick={openAdd}
-            class="flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-white hover:bg-red-700"
-        >
-            <Minus class="h-5 w-5" />
-            {t("inventory.addStockOut")}
-        </button>
-        {/if}
+        <div class="flex items-center gap-2">
+            <button
+                onclick={exportToCsv}
+                class="flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 text-sm font-medium"
+            >
+                <Download class="h-4 w-4" />
+                ສົ່ງອອກ
+            </button>
+            {#if canCreateStockOut}
+            <button
+                onclick={openAdd}
+                class="flex items-center gap-2 rounded-lg bg-danger-600 px-4 py-2 text-white hover:bg-danger-700"
+            >
+                <Minus class="h-5 w-5" />
+                {t("inventory.addStockOut")}
+            </button>
+            {/if}
+        </div>
     </div>
 
     <div class="relative">
@@ -226,17 +269,17 @@
             bind:value={searchQuery}
             onkeydown={(e) => e.key === 'Enter' && handleSearch()}
             placeholder="{t('common.search')}..."
-            class="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 py-2 pl-10 pr-4 text-gray-900 dark:text-white focus:border-red-500 focus:ring-1 focus:ring-red-500"
+            class="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 py-2 pl-10 pr-4 text-gray-900 dark:text-white focus:border-danger-500 focus:ring-1 focus:ring-danger-500"
         />
     </div>
 
     {#if loadError}
         <div class="flex flex-col items-center justify-center py-12 px-6 bg-white dark:bg-gray-800 rounded-xl shadow-sm">
-            <AlertCircle class="w-12 h-12 text-red-500 mb-4" />
+            <AlertCircle class="w-12 h-12 text-danger-500 mb-4" />
             <p class="text-gray-600 dark:text-gray-400 text-center mb-4">{loadError}</p>
             <button
                 onclick={() => loadData()}
-                class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700"
+                class="px-4 py-2 bg-danger-600 text-white rounded-lg hover:bg-danger-700"
             >
                 {t("common.retry") || "Retry"}
             </button>
@@ -259,7 +302,7 @@
                 {#if loading}
                     <tr>
                         <td colspan="7" class="px-6 py-12 text-center">
-                            <Loader2 class="h-8 w-8 animate-spin text-red-600 mx-auto" />
+                            <Loader2 class="h-8 w-8 animate-spin text-danger-600 mx-auto" />
                         </td>
                     </tr>
                 {:else if stockOuts.length === 0}
@@ -275,7 +318,7 @@
                             <td class="whitespace-nowrap px-6 py-4 text-sm text-gray-900 dark:text-white">{formatDate(item.createdAt || item.date)}</td>
                             <td class="px-6 py-4 text-sm text-gray-900 dark:text-white">{item.product?.name || "-"}</td>
                             <td class="whitespace-nowrap px-6 py-4 text-sm font-medium">
-                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">
+                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-danger-100 text-danger-700">
                                     -{item.quantity}
                                 </span>
                             </td>
@@ -300,7 +343,7 @@
                                     {#if canDeleteStockOut}
                                     <button
                                         onclick={() => deleteStockOut(item.id)}
-                                        class="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg"
+                                        class="p-2 text-gray-400 hover:text-danger-500 hover:bg-danger-50 dark:hover:bg-danger-900/20 rounded-lg"
                                         title="{t('common.delete')}"
                                     >
                                         <Trash2 class="w-4 h-4" />
@@ -351,7 +394,7 @@
                                 disabled={loading}
                                 class="min-w-8 h-8 px-2 rounded-lg text-sm font-medium transition-colors
                                     {currentPage === page 
-                                        ? 'bg-red-600 text-white' 
+                                        ? 'bg-danger-600 text-white' 
                                         : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700'}
                                     disabled:opacity-50"
                             >
@@ -471,7 +514,7 @@
                     <button
                         type="submit"
                         disabled={isSaving}
-                        class="flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-white hover:bg-red-700 disabled:opacity-50"
+                        class="flex items-center gap-2 rounded-lg bg-danger-600 px-4 py-2 text-white hover:bg-danger-700 disabled:opacity-50"
                     >
                         {#if isSaving}
                             <Loader2 class="w-4 h-4 animate-spin" />

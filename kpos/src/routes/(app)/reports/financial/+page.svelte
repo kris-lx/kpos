@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount } from "svelte";
     import { cn, formatCurrency } from "$utils";
     import { api } from "$api";
@@ -72,7 +72,7 @@
 
     function getPaymentColor(method: string) {
         switch (method) {
-            case "cash": return "text-green-600 dark:text-green-400 bg-green-100 dark:bg-green-900/50";
+            case "cash": return "text-success-600 dark:text-success-400 bg-success-100 dark:bg-success-900/50";
             case "card": return "text-blue-600 dark:text-blue-400 bg-blue-100 dark:bg-blue-900/50";
             case "mobile": return "text-purple-600 dark:text-purple-400 bg-purple-100 dark:bg-purple-900/50";
             default: return "text-gray-600 dark:text-gray-400 bg-gray-100 dark:bg-gray-700";
@@ -179,7 +179,7 @@ ${(financialData.paymentMethods || []).map((p: any) => `<tr><td>${p.methodName |
     <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between mb-6 gap-4">
         <div>
             <div class="flex items-center gap-3">
-                <div class="p-2.5 bg-gradient-to-br from-green-500 to-emerald-600 rounded-xl shadow-lg">
+                <div class="p-2.5 bg-gradient-to-br from-success-500 to-emerald-600 rounded-xl shadow-lg">
                     <DollarSign class="w-6 h-6 text-white" />
                 </div>
                 <div>
@@ -214,11 +214,11 @@ ${(financialData.paymentMethods || []).map((p: any) => `<tr><td>${p.methodName |
                 {#if showExportMenu}
                     <div class="absolute right-0 mt-2 w-48 bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 z-50 overflow-hidden">
                         <button onclick={() => exportToExcel()} class="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300">
-                            <FileSpreadsheet class="w-5 h-5 text-green-600" />
+                            <FileSpreadsheet class="w-5 h-5 text-success-600" />
                             <span>{t("reports.exportExcel")}</span>
                         </button>
                         <button onclick={() => exportToPdf()} class="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300">
-                            <FileType class="w-5 h-5 text-red-600" />
+                            <FileType class="w-5 h-5 text-danger-600" />
                             <span>{t("reports.exportPdf")}</span>
                         </button>
                         <button onclick={() => exportToWord()} class="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300">
@@ -233,12 +233,12 @@ ${(financialData.paymentMethods || []).map((p: any) => `<tr><td>${p.methodName |
 
     {#if isLoading}
         <div class="flex items-center justify-center py-20">
-            <Loader2 class="w-10 h-10 text-green-500 animate-spin" />
+            <Loader2 class="w-10 h-10 text-success-500 animate-spin" />
         </div>
     {:else}
         <!-- Main Stats -->
         <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-            <div class="bg-gradient-to-br from-green-500 to-emerald-600 rounded-2xl p-5 text-white shadow-lg">
+            <div class="bg-gradient-to-br from-success-500 to-emerald-600 rounded-2xl p-5 text-white shadow-lg">
                 <div class="flex items-center justify-between">
                     <div class="p-2 bg-white/20 rounded-lg">
                         <TrendingUp class="w-6 h-6" />
@@ -257,7 +257,7 @@ ${(financialData.paymentMethods || []).map((p: any) => `<tr><td>${p.methodName |
                 <p class="text-2xl font-bold mt-1">{formatCurrency(financialData.revenue)}</p>
             </div>
 
-            <div class="bg-gradient-to-br from-red-500 to-rose-600 rounded-2xl p-5 text-white shadow-lg">
+            <div class="bg-gradient-to-br from-danger-500 to-rose-600 rounded-2xl p-5 text-white shadow-lg">
                 <div class="flex items-center justify-between">
                     <div class="p-2 bg-white/20 rounded-lg">
                         <TrendingDown class="w-6 h-6" />
@@ -363,8 +363,8 @@ ${(financialData.paymentMethods || []).map((p: any) => `<tr><td>${p.methodName |
                                 <p class="text-sm text-gray-500 dark:text-gray-400">{day.transactions || 0} ລາຍການ</p>
                             </div>
                             <div class="text-right">
-                                <p class="font-bold text-green-600 dark:text-green-400">{formatCurrency(day.revenue)}</p>
-                                <p class="text-sm text-red-500">{formatCurrency(day.expenses)}</p>
+                                <p class="font-bold text-success-600 dark:text-success-400">{formatCurrency(day.revenue)}</p>
+                                <p class="text-sm text-danger-500">{formatCurrency(day.expenses)}</p>
                             </div>
                         </div>
                     {/each}

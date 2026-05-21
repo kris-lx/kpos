@@ -153,13 +153,16 @@ documentRoutes.post('/invoices', authenticate, branchFilter(), authorize('docume
         const invoiceNo = `INV-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(invCount + 1).padStart(5, '0')}`;
 
         const docTenantId = req.authUser?.tenantId || req.user?.tenantId;
+        // Non-HQ users submit for approval; HQ/admin can create directly as PENDING
+        const roleLevel = req.authUser?.roleLevel ?? 7;
+        const invInitialStatus = (req.authUser?.isSuperAdmin || roleLevel <= 4) ? 'PENDING' : 'PENDING_APPROVAL';
         const [invoice] = await db.insert(documents).values({
             tenantId: docTenantId,
             type: 'INVOICE',
             documentNo: invoiceNo,
             referenceId: req.user!.userId,
             referenceType: 'USER',
-            status: 'PENDING',
+            status: invInitialStatus,
             branchId: req.authUser?.activeBranchId || null,
             storeId: req.authUser?.activeStoreId || null,
             data: {
@@ -249,7 +252,13 @@ documentRoutes.delete('/invoices/:id', authenticate, authorize('documents:delete
 // Mark invoice as paid
 documentRoutes.put('/invoices/:id/mark-paid', authenticate, authorize('documents:update'), async (req, res, next) => {
     try {
-        const [invoice] = await db.update(documents).set({ status: 'PAID', updatedAt: new Date() }).where(eq(documents.id, req.params.id)).returning();
+        const tenantId = req.authUser?.tenantId;
+        const conds: any[] = [eq(documents.id, req.params.id), eq(documents.type, 'INVOICE')];
+        if (tenantId && !req.authUser?.isSuperAdmin) conds.push(eq(documents.tenantId, tenantId));
+        const existing = await db.query.documents.findFirst({ where: and(...conds) });
+        if (!existing) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Invoice not found' } });
+
+        const [invoice] = await db.update(documents).set({ status: 'PAID', updatedAt: new Date() }).where(and(...conds)).returning();
 
         res.json({ success: true, data: { id: invoice.id, status: 'paid' } });
     } catch (error) {
@@ -260,11 +269,63 @@ documentRoutes.put('/invoices/:id/mark-paid', authenticate, authorize('documents
 // Send invoice
 documentRoutes.post('/invoices/:id/send', authenticate, authorize('documents:update'), async (req, res, next) => {
     try {
-        const [invoice] = await db.update(documents).set({ status: 'SENT', updatedAt: new Date() }).where(eq(documents.id, req.params.id)).returning();
+        const tenantId = req.authUser?.tenantId;
+        const conds: any[] = [eq(documents.id, req.params.id), eq(documents.type, 'INVOICE')];
+        if (tenantId && !req.authUser?.isSuperAdmin) conds.push(eq(documents.tenantId, tenantId));
+        const existing = await db.query.documents.findFirst({ where: and(...conds) });
+        if (!existing) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Invoice not found' } });
+
+        const [invoice] = await db.update(documents).set({ status: 'SENT', updatedAt: new Date() }).where(and(...conds)).returning();
 
         // TODO: Implement email sending
 
         res.json({ success: true, data: { id: invoice.id, status: 'sent' } });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Approve invoice (maker/checker)
+documentRoutes.patch('/invoices/:id/approve', authenticate, authorize('documents:update'), async (req, res, next) => {
+    try {
+        const roleLevel = req.authUser?.roleLevel ?? 7;
+        if (!req.authUser?.isSuperAdmin && roleLevel > 4) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Only HQ admins or above can approve invoices' } });
+        }
+        const tenantId = req.authUser?.tenantId;
+        const conds: any[] = [eq(documents.id, req.params.id), eq(documents.type, 'INVOICE')];
+        if (tenantId && !req.authUser?.isSuperAdmin) conds.push(eq(documents.tenantId, tenantId));
+        const existing = await db.query.documents.findFirst({ where: and(...conds) });
+        if (!existing) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Invoice not found' } });
+        if (!['PENDING_APPROVAL', 'PENDING'].includes(existing.status)) {
+            return res.status(400).json({ success: false, error: { code: 'INVALID_STATE', message: `Invoice is already ${existing.status}` } });
+        }
+        const [invoice] = await db.update(documents).set({ status: 'APPROVED', updatedAt: new Date() }).where(and(...conds)).returning();
+        res.json({ success: true, data: { id: invoice.id, status: 'approved' } });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Reject invoice (maker/checker)
+documentRoutes.patch('/invoices/:id/reject', authenticate, authorize('documents:update'), async (req, res, next) => {
+    try {
+        const roleLevel = req.authUser?.roleLevel ?? 7;
+        if (!req.authUser?.isSuperAdmin && roleLevel > 4) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Only HQ admins or above can reject invoices' } });
+        }
+        const { reason } = req.body;
+        const tenantId = req.authUser?.tenantId;
+        const conds: any[] = [eq(documents.id, req.params.id), eq(documents.type, 'INVOICE')];
+        if (tenantId && !req.authUser?.isSuperAdmin) conds.push(eq(documents.tenantId, tenantId));
+        const existing = await db.query.documents.findFirst({ where: and(...conds) });
+        if (!existing) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Invoice not found' } });
+        if (!['PENDING_APPROVAL', 'PENDING'].includes(existing.status)) {
+            return res.status(400).json({ success: false, error: { code: 'INVALID_STATE', message: `Invoice is already ${existing.status}` } });
+        }
+        const existingData = existing.data as Record<string, unknown>;
+        const [invoice] = await db.update(documents).set({ status: 'REJECTED', data: { ...existingData, rejectionReason: reason }, updatedAt: new Date() }).where(and(...conds)).returning();
+        res.json({ success: true, data: { id: invoice.id, status: 'rejected' } });
     } catch (error) {
         next(error);
     }
@@ -397,13 +458,15 @@ documentRoutes.post('/tax-invoices', authenticate, branchFilter(), authorize('do
         const invoiceNumber = `TXI-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(txiCount + 1).padStart(5, '0')}`;
 
         const taxDocTenantId = req.authUser?.tenantId || req.user?.tenantId;
+        const taxRoleLevel = req.authUser?.roleLevel ?? 7;
+        const taxInitialStatus = (req.authUser?.isSuperAdmin || taxRoleLevel <= 4) ? 'PENDING' : 'PENDING_APPROVAL';
         const [invoice] = await db.insert(documents).values({
             tenantId: taxDocTenantId,
             type: 'TAX_INVOICE',
             documentNo: invoiceNumber,
             referenceId: req.user!.userId,
             referenceType: 'USER',
-            status: 'PENDING',
+            status: taxInitialStatus,
             branchId: req.authUser?.activeBranchId || null,
             storeId: req.authUser?.activeStoreId || null,
             data: { customerName, taxId, orderId, subtotal: subtotal || 0, taxAmount: taxAmount || 0, total: total || 0, createdBy: req.user!.userId },
@@ -504,6 +567,61 @@ documentRoutes.put('/tax-invoices/:id/issue', authenticate, authorize('documents
         }).where(and(...issConds)).returning();
 
         res.json({ success: true, data: { id: invoice.id, status: 'issued' } });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Approve tax invoice (maker/checker) — HQ/admin only
+documentRoutes.patch('/tax-invoices/:id/approve', authenticate, authorize('documents:update'), async (req, res, next) => {
+    try {
+        const roleLevel = req.authUser?.roleLevel ?? 7;
+        if (!req.authUser?.isSuperAdmin && roleLevel > 4) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Only HQ admins or above can approve tax invoices' } });
+        }
+        const tenantId = req.authUser?.tenantId;
+        const conds: any[] = [eq(documents.id, req.params.id), eq(documents.type, 'TAX_INVOICE')];
+        if (tenantId && !req.authUser?.isSuperAdmin) conds.push(eq(documents.tenantId, tenantId));
+        const existing = await db.query.documents.findFirst({ where: and(...conds) });
+        if (!existing) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Tax invoice not found' } });
+        if (!['PENDING_APPROVAL', 'PENDING'].includes(existing.status)) {
+            return res.status(400).json({ success: false, error: { code: 'INVALID_STATE', message: `Tax invoice is already ${existing.status}` } });
+        }
+        const existingData = existing.data as Record<string, unknown>;
+        const [invoice] = await db.update(documents).set({
+            status: 'ISSUED',
+            data: { ...existingData, issuedAt: new Date().toISOString(), issuedBy: req.authUser?.userId },
+            updatedAt: new Date(),
+        }).where(and(...conds)).returning();
+        res.json({ success: true, data: { id: invoice.id, status: 'issued' } });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Reject tax invoice (maker/checker) — HQ/admin only
+documentRoutes.patch('/tax-invoices/:id/reject', authenticate, authorize('documents:update'), async (req, res, next) => {
+    try {
+        const roleLevel = req.authUser?.roleLevel ?? 7;
+        if (!req.authUser?.isSuperAdmin && roleLevel > 4) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Only HQ admins or above can reject tax invoices' } });
+        }
+        const { reason } = req.body;
+        const tenantId = req.authUser?.tenantId;
+        const conds: any[] = [eq(documents.id, req.params.id), eq(documents.type, 'TAX_INVOICE')];
+        if (tenantId && !req.authUser?.isSuperAdmin) conds.push(eq(documents.tenantId, tenantId));
+        const existing = await db.query.documents.findFirst({ where: and(...conds) });
+        if (!existing) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Tax invoice not found' } });
+        if (!['PENDING_APPROVAL', 'PENDING'].includes(existing.status)) {
+            return res.status(400).json({ success: false, error: { code: 'INVALID_STATE', message: `Tax invoice is already ${existing.status}` } });
+        }
+        const existingData = existing.data as Record<string, unknown>;
+        const [invoice] = await db.update(documents).set({
+            status: 'CANCELLED',
+            data: { ...existingData, rejectionReason: reason, rejectedBy: req.authUser?.userId },
+            updatedAt: new Date(),
+        }).where(and(...conds)).returning();
+        res.json({ success: true, data: { id: invoice.id, status: 'cancelled' } });
     } catch (error) {
         next(error);
     }

@@ -159,6 +159,7 @@ salesRoutes.post('/', authenticate, async (req, res, next) => {
                     const newQty = previousQty - item.quantity;
                     await db.update(inventory).set({ quantity: newQty, available: newQty - inv.reserved }).where(eq(inventory.id, inv.id));
                     await db.insert(stockMovements).values({
+                        tenantId: saleTenantId,
                         productId: item.productId, branchId, storeId, type: 'OUT',
                         quantity: item.quantity, previousQty, newQty,
                         reason: 'Sale', reference: transaction.id, referenceType: 'SALE', userId,
@@ -240,7 +241,7 @@ salesRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
 // GET SALE BY ID (must be after all specific routes like /held, /credit)
 // Note: Using regex to match only valid MongoDB ObjectIds (24 hex characters)
 // ═══════════════════════════════════════════════════════════════════════════
-salesRoutes.get('/:id([a-fA-F0-9]{24})', authenticate, async (req, res, next) => {
+salesRoutes.get('/:id([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})', authenticate, async (req, res, next) => {
     try {
         // BE-54: Tenant-scoped transaction lookup
         const tenantId = req.authUser?.tenantId;
@@ -274,7 +275,7 @@ salesRoutes.get('/:id([a-fA-F0-9]{24})', authenticate, async (req, res, next) =>
 // ═══════════════════════════════════════════════════════════════════════════
 // VOID SALE
 // ═══════════════════════════════════════════════════════════════════════════
-salesRoutes.post('/:id([a-fA-F0-9]{24})/void', authenticate, authorize('sales:delete'), async (req, res, next) => {
+salesRoutes.post('/:id([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/void', authenticate, authorize('sales:delete'), async (req, res, next) => {
     try {
         const { reason } = req.body;
 
@@ -334,7 +335,7 @@ salesRoutes.post('/:id([a-fA-F0-9]{24})/void', authenticate, authorize('sales:de
 // ═══════════════════════════════════════════════════════════════════════════
 // REFUND SALE
 // ═══════════════════════════════════════════════════════════════════════════
-salesRoutes.post('/:id([a-fA-F0-9]{24})/refund', authenticate, authorize('sales:delete'), async (req, res, next) => {
+salesRoutes.post('/:id([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/refund', authenticate, authorize('sales:delete'), async (req, res, next) => {
     try {
         const { reason, items: refundItems } = req.body;
 
@@ -461,7 +462,7 @@ salesRoutes.get('/summary/daily', authenticate, branchFilter(), async (req, res,
 // Get all shifts
 salesRoutes.get('/shifts', authenticate, branchFilter(), async (req, res, next) => {
     try {
-        const { branchId, userId, status, page = 1, limit = 50 } = req.query;
+        const { branchId, userId, status, date, dateFrom, dateTo, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
         const filter = req.branchFilter;
         const authUser = req.authUser;
@@ -479,6 +480,15 @@ salesRoutes.get('/shifts', authenticate, branchFilter(), async (req, res, next) 
         if (branchId) shiftConds.push(eq(shifts.branchId, String(branchId)));
         if (userId) shiftConds.push(eq(shifts.userId, String(userId)));
         if (status) shiftConds.push(eq(shifts.status, String(status)));
+        // date = single day filter (e.g. "2026-05-19")
+        if (date) {
+            const dayStart = new Date(String(date) + 'T00:00:00.000Z');
+            const dayEnd = new Date(String(date) + 'T23:59:59.999Z');
+            shiftConds.push(gte(shifts.openedAt, dayStart), lte(shifts.openedAt, dayEnd));
+        } else {
+            if (dateFrom) shiftConds.push(gte(shifts.openedAt, new Date(String(dateFrom))));
+            if (dateTo) shiftConds.push(lte(shifts.openedAt, new Date(String(dateTo))));
+        }
         const shiftWhere = shiftConds.length > 0 ? and(...shiftConds) : undefined;
 
         const [shiftRows, [{ value: total }]] = await Promise.all([

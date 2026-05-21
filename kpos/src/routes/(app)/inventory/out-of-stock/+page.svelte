@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
@@ -40,9 +40,11 @@
     async function loadData() {
         isLoading = true;
         try {
+            const activeBranchId = auth.activeBranchId;
             const params = new URLSearchParams({
                 page: currentPage.toString(),
                 limit: itemsPerPage.toString(),
+                ...(activeBranchId && { branchId: activeBranchId }),
             });
             if (searchQuery.trim()) {
                 params.append("search", searchQuery.trim());
@@ -94,6 +96,35 @@
         return pages;
     });
 
+    function downloadFile(content: string, filename: string, type: string) {
+        const blob = new Blob([content], { type });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
+    async function exportToCsv() {
+        try {
+            const activeBranchId = auth.activeBranchId;
+            const res = await api.get(`inventory/out-of-stock?limit=10000${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>();
+            const rows: any[] = res.data || [];
+            let csv = '﻿';
+            csv += 'ຊື່ສິນຄ້າ,SKU,ສາຂາ,ສະຕ໋ອກ,ສະຕ໋ອກຕ່ຳສຸດ,ໝວດໝູ່\n';
+            for (const item of rows) {
+                csv += `"${item.product?.name || item.name || ''}","${item.product?.sku || item.sku || ''}","${item.branch?.name || ''}","${item.quantity ?? 0}","${item.minStock || item.product?.minStock || 0}","${item.category?.name || ''}"\n`;
+            }
+            downloadFile(csv, `out-of-stock-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
+            toast.success('ສົ່ງອອກ CSV ສຳເລັດ');
+        } catch {
+            toast.error('ສົ່ງອອກລົ້ມເຫລວ');
+        }
+    }
+
     $effect(() => {
         auth.activeStoreId;
         loadData();
@@ -109,7 +140,7 @@
     <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between mb-6 gap-4">
         <div>
             <div class="flex items-center gap-3">
-                <div class="p-2.5 bg-gradient-to-br from-red-500 to-red-700 rounded-xl shadow-lg">
+                <div class="p-2.5 bg-gradient-to-br from-danger-500 to-danger-700 rounded-xl shadow-lg">
                     <PackageX class="w-6 h-6 text-white" />
                 </div>
                 <div>
@@ -127,7 +158,7 @@
                 <RefreshCw class="w-4 h-4" />
                 ໂຫລດໃໝ່
             </button>
-            <button class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-700">
+            <button onclick={exportToCsv} class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-700">
                 <Download class="w-4 h-4" />
                 ສົ່ງອອກ
             </button>
@@ -138,8 +169,8 @@
     <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
         <div class="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-100 dark:border-gray-700">
             <div class="flex items-center gap-3">
-                <div class="p-2 bg-red-100 dark:bg-red-900/30 rounded-lg">
-                    <PackageX class="w-5 h-5 text-red-600 dark:text-red-400" />
+                <div class="p-2 bg-danger-100 dark:bg-danger-900/30 rounded-lg">
+                    <PackageX class="w-5 h-5 text-danger-600 dark:text-danger-400" />
                 </div>
                 <div>
                     <p class="text-sm text-gray-500 dark:text-gray-400">ທັງໝົດ</p>
@@ -160,8 +191,8 @@
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-100 dark:border-gray-700">
             <div class="flex items-center gap-3">
-                <div class="p-2 bg-red-100 dark:bg-red-900/30 rounded-lg">
-                    <AlertTriangle class="w-5 h-5 text-red-600 dark:text-red-400" />
+                <div class="p-2 bg-danger-100 dark:bg-danger-900/30 rounded-lg">
+                    <AlertTriangle class="w-5 h-5 text-danger-600 dark:text-danger-400" />
                 </div>
                 <div>
                     <p class="text-sm text-gray-500 dark:text-gray-400">ສິນຄ້າຕິດລົບ</p>
@@ -181,7 +212,7 @@
                     bind:value={searchQuery}
                     oninput={handleSearch}
                     placeholder="ຄົ້ນຫາສິນຄ້າ..."
-                    class="w-full pl-10 pr-4 py-2.5 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-red-500"
+                    class="w-full pl-10 pr-4 py-2.5 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-danger-500"
                 />
             </div>
         </div>
@@ -191,7 +222,7 @@
     <div class="bg-white dark:bg-gray-800 rounded-xl border border-gray-100 dark:border-gray-700 overflow-hidden">
         {#if isLoading}
             <div class="flex items-center justify-center py-20">
-                <Loader2 class="w-8 h-8 animate-spin text-red-600" />
+                <Loader2 class="w-8 h-8 animate-spin text-danger-600" />
             </div>
         {:else if outOfStockProducts.length === 0}
             <div class="text-center py-20">
@@ -237,7 +268,7 @@
                                     <span class={cn(
                                         "inline-flex items-center px-2.5 py-1 rounded-full text-xs font-bold",
                                         item.quantity < 0 
-                                            ? "bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-400"
+                                            ? "bg-danger-100 dark:bg-danger-900/50 text-danger-700 dark:text-danger-400"
                                             : "bg-orange-100 dark:bg-orange-900/50 text-orange-700 dark:text-orange-400"
                                     )}>
                                         {item.quantity}
@@ -245,7 +276,7 @@
                                 </td>
                                 <td class="px-4 py-3 text-center">
                                     {#if item.quantity < 0}
-                                        <span class="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400">
+                                        <span class="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium bg-danger-100 dark:bg-danger-900/30 text-danger-700 dark:text-danger-400">
                                             <AlertTriangle class="w-3 h-3" />
                                             ຕິດລົບ
                                         </span>
@@ -316,7 +347,7 @@
                                         class={cn(
                                             "min-w-[32px] h-8 px-2 rounded-lg text-sm font-medium transition-colors",
                                             currentPage === page 
-                                                ? "bg-red-600 text-white" 
+                                                ? "bg-danger-600 text-white" 
                                                 : "text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700"
                                         )}
                                     >

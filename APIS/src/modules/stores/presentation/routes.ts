@@ -45,7 +45,7 @@ storeRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
 
         const whereClause = and(...conditions);
 
-        const [storeRows, [{ value: total }]] = await Promise.all([
+        const [storeRows, [{ value: total }], userCountRows] = await Promise.all([
             db.query.stores.findMany({
                 where: whereClause,
                 offset: skip,
@@ -54,11 +54,17 @@ storeRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
                 orderBy: [desc(stores.isDefault), asc(stores.name)],
             }),
             db.select({ value: count() }).from(stores).where(whereClause),
+            db.select({ storeId: userStores.storeId, cnt: count() })
+                .from(userStores)
+                .groupBy(userStores.storeId),
         ]);
+
+        const userCountMap = new Map(userCountRows.map((r: any) => [r.storeId, r.cnt]));
+        const storeData = storeRows.map((s: any) => ({ ...s, userCount: Number(userCountMap.get(s.id) || 0) }));
 
         res.json({
             success: true,
-            data: storeRows,
+            data: storeData,
             meta: {
                 page: Number(page),
                 limit: Number(limit),

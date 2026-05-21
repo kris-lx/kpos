@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { createQuery, createMutation, useQueryClient } from "@tanstack/svelte-query";
     import { get } from "svelte/store";
     import { api } from "$lib/api";
@@ -241,8 +241,8 @@
     function getStatusColor(status: string) {
         switch (status) {
             case "pending": return "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400";
-            case "approved": return "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400";
-            case "rejected": return "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400";
+            case "approved": return "bg-success-100 text-success-800 dark:bg-success-900/30 dark:text-success-400";
+            case "rejected": return "bg-danger-100 text-danger-800 dark:bg-danger-900/30 dark:text-danger-400";
             default: return "bg-gray-100 text-gray-800 dark:bg-gray-900/30 dark:text-gray-400";
         }
     }
@@ -297,11 +297,11 @@
                 <div><p class="text-xl font-bold text-gray-900 dark:text-white">{$myRequestsQuery.data?.filter((r:any)=>r.status==='pending').length||0}</p><p class="text-xs text-gray-500">ລໍຖ້າ</p></div>
             </div>
             <div class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-4 flex items-center gap-3">
-                <div class="p-2.5 bg-green-100 dark:bg-green-900/30 rounded-xl"><CheckCircle class="w-5 h-5 text-green-600 dark:text-green-400" /></div>
+                <div class="p-2.5 bg-success-100 dark:bg-success-900/30 rounded-xl"><CheckCircle class="w-5 h-5 text-success-600 dark:text-success-400" /></div>
                 <div><p class="text-xl font-bold text-gray-900 dark:text-white">{$myRequestsQuery.data?.filter((r:any)=>r.status==='approved').length||0}</p><p class="text-xs text-gray-500">ອະນຸມັດ</p></div>
             </div>
             <div class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-4 flex items-center gap-3">
-                <div class="p-2.5 bg-red-100 dark:bg-red-900/30 rounded-xl"><XCircle class="w-5 h-5 text-red-600 dark:text-red-400" /></div>
+                <div class="p-2.5 bg-danger-100 dark:bg-danger-900/30 rounded-xl"><XCircle class="w-5 h-5 text-danger-600 dark:text-danger-400" /></div>
                 <div><p class="text-xl font-bold text-gray-900 dark:text-white">{$myRequestsQuery.data?.filter((r:any)=>r.status==='rejected').length||0}</p><p class="text-xs text-gray-500">ປະຕິເສດ</p></div>
             </div>
         </div>
@@ -364,7 +364,7 @@
                 </h3>
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <div>
-                        <label for="store-name" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ຊື່ຮ້ານ <span class="text-red-500">*</span></label>
+                        <label for="store-name" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ຊື່ຮ້ານ <span class="text-danger-500">*</span></label>
                         <input id="store-name" type="text" bind:value={storeForm.storeName} placeholder="ຊື່ຮ້ານ" class="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent text-sm" />
                     </div>
                     <div>
@@ -410,12 +410,12 @@
                     <MapPin class="w-4 h-4" />ຂໍ້ມູນຕິດຕໍ່
                 </h3>
                 <div>
-                    <label for="store-address" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ທີ່ຢູ່ <span class="text-red-500">*</span></label>
+                    <label for="store-address" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ທີ່ຢູ່ <span class="text-danger-500">*</span></label>
                     <textarea id="store-address" bind:value={storeForm.address} rows="2" placeholder="ທີ່ຢູ່ຮ້ານ" class="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent text-sm resize-none"></textarea>
                 </div>
                 <div class="grid grid-cols-2 gap-3">
                     <div>
-                        <label for="store-phone" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ເບີໂທ <span class="text-red-500">*</span></label>
+                        <label for="store-phone" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ເບີໂທ <span class="text-danger-500">*</span></label>
                         <input id="store-phone" type="tel" inputmode="numeric" bind:value={storeForm.phone}
                             oninput={(e)=>{storeForm.phone=enforcePhoneInput(e.currentTarget.value)}}
                             placeholder="20xxxxxxxx" maxlength="10"
@@ -479,7 +479,7 @@
                                     <FileText class="w-5 h-5 text-primary-500 shrink-0" />
                                     <span class="text-sm text-gray-700 dark:text-gray-200 truncate">{doc.name}</span>
                                 </div>
-                                <button onclick={() => removeDocument(i)} class="p-1.5 hover:bg-red-100 text-red-500 rounded-md transition-colors" type="button">
+                                <button onclick={() => removeDocument(i)} class="p-1.5 hover:bg-danger-100 text-danger-500 rounded-md transition-colors" type="button">
                                     <XCircle class="w-4 h-4" />
                                 </button>
                             </div>
@@ -516,7 +516,7 @@
         <div class="p-5 space-y-4">
             <div class="grid grid-cols-2 gap-3">
                 <div>
-                    <label for="branch-name" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ຊື່ສາຂາ <span class="text-red-500">*</span></label>
+                    <label for="branch-name" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ຊື່ສາຂາ <span class="text-danger-500">*</span></label>
                     <input id="branch-name" type="text" bind:value={branchForm.branchName} placeholder="ສາຂາຕົ້ນຕານ" class="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-emerald-500 text-sm" />
                 </div>
                 <div>
@@ -539,12 +539,12 @@
             </div>
             {/if}
             <div>
-                <label for="branch-address" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ທີ່ຢູ່ <span class="text-red-500">*</span></label>
+                <label for="branch-address" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ທີ່ຢູ່ <span class="text-danger-500">*</span></label>
                 <textarea id="branch-address" bind:value={branchForm.address} rows="2" placeholder="ທີ່ຢູ່ສາຂາ" class="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-emerald-500 text-sm resize-none"></textarea>
             </div>
             <div class="grid grid-cols-2 gap-3">
                 <div>
-                    <label for="branch-phone" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ເບີໂທ <span class="text-red-500">*</span></label>
+                    <label for="branch-phone" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ເບີໂທ <span class="text-danger-500">*</span></label>
                     <input id="branch-phone" type="tel" inputmode="numeric" bind:value={branchForm.phone}
                         oninput={(e)=>{branchForm.phone=enforcePhoneInput(e.currentTarget.value)}}
                         placeholder="20xxxxxxxx" maxlength="10"
@@ -584,7 +584,7 @@
                                     <FileText class="w-5 h-5 text-emerald-500 shrink-0" />
                                     <span class="text-sm text-gray-700 dark:text-gray-200 truncate">{doc.name}</span>
                                 </div>
-                                <button onclick={() => removeDocument(i)} class="p-1.5 hover:bg-red-100 text-red-500 rounded-md transition-colors" type="button">
+                                <button onclick={() => removeDocument(i)} class="p-1.5 hover:bg-danger-100 text-danger-500 rounded-md transition-colors" type="button">
                                     <XCircle class="w-4 h-4" />
                                 </button>
                             </div>

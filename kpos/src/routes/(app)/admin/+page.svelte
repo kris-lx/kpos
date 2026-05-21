@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { createQuery, useQueryClient } from "@tanstack/svelte-query";
     import { get } from "svelte/store";
     import { api } from "$lib/api";
@@ -315,7 +315,7 @@
 
     function getActivityColor(action: string) {
         if (action.includes('created')) return 'text-emerald-500 bg-emerald-100 dark:bg-emerald-900/30';
-        if (action.includes('deleted')) return 'text-red-500 bg-red-100 dark:bg-red-900/30';
+        if (action.includes('deleted')) return 'text-danger-500 bg-danger-100 dark:bg-danger-900/30';
         if (action.includes('updated')) return 'text-blue-500 bg-blue-100 dark:bg-blue-900/30';
         return 'text-gray-500 bg-gray-100 dark:bg-gray-700';
     }
@@ -355,7 +355,7 @@
         const colors: Record<string, string> = {
             super_admin: "from-violet-600 to-purple-600",
             admin: "from-blue-600 to-cyan-600",
-            store_owner: "from-emerald-600 to-green-600",
+            store_owner: "from-emerald-600 to-success-600",
             manager: "from-amber-600 to-orange-600"
         };
         return colors[role] || "from-gray-600 to-slate-600";
@@ -391,6 +391,7 @@
         if (userRole === 'super_admin' || userRole === 'admin') {
             return [
                 { href: "/admin/requests", icon: FileCheck, label: "ຄຳຂໍລໍຖ້າ", desc: "ອະນຸມັດ/ປະຕິເສດຄຳຂໍ", color: "from-violet-500 to-purple-500", roles: ['super_admin', 'admin'] },
+                { href: "/admin/stores", icon: Store, label: "ພາບລວມຮ້ານ/ສາຂາ", desc: "ສະຖິຕິ ແລະ ຂໍ້ມູນແຕ່ລະສາຂາ", color: "from-emerald-500 to-success-500", roles: ['super_admin', 'admin'] },
                 { href: "/admin/branches", icon: Building2, label: "ຈັດການສາຂາ", desc: "ເບິ່ງ ແລະ ຈັດການສາຂາ", color: "from-blue-500 to-cyan-500", roles: ['super_admin', 'admin'] },
                 { href: "/admin/users", icon: Users, label: "ຈັດການຜູ້ໃຊ້", desc: "ສ້າງ ແລະ ແກ້ໄຂຜູ້ໃຊ້", color: "from-amber-500 to-orange-500", roles: ['super_admin', 'admin', 'store_owner'] },
                 { href: "/admin/roles", icon: Key, label: "ຈັດການບົດບາດ", desc: "ກຳນົດສິດ ແລະ ບົດບາດ", color: "from-pink-500 to-rose-500", roles: ['super_admin', 'admin'] },
@@ -402,7 +403,7 @@
         return [
             { href: "/staff", icon: Users, label: "ຈັດການຜູ້ໃຊ້", desc: "ສ້າງ ແລະ ແກ້ໄຂຜູ້ໃຊ້ໃນຮ້ານ", color: "from-amber-500 to-orange-500", roles: ['store_owner', 'manager'] },
             { href: "/branches", icon: Building2, label: "ສາຂາຂອງຂ້ອຍ", desc: "ເບິ່ງສາຂາໃນຮ້ານ", color: "from-blue-500 to-cyan-500", roles: ['store_owner', 'manager'] },
-            { href: "/products", icon: Package, label: "ຈັດການສິນຄ້າ", desc: "ເພີ່ມ, ແກ້ໄຂ, ລົບສິນຄ້າ", color: "from-emerald-500 to-green-500", roles: ['store_owner', 'manager'] },
+            { href: "/products", icon: Package, label: "ຈັດການສິນຄ້າ", desc: "ເພີ່ມ, ແກ້ໄຂ, ລົບສິນຄ້າ", color: "from-emerald-500 to-success-500", roles: ['store_owner', 'manager'] },
             { href: "/inventory", icon: Boxes, label: "ຈັດການສາງ", desc: "Stock, SKU, Barcode", color: "from-violet-500 to-purple-500", roles: ['store_owner', 'manager'] },
         ];
     });
@@ -448,7 +449,7 @@
                     <button class="relative p-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-all shadow-sm">
                         <Bell class="w-5 h-5" />
                         {#if ($pendingRequestsQuery.data?.length || 0) > 0}
-                            <span class="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white text-xs rounded-full flex items-center justify-center font-medium">
+                            <span class="absolute -top-1 -right-1 w-5 h-5 bg-danger-500 text-white text-xs rounded-full flex items-center justify-center font-medium">
                                 {$pendingRequestsQuery.data?.length}
                             </span>
                         {/if}
@@ -486,10 +487,10 @@
 
                     <!-- Stores Card -->
                     <div class="group relative bg-white dark:bg-gray-800/50 backdrop-blur-xl rounded-2xl p-5 border border-gray-100 dark:border-gray-700/50 shadow-xl shadow-gray-200/50 dark:shadow-none hover:shadow-2xl hover:shadow-emerald-500/10 transition-all duration-300 overflow-hidden">
-                        <div class="absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-emerald-500/10 to-green-500/10 rounded-full blur-2xl -translate-y-1/2 translate-x-1/2"></div>
+                        <div class="absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-emerald-500/10 to-success-500/10 rounded-full blur-2xl -translate-y-1/2 translate-x-1/2"></div>
                         <div class="relative">
                             <div class="flex items-center justify-between mb-4">
-                                <div class="w-12 h-12 bg-gradient-to-br from-emerald-500 to-green-500 rounded-xl flex items-center justify-center shadow-lg shadow-emerald-500/30">
+                                <div class="w-12 h-12 bg-gradient-to-br from-emerald-500 to-success-500 rounded-xl flex items-center justify-center shadow-lg shadow-emerald-500/30">
                                     <Store class="w-6 h-6 text-white" />
                                 </div>
                                 <span class="px-2 py-1 bg-blue-100 dark:bg-blue-900/50 text-blue-600 dark:text-blue-400 text-xs font-medium rounded-full flex items-center gap-1">
@@ -626,7 +627,7 @@
                                             </button>
                                             <button
                                                 onclick={() => openReviewModal(request, "reject")}
-                                                class="w-10 h-10 bg-red-500 hover:bg-red-600 text-white rounded-xl flex items-center justify-center shadow-lg shadow-red-500/30 hover:shadow-red-500/50 transition-all hover:scale-105"
+                                                class="w-10 h-10 bg-danger-500 hover:bg-danger-600 text-white rounded-xl flex items-center justify-center shadow-lg shadow-danger-500/30 hover:shadow-danger-500/50 transition-all hover:scale-105"
                                             >
                                                 <XCircle class="w-5 h-5" />
                                             </button>
@@ -659,7 +660,7 @@
                             <p class="text-3xl font-bold text-gray-900 dark:text-white">{$dashboardQuery.data?.transactions?.today || 0}</p>
                             <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">ລາຍການມື້ນີ້</p>
                         </div>
-                        <div class="relative overflow-hidden bg-gradient-to-br from-emerald-50 to-green-50 dark:from-emerald-900/20 dark:to-green-900/20 rounded-2xl p-5 border border-emerald-100 dark:border-emerald-800/50">
+                        <div class="relative overflow-hidden bg-gradient-to-br from-emerald-50 to-success-50 dark:from-emerald-900/20 dark:to-success-900/20 rounded-2xl p-5 border border-emerald-100 dark:border-emerald-800/50">
                             <div class="flex items-center gap-3 mb-3">
                                 <div class="w-10 h-10 bg-emerald-500 rounded-xl flex items-center justify-center">
                                     <Building2 class="w-5 h-5 text-white" />
@@ -947,7 +948,7 @@
                             <p class="text-2xl font-bold text-gray-900 dark:text-white">{$dashboardQuery.data?.users?.superAdmins || 1}</p>
                             <p class="text-sm text-gray-500 dark:text-gray-400">Super Admin</p>
                         </div>
-                        <div class="text-center p-4 bg-gradient-to-br from-emerald-50 to-green-50 dark:from-emerald-900/20 dark:to-green-900/20 rounded-xl border border-emerald-100 dark:border-emerald-800/50">
+                        <div class="text-center p-4 bg-gradient-to-br from-emerald-50 to-success-50 dark:from-emerald-900/20 dark:to-success-900/20 rounded-xl border border-emerald-100 dark:border-emerald-800/50">
                             <div class="w-12 h-12 bg-emerald-500 rounded-xl flex items-center justify-center mx-auto mb-3 shadow-lg shadow-emerald-500/30">
                                 <BadgeCheck class="w-6 h-6 text-white" />
                             </div>
@@ -965,7 +966,7 @@
         <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
             <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showReviewModal = false}></div>
             <div class="relative bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
-                <div class={cn("p-6 text-white", reviewAction === "approve" ? "bg-gradient-to-r from-emerald-500 to-green-500" : "bg-gradient-to-r from-red-500 to-rose-500")}>
+                <div class={cn("p-6 text-white", reviewAction === "approve" ? "bg-gradient-to-r from-emerald-500 to-success-500" : "bg-gradient-to-r from-danger-500 to-rose-500")}>
                     <div class="flex items-center gap-3">
                         {#if reviewAction === "approve"}
                             <CheckCircle class="w-8 h-8" />
@@ -1011,7 +1012,7 @@
                             "flex-1 px-4 py-3 font-medium rounded-xl transition-all flex items-center justify-center gap-2",
                             reviewAction === "approve" 
                                 ? "bg-emerald-500 hover:bg-emerald-600 text-white shadow-lg shadow-emerald-500/30" 
-                                : "bg-red-500 hover:bg-red-600 text-white shadow-lg shadow-red-500/30"
+                                : "bg-danger-500 hover:bg-danger-600 text-white shadow-lg shadow-danger-500/30"
                         )}
                     >
                         {#if $approveMutation.isPending || $rejectMutation.isPending}

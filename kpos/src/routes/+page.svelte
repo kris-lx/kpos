@@ -21,6 +21,6 @@
         <div
             class="animate-spin rounded-full h-12 w-12 border-4 border-primary-500 border-t-transparent mx-auto"
         ></div>
-        <p class="mt-4 text-gray-600 dark:text-gray-400">กำลังโหลด...</p>
+        <p class="mt-4 text-gray-600 dark:text-gray-400">ກຳລັງໂຫຼດ...</p>
     </div>
 </div>

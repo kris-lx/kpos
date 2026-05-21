@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { createQuery, createMutation, useQueryClient } from "@tanstack/svelte-query";
     import { get } from "svelte/store";
     import { api } from "$lib/api";
@@ -133,14 +133,14 @@
         const badges: Record<string, { bg: string; text: string; dot: string; label: string; icon: any }> = {
             pending:  { bg: "bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700",  text: "text-amber-700 dark:text-amber-300",  dot: "bg-amber-400",  label: "ລໍຖ້າອະນຸມັດ", icon: Clock },
             approved: { bg: "bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-700", text: "text-emerald-700 dark:text-emerald-300", dot: "bg-emerald-400", label: "ອະນຸມັດແລ້ວ", icon: CheckCircle },
-            rejected: { bg: "bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700",   text: "text-red-700 dark:text-red-300",   dot: "bg-red-400",   label: "ປະຕິເສດ",      icon: XCircle }
+            rejected: { bg: "bg-danger-50 dark:bg-danger-900/20 border border-danger-200 dark:border-danger-700",   text: "text-danger-700 dark:text-danger-300",   dot: "bg-danger-400",   label: "ປະຕິເສດ",      icon: XCircle }
         };
         return badges[status] || badges.pending;
     }
 
     function getTypeInfo(type: string) {
         const types: Record<string, { label: string; icon: any; color: string; bg: string }> = {
-            new_store:     { label: "ເປີດຮ້ານໃໝ່",    icon: Store,      color: "from-emerald-500 to-green-500",   bg: "bg-emerald-100 dark:bg-emerald-900/30" },
+            new_store:     { label: "ເປີດຮ້ານໃໝ່",    icon: Store,      color: "from-emerald-500 to-success-500",   bg: "bg-emerald-100 dark:bg-emerald-900/30" },
             new_tenant:    { label: "ສະໝັກໃໝ່",       icon: ShieldCheck, color: "from-violet-500 to-purple-500",   bg: "bg-violet-100 dark:bg-violet-900/30" },
             new_branch:    { label: "ເປີດສາຂາໃໝ່",   icon: Building2,  color: "from-blue-500 to-cyan-500",       bg: "bg-blue-100 dark:bg-blue-900/30" },
             branch_update: { label: "ແກ້ໄຂສາຂາ",    icon: Building2,  color: "from-orange-500 to-amber-500",    bg: "bg-orange-100 dark:bg-orange-900/30" },
@@ -233,11 +233,11 @@
                 <button onclick={() => { statusFilter = 'rejected'; currentPage = 1; }}
                     class={cn("rounded-2xl p-4 text-left transition-all border-2 shadow-sm",
                         statusFilter === 'rejected'
-                            ? "bg-red-500 border-red-500 text-white shadow-red-200 dark:shadow-red-900/30"
-                            : "bg-white dark:bg-gray-800 border-transparent hover:border-red-200 dark:hover:border-red-700")}>
+                            ? "bg-danger-500 border-danger-500 text-white shadow-danger-200 dark:shadow-danger-900/30"
+                            : "bg-white dark:bg-gray-800 border-transparent hover:border-danger-200 dark:hover:border-danger-700")}>
                     <div class="flex items-center gap-3 mb-1">
-                        <div class={cn("w-9 h-9 rounded-xl flex items-center justify-center", statusFilter === 'rejected' ? "bg-white/20" : "bg-red-100 dark:bg-red-900/30")}>
-                            <XCircle class={cn("w-5 h-5", statusFilter === 'rejected' ? "text-white" : "text-red-600 dark:text-red-400")} />
+                        <div class={cn("w-9 h-9 rounded-xl flex items-center justify-center", statusFilter === 'rejected' ? "bg-white/20" : "bg-danger-100 dark:bg-danger-900/30")}>
+                            <XCircle class={cn("w-5 h-5", statusFilter === 'rejected' ? "text-white" : "text-danger-600 dark:text-danger-400")} />
                         </div>
                         <span class={cn("text-2xl font-bold", statusFilter === 'rejected' ? "text-white" : "text-gray-900 dark:text-white")}>{stats.rejected}</span>
                     </div>
@@ -295,7 +295,7 @@
                     </div>
                 {:else if $requestsQuery.isError}
                     <div class="p-12 text-center">
-                        <XCircle class="w-10 h-10 text-red-400 mx-auto mb-3" />
+                        <XCircle class="w-10 h-10 text-danger-400 mx-auto mb-3" />
                         <p class="text-gray-600 dark:text-gray-400">ໂຫຼດຂໍ້ມູນບໍ່ສຳເລັດ</p>
                         <button onclick={() => queryClient.invalidateQueries({ queryKey: ['admin-requests-all'] })}
                             class="mt-3 text-sm text-violet-600 dark:text-violet-400 hover:underline">ລອງໃໝ່</button>
@@ -385,7 +385,7 @@
                                                         <CheckCircle class="w-4 h-4" />
                                                     </button>
                                                     <button onclick={() => openReviewModal(request, 'reject')}
-                                                        class="w-8 h-8 bg-red-500 hover:bg-red-600 rounded-lg flex items-center justify-center text-white shadow-sm transition-all hover:scale-105" title="ປະຕິເສດ">
+                                                        class="w-8 h-8 bg-danger-500 hover:bg-danger-600 rounded-lg flex items-center justify-center text-white shadow-sm transition-all hover:scale-105" title="ປະຕິເສດ">
                                                         <XCircle class="w-4 h-4" />
                                                     </button>
                                                 {/if}
@@ -434,7 +434,7 @@
                                         <button onclick={() => openReviewModal(request, 'approve')} class="flex-1 py-2 bg-emerald-500 text-white rounded-lg text-xs font-medium flex items-center justify-center gap-1">
                                             <CheckCircle class="w-3.5 h-3.5" /> ອະນຸມັດ
                                         </button>
-                                        <button onclick={() => openReviewModal(request, 'reject')} class="flex-1 py-2 bg-red-500 text-white rounded-lg text-xs font-medium flex items-center justify-center gap-1">
+                                        <button onclick={() => openReviewModal(request, 'reject')} class="flex-1 py-2 bg-danger-500 text-white rounded-lg text-xs font-medium flex items-center justify-center gap-1">
                                             <XCircle class="w-3.5 h-3.5" /> ປະຕິເສດ
                                         </button>
                                     {/if}
@@ -569,8 +569,8 @@
                                     {:else}
                                         <a href={docUrl} target="_blank" rel="noopener noreferrer"
                                             class="flex items-center gap-2 p-3 bg-white dark:bg-gray-700 rounded-xl border border-gray-200 dark:border-gray-600 hover:border-violet-400 transition-all group">
-                                            <div class={cn("w-8 h-8 rounded-lg flex items-center justify-center shrink-0", pdf ? 'bg-red-100 dark:bg-red-900/30' : 'bg-blue-100 dark:bg-blue-900/30')}>
-                                                <FileText class={cn("w-4 h-4", pdf ? 'text-red-500' : 'text-blue-500')} />
+                                            <div class={cn("w-8 h-8 rounded-lg flex items-center justify-center shrink-0", pdf ? 'bg-danger-100 dark:bg-danger-900/30' : 'bg-blue-100 dark:bg-blue-900/30')}>
+                                                <FileText class={cn("w-4 h-4", pdf ? 'text-danger-500' : 'text-blue-500')} />
                                             </div>
                                             <div class="flex-1 min-w-0">
                                                 <p class="text-xs font-medium text-gray-700 dark:text-gray-200 truncate">{fname}</p>
@@ -608,7 +608,7 @@
                             <CheckCircle class="w-4 h-4" /> ອະນຸມັດ
                         </button>
                         <button onclick={() => { showDetailModal = false; openReviewModal(req, 'reject'); }}
-                            class="flex-1 py-2.5 bg-red-500 hover:bg-red-600 text-white font-semibold rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 text-sm">
+                            class="flex-1 py-2.5 bg-danger-500 hover:bg-danger-600 text-white font-semibold rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 text-sm">
                             <XCircle class="w-4 h-4" /> ປະຕິເສດ
                         </button>
                     {/if}
@@ -678,7 +678,7 @@
         <div class="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
             <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showReviewModal = false}></div>
             <div class="relative bg-white dark:bg-gray-900 rounded-t-3xl sm:rounded-2xl shadow-2xl w-full sm:max-w-md overflow-hidden">
-                <div class={cn("px-6 py-5 text-white", reviewAction === 'approve' ? 'bg-linear-to-r from-emerald-500 to-green-500' : 'bg-linear-to-r from-red-500 to-rose-600')}>
+                <div class={cn("px-6 py-5 text-white", reviewAction === 'approve' ? 'bg-linear-to-r from-emerald-500 to-success-500' : 'bg-linear-to-r from-danger-500 to-rose-600')}>
                     <div class="flex items-center gap-3">
                         {#if reviewAction === 'approve'}
                             <CheckCircle class="w-7 h-7" />
@@ -724,7 +724,7 @@
                             'flex-1 py-2.5 font-semibold rounded-xl transition-all flex items-center justify-center gap-2 text-sm disabled:opacity-60',
                             reviewAction === 'approve'
                                 ? 'bg-emerald-500 hover:bg-emerald-600 text-white shadow-sm'
-                                : 'bg-red-500 hover:bg-red-600 text-white shadow-sm'
+                                : 'bg-danger-500 hover:bg-danger-600 text-white shadow-sm'
                         )}>
                         {#if $approveMutation.isPending || $rejectMutation.isPending}
                             <Loader2 class="w-4 h-4 animate-spin" />

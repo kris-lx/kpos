@@ -1,4 +1,4 @@
-<!-- ═══════════════════════════════════════════════════════════════════════════
+﻿<!-- ═══════════════════════════════════════════════════════════════════════════
      Cash Registers Management Page - KPOS
      ═══════════════════════════════════════════════════════════════════════════ -->
 <script lang="ts">
@@ -156,8 +156,8 @@
 
     function getStatusConfig(register: any) {
         if (!register.isActive) return { bg: "bg-gray-100 dark:bg-gray-700", text: "text-gray-600 dark:text-gray-400", label: t("registers.statusDisabled") };
-        if (register.status === "open") return { bg: "bg-green-100 dark:bg-green-900/50", text: "text-green-700 dark:text-green-400", label: t("registers.statusOpen") };
-        return { bg: "bg-red-100 dark:bg-red-900/50", text: "text-red-700 dark:text-red-400", label: t("registers.statusClosed") };
+        if (register.status === "open") return { bg: "bg-success-100 dark:bg-success-900/50", text: "text-success-700 dark:text-success-400", label: t("registers.statusOpen") };
+        return { bg: "bg-danger-100 dark:bg-danger-900/50", text: "text-danger-700 dark:text-danger-400", label: t("registers.statusClosed") };
     }
 
     function getBranchName(id: string) {
@@ -261,19 +261,19 @@
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
             <div class="flex items-center justify-between">
-                <div class="p-2 bg-green-100 dark:bg-green-900/50 rounded-lg">
-                    <Power class="w-5 h-5 text-green-600 dark:text-green-400" />
+                <div class="p-2 bg-success-100 dark:bg-success-900/50 rounded-lg">
+                    <Power class="w-5 h-5 text-success-600 dark:text-success-400" />
                 </div>
-                <span class="text-2xl font-bold text-green-600 dark:text-green-400">{stats.active}</span>
+                <span class="text-2xl font-bold text-success-600 dark:text-success-400">{stats.active}</span>
             </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">{t("registers.openRegisters")}</p>
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
             <div class="flex items-center justify-between">
-                <div class="p-2 bg-red-100 dark:bg-red-900/50 rounded-lg">
-                    <PowerOff class="w-5 h-5 text-red-600 dark:text-red-400" />
+                <div class="p-2 bg-danger-100 dark:bg-danger-900/50 rounded-lg">
+                    <PowerOff class="w-5 h-5 text-danger-600 dark:text-danger-400" />
                 </div>
-                <span class="text-2xl font-bold text-red-600 dark:text-red-400">{stats.inactive}</span>
+                <span class="text-2xl font-bold text-danger-600 dark:text-danger-400">{stats.inactive}</span>
             </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">{t("registers.closedRegisters")}</p>
         </div>
@@ -382,7 +382,7 @@
                         {#if canDelete}
                         <button
                             onclick={() => handleDelete(register)}
-                            class="p-2 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg"
+                            class="p-2 text-danger-600 hover:bg-danger-50 dark:hover:bg-danger-900/30 rounded-lg"
                             title={t("registers.deleteRegister")}
                             disabled={$deleteMutationFn.isPending}
                         >

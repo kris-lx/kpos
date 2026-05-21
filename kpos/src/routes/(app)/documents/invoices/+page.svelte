@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { t } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
     import { formatCurrency, formatDateTime, formatDate, enforcePhoneInput } from "$lib/utils";
@@ -28,6 +28,8 @@
         Mail,
         MapPin,
         RefreshCw,
+        ThumbsUp,
+        ThumbsDown,
     } from "lucide-svelte";
 
     // State
@@ -93,6 +95,8 @@
             params.append("page", currentPage.toString());
             params.append("limit", pageSize.toString());
             if (searchQuery) params.append("search", searchQuery);
+            const invBranchId = auth.activeBranchId;
+            if (invBranchId && !auth.isSuperAdmin) params.append("branchId", invBranchId);
 
             const response = await api.get(`documents/invoices?${params}`).json<any>();
             if (response.success && response.data) {
@@ -119,11 +123,11 @@
     function getStatusClass(status: string) {
         switch (status) {
             case "paid":
-                return "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400";
+                return "bg-success-100 text-success-700 dark:bg-success-900/30 dark:text-success-400";
             case "pending":
                 return "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400";
             case "overdue":
-                return "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400";
+                return "bg-danger-100 text-danger-700 dark:bg-danger-900/30 dark:text-danger-400";
             case "sent":
                 return "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400";
             case "cancelled":
@@ -137,11 +141,50 @@
         const labels: Record<string, string> = {
             paid: t("documents.paid"),
             pending: t("documents.pending"),
+            pending_approval: "ລໍການອະນຸມັດ",
+            approved: "ອະນຸມັດແລ້ວ",
             overdue: t("documents.overdue"),
             sent: t("documents.sent"),
             cancelled: t("documents.cancelled"),
+            rejected: "ຖືກປະຕິເສດ",
         };
         return labels[status] || status;
+    }
+
+    // Maker/checker
+    let canApprove = $derived(auth.isSuperAdmin || (auth.roleLevel ?? 7) <= 4);
+
+    async function approveInvoice(id: string) {
+        try {
+            await api.patch(`documents/invoices/${id}/approve`).json();
+            toast.success("ອະນຸມັດໃບເກັບເງິນສຳເລັດ");
+            loadData();
+        } catch (e: any) {
+            toast.error(e?.message || t("common.error"));
+        }
+    }
+
+    let invRejectReason = $state("");
+    let showInvRejectModal = $state(false);
+    let invRejectTargetId = $state<string | null>(null);
+
+    function openInvRejectModal(id: string) {
+        invRejectTargetId = id;
+        invRejectReason = "";
+        showInvRejectModal = true;
+    }
+
+    async function confirmInvReject() {
+        if (!invRejectTargetId) return;
+        try {
+            await api.patch(`documents/invoices/${invRejectTargetId}/reject`, { json: { reason: invRejectReason } }).json();
+            toast.success("ປະຕິເສດໃບເກັບເງິນສຳເລັດ");
+            showInvRejectModal = false;
+            invRejectTargetId = null;
+            loadData();
+        } catch (e: any) {
+            toast.error(e?.message || t("common.error"));
+        }
     }
 
     let totalPages = $derived(Math.ceil(totalItems / pageSize));
@@ -363,14 +406,14 @@
 
     <!-- Error State -->
     {#if error && !loading}
-        <div class="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl p-6 mb-6">
+        <div class="bg-danger-50 dark:bg-danger-900/20 border border-danger-200 dark:border-danger-800 rounded-xl p-6 mb-6">
             <div class="flex flex-col items-center justify-center text-center">
-                <AlertCircle class="w-12 h-12 text-red-500 mb-3" />
-                <h3 class="text-lg font-semibold text-red-700 dark:text-red-400 mb-2">{t("common.error")}</h3>
-                <p class="text-red-600 dark:text-red-300 mb-4">{error}</p>
+                <AlertCircle class="w-12 h-12 text-danger-500 mb-3" />
+                <h3 class="text-lg font-semibold text-danger-700 dark:text-danger-400 mb-2">{t("common.error")}</h3>
+                <p class="text-danger-600 dark:text-danger-300 mb-4">{error}</p>
                 <button
                     onclick={() => loadData()}
-                    class="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+                    class="flex items-center gap-2 px-4 py-2 bg-danger-600 text-white rounded-lg hover:bg-danger-700 transition-colors"
                 >
                     <RefreshCw class="w-4 h-4" />
                     {t("common.retry")}
@@ -394,8 +437,8 @@
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-xl p-4 shadow-sm">
             <div class="flex items-center gap-3">
-                <div class="p-2 bg-green-50 dark:bg-green-900/20 rounded-lg">
-                    <CheckCircle class="w-5 h-5 text-green-500" />
+                <div class="p-2 bg-success-50 dark:bg-success-900/20 rounded-lg">
+                    <CheckCircle class="w-5 h-5 text-success-500" />
                 </div>
                 <div>
                     <p class="text-2xl font-bold text-gray-900 dark:text-white">{stats.paid}</p>
@@ -416,8 +459,8 @@
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-xl p-4 shadow-sm">
             <div class="flex items-center gap-3">
-                <div class="p-2 bg-red-50 dark:bg-red-900/20 rounded-lg">
-                    <AlertCircle class="w-5 h-5 text-red-500" />
+                <div class="p-2 bg-danger-50 dark:bg-danger-900/20 rounded-lg">
+                    <AlertCircle class="w-5 h-5 text-danger-500" />
                 </div>
                 <div>
                     <p class="text-2xl font-bold text-gray-900 dark:text-white">{stats.overdue}</p>
@@ -524,10 +567,26 @@
                                         >
                                             <Printer class="w-4 h-4" />
                                         </button>
+                                        {#if invoice.status === "pending_approval" && canApprove}
+                                            <button
+                                                onclick={() => approveInvoice(invoice.id)}
+                                                class="p-2 text-success-600 hover:bg-success-50 dark:hover:bg-success-900/30 rounded-lg"
+                                                title="ອະນຸມັດ"
+                                            >
+                                                <ThumbsUp class="w-4 h-4" />
+                                            </button>
+                                            <button
+                                                onclick={() => openInvRejectModal(invoice.id)}
+                                                class="p-2 text-danger-600 hover:bg-danger-50 dark:hover:bg-danger-900/30 rounded-lg"
+                                                title="ປະຕິເສດ"
+                                            >
+                                                <ThumbsDown class="w-4 h-4" />
+                                            </button>
+                                        {/if}
                                         {#if invoice.status === "pending"}
                                             <button
                                                 onclick={() => markAsPaid(invoice)}
-                                                class="p-2 text-gray-500 hover:text-green-600 dark:text-gray-400 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
+                                                class="p-2 text-gray-500 hover:text-success-600 dark:text-gray-400 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
                                                 title={t("documents.markAsPaid")}
                                             >
                                                 <DollarSign class="w-4 h-4" />
@@ -549,7 +608,7 @@
                                         </button>
                                         <button
                                             onclick={() => deleteInvoice(invoice.id)}
-                                            class="p-2 text-gray-500 hover:text-red-600 dark:text-gray-400 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
+                                            class="p-2 text-gray-500 hover:text-danger-600 dark:text-gray-400 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
                                             title={t("common.delete")}
                                         >
                                             <Trash2 class="w-4 h-4" />
@@ -625,7 +684,7 @@
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div class="md:col-span-2">
                             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                {t("documents.customerName")} <span class="text-red-500">*</span>
+                                {t("documents.customerName")} <span class="text-danger-500">*</span>
                             </label>
                             <input
                                 type="text"
@@ -738,7 +797,7 @@
                                 <button
                                     type="button"
                                     onclick={() => removeItem(index)}
-                                    class="col-span-1 p-1.5 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded flex justify-center"
+                                    class="col-span-1 p-1.5 text-danger-500 hover:bg-danger-50 dark:hover:bg-danger-900/20 rounded flex justify-center"
                                     disabled={formData.items.length <= 1}
                                 >
                                     <X class="w-4 h-4" />
@@ -928,12 +987,36 @@
                 {#if viewingInvoice.status === "pending"}
                     <button
                         onclick={() => markAsPaid(viewingInvoice)}
-                        class="flex items-center gap-2 px-4 py-2 rounded-xl bg-green-600 text-white hover:bg-green-700"
+                        class="flex items-center gap-2 px-4 py-2 rounded-xl bg-success-600 text-white hover:bg-success-700"
                     >
                         <DollarSign class="w-4 h-4" />
                         {t("documents.markAsPaid")}
                     </button>
                 {/if}
+            </div>
+        </div>
+    </div>
+{/if}
+
+<!-- Reject Invoice Modal -->
+{#if showInvRejectModal}
+    <div class="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+        <div class="w-full max-w-md bg-white dark:bg-gray-800 rounded-2xl shadow-2xl overflow-hidden">
+            <div class="px-6 py-4 bg-gradient-to-r from-danger-500 to-red-600 flex items-center justify-between">
+                <h2 class="text-lg font-bold text-white">ປະຕິເສດໃບເກັບເງິນ</h2>
+                <button onclick={() => (showInvRejectModal = false)} class="p-1.5 hover:bg-white/20 rounded-lg">
+                    <X class="w-5 h-5 text-white" />
+                </button>
+            </div>
+            <div class="p-6 space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ເຫດຜົນ</label>
+                    <textarea bind:value={invRejectReason} rows="3" placeholder="ລະບຸເຫດຜົນ..." class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white resize-none"></textarea>
+                </div>
+                <div class="flex justify-end gap-3">
+                    <button onclick={() => (showInvRejectModal = false)} class="px-5 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 font-medium">ຍົກເລີກ</button>
+                    <button onclick={confirmInvReject} class="px-5 py-2.5 bg-gradient-to-r from-danger-500 to-red-600 text-white rounded-xl font-medium">ຢືນຢັນປະຕິເສດ</button>
+                </div>
             </div>
         </div>
     </div>
@@ -1053,7 +1136,7 @@
 
             <!-- Status Badge -->
             <div class="flex justify-center mb-6">
-                <span class="px-6 py-2 rounded-full text-sm font-bold uppercase {viewingInvoice.status === 'paid' ? 'bg-green-100 text-green-700' : viewingInvoice.status === 'pending' ? 'bg-yellow-100 text-yellow-700' : 'bg-gray-100 text-gray-700'}">
+                <span class="px-6 py-2 rounded-full text-sm font-bold uppercase {viewingInvoice.status === 'paid' ? 'bg-success-100 text-success-700' : viewingInvoice.status === 'pending' ? 'bg-yellow-100 text-yellow-700' : 'bg-gray-100 text-gray-700'}">
                     {getStatusLabel(viewingInvoice.status)}
                 </span>
             </div>

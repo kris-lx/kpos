@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
@@ -143,9 +143,9 @@
 
     function getStatusColor(status: string): string {
         switch (status) {
-            case "COMPLETED": return "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400";
+            case "COMPLETED": return "bg-success-100 text-success-700 dark:bg-success-900/30 dark:text-success-400";
             case "PENDING": return "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400";
-            case "VOIDED": return "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400";
+            case "VOIDED": return "bg-danger-100 text-danger-700 dark:bg-danger-900/30 dark:text-danger-400";
             default: return "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300";
         }
     }
@@ -278,7 +278,7 @@
                 </div>
             {:else if error}
                 <div class="text-center py-12">
-                    <AlertCircle class="w-12 h-12 mx-auto text-red-400" />
+                    <AlertCircle class="w-12 h-12 mx-auto text-danger-400" />
                     <p class="mt-4 text-gray-700 dark:text-gray-300">{error}</p>
                     <button onclick={() => loadDocuments()} class="mt-4 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700">
                         {t("common.tryAgain")}
@@ -540,7 +540,7 @@
                                 <span class="print-text text-gray-900 dark:text-white">{formatCurrency(previewDoc.subtotal)}</span>
                             </div>
                             {#if previewDoc.discountAmount > 0}
-                                <div class="flex justify-between text-red-600 dark:text-red-400">
+                                <div class="flex justify-between text-danger-600 dark:text-danger-400">
                                     <span class="print-text">{t("documents.discount")}</span>
                                     <span class="print-text">-{formatCurrency(previewDoc.discountAmount)}</span>
                                 </div>
@@ -562,7 +562,7 @@
                                 </div>
                                 <div class="flex justify-between">
                                     <span class="print-text text-gray-500 dark:text-gray-400">{t("documents.change")}</span>
-                                    <span class="print-text text-green-600 dark:text-green-400 font-medium">{formatCurrency(previewDoc.change)}</span>
+                                    <span class="print-text text-success-600 dark:text-success-400 font-medium">{formatCurrency(previewDoc.change)}</span>
                                 </div>
                             </div>
                         {/if}

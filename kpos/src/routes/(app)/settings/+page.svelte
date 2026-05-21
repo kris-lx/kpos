@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount } from "svelte";
     import { auth } from "$stores";
     import { api } from "$api";
@@ -18,6 +18,9 @@
         Camera,
         Upload,
         Image,
+        ExternalLink,
+        Eye,
+        EyeOff,
     } from "lucide-svelte";
 
     // State
@@ -36,24 +39,22 @@
         if (file.size > 2 * 1024 * 1024) { toast.error('ຮູບຕ້ອງນ້ອຍກວ່າ 2MB'); return; }
         isUploadingLogo = true;
         try {
-            const formData = new FormData();
-            formData.append('file', file);
-            const res = await api.post('uploads/logo', { body: formData }).json<any>();
-            if (res.success && res.data?.url) {
-                storeLogo = res.data.url;
-                toast.success('ອັບໂຫຼດ logo ສຳເລັດ');
-            } else {
-                // Fallback: use local preview
+            // Convert to base64 data URL then upload as JSON to the single-upload endpoint
+            const base64 = await new Promise<string>((resolve, reject) => {
                 const reader = new FileReader();
-                reader.onload = (e) => { storeLogo = e.target?.result as string; };
+                reader.onload = (e) => resolve(e.target?.result as string);
+                reader.onerror = reject;
                 reader.readAsDataURL(file);
-                toast.success('ອັບໂຫຼດ logo ສຳເລັດ (local)');
+            });
+            try {
+                const res = await api.post('upload/single', { json: { image: base64, folder: 'logos' } }).json<any>();
+                storeLogo = res.success && res.data?.url ? res.data.url : base64;
+            } catch {
+                storeLogo = base64; // keep local data URL if Cloudinary not configured
             }
+            toast.success('ອັບໂຫຼດ logo ສຳເລັດ');
         } catch {
-            // Fallback to local preview on error
-            const reader = new FileReader();
-            reader.onload = (e) => { storeLogo = e.target?.result as string; };
-            reader.readAsDataURL(file);
+            toast.error('ອັບໂຫຼດ logo ລົ້ມເຫຼວ');
         } finally {
             isUploadingLogo = false;
         }
@@ -146,31 +147,45 @@
         isSaving = true;
         try {
             // Prepare settings for bulk update
-            const settingsToSave = [
-                { category: "general", key: "businessName", value: settings.storeName },
-                { category: "general", key: "address", value: settings.storeAddress },
-                { category: "general", key: "phone", value: settings.storePhone },
-                { category: "general", key: "email", value: settings.storeEmail },
-                { category: "general", key: "taxId", value: settings.taxId },
-                { category: "receipt", key: "header", value: settings.receiptHeader },
-                { category: "receipt", key: "footer", value: settings.receiptFooter },
-                { category: "receipt", key: "showLogo", value: settings.showLogo },
-                { category: "tax", key: "vatEnabled", value: settings.enableTax },
-                { category: "tax", key: "vatRate", value: settings.taxRate },
-                { category: "display", key: "theme", value: settings.theme },
-                { category: "display", key: "accentColor", value: settings.accentColor },
-                { category: "inventory", key: "lowStockAlert", value: settings.lowStockAlert },
-                { category: "inventory", key: "lowStockThreshold", value: settings.lowStockThreshold },
-                { category: "notifications", key: "email", value: settings.emailNotifications },
-                { category: "pos", key: "quickSale", value: settings.quickSale },
-                { category: "pos", key: "requireCustomer", value: settings.requireCustomer },
-                { category: "pos", key: "defaultPaymentMethod", value: settings.defaultPaymentMethod },
-                { category: "pos", key: "allowNegativeStock", value: settings.allowNegativeStock },
-                { category: "pos", key: "enableHoldSale", value: settings.enableHoldSale },
-            ];
-            
-            const response = await api.post("settings/bulk", { 
-                json: { settings: settingsToSave } 
+            const response = await api.post("settings/bulk", {
+                json: {
+                    settings: {
+                        general: {
+                            businessName: settings.storeName,
+                            address: settings.storeAddress,
+                            phone: settings.storePhone,
+                            email: settings.storeEmail,
+                            taxId: settings.taxId,
+                        },
+                        receipt: {
+                            header: settings.receiptHeader,
+                            footer: settings.receiptFooter,
+                            showLogo: settings.showLogo,
+                        },
+                        tax: {
+                            vatEnabled: settings.enableTax,
+                            vatRate: settings.taxRate,
+                        },
+                        display: {
+                            theme: settings.theme,
+                            accentColor: settings.accentColor,
+                        },
+                        inventory: {
+                            lowStockAlert: settings.lowStockAlert,
+                            lowStockThreshold: settings.lowStockThreshold,
+                        },
+                        notifications: {
+                            email: settings.emailNotifications,
+                        },
+                        pos: {
+                            quickSale: settings.quickSale,
+                            requireCustomer: settings.requireCustomer,
+                            defaultPaymentMethod: settings.defaultPaymentMethod,
+                            allowNegativeStock: settings.allowNegativeStock,
+                            enableHoldSale: settings.enableHoldSale,
+                        },
+                    },
+                },
             }).json<any>();
             
             if (response.success) {
@@ -186,9 +201,74 @@
         }
     }
     
+    // Receipt quick settings
+    let receiptQuick = $state({ footerText: 'ຂອບໃຈທີ່ໃຊ້ບໍລິການ!', showLogo: true, paperSize: '80mm' as '58mm' | '80mm' | 'A4' });
+    let receiptQuickLoaded = $state(false);
+    let savingReceipt = $state(false);
+
+    async function loadReceiptSettings() {
+        try {
+            const res = await api.get('settings/receipt').json<any>();
+            if (res.success && res.data) {
+                receiptQuick = {
+                    footerText: res.data.footerText ?? 'ຂອບໃຈທີ່ໃຊ້ບໍລິການ!',
+                    showLogo: res.data.showLogo !== false,
+                    paperSize: res.data.paperSize ?? '80mm',
+                };
+            }
+        } catch {}
+        receiptQuickLoaded = true;
+    }
+
+    async function saveReceiptSettings() {
+        savingReceipt = true;
+        try {
+            await api.put('settings/receipt', { json: receiptQuick });
+            toast.success('ບັນທຶກການຕັ້ງຄ່າໃບບິນສຳເລັດ');
+        } catch {
+            toast.error('ເກີດຂໍ້ຜິດພາດ');
+        } finally {
+            savingReceipt = false;
+        }
+    }
+
+    // Security — password change
+    let securityForm = $state({ currentPassword: '', newPassword: '', confirmPassword: '' });
+    let showCurrentPw = $state(false);
+    let showNewPw = $state(false);
+    let savingSecurity = $state(false);
+
+    async function changePassword() {
+        if (!securityForm.currentPassword || !securityForm.newPassword) {
+            toast.error('ກະລຸນາປ້ອນລະຫັດຜ່ານ');
+            return;
+        }
+        if (securityForm.newPassword !== securityForm.confirmPassword) {
+            toast.error('ລະຫັດຜ່ານໃໝ່ບໍ່ຕົງກັນ');
+            return;
+        }
+        if (securityForm.newPassword.length < 6) {
+            toast.error('ລະຫັດຜ່ານຕ້ອງມີຢ່າງໜ້ອຍ 6 ຕົວອັກສອນ');
+            return;
+        }
+        savingSecurity = true;
+        try {
+            await api.put('users/me/password', {
+                json: { currentPassword: securityForm.currentPassword, newPassword: securityForm.newPassword }
+            });
+            toast.success('ປ່ຽນລະຫັດຜ່ານສຳເລັດ');
+            securityForm = { currentPassword: '', newPassword: '', confirmPassword: '' };
+        } catch (err: any) {
+            toast.error(err?.message || 'ລະຫັດຜ່ານປັດຈຸບັນບໍ່ຖືກຕ້ອງ');
+        } finally {
+            savingSecurity = false;
+        }
+    }
+
     $effect(() => {
         auth.activeStoreId;
         loadSettings();
+        if (!receiptQuickLoaded) loadReceiptSettings();
     });
 </script>
 
@@ -273,7 +353,7 @@
                             <p class="font-medium text-gray-900 dark:text-white">ໂລໂກ້ຮ້ານ</p>
                             <p class="text-sm text-gray-500 dark:text-gray-400">ອັບໂຫຼດຮູບໂລໂກ້ (ສູງສຸດ 2MB)</p>
                             {#if storeLogo}
-                                <button onclick={() => storeLogo = null} class="text-xs text-red-500 hover:underline mt-1">ລຶບໂລໂກ້</button>
+                                <button onclick={() => storeLogo = null} class="text-xs text-danger-500 hover:underline mt-1">ລຶບໂລໂກ້</button>
                             {/if}
                         </div>
                     </div>
@@ -391,146 +471,82 @@
                     {/if}
                 </div>
             {:else if activeTab === "receipt"}
-                <h2
-                    class="text-lg font-semibold text-gray-900 dark:text-white mb-6"
-                >
+                <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-6">
                     ຕັ້ງຄ່າໃບບິນ
                 </h2>
 
-                <div class="space-y-6">
+                <!-- Link to full design page -->
+                <div class="mb-6 p-4 bg-primary-50 dark:bg-primary-900/20 border border-primary-200 dark:border-primary-800 rounded-xl flex items-center justify-between gap-4">
                     <div>
-                        <label
-                            class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2"
-                            >ຂໍ້ຄວາມຫົວໃບບິນ</label
-                        >
-                        <textarea
-                            bind:value={settings.receiptHeader}
-                            rows="2"
-                            placeholder="ຂໍ້ຄວາມສະແດງຢູ່ດ້ານເທິງໃບບິນ"
-                            class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 focus:ring-2 focus:ring-primary-500"
-                        ></textarea>
+                        <p class="font-medium text-primary-900 dark:text-primary-100">ອອກແບບໃບບິນແບບລະອຽດ</p>
+                        <p class="text-sm text-primary-700 dark:text-primary-300">ເພີ່ມ / ຈັດວາງ / ອອກແບບ Layout ໃບບິນຢ່າງລະອຽດໃນໜ້າ Documents</p>
+                    </div>
+                    <a
+                        href="/documents/design"
+                        class="inline-flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors whitespace-nowrap text-sm font-medium"
+                    >
+                        <ExternalLink class="w-4 h-4" />
+                        ອອກແບບໃບບິນ
+                    </a>
+                </div>
+
+                <!-- Quick settings -->
+                <div class="space-y-5">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                            ຂໍ້ຄວາມທ້າຍໃບບິນ
+                        </label>
+                        <input
+                            type="text"
+                            bind:value={receiptQuick.footerText}
+                            placeholder="ຂອບໃຈທີ່ໃຊ້ບໍລິການ!"
+                            class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:ring-2 focus:ring-primary-500 focus:outline-none"
+                        />
                     </div>
 
                     <div>
-                        <label
-                            class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2"
-                            >ຂໍ້ຄວາມທ້າຍໃບບິນ</label
-                        >
-                        <textarea
-                            bind:value={settings.receiptFooter}
-                            rows="2"
-                            placeholder="ຂໍ້ຄວາມສະແດງຢູ່ດ້ານລຸ່ມໃບບິນ"
-                            class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 focus:ring-2 focus:ring-primary-500"
-                        ></textarea>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                            ຂະໜາດກະດາດ
+                        </label>
+                        <div class="flex gap-3">
+                            {#each (['58mm', '80mm', 'A4'] as const) as size (size)}
+                                <button
+                                    onclick={() => (receiptQuick.paperSize = size)}
+                                    class={cn(
+                                        "px-4 py-2 rounded-lg border-2 text-sm font-medium transition-colors",
+                                        receiptQuick.paperSize === size
+                                            ? "border-primary-500 bg-primary-50 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300"
+                                            : "border-gray-200 dark:border-gray-700 hover:border-primary-300"
+                                    )}
+                                >{size}</button>
+                            {/each}
+                        </div>
                     </div>
 
                     <div class="flex items-center justify-between">
                         <div>
-                            <p
-                                class="font-medium text-gray-900 dark:text-white"
-                            >
-                                ສະແດງໂລໂກ້
-                            </p>
-                            <p class="text-sm text-gray-500 dark:text-gray-400">
-                                ສະແດງໂລໂກ້ຮ້ານຄ້າໃນໃບບິນ
-                            </p>
+                            <p class="font-medium text-gray-900 dark:text-white">ສະແດງໂລໂກ້</p>
+                            <p class="text-sm text-gray-500 dark:text-gray-400">ສະແດງໂລໂກ້ຮ້ານຄ້າໃນໃບບິນ</p>
                         </div>
-                        <label
-                            class="relative inline-flex items-center cursor-pointer"
-                        >
-                            <input
-                                type="checkbox"
-                                bind:checked={settings.showLogo}
-                                class="sr-only peer"
-                            />
-                            <div
-                                class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-primary-300 dark:peer-focus:ring-primary-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-primary-600"
-                            ></div>
+                        <label class="relative inline-flex items-center cursor-pointer">
+                            <input type="checkbox" bind:checked={receiptQuick.showLogo} class="sr-only peer" />
+                            <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-primary-300 dark:peer-focus:ring-primary-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-primary-600"></div>
                         </label>
                     </div>
 
-                    <!-- Receipt Preview -->
-                    <div class="mt-8">
-                        <h3
-                            class="text-md font-medium text-gray-900 dark:text-white mb-4"
+                    <div class="pt-2">
+                        <button
+                            onclick={saveReceiptSettings}
+                            disabled={savingReceipt}
+                            class="flex items-center gap-2 px-5 py-2.5 bg-primary-600 text-white rounded-xl hover:bg-primary-700 disabled:opacity-60 transition-colors"
                         >
-                            ຕົວຢ່າງໃບບິນ
-                        </h3>
-                        <div
-                            class="w-80 mx-auto bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4 font-mono text-sm"
-                        >
-                            <div class="text-center mb-4">
-                                {#if settings.showLogo}
-                                    <div
-                                        class="w-16 h-16 mx-auto bg-gray-100 rounded-lg flex items-center justify-center mb-2"
-                                    >
-                                        <Store class="w-8 h-8 text-gray-400" />
-                                    </div>
-                                {/if}
-                                <p class="font-bold">{settings.storeName}</p>
-                                {#if settings.receiptHeader}
-                                    <p class="text-xs text-gray-500 dark:text-gray-400">
-                                        {settings.receiptHeader}
-                                    </p>
-                                {/if}
-                            </div>
-
-                            <hr class="border-dashed border-gray-300 dark:border-gray-600 my-2" />
-
-                            <div class="space-y-1">
-                                <div class="flex justify-between">
-                                    <span>ສິນຄ້າ A x 2</span>
-                                    <span>100.00</span>
-                                </div>
-                                <div class="flex justify-between">
-                                    <span>ສິນຄ້າ B x 1</span>
-                                    <span>50.00</span>
-                                </div>
-                            </div>
-
-                            <hr class="border-dashed border-gray-300 dark:border-gray-600 my-2" />
-
-                            <div class="space-y-1">
-                                <div class="flex justify-between">
-                                    <span>ລວມ</span>
-                                    <span>150.00</span>
-                                </div>
-                                {#if settings.enableTax}
-                                    <div
-                                        class="flex justify-between text-xs text-gray-500 dark:text-gray-400"
-                                    >
-                                        <span>ພາສີ {settings.taxRate}%</span>
-                                        <span
-                                            >{(
-                                                (150 * settings.taxRate) /
-                                                100
-                                            ).toFixed(2)}</span
-                                        >
-                                    </div>
-                                {/if}
-                                <div class="flex justify-between font-bold">
-                                    <span>ລວມທັງໝົດ</span>
-                                    <span
-                                        >{(
-                                            150 *
-                                            (1 +
-                                                (settings.enableTax
-                                                    ? settings.taxRate / 100
-                                                    : 0))
-                                        ).toFixed(2)}</span
-                                    >
-                                </div>
-                            </div>
-
-                            {#if settings.receiptFooter}
-                                <hr
-                                    class="border-dashed border-gray-300 dark:border-gray-600 my-2"
-                                />
-                                <p class="text-center text-xs text-gray-500 dark:text-gray-400">
-                                    {settings.receiptFooter}
-                                </p>
+                            {#if savingReceipt}
+                                <Loader2 class="w-4 h-4 animate-spin" />
+                            {:else}
+                                <Save class="w-4 h-4" />
                             {/if}
-                        </div>
+                            ບັນທຶກ
+                        </button>
                     </div>
                 </div>
             {:else if activeTab === "notifications"}
@@ -683,9 +699,9 @@
                                             ? "scale-110 ring-2 ring-offset-2 ring-gray-400"
                                             : "hover:scale-105",
                                         color === "blue" && "bg-blue-500",
-                                        color === "green" && "bg-green-500",
+                                        color === "green" && "bg-success-500",
                                         color === "purple" && "bg-purple-500",
-                                        color === "red" && "bg-red-500",
+                                        color === "red" && "bg-danger-500",
                                         color === "orange" && "bg-orange-500",
                                     )}
                                 ></button>
@@ -693,21 +709,102 @@
                         </div>
                     </div>
                 </div>
+            {:else if activeTab === "users"}
+                <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-6">ຜູ້ໃຊ້</h2>
+                <div class="p-5 bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700 rounded-xl flex items-center justify-between gap-4">
+                    <div class="flex items-center gap-4">
+                        <div class="w-12 h-12 bg-primary-100 dark:bg-primary-900/40 rounded-xl flex items-center justify-center">
+                            <User class="w-6 h-6 text-primary-600 dark:text-primary-400" />
+                        </div>
+                        <div>
+                            <p class="font-medium text-gray-900 dark:text-white">ໂປຣໄຟລ໌ ແລະ ລະຫັດຜ່ານ</p>
+                            <p class="text-sm text-gray-500 dark:text-gray-400">ແກ້ໄຂຂໍ້ມູນສ່ວນຕົວ, ຮູບໂປຣໄຟລ໌ ແລະ ລະຫັດຜ່ານ</p>
+                        </div>
+                    </div>
+                    <a
+                        href="/settings/profile"
+                        class="inline-flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors whitespace-nowrap text-sm font-medium"
+                    >
+                        <ExternalLink class="w-4 h-4" />
+                        ໄປຫາໂປຣໄຟລ໌
+                    </a>
+                </div>
+
+            {:else if activeTab === "security"}
+                <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-6">ຄວາມປອດໄພ</h2>
+                <div class="max-w-md space-y-5">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ລະຫັດຜ່ານປັດຈຸບັນ</label>
+                        <div class="relative">
+                            <input
+                                type={showCurrentPw ? 'text' : 'password'}
+                                bind:value={securityForm.currentPassword}
+                                placeholder="••••••••"
+                                class="w-full px-4 py-2.5 pr-10 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:ring-2 focus:ring-primary-500 focus:outline-none"
+                            />
+                            <button
+                                type="button"
+                                onclick={() => (showCurrentPw = !showCurrentPw)}
+                                class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                            >
+                                {#if showCurrentPw}<EyeOff class="w-4 h-4" />{:else}<Eye class="w-4 h-4" />{/if}
+                            </button>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ລະຫັດຜ່ານໃໝ່</label>
+                        <div class="relative">
+                            <input
+                                type={showNewPw ? 'text' : 'password'}
+                                bind:value={securityForm.newPassword}
+                                placeholder="••••••••"
+                                class="w-full px-4 py-2.5 pr-10 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:ring-2 focus:ring-primary-500 focus:outline-none"
+                            />
+                            <button
+                                type="button"
+                                onclick={() => (showNewPw = !showNewPw)}
+                                class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                            >
+                                {#if showNewPw}<EyeOff class="w-4 h-4" />{:else}<Eye class="w-4 h-4" />{/if}
+                            </button>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ຢືນຍັນລະຫັດຜ່ານໃໝ່</label>
+                        <input
+                            type="password"
+                            bind:value={securityForm.confirmPassword}
+                            placeholder="••••••••"
+                            class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:ring-2 focus:ring-primary-500 focus:outline-none"
+                        />
+                    </div>
+                    <button
+                        onclick={changePassword}
+                        disabled={savingSecurity || !securityForm.currentPassword || !securityForm.newPassword || !securityForm.confirmPassword}
+                        class="flex items-center gap-2 px-5 py-2.5 bg-primary-600 text-white rounded-xl hover:bg-primary-700 disabled:opacity-60 transition-colors"
+                    >
+                        {#if savingSecurity}
+                            <Loader2 class="w-4 h-4 animate-spin" />
+                        {:else}
+                            <Shield class="w-4 h-4" />
+                        {/if}
+                        ປ່ຽນລະຫັດຜ່ານ
+                    </button>
+                </div>
+
+            {:else if activeTab === "backup"}
+                <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-6">ສຳຮອງຂໍ້ມູນ</h2>
+                <div class="text-center py-12 text-gray-500 dark:text-gray-400">
+                    <div class="w-16 h-16 mx-auto bg-gray-100 dark:bg-gray-800 rounded-xl flex items-center justify-center mb-4">
+                        <Database class="w-8 h-8 text-gray-400" />
+                    </div>
+                    <p class="text-lg font-medium text-gray-700 dark:text-gray-300">ກຳລັງພັດທະນາ</p>
+                    <p class="text-sm mt-1">ຟີເຈີນີ້ຈະມີໃຫ້ໃຊ້ໃນໄວໆນີ້</p>
+                </div>
+
             {:else}
                 <div class="text-center py-12 text-gray-500 dark:text-gray-400">
-                    <div
-                        class="w-16 h-16 mx-auto bg-gray-100 dark:bg-gray-800 rounded-xl flex items-center justify-center mb-4"
-                    >
-                        {#if activeTab === "users"}
-                            <User class="w-8 h-8 text-gray-400" />
-                        {:else if activeTab === "security"}
-                            <Shield class="w-8 h-8 text-gray-400" />
-                        {:else}
-                            <Database class="w-8 h-8 text-gray-400" />
-                        {/if}
-                    </div>
-                    <p class="text-lg font-medium">เร็วๆ นี้</p>
-                    <p class="text-sm">ฟีเจอร์นี้กำลังพัฒนา</p>
+                    <p class="text-lg font-medium text-gray-700 dark:text-gray-300">ກຳລັງພັດທະນາ</p>
                 </div>
             {/if}
         </div>

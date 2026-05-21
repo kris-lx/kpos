@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { createQuery, createMutation, useQueryClient } from "@tanstack/svelte-query";
     import { get } from "svelte/store";
     import { api } from "$lib/api";
@@ -27,7 +27,8 @@
         Calendar,
         CheckCircle,
         XCircle,
-        AlertTriangle
+        AlertTriangle,
+        Package
     } from "lucide-svelte";
 
     import { auth } from "$lib/stores/auth.svelte";
@@ -51,7 +52,7 @@
             userStoreId = (user as any).storeId || null;
             
             // Super Admin, Admin ເຫັນທຸກສາຂາ; Shop Admin, Manager ເຫັນສະເພາະສາຂາຂອງຮ້ານຕົນເອງ
-            if (user.isSuperAdmin || ['admin', 'store_owner', 'branch_admin', 'store_manager'].includes(user.role)) {
+            if (user.isSuperAdmin || ['admin', 'hq_admin', 'hq_manager', 'store_owner', 'branch_admin', 'store_manager'].includes(user.role)) {
                 canAccess = true;
             } else {
                 toast.error("ທ່ານບໍ່ມີສິດເຂົ້າເຖິງໜ້ານີ້");
@@ -279,7 +280,7 @@
                                             "px-2.5 py-1 rounded-full text-xs font-medium",
                                             branch.isActive !== false 
                                                 ? "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400"
-                                                : "bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400"
+                                                : "bg-danger-100 dark:bg-danger-900/30 text-danger-600 dark:text-danger-400"
                                         )}>
                                             {branch.isActive !== false ? "ເປີດໃຊ້" : "ປິດໃຊ້"}
                                         </span>
@@ -300,15 +301,17 @@
                                     {/if}
 
                                     <div class="flex items-center gap-4 text-xs text-gray-400 dark:text-gray-500 mt-3 pt-3 border-t border-gray-200 dark:border-gray-600">
-                                        {#if (branch._count?.users ?? branch._count?.userAccess) !== undefined}
-                                            <span class="flex items-center gap-1">
-                                                <Users class="w-3.5 h-3.5" />
-                                                {branch._count?.users ?? branch._count?.userAccess ?? 0} ຜູ້ໃຊ້
-                                            </span>
-                                        {/if}
                                         <span class="flex items-center gap-1">
-                                            <Calendar class="w-3.5 h-3.5" />
-                                            {formatDate(branch.createdAt)}
+                                            <Store class="w-3.5 h-3.5" />
+                                            {branch._count?.stores ?? 0} ຮ້ານ
+                                        </span>
+                                        <span class="flex items-center gap-1">
+                                            <Package class="w-3.5 h-3.5" />
+                                            {branch._count?.products ?? 0} ສິນຄ້າ
+                                        </span>
+                                        <span class="flex items-center gap-1">
+                                            <Users class="w-3.5 h-3.5" />
+                                            {branch._count?.users ?? 0} ຜູ້ໃຊ້
                                         </span>
                                     </div>
                                 </div>
@@ -321,7 +324,7 @@
                                         <Pencil class="w-4 h-4" />
                                         <span class="text-sm">ແກ້ໄຂ</span>
                                     </button>
-                                    <button onclick={() => openDeleteModal(branch)} class="flex-1 flex items-center justify-center gap-2 py-3 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors">
+                                    <button onclick={() => openDeleteModal(branch)} class="flex-1 flex items-center justify-center gap-2 py-3 text-danger-600 dark:text-danger-400 hover:bg-danger-50 dark:hover:bg-danger-900/20 transition-colors">
                                         <Trash2 class="w-4 h-4" />
                                         <span class="text-sm">ລຶບ</span>
                                     </button>
@@ -387,7 +390,7 @@
                                 "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-sm font-medium",
                                 selectedBranch.isActive !== false 
                                     ? "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400"
-                                    : "bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400"
+                                    : "bg-danger-100 dark:bg-danger-900/30 text-danger-600 dark:text-danger-400"
                             )}>
                                 {#if selectedBranch.isActive !== false}
                                     <CheckCircle class="w-4 h-4" />
@@ -574,8 +577,8 @@
             <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showDeleteModal = false}></div>
             <div class="relative bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
                 <div class="p-6 text-center">
-                    <div class="w-16 h-16 bg-red-100 dark:bg-red-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
-                        <AlertTriangle class="w-8 h-8 text-red-600 dark:text-red-400" />
+                    <div class="w-16 h-16 bg-danger-100 dark:bg-danger-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <AlertTriangle class="w-8 h-8 text-danger-600 dark:text-danger-400" />
                     </div>
                     <h3 class="text-xl font-bold text-gray-900 dark:text-white mb-2">ລຶບສາຂາ?</h3>
                     <p class="text-gray-500 dark:text-gray-400 mb-4">ທ່ານແນ່ໃຈບໍ່ວ່າຕ້ອງການລຶບສາຂາ <span class="font-semibold text-gray-900 dark:text-white">"{selectedBranch.name}"</span>? ການດຳເນີນການນີ້ບໍ່ສາມາດຍ້ອນກັບໄດ້.</p>
@@ -587,7 +590,7 @@
                     <button 
                         onclick={handleDelete}
                         disabled={$deleteMutationFn.isPending}
-                        class="flex-1 px-4 py-3 bg-red-500 hover:bg-red-600 text-white font-medium rounded-xl shadow-lg shadow-red-500/30 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                        class="flex-1 px-4 py-3 bg-danger-500 hover:bg-danger-600 text-white font-medium rounded-xl shadow-lg shadow-danger-500/30 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
                     >
                         {#if $deleteMutationFn.isPending}
                             <Loader2 class="w-5 h-5 animate-spin" />

@@ -1,11 +1,11 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount } from "svelte";
     import { i18n } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
     import { formatCurrency, formatDate, formatDateTime } from "$lib/utils";
     import { toast } from "svelte-sonner";
     import { auth } from "$stores";
-    import { Plus, Search, Package, X, ChevronLeft, ChevronRight, Loader2, Trash2, AlertCircle, ChevronsLeft, ChevronsRight, Pencil } from "lucide-svelte";
+    import { Plus, Search, Package, X, ChevronLeft, ChevronRight, Loader2, Trash2, AlertCircle, ChevronsLeft, ChevronsRight, Pencil, Download } from "lucide-svelte";
     import MoneyInput from "$lib/components/MoneyInput.svelte";
 
     const t = i18n.t;
@@ -46,17 +46,19 @@
         loading = true;
         errorMessage = "";
         try {
+            const activeBranchId = auth.activeBranchId;
             const params = new URLSearchParams({
                 page: currentPage.toString(),
                 limit: pageSize.toString(),
-                ...(searchQuery && { search: searchQuery })
+                ...(searchQuery && { search: searchQuery }),
+                ...(activeBranchId && { branchId: activeBranchId }),
             });
-            
+
             const [stockRes, prodRes, vendorRes, invRes] = await Promise.all([
                 api.get(`inventory/stock-in?${params}`).json<any>(),
-                api.get("products?limit=1000").json<any>(),
-                api.get("inventory/vendors?limit=1000").json<any>(),
-                api.get("inventory?limit=1000").json<any>(),
+                api.get(`products?limit=1000${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>(),
+                api.get(`inventory/vendors?limit=1000${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>(),
+                api.get(`inventory?limit=1000${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>(),
             ]);
             
             stockIns = stockRes.data || [];
@@ -195,6 +197,37 @@
         };
     }
 
+    function downloadFile(content: string, filename: string, type: string) {
+        const blob = new Blob([content], { type });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
+    async function exportToCsv() {
+        try {
+            const activeBranchId = auth.activeBranchId;
+            const res = await api.get(`inventory/stock-in?limit=10000${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>();
+            const rows: any[] = res.data || [];
+            let csv = '﻿';
+            csv += 'ວັນທີ,ຊື່ສິນຄ້າ,ຈຳນວນ,ລາຄາທຶນ,ຜູ້ສະໜອງ,ເລກອ້າງອີງ,ຫມາຍເລກ Batch\n';
+            for (const item of rows) {
+                const productName = products.find((p: any) => p.id === item.productId)?.name || item.productId;
+                const date = item.createdAt ? new Date(item.createdAt).toLocaleDateString('lo-LA') : '';
+                csv += `"${date}","${productName}","${item.quantity || 0}","${item.unitCost || 0}","${item.supplier || ''}","${item.reference || ''}","${item.batchNumber || ''}"\n`;
+            }
+            downloadFile(csv, `stockin-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
+            toast.success('ສົ່ງອອກ CSV ສຳເລັດ');
+        } catch {
+            toast.error('ສົ່ງອອກລົ້ມເຫລວ');
+        }
+    }
+
     $effect(() => {
         auth.activeStoreId;
         loadData();
@@ -210,13 +243,22 @@
             </h1>
             <p class="text-sm text-gray-500 dark:text-gray-400">{t("inventory.stockInDesc")}</p>
         </div>
-        <button
-            onclick={openAdd}
-            class="flex items-center gap-2 rounded-lg bg-green-600 px-4 py-2 text-white hover:bg-green-700"
-        >
-            <Plus class="h-5 w-5" />
-            {t("inventory.addStockIn")}
-        </button>
+        <div class="flex items-center gap-2">
+            <button
+                onclick={exportToCsv}
+                class="flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 text-sm font-medium"
+            >
+                <Download class="h-4 w-4" />
+                ສົ່ງອອກ
+            </button>
+            <button
+                onclick={openAdd}
+                class="flex items-center gap-2 rounded-lg bg-success-600 px-4 py-2 text-white hover:bg-success-700"
+            >
+                <Plus class="h-5 w-5" />
+                {t("inventory.addStockIn")}
+            </button>
+        </div>
     </div>
 
     <!-- Search & Filter -->
@@ -228,7 +270,7 @@
                 bind:value={searchQuery}
                 onkeydown={(e) => e.key === 'Enter' && handleSearch()}
                 placeholder="{t('common.search')}..."
-                class="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 py-2 pl-10 pr-4 text-gray-900 dark:text-white focus:border-green-500 focus:ring-1 focus:ring-green-500"
+                class="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 py-2 pl-10 pr-4 text-gray-900 dark:text-white focus:border-success-500 focus:ring-1 focus:ring-success-500"
             />
         </div>
         <button
@@ -241,12 +283,12 @@
 
     <!-- Error Message -->
     {#if errorMessage}
-        <div class="flex items-center gap-3 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 p-4 text-red-700 dark:text-red-400">
+        <div class="flex items-center gap-3 rounded-lg border border-danger-200 dark:border-danger-800 bg-danger-50 dark:bg-danger-900/20 p-4 text-danger-700 dark:text-danger-400">
             <AlertCircle class="h-5 w-5 flex-shrink-0" />
             <p>{errorMessage}</p>
             <button
                 onclick={loadData}
-                class="ml-auto rounded-lg bg-red-100 dark:bg-red-800/30 px-3 py-1 text-sm hover:bg-red-200 dark:hover:bg-red-800/50"
+                class="ml-auto rounded-lg bg-danger-100 dark:bg-danger-800/30 px-3 py-1 text-sm hover:bg-danger-200 dark:hover:bg-danger-800/50"
             >
                 {t("common.retry")}
             </button>
@@ -272,7 +314,7 @@
                 {#if loading}
                     <tr>
                         <td colspan="8" class="px-6 py-12 text-center">
-                            <Loader2 class="h-8 w-8 animate-spin text-green-600 mx-auto" />
+                            <Loader2 class="h-8 w-8 animate-spin text-success-600 mx-auto" />
                         </td>
                     </tr>
                 {:else if stockIns.length === 0}
@@ -288,7 +330,7 @@
                             <td class="whitespace-nowrap px-6 py-4 text-sm text-gray-900 dark:text-white">{formatDate(item.createdAt || item.date)}</td>
                             <td class="px-6 py-4 text-sm text-gray-900 dark:text-white">{item.product?.name || "-"}</td>
                             <td class="whitespace-nowrap px-6 py-4 text-sm text-gray-900 dark:text-white">
-                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">
+                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-success-100 text-success-700">
                                     +{item.quantity}
                                 </span>
                             </td>
@@ -307,7 +349,7 @@
                                     </button>
                                     <button
                                         onclick={() => deleteStockIn(item.id)}
-                                        class="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg"
+                                        class="p-2 text-gray-400 hover:text-danger-500 hover:bg-danger-50 dark:hover:bg-danger-900/20 rounded-lg"
                                         title="{t('common.delete')}"
                                     >
                                         <Trash2 class="w-4 h-4" />
@@ -375,7 +417,7 @@
                                     onclick={() => goToPage(page)}
                                     class="min-w-[32px] h-8 px-2 rounded-lg text-sm font-medium transition-colors
                                         {currentPage === page 
-                                            ? 'bg-green-600 text-white' 
+                                            ? 'bg-success-600 text-white' 
                                             : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700'}"
                                 >
                                     {page}
@@ -537,7 +579,7 @@
                     <button
                         type="submit"
                         disabled={isSaving}
-                        class="flex items-center gap-2 rounded-lg bg-green-600 px-4 py-2 text-white hover:bg-green-700 disabled:opacity-50"
+                        class="flex items-center gap-2 rounded-lg bg-success-600 px-4 py-2 text-white hover:bg-success-700 disabled:opacity-50"
                     >
                         {#if isSaving}
                             <Loader2 class="w-4 h-4 animate-spin" />

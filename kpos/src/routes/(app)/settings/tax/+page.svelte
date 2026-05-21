@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
@@ -123,7 +123,7 @@
     <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between mb-6 gap-4">
         <div>
             <div class="flex items-center gap-3">
-                <div class="p-2.5 bg-gradient-to-br from-orange-500 to-red-600 rounded-xl shadow-lg">
+                <div class="p-2.5 bg-gradient-to-br from-orange-500 to-danger-600 rounded-xl shadow-lg">
                     <Calculator class="w-6 h-6 text-white" />
                 </div>
                 <div>
@@ -135,7 +135,7 @@
 
         <button
             onclick={() => { resetForm(); showModal = true; }}
-            class="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-orange-500 to-red-600 text-white rounded-xl text-sm font-semibold shadow-lg"
+            class="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-orange-500 to-danger-600 text-white rounded-xl text-sm font-semibold shadow-lg"
         >
             <Plus class="w-5 h-5" />
             ເພີ່ມພາສີ
@@ -155,10 +155,10 @@
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
             <div class="flex items-center justify-between">
-                <div class="p-2 bg-green-100 dark:bg-green-900/50 rounded-lg">
-                    <CheckCircle class="w-5 h-5 text-green-600 dark:text-green-400" />
+                <div class="p-2 bg-success-100 dark:bg-success-900/50 rounded-lg">
+                    <CheckCircle class="w-5 h-5 text-success-600 dark:text-success-400" />
                 </div>
-                <span class="text-2xl font-bold text-green-600 dark:text-green-400">{stats.active}</span>
+                <span class="text-2xl font-bold text-success-600 dark:text-success-400">{stats.active}</span>
             </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">ເປີດໃຊ້ງານ</p>
         </div>
@@ -195,7 +195,7 @@
         <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
             {#each filteredTaxes as tax (tax.id)}
                 <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden hover:shadow-md transition-all">
-                    <div class={cn("p-4 flex items-center justify-between", tax.isDefault ? "bg-gradient-to-r from-orange-500 to-red-600" : "bg-gray-100 dark:bg-gray-700")}>
+                    <div class={cn("p-4 flex items-center justify-between", tax.isDefault ? "bg-gradient-to-r from-orange-500 to-danger-600" : "bg-gray-100 dark:bg-gray-700")}>
                         <div class="flex items-center gap-3">
                             <Percent class={cn("w-6 h-6", tax.isDefault ? "text-white" : "text-gray-600 dark:text-gray-400")} />
                             <h3 class={cn("text-lg font-bold", tax.isDefault ? "text-white" : "text-gray-900 dark:text-white")}>{tax.name}</h3>
@@ -212,7 +212,7 @@
                         <div class="flex items-center justify-between">
                             <span class="text-gray-500 dark:text-gray-400">ສະຖານະ:</span>
                             {#if tax.isActive}
-                                <span class="inline-flex items-center gap-1 text-green-600 dark:text-green-400 text-sm">
+                                <span class="inline-flex items-center gap-1 text-success-600 dark:text-success-400 text-sm">
                                     <CheckCircle class="w-4 h-4" /> ເປີດ
                                 </span>
                             {:else}
@@ -229,7 +229,7 @@
                         <button onclick={() => openEdit(tax)} class="p-2 text-orange-600 hover:bg-orange-50 dark:hover:bg-orange-900/30 rounded-lg">
                             <Edit class="w-4 h-4" />
                         </button>
-                        <button onclick={() => handleDelete(tax)} class="p-2 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg">
+                        <button onclick={() => handleDelete(tax)} class="p-2 text-danger-600 hover:bg-danger-50 dark:hover:bg-danger-900/30 rounded-lg">
                             <Trash2 class="w-4 h-4" />
                         </button>
                     </div>
@@ -243,7 +243,7 @@
 {#if showModal}
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
         <div class="w-full max-w-md bg-white dark:bg-gray-800 rounded-2xl shadow-2xl overflow-hidden">
-            <div class="px-6 py-4 bg-gradient-to-r from-orange-500 to-red-600 flex items-center justify-between">
+            <div class="px-6 py-4 bg-gradient-to-r from-orange-500 to-danger-600 flex items-center justify-between">
                 <h2 class="text-xl font-bold text-white">{editingTax ? "ແກ້ໄຂພາສີ" : "ເພີ່ມພາສີ"}</h2>
                 <button onclick={() => (showModal = false)} class="p-1.5 hover:bg-white/20 rounded-lg">
                     <X class="w-5 h-5 text-white" />
@@ -279,7 +279,7 @@
 
                 <div class="flex justify-end gap-3 pt-4">
                     <button type="button" onclick={() => (showModal = false)} class="px-5 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 font-medium">ຍົກເລີກ</button>
-                    <button type="submit" class="px-5 py-2.5 bg-gradient-to-r from-orange-500 to-red-600 text-white rounded-xl font-medium shadow-lg">ບັນທຶກ</button>
+                    <button type="submit" class="px-5 py-2.5 bg-gradient-to-r from-orange-500 to-danger-600 text-white rounded-xl font-medium shadow-lg">ບັນທຶກ</button>
                 </div>
             </form>
         </div>

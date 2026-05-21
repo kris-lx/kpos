@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
@@ -21,6 +21,8 @@
         Eye,
         Download,
         Hash,
+        ThumbsUp,
+        ThumbsDown,
     } from "lucide-svelte";
 
     // State
@@ -46,6 +48,9 @@
         items: [] as { productId: string; systemQty: number; actualQty: number }[],
     });
 
+    // Approval permission
+    let canApprove = $derived(auth.isSuperAdmin || (auth.roleLevel ?? 7) <= 4);
+
     // Stats
     let stats = $derived({
         total: totalItems,
@@ -57,27 +62,69 @@
     function getStatusConfig(status: string) {
         switch (status) {
             case "completed":
-                return { bg: "bg-green-100 dark:bg-green-900/50", text: "text-green-700 dark:text-green-400", label: "ສຳເລັດ" };
+            case "approved":
+                return { bg: "bg-success-100 dark:bg-success-900/50", text: "text-success-700 dark:text-success-400", label: "ສຳເລັດ" };
             case "pending":
-                return { bg: "bg-amber-100 dark:bg-amber-900/50", text: "text-amber-700 dark:text-amber-400", label: "ລໍຖ້າ" };
+                return {
+                    bg: "bg-amber-100 dark:bg-amber-900/50",
+                    text: "text-amber-700 dark:text-amber-400",
+                    label: canApprove ? "ລໍຖ້າ" : "ລໍການອະນຸມັດ",
+                };
+            case "rejected":
+                return { bg: "bg-danger-100 dark:bg-danger-900/50", text: "text-danger-700 dark:text-danger-400", label: "ຖືກປະຕິເສດ" };
             default:
                 return { bg: "bg-gray-100 dark:bg-gray-700", text: "text-gray-600 dark:text-gray-400", label: status };
+        }
+    }
+
+    let rejectReason = $state("");
+    let showRejectModal = $state(false);
+    let rejectTargetId = $state<string | null>(null);
+
+    async function approveCount(id: string) {
+        try {
+            await api.patch(`inventory/stock-counts/${id}/approve`).json();
+            toast.success("ອະນຸມັດການນັບສຳເລັດ");
+            loadData();
+        } catch (e: any) {
+            toast.error(e?.message || t("common.error"));
+        }
+    }
+
+    function openRejectModal(id: string) {
+        rejectTargetId = id;
+        rejectReason = "";
+        showRejectModal = true;
+    }
+
+    async function confirmReject() {
+        if (!rejectTargetId) return;
+        try {
+            await api.patch(`inventory/stock-counts/${rejectTargetId}/reject`, { json: { reason: rejectReason } }).json();
+            toast.success("ປະຕິເສດການນັບສຳເລັດ");
+            showRejectModal = false;
+            rejectTargetId = null;
+            loadData();
+        } catch (e: any) {
+            toast.error(e?.message || t("common.error"));
         }
     }
 
     async function loadData() {
         isLoading = true;
         try {
+            const activeBranchId = auth.activeBranchId;
             const params = new URLSearchParams({
                 page: currentPage.toString(),
                 limit: itemsPerPage.toString(),
+                ...(activeBranchId && { branchId: activeBranchId }),
             });
             if (statusFilter) {
                 params.append("status", statusFilter);
             }
             const [countRes, prodRes] = await Promise.all([
                 api.get(`inventory/stock-counts?${params}`).json<any>(),
-                api.get("products?limit=1000").json<any>(),
+                api.get(`products?limit=1000${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>(),
             ]);
             stockCounts = countRes.data || [];
             totalItems = countRes.meta?.total || 0;
@@ -149,6 +196,37 @@
         }
     }
 
+    function downloadFile(content: string, filename: string, type: string) {
+        const blob = new Blob([content], { type });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
+    async function exportToCsv() {
+        try {
+            const activeBranchId = auth.activeBranchId;
+            const res = await api.get(`inventory/stock-counts?limit=10000${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>();
+            const rows: any[] = res.data || [];
+            let csv = '﻿';
+            csv += 'ວັນທີ,ເລກນັບ,ຈຳນວນລາຍການ,ມີຄວາມຕ່າງ,ສະຖານະ\n';
+            for (const item of rows) {
+                const statusLabel = item.status === 'completed' ? 'ສຳເລັດ' : item.status === 'pending' ? 'ລໍຖ້າ' : item.status;
+                const date = item.createdAt ? new Date(item.createdAt).toLocaleDateString('lo-LA') : '';
+                csv += `"${date}","${item.countNo || ''}","${item.items?.length || 0}","${item.hasDiscrepancy ? 'ມີ' : 'ບໍ່ມີ'}","${statusLabel}"\n`;
+            }
+            downloadFile(csv, `stock-counts-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
+            toast.success('ສົ່ງອອກ CSV ສຳເລັດ');
+        } catch {
+            toast.error('ສົ່ງອອກລົ້ມເຫລວ');
+        }
+    }
+
     $effect(() => {
         auth.activeStoreId;
         loadData();
@@ -175,7 +253,7 @@
         </div>
 
         <div class="flex items-center gap-3">
-            <button class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium">
+            <button onclick={exportToCsv} class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium">
                 <Download class="w-4 h-4" />
                 ສົ່ງອອກ
             </button>
@@ -211,19 +289,19 @@
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
             <div class="flex items-center justify-between">
-                <div class="p-2 bg-green-100 dark:bg-green-900/50 rounded-lg">
-                    <CheckCircle class="w-5 h-5 text-green-600 dark:text-green-400" />
+                <div class="p-2 bg-success-100 dark:bg-success-900/50 rounded-lg">
+                    <CheckCircle class="w-5 h-5 text-success-600 dark:text-success-400" />
                 </div>
-                <span class="text-2xl font-bold text-green-600 dark:text-green-400">{stats.completed}</span>
+                <span class="text-2xl font-bold text-success-600 dark:text-success-400">{stats.completed}</span>
             </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">ສຳເລັດ</p>
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
             <div class="flex items-center justify-between">
-                <div class="p-2 bg-red-100 dark:bg-red-900/50 rounded-lg">
-                    <AlertTriangle class="w-5 h-5 text-red-600 dark:text-red-400" />
+                <div class="p-2 bg-danger-100 dark:bg-danger-900/50 rounded-lg">
+                    <AlertTriangle class="w-5 h-5 text-danger-600 dark:text-danger-400" />
                 </div>
-                <span class="text-2xl font-bold text-red-600 dark:text-red-400">{stats.discrepancy}</span>
+                <span class="text-2xl font-bold text-danger-600 dark:text-danger-400">{stats.discrepancy}</span>
             </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">ມີຜິດປົກກະຕິ</p>
         </div>
@@ -292,17 +370,27 @@
                                 </td>
                                 <td class="px-6 py-4 text-center">
                                     {#if count.hasDiscrepancy}
-                                        <span class="inline-flex items-center gap-1 text-red-600 dark:text-red-400 text-sm">
+                                        <span class="inline-flex items-center gap-1 text-danger-600 dark:text-danger-400 text-sm">
                                             <AlertTriangle class="w-4 h-4" /> ມີ
                                         </span>
                                     {:else}
-                                        <span class="text-green-600 dark:text-green-400 text-sm">ບໍ່ມີ</span>
+                                        <span class="text-success-600 dark:text-success-400 text-sm">ບໍ່ມີ</span>
                                     {/if}
                                 </td>
                                 <td class="px-6 py-4 text-center">
-                                    <button onclick={() => viewCount(count)} class="p-2 text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-900/30 rounded-lg">
-                                        <Eye class="w-4 h-4" />
-                                    </button>
+                                    <div class="flex items-center justify-center gap-1">
+                                        <button onclick={() => viewCount(count)} class="p-2 text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-900/30 rounded-lg" title="ເບິ່ງລາຍລະອຽດ">
+                                            <Eye class="w-4 h-4" />
+                                        </button>
+                                        {#if count.status === 'pending' && canApprove}
+                                            <button onclick={() => approveCount(count.id)} class="p-2 text-success-600 hover:bg-success-50 dark:hover:bg-success-900/30 rounded-lg" title="ອະນຸມັດ">
+                                                <ThumbsUp class="w-4 h-4" />
+                                            </button>
+                                            <button onclick={() => openRejectModal(count.id)} class="p-2 text-danger-600 hover:bg-danger-50 dark:hover:bg-danger-900/30 rounded-lg" title="ປະຕິເສດ">
+                                                <ThumbsDown class="w-4 h-4" />
+                                            </button>
+                                        {/if}
+                                    </div>
                                 </td>
                             </tr>
                         {/each}
@@ -374,7 +462,7 @@
                                 </select>
                                 <input type="number" bind:value={item.systemQty} placeholder="ລະບົບ" class="w-20 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm" />
                                 <input type="number" bind:value={item.actualQty} placeholder="ຕົວຈິງ" class="w-20 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm" />
-                                <button type="button" onclick={() => removeItem(i)} class="p-1.5 text-red-500 hover:bg-red-50 rounded-lg">
+                                <button type="button" onclick={() => removeItem(i)} class="p-1.5 text-danger-500 hover:bg-danger-50 rounded-lg">
                                     <X class="w-4 h-4" />
                                 </button>
                             </div>
@@ -392,6 +480,30 @@
                     <button type="submit" class="px-5 py-2.5 bg-gradient-to-r from-violet-500 to-purple-600 text-white rounded-xl font-medium shadow-lg">ບັນທຶກ</button>
                 </div>
             </form>
+        </div>
+    </div>
+{/if}
+
+<!-- Reject Reason Modal -->
+{#if showRejectModal}
+    <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+        <div class="w-full max-w-md bg-white dark:bg-gray-800 rounded-2xl shadow-2xl overflow-hidden">
+            <div class="px-6 py-4 bg-gradient-to-r from-danger-500 to-red-600 flex items-center justify-between">
+                <h2 class="text-lg font-bold text-white">ປະຕິເສດການນັບ</h2>
+                <button onclick={() => (showRejectModal = false)} class="p-1.5 hover:bg-white/20 rounded-lg">
+                    <X class="w-5 h-5 text-white" />
+                </button>
+            </div>
+            <div class="p-6 space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ເຫດຜົນ</label>
+                    <textarea bind:value={rejectReason} rows="3" placeholder="ລະບຸເຫດຜົນການປະຕິເສດ..." class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white resize-none"></textarea>
+                </div>
+                <div class="flex justify-end gap-3">
+                    <button onclick={() => (showRejectModal = false)} class="px-5 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 font-medium">ຍົກເລີກ</button>
+                    <button onclick={confirmReject} class="px-5 py-2.5 bg-gradient-to-r from-danger-500 to-red-600 text-white rounded-xl font-medium">ຢືນຢັນປະຕິເສດ</button>
+                </div>
+            </div>
         </div>
     </div>
 {/if}
@@ -418,7 +530,7 @@
                         {#each selectedCount.items || [] as item (item.productId)}
                             <div class="flex justify-between p-2 bg-gray-50 dark:bg-gray-700/50 rounded-lg text-sm">
                                 <span class="text-gray-900 dark:text-white">{getProductName(item.productId)}</span>
-                                <span class={cn(item.systemQty !== item.actualQty ? "text-red-600" : "text-gray-500")}>
+                                <span class={cn(item.systemQty !== item.actualQty ? "text-danger-600" : "text-gray-500")}>
                                     {item.systemQty} → {item.actualQty}
                                 </span>
                             </div>

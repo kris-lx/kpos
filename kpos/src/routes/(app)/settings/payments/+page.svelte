@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { i18n } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
     import { onMount } from "svelte";
@@ -137,7 +137,7 @@
 
     async function setDefault(method: any) {
         try {
-            await api.put(`payments/methods/${method.id}/default`).json();
+            await api.put(`payments/methods/${method.id}`, { json: { isDefault: true } }).json();
             toast.success("ຕັ້ງເປັນຄ່າເລີ່ມຕົ້ນແລ້ວ");
             loadPaymentMethods();
         } catch (error) {
@@ -148,12 +148,12 @@
 
     function getTypeColor(type: string): string {
         const colors: Record<string, string> = {
-            cash: "bg-green-100 dark:bg-green-900/50 text-green-700 dark:text-green-300",
+            cash: "bg-success-100 dark:bg-success-900/50 text-success-700 dark:text-success-300",
             card: "bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300",
             qr: "bg-purple-100 dark:bg-purple-900/50 text-purple-700 dark:text-purple-300",
             bank_transfer: "bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300",
             ewallet: "bg-orange-100 dark:bg-orange-900/50 text-orange-700 dark:text-orange-300",
-            credit: "bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-300",
+            credit: "bg-danger-100 dark:bg-danger-900/50 text-danger-700 dark:text-danger-300",
         };
         return colors[type] || "bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300";
     }
@@ -187,8 +187,8 @@
         </div>
     {:else if error}
         <div class="flex flex-col items-center justify-center py-12 text-center">
-            <AlertCircle class="h-12 w-12 text-red-500 mb-4" />
-            <p class="text-red-600 dark:text-red-400 mb-4">{error}</p>
+            <AlertCircle class="h-12 w-12 text-danger-500 mb-4" />
+            <p class="text-danger-600 dark:text-danger-400 mb-4">{error}</p>
             <button
                 onclick={() => loadPaymentMethods()}
                 class="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 flex items-center gap-2"
@@ -229,7 +229,7 @@
                             <button
                                 onclick={() => toggleActive(method)}
                                 class="w-10 h-6 rounded-full transition-colors {method.isActive
-                                    ? 'bg-green-500'
+                                    ? 'bg-success-500'
                                     : 'bg-gray-300 dark:bg-gray-600'}"
                             >
                                 <div

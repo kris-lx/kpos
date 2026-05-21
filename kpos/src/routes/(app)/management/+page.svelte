@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { i18n } from "$lib/i18n/index.svelte";
     import { goto } from "$app/navigation";
     import { api } from "$lib/api";
@@ -30,7 +30,7 @@
             description: "ຈັດການເຄົາເຕີ ແລະ ກະ",
             href: "/management/cashregisters",
             icon: Calculator,
-            color: "bg-green-50 text-green-600 dark:bg-green-900/30 dark:text-green-400",
+            color: "bg-success-50 text-success-600 dark:bg-success-900/30 dark:text-success-400",
             badge: null as number | null,
         },
         {

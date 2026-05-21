@@ -25,6 +25,7 @@
         ChevronRight,
         ChevronsLeft,
         ChevronsRight,
+        Download,
     } from "lucide-svelte";
 
     const queryClient = useQueryClient();
@@ -209,6 +210,37 @@
         });
     }
 
+    function downloadFile(content: string, filename: string, type: string) {
+        const blob = new Blob([content], { type });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
+    async function exportToCsv() {
+        try {
+            const res = await api.get(`inventory?limit=10000${auth.activeBranchId ? `&branchId=${auth.activeBranchId}` : ''}`).json<any>();
+            const rows: any[] = res.data || [];
+            let csv = '﻿';
+            csv += 'ຊື່ສິນຄ້າ,SKU,ສາຂາ,ສະຕ໋ອກ,ສຳຮອງ,ມີຢູ່,ທີ່ຕັ້ງ,ສະຖານະ\n';
+            for (const item of rows) {
+                const qty = item.quantity ?? 0;
+                const min = item.minStock ?? item.product?.minStock ?? 0;
+                const status = qty <= 0 ? 'ໝົດສິນຄ້າ' : qty <= min ? 'ສະຕ໋ອກຕ່ຳ' : 'ປົກກະຕິ';
+                csv += `"${item.product?.name || item.name || ''}","${item.product?.sku || item.sku || ''}","${item.branch?.name || ''}","${qty}","${item.reserved ?? 0}","${item.available ?? qty}","${item.location || ''}","${status}"\n`;
+            }
+            downloadFile(csv, `inventory-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
+            toast.success('ສົ່ງອອກ CSV ສຳເລັດ');
+        } catch {
+            toast.error('ສົ່ງອອກລົ້ມເຫລວ');
+        }
+    }
+
     // Stats query - fetches from dedicated endpoint for accurate counts
     const statsQuery = createQuery({
         queryKey: ["inventory-stats"],
@@ -244,6 +276,13 @@
         </div>
         <div class="flex items-center gap-3">
             <StoreBranchSelector onchange={() => $inventoryQuery.refetch()} />
+            <button
+                onclick={exportToCsv}
+                class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-700 transition-all"
+            >
+                <Download class="w-4 h-4" />
+                ສົ່ງອອກ
+            </button>
         </div>
     </div>
 

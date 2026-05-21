@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
@@ -68,9 +68,11 @@
     async function loadData() {
         isLoading = true;
         try {
+            const activeBranchId = auth.activeBranchId;
             const params = new URLSearchParams({
                 page: currentPage.toString(),
                 limit: itemsPerPage.toString(),
+                ...(activeBranchId && { branchId: activeBranchId }),
             });
             if (searchQuery.trim()) {
                 params.append("search", searchQuery.trim());
@@ -169,6 +171,29 @@
         }
     }
 
+    function downloadFile(content: string, filename: string, type: string) {
+        const blob = new Blob([content], { type });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
+    function exportToCsv() {
+        let csv = '﻿';
+        csv += 'ຊື່,ລະຫັດ,ຊື່ຜູ້ຕິດຕໍ່,ເບີໂທ,ອີເມລ,ທີ່ຢູ່,ເງື່ອນໄຂຈ່າຍ,ສະຖານະ\n';
+        for (const v of vendors) {
+            const status = v.isActive ? 'ເປີດໃຊ້' : 'ປິດໃຊ້';
+            csv += `"${v.name || ''}","${v.code || ''}","${v.contactName || ''}","${v.phone || ''}","${v.email || ''}","${v.address || ''}","${v.paymentTerms || 0} ວັນ","${status}"\n`;
+        }
+        downloadFile(csv, `vendors-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
+        toast.success('ສົ່ງອອກ CSV ສຳເລັດ');
+    }
+
     $effect(() => {
         auth.activeStoreId;
         loadData();
@@ -195,7 +220,7 @@
         </div>
 
         <div class="flex items-center gap-3">
-            <button class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium">
+            <button onclick={exportToCsv} class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium">
                 <Download class="w-4 h-4" />
                 ສົ່ງອອກ
             </button>
@@ -224,10 +249,10 @@
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
             <div class="flex items-center justify-between">
-                <div class="p-2 bg-green-100 dark:bg-green-900/50 rounded-lg">
-                    <Building class="w-5 h-5 text-green-600 dark:text-green-400" />
+                <div class="p-2 bg-success-100 dark:bg-success-900/50 rounded-lg">
+                    <Building class="w-5 h-5 text-success-600 dark:text-success-400" />
                 </div>
-                <span class="text-2xl font-bold text-green-600 dark:text-green-400">{stats.active}</span>
+                <span class="text-2xl font-bold text-success-600 dark:text-success-400">{stats.active}</span>
             </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">ໃຊ້ງານຢູ່</p>
         </div>
@@ -309,7 +334,7 @@
                             </button>
                             {/if}
                             {#if canDelete}
-                            <button onclick={() => handleDelete(vendor)} class="p-2 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg">
+                            <button onclick={() => handleDelete(vendor)} class="p-2 text-danger-600 hover:bg-danger-50 dark:hover:bg-danger-900/30 rounded-lg">
                                 <Trash2 class="w-4 h-4" />
                             </button>
                             {/if}

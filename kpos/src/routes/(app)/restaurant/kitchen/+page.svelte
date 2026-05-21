@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount, onDestroy } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
@@ -93,10 +93,10 @@
     function getTimeColor(createdAt: string) {
         const mins = getElapsedMinutes(createdAt);
         if (mins > 30) return {
-            bg: "bg-red-100 dark:bg-red-900/50",
-            text: "text-red-700 dark:text-red-400",
-            border: "border-red-300 dark:border-red-700",
-            glow: "ring-red-500/50",
+            bg: "bg-danger-100 dark:bg-danger-900/50",
+            text: "text-danger-700 dark:text-danger-400",
+            border: "border-danger-300 dark:border-danger-700",
+            glow: "ring-danger-500/50",
         };
         if (mins > 15) return {
             bg: "bg-amber-100 dark:bg-amber-900/50",
@@ -105,17 +105,17 @@
             glow: "ring-amber-500/50",
         };
         return {
-            bg: "bg-green-100 dark:bg-green-900/50",
-            text: "text-green-700 dark:text-green-400",
-            border: "border-green-300 dark:border-green-700",
-            glow: "ring-green-500/50",
+            bg: "bg-success-100 dark:bg-success-900/50",
+            text: "text-success-700 dark:text-success-400",
+            border: "border-success-300 dark:border-success-700",
+            glow: "ring-success-500/50",
         };
     }
 
     function getPriorityColor(priority: string) {
         switch (priority) {
             case "high":
-                return "bg-red-500 text-white animate-pulse";
+                return "bg-danger-500 text-white animate-pulse";
             case "low":
                 return "bg-gray-300 text-gray-700 dark:bg-gray-600 dark:text-gray-300";
             default:
@@ -164,7 +164,7 @@
     <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between mb-6 gap-4">
         <div>
             <div class="flex items-center gap-3">
-                <div class="p-2.5 bg-gradient-to-br from-orange-500 to-red-600 rounded-xl shadow-lg">
+                <div class="p-2.5 bg-gradient-to-br from-orange-500 to-danger-600 rounded-xl shadow-lg">
                     <ChefHat class="w-6 h-6 text-white" />
                 </div>
                 <div>
@@ -242,20 +242,20 @@
         
         <div class="bg-gray-800/50 backdrop-blur rounded-xl p-4 border border-gray-700">
             <div class="flex items-center justify-between">
-                <div class="p-2 bg-green-900/50 rounded-lg">
-                    <CheckCircle class="w-5 h-5 text-green-400" />
+                <div class="p-2 bg-success-900/50 rounded-lg">
+                    <CheckCircle class="w-5 h-5 text-success-400" />
                 </div>
-                <span class="text-2xl font-bold text-green-400">{stats.done}</span>
+                <span class="text-2xl font-bold text-success-400">{stats.done}</span>
             </div>
             <p class="text-xs text-gray-400 mt-2">{t("restaurant.completed")}</p>
         </div>
         
-        <div class="bg-gray-800/50 backdrop-blur rounded-xl p-4 border border-red-900/50">
+        <div class="bg-gray-800/50 backdrop-blur rounded-xl p-4 border border-danger-900/50">
             <div class="flex items-center justify-between">
-                <div class="p-2 bg-red-900/50 rounded-lg">
-                    <AlertCircle class="w-5 h-5 text-red-400" />
+                <div class="p-2 bg-danger-900/50 rounded-lg">
+                    <AlertCircle class="w-5 h-5 text-danger-400" />
                 </div>
-                <span class="text-2xl font-bold text-red-400">{stats.urgent}</span>
+                <span class="text-2xl font-bold text-danger-400">{stats.urgent}</span>
             </div>
             <p class="text-xs text-gray-400 mt-2">{t("restaurant.urgent")}</p>
         </div>
@@ -272,7 +272,7 @@
     {:else if orders.length === 0}
         <div class="bg-gray-800/50 backdrop-blur rounded-2xl border border-gray-700 p-16">
             <div class="text-center">
-                <CheckCircle class="w-20 h-20 mx-auto text-green-500" />
+                <CheckCircle class="w-20 h-20 mx-auto text-success-500" />
                 <h3 class="text-xl font-bold text-white mt-4">{t("restaurant.noPendingOrders")}</h3>
                 <p class="text-gray-400 mt-2">ບໍ່ມີອໍເດີລໍຖ້າໃນຄົວ</p>
             </div>
@@ -288,20 +288,20 @@
                 <div class={cn(
                     "rounded-2xl overflow-hidden transition-all duration-300",
                     isAllDone 
-                        ? "bg-green-900/30 border-2 border-green-500 ring-2 ring-green-500/30" 
+                        ? "bg-success-900/30 border-2 border-success-500 ring-2 ring-success-500/30" 
                         : "bg-gray-800 border border-gray-700"
                 )}>
                     <!-- Header -->
                     <div class={cn(
                         "px-4 py-3 flex items-center justify-between",
                         isAllDone 
-                            ? "bg-green-900/50" 
+                            ? "bg-success-900/50" 
                             : "bg-gradient-to-r from-gray-900 to-gray-800"
                     )}>
                         <div class="flex items-center gap-3">
                             <div class={cn(
                                 "p-2 rounded-lg",
-                                isAllDone ? "bg-green-600" : "bg-primary-600"
+                                isAllDone ? "bg-success-600" : "bg-primary-600"
                             )}>
                                 {#if isAllDone}
                                     <Bell class="w-5 h-5 text-white" />
@@ -331,7 +331,7 @@
                                 {getElapsedDisplay(order.createdAt)}
                             </span>
                             {#if order.priority === "high"}
-                                <span class="px-2 py-0.5 bg-red-500 text-white rounded text-xs font-bold animate-pulse">
+                                <span class="px-2 py-0.5 bg-danger-500 text-white rounded text-xs font-bold animate-pulse">
                                     {t("restaurant.urgent")}
                                 </span>
                             {/if}
@@ -341,7 +341,7 @@
                     <!-- Progress Bar -->
                     <div class="h-1 bg-gray-700">
                         <div 
-                            class="h-full bg-gradient-to-r from-green-500 to-emerald-500 transition-all duration-500"
+                            class="h-full bg-gradient-to-r from-success-500 to-emerald-500 transition-all duration-500"
                             style="width: {totalItems > 0 ? (completedItems / totalItems) * 100 : 0}%"
                         ></div>
                     </div>
@@ -352,15 +352,15 @@
                             {@const isDone = item.status === "done"}
                             <div class={cn(
                                 "flex items-center gap-3 p-3 transition-all",
-                                isDone ? "bg-green-900/20" : "bg-transparent hover:bg-gray-700/30"
+                                isDone ? "bg-success-900/20" : "bg-transparent hover:bg-gray-700/30"
                             )}>
                                 <button
                                     onclick={() => updateItemStatus(order.id, item.id, isDone ? "pending" : "done")}
                                     class={cn(
                                         "shrink-0 w-10 h-10 rounded-xl flex items-center justify-center border-2 transition-all",
                                         isDone
-                                            ? "bg-green-600 border-green-500 text-white"
-                                            : "border-gray-600 hover:border-green-500 text-gray-500 hover:text-green-500"
+                                            ? "bg-success-600 border-success-500 text-white"
+                                            : "border-gray-600 hover:border-success-500 text-gray-500 hover:text-success-500"
                                     )}
                                 >
                                     {#if isDone}
@@ -407,7 +407,7 @@
                             class={cn(
                                 "w-full py-3 rounded-xl font-bold text-white flex items-center justify-center gap-2 transition-all",
                                 isAllDone
-                                    ? "bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 shadow-lg shadow-green-500/30"
+                                    ? "bg-gradient-to-r from-success-500 to-emerald-600 hover:from-success-600 hover:to-emerald-700 shadow-lg shadow-success-500/30"
                                     : "bg-gray-700 text-gray-400 cursor-not-allowed"
                             )}
                         >

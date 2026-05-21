@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
     import { api } from "$api";
@@ -91,7 +91,7 @@
             case "all":
                 return { icon: ShoppingBag, bg: "bg-blue-100 dark:bg-blue-900/50", text: "text-blue-600 dark:text-blue-400" };
             case "products":
-                return { icon: Package, bg: "bg-green-100 dark:bg-green-900/50", text: "text-green-600 dark:text-green-400" };
+                return { icon: Package, bg: "bg-success-100 dark:bg-success-900/50", text: "text-success-600 dark:text-success-400" };
             case "categories":
                 return { icon: Layers, bg: "bg-purple-100 dark:bg-purple-900/50", text: "text-purple-600 dark:text-purple-400" };
             default:
@@ -270,7 +270,7 @@
                 >
                     <ArrowLeft class="w-5 h-5 text-gray-500" />
                 </a>
-                <div class="p-2.5 bg-gradient-to-br from-orange-500 to-red-600 rounded-xl shadow-lg">
+                <div class="p-2.5 bg-gradient-to-br from-orange-500 to-danger-600 rounded-xl shadow-lg">
                     <BadgePercent class="w-6 h-6 text-white" />
                 </div>
                 <div>
@@ -289,7 +289,7 @@
                 resetForm();
                 showModal = true;
             }}
-            class="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-orange-500 to-red-600 text-white rounded-xl text-sm font-semibold shadow-lg hover:from-orange-600 hover:to-red-700 transition-all"
+            class="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-orange-500 to-danger-600 text-white rounded-xl text-sm font-semibold shadow-lg hover:from-orange-600 hover:to-danger-700 transition-all"
         >
             <Plus class="w-5 h-5" />
             ສ້າງສ່ວນຫຼຸດໃໝ່
@@ -310,10 +310,10 @@
 
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
             <div class="flex items-center justify-between">
-                <div class="p-2 bg-green-100 dark:bg-green-900/50 rounded-lg">
-                    <Check class="w-5 h-5 text-green-600 dark:text-green-400" />
+                <div class="p-2 bg-success-100 dark:bg-success-900/50 rounded-lg">
+                    <Check class="w-5 h-5 text-success-600 dark:text-success-400" />
                 </div>
-                <span class="text-2xl font-bold text-green-600 dark:text-green-400">{stats.active}</span>
+                <span class="text-2xl font-bold text-success-600 dark:text-success-400">{stats.active}</span>
             </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">ເປີດໃຊ້ງານ</p>
         </div>
@@ -403,7 +403,7 @@
                         : "border-gray-200 dark:border-gray-700 opacity-60"
                 )}>
                     <!-- Header -->
-                    <div class="px-4 py-3 bg-gradient-to-r from-orange-50 to-red-50 dark:from-orange-900/30 dark:to-red-900/30 border-b border-orange-100 dark:border-orange-800 flex items-center justify-between">
+                    <div class="px-4 py-3 bg-gradient-to-r from-orange-50 to-danger-50 dark:from-orange-900/30 dark:to-danger-900/30 border-b border-orange-100 dark:border-orange-800 flex items-center justify-between">
                         <div class="flex items-center gap-3">
                             {#if discount.discountType === "PERCENTAGE" || discount.discountType === "percentage"}
                                 <div class="p-2 bg-purple-100 dark:bg-purple-900/50 rounded-lg">
@@ -411,10 +411,10 @@
                                 </div>
                                 <span class="text-xl font-bold text-purple-600 dark:text-purple-400">{discount.discountValue}%</span>
                             {:else}
-                                <div class="p-2 bg-green-100 dark:bg-green-900/50 rounded-lg">
-                                    <Tag class="w-5 h-5 text-green-600 dark:text-green-400" />
+                                <div class="p-2 bg-success-100 dark:bg-success-900/50 rounded-lg">
+                                    <Tag class="w-5 h-5 text-success-600 dark:text-success-400" />
                                 </div>
-                                <span class="text-xl font-bold text-green-600 dark:text-green-400">{formatCurrency(discount.discountValue)}</span>
+                                <span class="text-xl font-bold text-success-600 dark:text-success-400">{formatCurrency(discount.discountValue)}</span>
                             {/if}
                         </div>
                         <button
@@ -422,7 +422,7 @@
                             class="p-1"
                         >
                             {#if discount.isActive}
-                                <ToggleRight class="w-8 h-8 text-green-500" />
+                                <ToggleRight class="w-8 h-8 text-success-500" />
                             {:else}
                                 <ToggleLeft class="w-8 h-8 text-gray-400" />
                             {/if}
@@ -487,7 +487,7 @@
                         </button>
                         <button
                             onclick={() => handleDelete(discount)}
-                            class="p-2 text-red-500 hover:bg-red-100 dark:hover:bg-red-900/30 rounded-lg transition-all"
+                            class="p-2 text-danger-500 hover:bg-danger-100 dark:hover:bg-danger-900/30 rounded-lg transition-all"
                         >
                             <Trash2 class="w-4 h-4" />
                         </button>
@@ -541,7 +541,7 @@
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
         <div class="w-full max-w-2xl bg-white dark:bg-gray-800 rounded-2xl shadow-2xl overflow-hidden">
             <!-- Modal Header -->
-            <div class="px-6 py-4 bg-gradient-to-r from-orange-500 to-red-600 flex items-center justify-between">
+            <div class="px-6 py-4 bg-gradient-to-r from-orange-500 to-danger-600 flex items-center justify-between">
                 <h2 class="text-xl font-bold text-white">
                     {editingDiscount ? "ແກ້ໄຂສ່ວນຫຼຸດ" : "ສ້າງສ່ວນຫຼຸດໃໝ່"}
                 </h2>
@@ -742,7 +742,7 @@
                     </button>
                     <button
                         type="submit"
-                        class="px-5 py-2.5 bg-gradient-to-r from-orange-500 to-red-600 text-white rounded-xl font-medium hover:from-orange-600 hover:to-red-700 transition-all shadow-lg"
+                        class="px-5 py-2.5 bg-gradient-to-r from-orange-500 to-danger-600 text-white rounded-xl font-medium hover:from-orange-600 hover:to-danger-700 transition-all shadow-lg"
                     >
                         {t("common.save")}
                     </button>

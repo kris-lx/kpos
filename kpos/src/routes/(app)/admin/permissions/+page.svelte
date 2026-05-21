@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { createQuery, createMutation, useQueryClient } from "@tanstack/svelte-query";
     import { get } from "svelte/store";
     import { api } from "$lib/api";
@@ -40,8 +40,8 @@
                 goto("/login");
                 return;
             }
-            // ສະເພາະ Super Admin ແລະ Admin ເທົ່ານັ້ນທີ່ຈັດການສິດໄດ້
-            if (user.isSuperAdmin || user.role === 'admin') {
+            const permRoles = ['admin', 'hq_admin', 'hq_manager', 'branch_admin', 'store_owner'];
+            if (user.isSuperAdmin || permRoles.includes(user.role)) {
                 canAccess = true;
             } else {
                 toast.error("ທ່ານບໍ່ມີສິດເຂົ້າເຖິງໜ້ານີ້");
@@ -110,13 +110,13 @@
     ];
 
     const colorOptions = [
-        { value: "from-emerald-500 to-green-500", label: "ຂຽວ" },
+        { value: "from-emerald-500 to-success-500", label: "ຂຽວ" },
         { value: "from-blue-500 to-cyan-500", label: "ຟ້າ" },
         { value: "from-amber-500 to-orange-500", label: "ສົ້ມ" },
         { value: "from-violet-500 to-purple-500", label: "ມ່ວງ" },
         { value: "from-pink-500 to-rose-500", label: "ບົວ" },
         { value: "from-gray-500 to-slate-500", label: "ເທົາ" },
-        { value: "from-red-500 to-rose-500", label: "ແດງ" },
+        { value: "from-danger-500 to-rose-500", label: "ແດງ" },
         { value: "from-teal-500 to-cyan-500", label: "ຟ້າເຂັ້ມ" }
     ];
 
@@ -263,7 +263,7 @@
                                     <button onclick={() => openAddPermissionModal(group.key)} class="w-9 h-9 bg-emerald-100 dark:bg-emerald-900/30 hover:bg-emerald-200 dark:hover:bg-emerald-900/50 rounded-lg flex items-center justify-center text-emerald-600 dark:text-emerald-400 transition-colors">
                                         <Plus class="w-4 h-4" />
                                     </button>
-                                    <button onclick={() => removeGroup(group.key)} class="w-9 h-9 bg-red-100 dark:bg-red-900/30 hover:bg-red-200 dark:hover:bg-red-900/50 rounded-lg flex items-center justify-center text-red-600 dark:text-red-400 transition-colors">
+                                    <button onclick={() => removeGroup(group.key)} class="w-9 h-9 bg-danger-100 dark:bg-danger-900/30 hover:bg-danger-200 dark:hover:bg-danger-900/50 rounded-lg flex items-center justify-center text-danger-600 dark:text-danger-400 transition-colors">
                                         <Trash2 class="w-4 h-4" />
                                     </button>
                                     <button onclick={() => toggleGroup(group.key)} class="w-9 h-9 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg flex items-center justify-center text-gray-600 dark:text-gray-300 transition-colors">
@@ -298,7 +298,7 @@
                                                             <p class="text-xs text-gray-500 dark:text-gray-400">{permission.key}</p>
                                                         </div>
                                                     </label>
-                                                    <button onclick={() => removePermission(group.key, permission.key)} class="w-7 h-7 bg-red-100 dark:bg-red-900/30 hover:bg-red-200 dark:hover:bg-red-900/50 rounded-lg flex items-center justify-center text-red-600 dark:text-red-400 opacity-0 group-hover:opacity-100 transition-all">
+                                                    <button onclick={() => removePermission(group.key, permission.key)} class="w-7 h-7 bg-danger-100 dark:bg-danger-900/30 hover:bg-danger-200 dark:hover:bg-danger-900/50 rounded-lg flex items-center justify-center text-danger-600 dark:text-danger-400 opacity-0 group-hover:opacity-100 transition-all">
                                                         <Trash2 class="w-3.5 h-3.5" />
                                                     </button>
                                                 </div>

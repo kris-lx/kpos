@@ -86,15 +86,25 @@ customerRoutes.get('/loyalty', authenticate, async (req, res, next) => {
         const limitNum = Math.min(100, Math.max(1, parseInt(String(limit), 10) || 20));
         const skip = (pageNum - 1) * limitNum;
 
+        const loyaltyTenantId = req.authUser?.tenantId;
+        const tierConds: any[] = [eq(membershipTiers.isActive, true)];
+        if (loyaltyTenantId && !req.authUser?.isSuperAdmin) {
+            tierConds.push(eq(membershipTiers.tenantId, loyaltyTenantId));
+        }
+        const tierWhere = and(...tierConds);
+
         const [tiers, [{ value: total }], settingsRow] = await Promise.all([
             db.query.membershipTiers.findMany({
-                where: eq(membershipTiers.isActive, true),
+                where: tierWhere,
                 orderBy: asc(membershipTiers.sortOrder),
                 offset: skip,
                 limit: limitNum,
             }),
-            db.select({ value: count() }).from(membershipTiers).where(eq(membershipTiers.isActive, true)),
-            db.query.settings.findFirst({ where: and(eq(settings.category, 'loyalty'), eq(settings.key, 'program_settings')) }),
+            db.select({ value: count() }).from(membershipTiers).where(tierWhere),
+            db.query.settings.findFirst({ where: loyaltyTenantId
+                ? and(eq(settings.category, 'loyalty'), eq(settings.key, 'program_settings'), eq(settings.tenantId, loyaltyTenantId))
+                : and(eq(settings.category, 'loyalty'), eq(settings.key, 'program_settings'))
+            }),
         ]);
 
         // Transform tiers to match frontend expected format
@@ -145,12 +155,15 @@ customerRoutes.post('/loyalty/tiers', authenticate, authorize('customers:create'
     try {
         const { name, minPoints, discountPercent, pointsMultiplier, benefits, color } = req.body;
 
-        // Get max sort order
+        // Get max sort order scoped to this tenant
+        const tierTenantId = req.authUser?.tenantId || req.user?.tenantId;
+        const maxOrderConds: any[] = [];
+        if (tierTenantId && !req.authUser?.isSuperAdmin) maxOrderConds.push(eq(membershipTiers.tenantId, tierTenantId));
         const maxOrder = await db.query.membershipTiers.findFirst({
+            where: maxOrderConds.length > 0 ? and(...maxOrderConds) : undefined,
             orderBy: desc(membershipTiers.sortOrder),
         });
 
-        const tierTenantId = req.authUser?.tenantId || req.user?.tenantId;
         const [tier] = await db.insert(membershipTiers).values({
             tenantId: tierTenantId,
             name,
@@ -194,9 +207,13 @@ customerRoutes.put('/loyalty/tiers/:id', authenticate, authorize('customers:upda
         if (color !== undefined) updateData.color = color;
         if (sortOrder !== undefined) updateData.sortOrder = sortOrder;
 
+        const tierUpdateTenantId = req.authUser?.tenantId;
+        const tierUpdateConds: any[] = [eq(membershipTiers.id, req.params.id)];
+        if (tierUpdateTenantId && !req.authUser?.isSuperAdmin) tierUpdateConds.push(eq(membershipTiers.tenantId, tierUpdateTenantId));
+
         const [tier] = await db.update(membershipTiers)
             .set(updateData as any)
-            .where(eq(membershipTiers.id, req.params.id))
+            .where(and(...tierUpdateConds))
             .returning();
 
         res.json({
@@ -220,9 +237,12 @@ customerRoutes.put('/loyalty/tiers/:id', authenticate, authorize('customers:upda
 // Delete loyalty tier (soft delete)
 customerRoutes.delete('/loyalty/tiers/:id', authenticate, authorize('customers:delete'), async (req, res, next) => {
     try {
+        const tierDelTenantId = req.authUser?.tenantId;
+        const tierDelConds: any[] = [eq(membershipTiers.id, req.params.id)];
+        if (tierDelTenantId && !req.authUser?.isSuperAdmin) tierDelConds.push(eq(membershipTiers.tenantId, tierDelTenantId));
         await db.update(membershipTiers)
             .set({ isActive: false, updatedAt: new Date() })
-            .where(eq(membershipTiers.id, req.params.id));
+            .where(and(...tierDelConds));
 
         res.json({ success: true, data: { message: 'Tier deleted' } });
     } catch (error) {
@@ -355,7 +375,7 @@ customerRoutes.get('/:id', authenticate, async (req, res, next) => {
 customerRoutes.post('/', authenticate, authorize('customers:create'), async (req, res, next) => {
     try {
         const branchId = req.user!.branchId;
-        const authUser = (req as any).user;
+        const authUser = req.authUser!;
         const { name, email, phone, address, taxId, birthDate, gender, notes, points, storeId } = req.body;
 
         if (!name || !name.trim()) {
@@ -367,7 +387,7 @@ customerRoutes.post('/', authenticate, authorize('customers:create'), async (req
 
         // Prevent scope spoofing: enforce user's active store unless they are a super admin
         let finalStoreId = storeId || null;
-        if (!authUser?.isSuperAdmin && authUser?.activeStoreId) {
+        if (!authUser.isSuperAdmin && authUser.activeStoreId) {
             finalStoreId = authUser.activeStoreId;
         }
 
@@ -375,7 +395,7 @@ customerRoutes.post('/', authenticate, authorize('customers:create'), async (req
         const [{ value: custCount }] = await db.select({ value: count() }).from(customers).where(eq(customers.branchId, branchId));
         const memberCode = `MEM${branchId.slice(-4)}${String(custCount + 1).padStart(6, '0')}`;
 
-        const custTenantId = authUser?.tenantId || req.user?.tenantId;
+        const custTenantId = authUser.tenantId;
         const [customer] = await db.insert(customers).values({
             tenantId: custTenantId,
             name: name.trim(),
@@ -402,28 +422,28 @@ customerRoutes.post('/', authenticate, authorize('customers:create'), async (req
 // Update customer
 customerRoutes.put('/:id', authenticate, authorize('customers:update'), async (req, res, next) => {
     try {
-        const authUser = (req as any).user;
+        const authUser = req.authUser!;
         const { name, email, phone, address, taxId, birthDate, gender, notes, points, totalSpent, isActive, storeId } = req.body;
 
         // BE-70: Tenant-scoped update
-        const tenantId = req.authUser?.tenantId;
-        if (!authUser?.isSuperAdmin && tenantId) {
+        const tenantId = authUser.tenantId;
+        if (!authUser.isSuperAdmin && tenantId) {
             const existing = await db.query.customers.findFirst({ where: and(eq(customers.id, req.params.id), eq(customers.tenantId, tenantId)) });
             if (!existing) {
                 return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Customer not found or no access' } });
             }
-            if (authUser?.activeStoreId && existing?.storeId && existing.storeId !== authUser.activeStoreId) {
+            if (authUser.activeStoreId && existing?.storeId && existing.storeId !== authUser.activeStoreId) {
                 return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot modify customer from another store' } });
             }
         }
 
         const updateData: Record<string, unknown> = { updatedAt: new Date() };
-        
+
         // Prevent scope spoofing: only allow storeId update if super admin
         if (storeId !== undefined) {
-             if (authUser?.isSuperAdmin) {
+             if (authUser.isSuperAdmin) {
                  updateData.storeId = storeId || null;
-             } else if (authUser?.activeStoreId) {
+             } else if (authUser.activeStoreId) {
                  updateData.storeId = authUser.activeStoreId;
              }
         }
@@ -444,7 +464,7 @@ customerRoutes.put('/:id', authenticate, authorize('customers:update'), async (r
         delete updateData.tenantId;
 
         const updConds: any[] = [eq(customers.id, req.params.id)];
-        if (tenantId && !authUser?.isSuperAdmin) updConds.push(eq(customers.tenantId, tenantId));
+        if (tenantId && !authUser.isSuperAdmin) updConds.push(eq(customers.tenantId, tenantId));
         const [customer] = await db.update(customers)
             .set(updateData as any)
             .where(and(...updConds))
@@ -460,15 +480,15 @@ customerRoutes.put('/:id', authenticate, authorize('customers:update'), async (r
 // Delete customer (soft delete)
 customerRoutes.delete('/:id', authenticate, authorize('customers:delete'), async (req, res, next) => {
     try {
-        const authUser = (req as any).user;
+        const authUser = req.authUser!;
 
         // BE-70: Tenant-scoped delete
-        const tenantId = req.authUser?.tenantId;
+        const tenantId = authUser.tenantId;
         const delConds: any[] = [eq(customers.id, req.params.id)];
-        if (tenantId && !authUser?.isSuperAdmin) {
+        if (tenantId && !authUser.isSuperAdmin) {
             delConds.push(eq(customers.tenantId, tenantId));
         }
-        if (!authUser?.isSuperAdmin && authUser?.activeStoreId) {
+        if (!authUser.isSuperAdmin && authUser.activeStoreId) {
             const existing = await db.query.customers.findFirst({ where: and(...delConds) });
             if (!existing) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Customer not found or no access' } });
             if (existing?.storeId && existing.storeId !== authUser.activeStoreId) {
@@ -543,7 +563,7 @@ customerRoutes.post('/:id/points/adjust', authenticate, authorize('customers:upd
     try {
         const { points, reason } = req.body;
         const customerId = req.params.id;
-        const userId = req.user!.id;
+        const userId = req.authUser!.userId;
 
         // Get current customer
         const customer = await db.query.customers.findFirst({

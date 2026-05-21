@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, branchFilter, applyScopeFilter, ensureScopeAccess, buildScopeCondition, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, branchFilter, applyScopeFilter, ensureScopeAccess, buildScopeCondition, buildBranchIdScope, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { db, dbRead } from '@/config/database.config';
 import { products, categories, priceLevels, productPriceLevels, skuVariants, inventory, productStores } from '@/db/schema/tables';
 import { eq, and, or, ne, ilike, inArray, isNotNull, isNull, desc, asc, count, sql } from 'drizzle-orm';
@@ -236,8 +236,9 @@ productRoutes.get('/skus', authenticate, branchFilter(), async (req, res, next) 
 
             if (scopedProductIds.length > 0) {
                 skuConds.push(inArray(skuVariants.productId, scopedProductIds));
-            } else {
-                skuConds.push(sql`1 = 0`); // Force empty if no products
+            } else if (filter.tenantId) {
+                // No store-product mappings yet — fall back to all tenant SKUs
+                skuConds.push(eq(skuVariants.tenantId, filter.tenantId));
             }
         } else if (filter) {
             // Branch scoped users (e.g. branch admins) need to filter by product's branchId
@@ -606,24 +607,30 @@ productRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
         const prodConds: any[] = [eq(products.isActive, true)];
         
         if (filter?.scopeByStore && filter.storeIds.length > 0) {
-            // If user is scoped by store, show ONLY products explicitly mapped to their store
+            // If user is scoped by store, prefer products explicitly mapped to their store
             const storeProds = await db.query.productStores.findMany({
                 where: inArray(productStores.storeId, filter.storeIds),
                 columns: { productId: true }
             });
             const scopedProductIds = storeProds.map(sp => sp.productId);
-            
+
             if (scopedProductIds.length > 0) {
                 prodConds.push(inArray(products.id, scopedProductIds));
             } else {
-                prodConds.push(sql`1 = 0`); // Force empty result if no products mapped to this store
+                // No store-product mappings — scope to user's branch to prevent cross-branch leakage
+                const authBranchId = req.authUser?.activeBranchId || req.authUser?.branchId;
+                if (authBranchId) {
+                    prodConds.push(eq(products.branchId, authBranchId));
+                } else if (filter.tenantId) {
+                    prodConds.push(eq(products.tenantId, filter.tenantId));
+                }
             }
         } else if (filter) {
-            // Non-store-scoped but branch-scoped (e.g., branch_admin)
-            if (filter.branchIds.length > 0) {
-                prodConds.push(inArray(products.branchId, filter.branchIds));
-            } else if (filter.tenantId) {
-                // Only fallback to raw tenant isolation if they literally have no branch scope
+            // HQ or branch-scoped: use path-aware branch scope
+            const branchScope = buildBranchIdScope(filter, products.branchId);
+            if (branchScope) {
+                prodConds.push(branchScope);
+            } else if (filter.tenantId && !req.authUser?.isSuperAdmin) {
                 prodConds.push(eq(products.tenantId, filter.tenantId));
             }
         }
@@ -834,8 +841,9 @@ productRoutes.get('/barcodes', authenticate, branchFilter(), async (req, res, ne
 
             if (scopedProductIds.length > 0) {
                 conds.push(inArray(products.id, scopedProductIds));
-            } else {
-                conds.push(sql`1 = 0`); // Force empty if no products
+            } else if (filter.tenantId) {
+                // No store-product mappings yet — fall back to all tenant products
+                conds.push(eq(products.tenantId, filter.tenantId));
             }
         } else if (filter) {
             if (filter.branchIds.length > 0) conds.push(inArray(products.branchId, filter.branchIds));

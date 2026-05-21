@@ -1,17 +1,14 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount } from "svelte";
     import { cn } from "$utils";
     import { api } from "$api";
+    import QRCode from 'qrcode';
     import { t } from "$lib/i18n/index.svelte";
     import { toast } from "svelte-sonner";
     import {
         Save,
-        Undo,
-        Redo,
         Eye,
         Printer,
-        GripVertical,
-        Plus,
         Trash2,
         Image,
         Type,
@@ -20,14 +17,17 @@
         AlignRight,
         Bold,
         Italic,
-        Underline,
-        ChevronDown,
         Settings,
         FileText,
         QrCode,
         Barcode,
         Minus,
         Table,
+        LayoutTemplate,
+        X,
+        Palette,
+        ChevronDown,
+        ChevronUp,
     } from "lucide-svelte";
 
     // Receipt paper sizes
@@ -44,26 +44,62 @@
         { type: "storeName", name: "ຊື່ຮ້ານ", icon: FileText },
         { type: "address", name: "ທີ່ຢູ່", icon: FileText },
         { type: "phone", name: "ເບີໂທ", icon: FileText },
+        { type: "taxId", name: "ເລກທະບຽນພາສີ", icon: FileText },
+        { type: "website", name: "ເວັບໄຊ", icon: FileText },
         { type: "divider", name: "ເສັ້ນແບ່ງ", icon: Minus },
         { type: "date", name: "ວັນທີ/ເວລາ", icon: FileText },
         { type: "receiptNo", name: "ເລກທີບິນ", icon: FileText },
         { type: "cashier", name: "ພະນັກງານ", icon: FileText },
+        { type: "customer", name: "ຂໍ້ມູນລູກຄ້າ", icon: FileText },
+        { type: "tableNo", name: "ເລກໂຕະ", icon: FileText },
         { type: "items", name: "ລາຍການສິນຄ້າ", icon: Table },
         { type: "subtotal", name: "ລວມ", icon: FileText },
         { type: "discount", name: "ສ່ວນຫຼຸດ", icon: FileText },
-        { type: "tax", name: "ພາສີ", icon: FileText },
+        { type: "tax", name: "ພາສີ (VAT)", icon: FileText },
+        { type: "rounding", name: "ປັດຈຳນວນ", icon: FileText },
         { type: "total", name: "ຍອດຊຳລະ", icon: FileText },
+        { type: "received", name: "ຈ່າຍມາ", icon: FileText },
         { type: "payment", name: "ວິທີຊຳລະ", icon: FileText },
         { type: "change", name: "ເງິນທອນ", icon: FileText },
         { type: "qrcode", name: "QR Code", icon: QrCode },
         { type: "barcode", name: "Barcode", icon: Barcode },
+        { type: "signature", name: "ລາຍເຊັນ", icon: FileText },
         { type: "footer", name: "ຂໍ້ຄວາມລຸ່ມ", icon: Type },
     ];
+
+    // Receipt settings (loaded from API — used in preview/print)
+    interface ReceiptSettings {
+        branchName?: string;
+        branchLogo?: string;
+        branchAddress?: string;
+        branchPhone?: string;
+        branchTaxId?: string;
+        footerText?: string;
+        showLogo?: boolean;
+        primaryColor?: string;
+        paperSize?: string;
+    }
+    let receiptSettings = $state<ReceiptSettings>({});
+    let receiptSettingsForm = $state({ footerText: '', showLogo: true, primaryColor: '#3b82f6' });
+
+    // QR code data URL cache (generated on-demand)
+    let qrDataUrl = $state<string>('');
+    const QR_PREVIEW_TEXT = 'https://kpos.example.com/receipt/preview';
+
+    async function generateQrPreview(text: string = QR_PREVIEW_TEXT) {
+        try {
+            qrDataUrl = await QRCode.toDataURL(text, { width: 80, margin: 1, errorCorrectionLevel: 'M' });
+        } catch { qrDataUrl = ''; }
+    }
+
+    $effect(() => { generateQrPreview(); });
 
     // Receipt design state
     let selectedPaperSize = $state("80mm");
     let selectedElementId = $state<string | null>(null);
     let showPreview = $state(false);
+    let showTemplateModal = $state(false);
+    let showReceiptSettings = $state(false);
 
     // Elements on the receipt
     let receiptElements = $state([
@@ -273,6 +309,10 @@
         time: "14:30:25",
         receiptNo: "RC-2026012900001",
         cashier: "ສົມສັກ",
+        customer: "ທ. ວິໄລ 020-1234-5678",
+        tableNo: "T-05",
+        taxId: "0101234567890",
+        website: "www.kpos.la",
         items: [
             { name: "ກາເຟລາວ", qty: 2, price: 25000, total: 50000 },
             { name: "ເຂົ້າໜຽວໝູປີ້ງ", qty: 1, price: 35000, total: 35000 },
@@ -281,6 +321,7 @@
         subtotal: 105000,
         discount: 5000,
         tax: 7000,
+        rounding: -100,
         total: 107000,
         paymentMethod: "ເງິນສົດ",
         received: 110000,
@@ -342,34 +383,37 @@
 
     function renderContent(element: (typeof receiptElements)[0]): string {
         let content = element.content;
-
-        // Replace placeholders with sample data
+        // Branch identity — use real settings, fall back to sample
+        const storeName = receiptSettings.branchName || 'KPOS Demo Store';
+        const address = receiptSettings.branchAddress || '123 ຖະໜົນລ້ານຊ້າງ, ນະຄອນຫຼວງວຽງຈັນ';
+        const phone = receiptSettings.branchPhone || 'ໂທ: 021-123456';
+        const taxId = receiptSettings.branchTaxId || sampleData.taxId;
+        // For typed elements that render static branch info
+        if (element.type === 'storeName') return storeName;
+        if (element.type === 'address') return address;
+        if (element.type === 'phone') return phone;
+        if (element.type === 'taxId') return taxId;
+        if (element.type === 'website') return receiptSettings.branchName ? '' : sampleData.website;
+        // Replace {{tokens}}
+        content = content.replace("{{storeName}}", storeName);
+        content = content.replace("{{address}}", address);
+        content = content.replace("{{phone}}", phone);
+        content = content.replace("{{taxId}}", taxId);
         content = content.replace("{{date}}", sampleData.date);
         content = content.replace("{{time}}", sampleData.time);
         content = content.replace("{{receiptNo}}", sampleData.receiptNo);
         content = content.replace("{{cashier}}", sampleData.cashier);
-        content = content.replace(
-            "{{subtotal}}",
-            formatCurrency(sampleData.subtotal),
-        );
-        content = content.replace(
-            "{{discount}}",
-            formatCurrency(sampleData.discount),
-        );
+        content = content.replace("{{customer}}", sampleData.customer);
+        content = content.replace("{{tableNo}}", sampleData.tableNo);
+        content = content.replace("{{website}}", sampleData.website);
+        content = content.replace("{{subtotal}}", formatCurrency(sampleData.subtotal));
+        content = content.replace("{{discount}}", formatCurrency(sampleData.discount));
         content = content.replace("{{tax}}", formatCurrency(sampleData.tax));
-        content = content.replace(
-            "{{total}}",
-            formatCurrency(sampleData.total),
-        );
-        content = content.replace(
-            "{{paymentMethod}}",
-            sampleData.paymentMethod,
-        );
-        content = content.replace(
-            "{{change}}",
-            formatCurrency(sampleData.change),
-        );
-
+        content = content.replace("{{rounding}}", formatCurrency(sampleData.rounding));
+        content = content.replace("{{total}}", formatCurrency(sampleData.total));
+        content = content.replace("{{received}}", formatCurrency(sampleData.received));
+        content = content.replace("{{paymentMethod}}", sampleData.paymentMethod);
+        content = content.replace("{{change}}", formatCurrency(sampleData.change));
         return content;
     }
 
@@ -380,8 +424,14 @@
                 elements: receiptElements,
             };
             localStorage.setItem("kpos_receipt_design", JSON.stringify(design));
-            // Persist to DB for cross-device sync
-            await api.put('settings', { json: { category: 'receipt', key: 'design', value: design } }).json().catch(() => {});
+            await api.put('settings/receipt/design', { json: { value: design } }).json();
+            // Also save receipt display settings
+            await api.put('settings/receipt', { json: {
+                footerText: receiptSettingsForm.footerText,
+                showLogo: receiptSettingsForm.showLogo,
+                primaryColor: receiptSettingsForm.primaryColor,
+                paperSize: selectedPaperSize,
+            } }).json().catch(() => {});
             toast.success("ບັນທຶກສຳເລັດ!");
         } catch (e) {
             console.error("Failed to save design:", e);
@@ -392,32 +442,146 @@
     async function loadDesign() {
         // Try API first for cross-device sync
         try {
-            const res = await api.get('settings?category=receipt&key=design').json<any>();
-            if (res.data?.value) {
-                const design = typeof res.data.value === 'string' ? JSON.parse(res.data.value) : res.data.value;
-                if (design.paperSize) selectedPaperSize = design.paperSize;
-                if (design.elements?.length) receiptElements = design.elements;
+            const res = await api.get('settings/receipt/design').json<{ success: boolean; data: { paperSize?: string; elements?: any[] } | null }>();
+            if (res.success && res.data?.elements?.length) {
+                if (res.data.paperSize) selectedPaperSize = res.data.paperSize;
+                receiptElements = res.data.elements;
                 return;
             }
         } catch { /* fallback to localStorage */ }
-        const saved = localStorage.getItem("kpos_receipt_design");
-        if (saved) {
-            const design = JSON.parse(saved);
-            selectedPaperSize = design.paperSize;
-            receiptElements = design.elements;
-        }
+        try {
+            const saved = localStorage.getItem("kpos_receipt_design");
+            if (saved) {
+                const design = JSON.parse(saved);
+                if (design.paperSize) selectedPaperSize = design.paperSize;
+                if (design.elements?.length) receiptElements = design.elements;
+            }
+        } catch {}
     }
 
-    // Load saved design on mount
-    onMount(() => {
-        loadDesign();
+    // Load saved design and receipt settings on mount
+    onMount(async () => {
+        await loadDesign();
+        try {
+            const res = await api.get('settings/receipt').json<{ success: boolean; data: ReceiptSettings & { footerText?: string; showLogo?: boolean; primaryColor?: string } }>();
+            if (res.success && res.data) {
+                receiptSettings = res.data;
+                receiptSettingsForm = {
+                    footerText: res.data.footerText ?? 'ຂອບໃຈທີ່ໃຊ້ບໍລິການ!',
+                    showLogo: res.data.showLogo !== false,
+                    primaryColor: res.data.primaryColor ?? '#3b82f6',
+                };
+                if (res.data.paperSize) selectedPaperSize = res.data.paperSize;
+            }
+        } catch {}
     });
+
+    // ── Preset Templates ──
+    function makeId() { return Date.now().toString() + Math.random().toString(36).slice(2, 6); }
+
+    const presetTemplates = [
+        {
+            id: 'basic',
+            name: 'ພື້ນຖານ (Basic)',
+            desc: 'ໂລໂກ້, ຊື່ຮ້ານ, ລາຍການ, ຍອດລວມ',
+            paperSize: '80mm',
+            elements: () => [
+                { id: makeId(), type: 'logo',      content: '',                         align: 'center', fontSize: 14, bold: false, italic: false },
+                { id: makeId(), type: 'storeName', content: '',                         align: 'center', fontSize: 16, bold: true,  italic: false },
+                { id: makeId(), type: 'divider',   content: '-',                        align: 'center', fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'date',      content: '{{date}} {{time}}',        align: 'left',   fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'receiptNo', content: 'ເລກທີ: {{receiptNo}}',   align: 'left',   fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'divider',   content: '=',                        align: 'center', fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'items',     content: '',                         align: 'left',   fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'divider',   content: '-',                        align: 'center', fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'total',     content: 'ຍອດຊຳລະ: {{total}}',    align: 'right',  fontSize: 16, bold: true,  italic: false },
+                { id: makeId(), type: 'divider',   content: '-',                        align: 'center', fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'footer',    content: 'ຂອບໃຈທີ່ໃຊ້ບໍລິການ',   align: 'center', fontSize: 12, bold: false, italic: false },
+            ],
+        },
+        {
+            id: 'detailed',
+            name: 'ລະອຽດ (Detailed)',
+            desc: 'ຂໍ້ມູນຄົບຖ້ວນ: ໂລໂກ້, ທີ່ຢູ່, ພາສີ, QR Code',
+            paperSize: '80mm',
+            elements: () => [
+                { id: makeId(), type: 'logo',      content: '',                             align: 'center', fontSize: 14, bold: false, italic: false },
+                { id: makeId(), type: 'storeName', content: '',                             align: 'center', fontSize: 16, bold: true,  italic: false },
+                { id: makeId(), type: 'address',   content: '',                             align: 'center', fontSize: 11, bold: false, italic: false },
+                { id: makeId(), type: 'phone',     content: '',                             align: 'center', fontSize: 11, bold: false, italic: false },
+                { id: makeId(), type: 'taxId',     content: '',                             align: 'center', fontSize: 11, bold: false, italic: false },
+                { id: makeId(), type: 'divider',   content: '-',                            align: 'center', fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'date',      content: '{{date}} {{time}}',            align: 'left',   fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'receiptNo', content: 'ເລກທີ: {{receiptNo}}',       align: 'left',   fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'cashier',   content: 'ພະນັກງານ: {{cashier}}',     align: 'left',   fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'customer',  content: 'ລູກຄ້າ: {{customer}}',       align: 'left',   fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'divider',   content: '=',                            align: 'center', fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'items',     content: '',                             align: 'left',   fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'divider',   content: '-',                            align: 'center', fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'subtotal',  content: 'ລວມ: {{subtotal}}',           align: 'right',  fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'discount',  content: 'ສ່ວນຫຼຸດ: -{{discount}}',  align: 'right',  fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'tax',       content: 'ພາສີ (VAT): {{tax}}',        align: 'right',  fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'divider',   content: '=',                            align: 'center', fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'total',     content: 'ຍອດຊຳລະ: {{total}}',        align: 'right',  fontSize: 16, bold: true,  italic: false },
+                { id: makeId(), type: 'divider',   content: '-',                            align: 'center', fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'payment',   content: 'ຊຳລະໂດຍ: {{paymentMethod}}', align: 'left',  fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'received',  content: 'ຈ່າຍມາ: {{received}}',       align: 'left',   fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'change',    content: 'ເງິນທອນ: {{change}}',        align: 'left',   fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'divider',   content: '-',                            align: 'center', fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'qrcode',    content: '{{qrcode}}',                  align: 'center', fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'footer',    content: 'ຂອບໃຈທີ່ໃຊ້ບໍລິການ',       align: 'center', fontSize: 12, bold: false, italic: false },
+            ],
+        },
+        {
+            id: 'restaurant',
+            name: 'ຮ້ານອາຫານ (Restaurant)',
+            desc: 'ລວມເລກໂຕະ ສຳລັບຮ້ານອາຫານ',
+            paperSize: '80mm',
+            elements: () => [
+                { id: makeId(), type: 'logo',      content: '',                             align: 'center', fontSize: 14, bold: false, italic: false },
+                { id: makeId(), type: 'storeName', content: '',                             align: 'center', fontSize: 16, bold: true,  italic: false },
+                { id: makeId(), type: 'address',   content: '',                             align: 'center', fontSize: 11, bold: false, italic: false },
+                { id: makeId(), type: 'phone',     content: '',                             align: 'center', fontSize: 11, bold: false, italic: false },
+                { id: makeId(), type: 'divider',   content: '=',                            align: 'center', fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'tableNo',   content: 'ໂຕະ: {{tableNo}}',            align: 'center', fontSize: 14, bold: true,  italic: false },
+                { id: makeId(), type: 'date',      content: '{{date}} {{time}}',            align: 'left',   fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'receiptNo', content: 'ເລກທີ: {{receiptNo}}',       align: 'left',   fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'cashier',   content: 'ພະນັກງານ: {{cashier}}',     align: 'left',   fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'divider',   content: '=',                            align: 'center', fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'items',     content: '',                             align: 'left',   fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'divider',   content: '-',                            align: 'center', fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'subtotal',  content: 'ລວມ: {{subtotal}}',           align: 'right',  fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'discount',  content: 'ສ່ວນຫຼຸດ: -{{discount}}',  align: 'right',  fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'tax',       content: 'ພາສີ: {{tax}}',               align: 'right',  fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'divider',   content: '=',                            align: 'center', fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'total',     content: 'ຍອດຊຳລະ: {{total}}',        align: 'right',  fontSize: 16, bold: true,  italic: false },
+                { id: makeId(), type: 'divider',   content: '-',                            align: 'center', fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'payment',   content: 'ຊຳລະໂດຍ: {{paymentMethod}}', align: 'left',  fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'change',    content: 'ເງິນທອນ: {{change}}',        align: 'left',   fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'divider',   content: '-',                            align: 'center', fontSize: 12, bold: false, italic: false },
+                { id: makeId(), type: 'footer',    content: 'ຂອບໃຈທີ່ໃຊ້ບໍລິການ',       align: 'center', fontSize: 12, bold: false, italic: false },
+            ],
+        },
+    ];
+
+    function applyPreset(preset: typeof presetTemplates[0]) {
+        receiptElements = preset.elements();
+        selectedPaperSize = preset.paperSize;
+        selectedElementId = null;
+        showTemplateModal = false;
+        toast.success(`ໂຕິໝາຍ "${preset.name}" ຖືກໂຫຼດສຳເລັດ`);
+    }
 
     const paperWidth = $derived(
         paperSizes.find((p) => p.id === selectedPaperSize)?.width || 72,
     );
 
     function printReceipt() {
+        const storeName = receiptSettings.branchName || 'KPOS Demo Store';
+        const logoUrl = receiptSettings.branchLogo || '';
+        const address = receiptSettings.branchAddress || '123 ຖະໜົນລ້ານຊ້າງ, ນະຄອນຫຼວງວຽງຈັນ';
+        const phone = receiptSettings.branchPhone || 'ໂທ: 021-123456';
+        const taxId = receiptSettings.branchTaxId || sampleData.taxId;
         const pw = paperWidth * 3;
         const cssRules = [
             `@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+Lao&display=swap')`,
@@ -443,11 +607,24 @@
                     html += `<div class="item-row" style="font-size:${fs}px"><span>${item.name} x${item.qty}</span><span>${formatCurrency(item.total)}</span></div>`;
                 }
             } else if (el.type === 'logo') {
-                html += `<div class="logo"><div class="logo-box">LOGO</div></div>`;
+                html += logoUrl
+                    ? `<div class="logo"><img src="${logoUrl}" style="max-width:80px;max-height:80px;object-fit:contain" alt="Logo"/></div>`
+                    : `<div class="logo"><div class="logo-box">LOGO</div></div>`;
             } else if (el.type === 'qrcode') {
-                html += `<div class="qr"><div class="qr-box">QR Code</div></div>`;
+                const qrSrc = qrDataUrl || '';
+                html += qrSrc
+                    ? `<div class="qr"><img src="${qrSrc}" style="width:80px;height:80px" alt="QR Code"/></div>`
+                    : `<div class="qr"><div class="qr-box">QR Code</div></div>`;
             } else if (el.type === 'barcode') {
                 html += `<div class="barcode"><div class="barcode-box">Barcode</div></div>`;
+            } else if (el.type === 'storeName') {
+                html += `<div class="${cls}" style="font-size:${fs}px">${storeName}</div>`;
+            } else if (el.type === 'address') {
+                html += `<div class="${cls}" style="font-size:${fs}px">${address}</div>`;
+            } else if (el.type === 'phone') {
+                html += `<div class="${cls}" style="font-size:${fs}px">${phone}</div>`;
+            } else if (el.type === 'taxId') {
+                html += `<div class="${cls}" style="font-size:${fs}px">${taxId}</div>`;
             } else {
                 html += `<div class="${cls}" style="font-size:${fs}px">${renderContent(el)}</div>`;
             }
@@ -460,16 +637,6 @@
         if (w) w.onload = () => { w.print(); };
     }
 
-    function saveDesignToApi() {
-        const design = {
-            paperSize: selectedPaperSize,
-            elements: receiptElements,
-        };
-        saveDesign();
-        // Also try to save to API for persistence across devices
-        api.put('documents/settings', { json: { receiptDesign: design } }).json().catch(() => {});
-        toast.success('ບັນທຶກສຳເລັດ!');
-    }
 </script>
 
 <div class="min-h-screen bg-gray-100 dark:bg-gray-950">
@@ -500,6 +667,13 @@
             </div>
 
             <div class="flex items-center gap-2">
+                <button
+                    onclick={() => (showTemplateModal = true)}
+                    class="flex items-center gap-2 px-4 py-2 rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 text-sm font-medium transition-colors"
+                >
+                    <LayoutTemplate class="w-4 h-4" />
+                    ໂຕິໝາຍ
+                </button>
                 <button
                     onclick={() => (showPreview = !showPreview)}
                     class={cn(
@@ -558,9 +732,12 @@
             </div>
         </div>
 
-        <!-- Design Canvas -->
+        <!-- Design Canvas + Preview -->
         <div class="flex-1 p-8 overflow-auto h-[calc(100vh-65px)]">
-            <div class="flex justify-center">
+            <div class="flex justify-center gap-8 flex-wrap">
+                <!-- Editable Canvas -->
+                <div>
+                    <p class="text-xs text-center text-gray-400 dark:text-gray-500 mb-2">ແກ້ໄຂ — {selectedPaperSize}</p>
                 <div
                     class="bg-white shadow-lg rounded-lg overflow-hidden"
                     style="width: {paperWidth * 3}px"
@@ -681,7 +858,7 @@
                                             e.stopPropagation();
                                             removeElement(element.id);
                                         }}
-                                        class="p-1 hover:bg-red-100 dark:hover:bg-red-900/30 text-red-500 rounded"
+                                        class="p-1 hover:bg-danger-100 dark:hover:bg-danger-900/30 text-danger-500 rounded"
                                         title="ລຶບ"
                                     >
                                         <Trash2 class="w-3 h-3" />
@@ -691,6 +868,62 @@
                         {/each}
                     </div>
                 </div>
+                </div>
+
+                <!-- Print Preview Panel (shown when showPreview is true) -->
+                {#if showPreview}
+                <div>
+                    <p class="text-xs text-center text-gray-400 dark:text-gray-500 mb-2">ຕົວຢ່າງ (Print Preview)</p>
+                    <div
+                        class="bg-white shadow-xl rounded-lg overflow-hidden border border-gray-300"
+                        style="width: {paperWidth * 3}px; font-family: 'Noto Sans Lao', 'Courier New', monospace; font-size: 12px; color: #111;"
+                    >
+                        <div class="p-3 space-y-0.5">
+                            {#each receiptElements as el (el.id)}
+                                {#if el.type === 'divider'}
+                                    <div class="text-center overflow-hidden" style="font-size:{el.fontSize}px">{el.content.repeat(40)}</div>
+                                {:else if el.type === 'items'}
+                                    <div style="font-size:{el.fontSize}px">
+                                        {#each sampleData.items as item (item.name)}
+                                            <div class="flex justify-between"><span>{item.name} x{item.qty}</span><span>{formatCurrency(item.total)}</span></div>
+                                        {/each}
+                                    </div>
+                                {:else if el.type === 'logo'}
+                                    <div class="text-center py-1">
+                                        {#if receiptSettings.showLogo !== false && receiptSettings.branchLogo}
+                                            <img src={receiptSettings.branchLogo} alt="Logo" class="mx-auto max-h-14 max-w-20 object-contain" />
+                                        {:else}
+                                            <div class="inline-flex w-12 h-12 bg-gray-100 rounded items-center justify-center text-gray-400 text-xs">LOGO</div>
+                                        {/if}
+                                    </div>
+                                {:else if el.type === 'qrcode'}
+                                    <div class="text-center py-1">
+                                        {#if qrDataUrl}
+                                            <img src={qrDataUrl} alt="QR Code" class="mx-auto" style="width:64px;height:64px" />
+                                        {:else}
+                                            <div class="inline-block w-16 h-16 border border-gray-400 flex items-center justify-center text-xs text-gray-400">QR</div>
+                                        {/if}
+                                    </div>
+                                {:else if el.type === 'barcode'}
+                                    <div class="text-center py-1">
+                                        <div class="inline-block w-24 h-8 border border-gray-400 flex items-center justify-center text-xs text-gray-400">Barcode</div>
+                                    </div>
+                                {:else if el.type === 'signature'}
+                                    <div class="text-center pt-3 pb-1">
+                                        <div class="border-b border-gray-400 w-24 mx-auto mb-1"></div>
+                                        <span class="text-xs text-gray-500">ລາຍເຊັນ</span>
+                                    </div>
+                                {:else}
+                                    <div
+                                        class={cn(el.bold && 'font-bold', el.italic && 'italic', el.align === 'center' && 'text-center', el.align === 'right' && 'text-right')}
+                                        style="font-size:{el.fontSize}px"
+                                    >{renderContent(el)}</div>
+                                {/if}
+                            {/each}
+                        </div>
+                    </div>
+                </div>
+                {/if}
             </div>
         </div>
 
@@ -708,6 +941,25 @@
                     </h3>
 
                     <div class="space-y-4">
+                        <!-- Logo source info -->
+                        {#if selectedElement.type === "logo"}
+                            <div class="rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 p-3 space-y-2">
+                                {#if receiptSettings.branchLogo}
+                                    <img src={receiptSettings.branchLogo} alt="Branch Logo" class="mx-auto max-h-16 max-w-full object-contain rounded" />
+                                {:else}
+                                    <div class="w-14 h-14 mx-auto bg-gray-200 dark:bg-gray-700 rounded-lg flex items-center justify-center">
+                                        <Image class="w-7 h-7 text-gray-400" />
+                                    </div>
+                                {/if}
+                                <p class="text-xs text-blue-700 dark:text-blue-300 text-center">
+                                    ໂລໂກ້ຖືກດຶງຈາກຂໍ້ມູນສາຂາ
+                                </p>
+                                <a href="/branches" class="flex items-center justify-center gap-1 text-xs text-blue-600 dark:text-blue-400 hover:underline font-medium">
+                                    ຕັ້ງຄ່າໂລໂກ້ທີ່ ສາຂາ →
+                                </a>
+                            </div>
+                        {/if}
+
                         <!-- Content -->
                         {#if !["divider", "items", "logo", "qrcode", "barcode"].includes(selectedElement.type)}
                             <div>
@@ -872,7 +1124,7 @@
                         <!-- Delete -->
                         <button
                             onclick={() => removeElement(selectedElement.id)}
-                            class="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-red-50 dark:bg-red-900/20 text-red-600 hover:bg-red-100 dark:hover:bg-red-900/30 text-sm font-medium transition-colors"
+                            class="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-danger-50 dark:bg-danger-900/20 text-danger-600 hover:bg-danger-100 dark:hover:bg-danger-900/30 text-sm font-medium transition-colors"
                         >
                             <Trash2 class="w-4 h-4" />
                             ລຶບອົງປະກອບ
@@ -880,11 +1132,97 @@
                     </div>
                 {/if}
             {:else}
-                <div class="text-center py-8 text-gray-400 dark:text-gray-500">
-                    <Settings class="w-12 h-12 mx-auto mb-3 opacity-50" />
-                    <p class="text-sm">ເລືອກອົງປະກອບເພື່ອແກ້ໄຂ</p>
+                <!-- Receipt Settings when nothing selected -->
+                <div class="space-y-4">
+                    <div class="text-center py-4 text-gray-400 dark:text-gray-500">
+                        <Settings class="w-8 h-8 mx-auto mb-1 opacity-40" />
+                        <p class="text-xs">ເລືອກອົງປະກອບເພື່ອແກ້ໄຂ</p>
+                    </div>
+
+                    <!-- Receipt settings collapsible -->
+                    <div class="border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden">
+                        <button
+                            onclick={() => showReceiptSettings = !showReceiptSettings}
+                            class="w-full flex items-center justify-between px-3 py-2.5 text-xs font-semibold text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                        >
+                            <div class="flex items-center gap-2">
+                                <Palette class="w-3.5 h-3.5" />
+                                ຕັ້ງຄ່າໃບບິນ
+                            </div>
+                            {#if showReceiptSettings}
+                                <ChevronUp class="w-3.5 h-3.5 text-gray-400" />
+                            {:else}
+                                <ChevronDown class="w-3.5 h-3.5 text-gray-400" />
+                            {/if}
+                        </button>
+                        {#if showReceiptSettings}
+                            <div class="px-3 pb-3 space-y-3 border-t border-gray-100 dark:border-gray-700 pt-3">
+                                <!-- Branch info (read-only) -->
+                                {#if receiptSettings.branchName}
+                                    <div class="bg-gray-50 dark:bg-gray-800 rounded-lg p-2 text-xs text-gray-500">
+                                        <p class="font-medium text-gray-700 dark:text-gray-300">{receiptSettings.branchName}</p>
+                                        {#if receiptSettings.branchAddress}<p>{receiptSettings.branchAddress}</p>{/if}
+                                        {#if receiptSettings.branchPhone}<p>{receiptSettings.branchPhone}</p>{/if}
+                                    </div>
+                                {/if}
+                                <div>
+                                    <label class="block text-xs text-gray-500 dark:text-gray-400 mb-1">ຂໍ້ຄວາມລຸ່ມ (Footer)</label>
+                                    <input type="text" bind:value={receiptSettingsForm.footerText}
+                                        class="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-xs px-2 py-1.5 text-gray-900 dark:text-white" />
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-500 dark:text-gray-400 mb-1">ສີຫຼັກ</label>
+                                    <div class="flex items-center gap-2">
+                                        <input type="color" bind:value={receiptSettingsForm.primaryColor}
+                                            class="w-8 h-8 rounded cursor-pointer border border-gray-200 p-0.5" />
+                                        <input type="text" bind:value={receiptSettingsForm.primaryColor}
+                                            class="flex-1 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-xs px-2 py-1.5 font-mono" />
+                                    </div>
+                                </div>
+                                <label class="flex items-center gap-2 cursor-pointer">
+                                    <input type="checkbox" bind:checked={receiptSettingsForm.showLogo}
+                                        class="w-3.5 h-3.5 rounded border-gray-300 text-primary-600" />
+                                    <span class="text-xs text-gray-600 dark:text-gray-400">ສະແດງໂລໂກ້</span>
+                                </label>
+                            </div>
+                        {/if}
+                    </div>
                 </div>
             {/if}
         </div>
     </div>
 </div>
+
+<!-- Template Preset Modal -->
+{#if showTemplateModal}
+<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+    <div class="bg-white dark:bg-gray-900 rounded-2xl w-full max-w-lg mx-4 p-6 shadow-2xl">
+        <div class="flex items-center justify-between mb-5">
+            <div>
+                <h2 class="text-lg font-bold text-gray-900 dark:text-white">ເລືອກໂຕິໝາຍ</h2>
+                <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">ໂຕິໝາຍຈະແທນທີ່ອົງປະກອບທີ່ມີຢູ່ທັງໝົດ</p>
+            </div>
+            <button onclick={() => showTemplateModal = false} class="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg">
+                <X class="w-5 h-5 text-gray-400" />
+            </button>
+        </div>
+        <div class="space-y-3">
+            {#each presetTemplates as preset (preset.id)}
+                <button
+                    onclick={() => applyPreset(preset)}
+                    class="w-full flex items-start gap-4 p-4 rounded-xl border-2 border-gray-200 dark:border-gray-700 hover:border-primary-400 dark:hover:border-primary-600 hover:bg-primary-50 dark:hover:bg-primary-900/20 transition-all text-left group"
+                >
+                    <div class="w-10 h-10 rounded-lg bg-primary-100 dark:bg-primary-900/30 flex items-center justify-center shrink-0 group-hover:bg-primary-200 transition-colors">
+                        <LayoutTemplate class="w-5 h-5 text-primary-600" />
+                    </div>
+                    <div>
+                        <p class="font-semibold text-gray-900 dark:text-white text-sm">{preset.name}</p>
+                        <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{preset.desc}</p>
+                        <p class="text-xs text-primary-600 dark:text-primary-400 mt-1">{preset.paperSize} · {preset.elements().length} ອົງປະກອບ</p>
+                    </div>
+                </button>
+            {/each}
+        </div>
+    </div>
+</div>
+{/if}

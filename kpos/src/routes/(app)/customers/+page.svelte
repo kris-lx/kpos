@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
@@ -31,6 +31,7 @@
         Heart,
         Filter,
         MoreVertical,
+        Download,
     } from "lucide-svelte";
 
     // Rule-based CRUD — also requires write access to active store
@@ -130,7 +131,10 @@
     async function loadData() {
         isLoading = true;
         try {
-            const response = await api.get("customers").json<any>();
+            const params = new URLSearchParams();
+            const custBranchId = auth.activeBranchId;
+            if (custBranchId && !auth.isSuperAdmin) params.append("branchId", custBranchId);
+            const response = await api.get(`customers?${params}`).json<any>();
             customers = response.data || [];
         } catch (e) {
             console.error("Failed to load:", e);
@@ -248,6 +252,26 @@
         }
     }
 
+    function exportToCsv() {
+        const bom = '﻿';
+        let csv = bom + 'ຊື່,ໂທລະສັບ,ອີເມວ,ຄະແນນ,ຍອດຊື້,ທີ່ຢູ່\n';
+        for (const c of filteredCustomers) {
+            csv += `"${c.name || ''}","${c.phone || ''}","${c.email || ''}","${c.points || 0}","${c.totalSpent || 0}","${c.address || ''}"\n`;
+        }
+        const totals = filteredCustomers.reduce((a, c) => ({ points: a.points + (c.points || 0), spent: a.spent + (c.totalSpent || 0) }), { points: 0, spent: 0 });
+        csv += `"ລວມທັງໝົດ (${filteredCustomers.length} ຄົນ)","","","${totals.points}","${totals.spent}",""\n`;
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `customers-${new Date().toISOString().split('T')[0]}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        toast.success('ສົ່ງອອກ CSV ສຳເລັດ');
+    }
+
     // Reload when active store switches
     $effect(() => {
         auth.activeStoreId; // track dependency
@@ -280,6 +304,10 @@
         </div>
         
         <div class="flex items-center gap-3">
+            <button onclick={exportToCsv} class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-700 transition-all">
+                <Download class="w-4 h-4" />
+                CSV
+            </button>
             <StoreBranchSelector onchange={() => loadData()} />
             {#if canCreateCustomer}
             <button
@@ -330,10 +358,10 @@
         
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
             <div class="flex items-center justify-between">
-                <div class="p-2 bg-green-100 dark:bg-green-900/50 rounded-lg">
-                    <TrendingUp class="w-5 h-5 text-green-600 dark:text-green-400" />
+                <div class="p-2 bg-success-100 dark:bg-success-900/50 rounded-lg">
+                    <TrendingUp class="w-5 h-5 text-success-600 dark:text-success-400" />
                 </div>
-                <span class="text-2xl font-bold text-green-600 dark:text-green-400">{stats.newThisMonth}</span>
+                <span class="text-2xl font-bold text-success-600 dark:text-success-400">{stats.newThisMonth}</span>
             </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">{t("customers.newThisMonth")}</p>
         </div>
@@ -770,7 +798,7 @@
                     </button>
                     <button
                         onclick={() => { showDetailModal = false; handleDelete(selectedCustomer); }}
-                        class="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 font-medium transition-all"
+                        class="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-danger-500 hover:bg-danger-50 dark:hover:bg-danger-900/30 font-medium transition-all"
                     >
                         <Trash2 class="w-4 h-4" />
                         {t("common.delete")}

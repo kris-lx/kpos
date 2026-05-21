@@ -28,6 +28,7 @@ import { restaurantRoutes } from '@/modules/restaurant/presentation/routes';
 import { paymentRoutes } from '@/modules/payments/presentation/routes';
 import { adminRoutes } from '@/modules/admin/presentation/routes';
 import { documentRoutes } from '@/modules/documents/presentation/routes';
+import { rulesRoutes } from '@/modules/rules/presentation/routes';
 import { uploadRoutes } from '@/infrastructure/services/upload.routes';
 import { notificationRoutes } from '@/infrastructure/services/notification.routes';
 
@@ -64,6 +65,7 @@ export function setupRoutes(app: Application): void {
     apiRouter.use('/payments', paymentRoutes);
     apiRouter.use('/admin', adminRoutes);  // Super Admin routes
     apiRouter.use('/documents', documentRoutes);  // Invoices & Tax Invoices
+    apiRouter.use('/rules', rulesRoutes);  // RBAC rules management
 
     // Mount API router with version prefix
     app.use(`/api/${appConfig.apiVersion}`, apiRouter);

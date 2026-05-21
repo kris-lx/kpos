@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount } from "svelte";
     import { i18n } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
@@ -133,8 +133,8 @@
         const colors: Record<string, string> = {
             pending: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400",
             partial: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
-            paid: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
-            overdue: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
+            paid: "bg-success-100 text-success-700 dark:bg-success-900/30 dark:text-success-400",
+            overdue: "bg-danger-100 text-danger-700 dark:bg-danger-900/30 dark:text-danger-400",
         };
         return colors[status] || "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300";
     }
@@ -184,7 +184,7 @@
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-lg border dark:border-gray-700 p-4">
             <p class="text-sm text-gray-500 dark:text-gray-400">ຮັບຊຳລະແລ້ວ</p>
-            <p class="text-2xl font-bold text-green-600 dark:text-green-400">
+            <p class="text-2xl font-bold text-success-600 dark:text-success-400">
                 {formatCurrency(stats.totalPaid)}
             </p>
         </div>
@@ -196,7 +196,7 @@
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-lg border dark:border-gray-700 p-4">
             <p class="text-sm text-gray-500 dark:text-gray-400">ເກີນກຳນົດ</p>
-            <p class="text-2xl font-bold text-red-600 dark:text-red-400">
+            <p class="text-2xl font-bold text-danger-600 dark:text-danger-400">
                 {stats.overdueCount} ລາຍການ
             </p>
         </div>
@@ -234,7 +234,7 @@
         </div>
     {:else if error}
         <div class="flex flex-col items-center justify-center py-12 bg-white dark:bg-gray-800 rounded-lg border dark:border-gray-700">
-            <AlertCircle class="w-12 h-12 text-red-500 dark:text-red-400" />
+            <AlertCircle class="w-12 h-12 text-danger-500 dark:text-danger-400" />
             <p class="mt-4 text-gray-700 dark:text-gray-300 font-medium">{error}</p>
             <button
                 onclick={loadCreditSales}
@@ -318,7 +318,7 @@
                                     {formatCurrency(sale.total || 0)}
                                 </td>
                                 <td
-                                    class="px-6 py-4 whitespace-nowrap text-sm text-green-600 dark:text-green-400"
+                                    class="px-6 py-4 whitespace-nowrap text-sm text-success-600 dark:text-success-400"
                                 >
                                     {formatCurrency(sale.paid || 0)}
                                 </td>

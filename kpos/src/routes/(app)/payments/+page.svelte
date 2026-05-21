@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
@@ -37,6 +37,11 @@
         ToggleRight,
         Percent,
     } from "lucide-svelte";
+
+    // CRUD guards
+    const canCreateMethod = $derived(auth.canCreate('payments'));
+    const canUpdateMethod = $derived(auth.canUpdate('payments'));
+    const canDeleteMethod = $derived(auth.canDelete('payments'));
 
     // State
     let activeTab = $state<"transactions" | "methods" | "settlements">("transactions");
@@ -77,28 +82,28 @@
     // Stats
     let stats = $derived({
         todayTotal: transactions
-            .filter((t) => t.status === "completed")
-            .reduce((sum, t) => sum + (t.amount || 0), 0),
-        todayCount: transactions.filter((t) => t.status === "completed").length,
-        pendingCount: transactions.filter((t) => t.status === "pending").length,
-        failedCount: transactions.filter((t) => t.status === "failed").length,
+            .filter((tx) => tx.status === "completed")
+            .reduce((sum, tx) => sum + (tx.amount || 0), 0),
+        todayCount: transactions.filter((tx) => tx.status === "completed").length,
+        pendingCount: transactions.filter((tx) => tx.status === "pending").length,
+        failedCount: transactions.filter((tx) => tx.status === "failed").length,
         cashTotal: transactions
-            .filter((t) => t.method === "cash" && t.status === "completed")
-            .reduce((sum, t) => sum + (t.amount || 0), 0),
+            .filter((tx) => tx.method === "cash" && tx.status === "completed")
+            .reduce((sum, tx) => sum + (tx.amount || 0), 0),
         cardTotal: transactions
-            .filter((t) => (t.method === "card" || t.method === "credit_card") && t.status === "completed")
-            .reduce((sum, t) => sum + (t.amount || 0), 0),
+            .filter((tx) => (tx.method === "card" || tx.method === "credit_card") && tx.status === "completed")
+            .reduce((sum, tx) => sum + (tx.amount || 0), 0),
         ewalletTotal: transactions
-            .filter((t) => ["promptpay", "truewallet", "linepay", "qr"].includes(t.method) && t.status === "completed")
-            .reduce((sum, t) => sum + (t.amount || 0), 0),
+            .filter((tx) => ["promptpay", "truewallet", "linepay", "qr"].includes(tx.method) && tx.status === "completed")
+            .reduce((sum, tx) => sum + (tx.amount || 0), 0),
     });
 
     function getStatusConfig(status: string) {
         switch (status) {
             case "completed":
                 return {
-                    bg: "bg-green-100 dark:bg-green-900/50",
-                    text: "text-green-700 dark:text-green-400",
+                    bg: "bg-success-100 dark:bg-success-900/50",
+                    text: "text-success-700 dark:text-success-400",
                     icon: CheckCircle,
                     label: t("payments.completed"),
                 };
@@ -111,8 +116,8 @@
                 };
             case "failed":
                 return {
-                    bg: "bg-red-100 dark:bg-red-900/50",
-                    text: "text-red-700 dark:text-red-400",
+                    bg: "bg-danger-100 dark:bg-danger-900/50",
+                    text: "text-danger-700 dark:text-danger-400",
                     icon: XCircle,
                     label: t("payments.failed"),
                 };
@@ -134,23 +139,25 @@
             if (statusFilter !== "all") {
                 params.append("status", statusFilter.toUpperCase());
             }
+            const txBranchId = auth.activeBranchId;
+            if (txBranchId && !auth.isSuperAdmin) params.append("branchId", txBranchId);
 
             const response = await api.get(`payments/transactions?${params}`).json<any>();
             if (response.success && response.data) {
-                transactions = response.data.map((t: any) => ({
-                    id: t.id,
-                    transactionNo: t.transactionNo || t.id.slice(-8).toUpperCase(),
-                    amount: t.total || t.amount || 0,
-                    method: t.payments?.[0]?.paymentMethod?.code || t.paymentMethod || "cash",
-                    methodName: t.payments?.[0]?.paymentMethod?.name || t.paymentMethodName || "ເງິນສົດ",
-                    status: (t.status || "completed").toLowerCase(),
-                    createdAt: t.createdAt,
-                    customer: t.customer?.name || t("pos.walkIn"),
-                    staff: t.user?.name || "-",
-                    storeName: t.store?.name || null,
-                    items: t.items || [],
-                    discount: t.discount || 0,
-                    tax: t.tax || 0,
+                transactions = response.data.map((tx: any) => ({
+                    id: tx.id,
+                    transactionNo: tx.transactionNo || tx.id.slice(-8).toUpperCase(),
+                    amount: tx.total || tx.amount || 0,
+                    method: tx.payments?.[0]?.paymentMethod?.code || tx.paymentMethod || "cash",
+                    methodName: tx.payments?.[0]?.paymentMethod?.name || tx.paymentMethodName || "ເງິນສົດ",
+                    status: (tx.status || "completed").toLowerCase(),
+                    createdAt: tx.createdAt,
+                    customer: tx.customer?.name || t("pos.walkIn"),
+                    staff: tx.user?.name || "-",
+                    storeName: tx.store?.name || null,
+                    items: tx.items || [],
+                    discount: tx.discount || 0,
+                    tax: tx.tax || 0,
                 }));
             }
         } catch (error) {
@@ -305,7 +312,7 @@
     <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between mb-6 gap-4">
         <div>
             <div class="flex items-center gap-3">
-                <div class="p-2.5 bg-gradient-to-br from-emerald-500 to-green-600 rounded-xl shadow-lg">
+                <div class="p-2.5 bg-gradient-to-br from-emerald-500 to-success-600 rounded-xl shadow-lg">
                     <CreditCard class="w-6 h-6 text-white" />
                 </div>
                 <div>
@@ -330,7 +337,7 @@
             <div class="relative">
                 <button
                     onclick={() => showExportMenu = !showExportMenu}
-                    class="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-emerald-500 to-green-600 text-white rounded-xl text-sm font-semibold shadow-lg hover:from-emerald-600 hover:to-green-700 transition-all"
+                    class="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-emerald-500 to-success-600 text-white rounded-xl text-sm font-semibold shadow-lg hover:from-emerald-600 hover:to-success-700 transition-all"
                 >
                     <Download class="w-4 h-4" />
                     {t("payments.exportReport")}
@@ -356,8 +363,8 @@
     <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
             <div class="flex items-center justify-between">
-                <div class="p-2 bg-green-100 dark:bg-green-900/50 rounded-lg">
-                    <DollarSign class="w-5 h-5 text-green-600 dark:text-green-400" />
+                <div class="p-2 bg-success-100 dark:bg-success-900/50 rounded-lg">
+                    <DollarSign class="w-5 h-5 text-success-600 dark:text-success-400" />
                 </div>
             </div>
             <p class="text-xl font-bold text-gray-900 dark:text-white mt-3">{formatCurrency(stats.todayTotal)}</p>
@@ -608,6 +615,7 @@
                                     <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{method.code}</p>
                                 </div>
                             </div>
+                            {#if canUpdateMethod}
                             <button
                                 onclick={() => togglePaymentMethod(method)}
                                 class="p-1"
@@ -618,6 +626,7 @@
                                     <ToggleLeft class="w-8 h-8 text-gray-400" />
                                 {/if}
                             </button>
+                            {/if}
                         </div>
                         
                         {#if method.fee > 0}
@@ -664,7 +673,7 @@
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
         <div class="w-full max-w-lg bg-white dark:bg-gray-800 rounded-2xl shadow-2xl overflow-hidden">
             <!-- Header -->
-            <div class="px-6 py-4 bg-gradient-to-r from-emerald-500 to-green-600 flex items-center justify-between">
+            <div class="px-6 py-4 bg-gradient-to-r from-emerald-500 to-success-600 flex items-center justify-between">
                 <div>
                     <h2 class="text-xl font-bold text-white">{t("payments.transactionDetails")}</h2>
                     <p class="text-sm text-white/80 mt-0.5">#{selectedTransaction.transactionNo}</p>
@@ -729,7 +738,7 @@
                         {t("common.close")}
                     </button>
                     <button
-                        class="flex-1 py-2.5 bg-gradient-to-r from-emerald-500 to-green-600 text-white rounded-xl font-medium hover:from-emerald-600 hover:to-green-700 transition-all shadow-lg flex items-center justify-center gap-2"
+                        class="flex-1 py-2.5 bg-gradient-to-r from-emerald-500 to-success-600 text-white rounded-xl font-medium hover:from-emerald-600 hover:to-success-700 transition-all shadow-lg flex items-center justify-center gap-2"
                     >
                         <Receipt class="w-4 h-4" />
                         {t("payments.printReceipt")}

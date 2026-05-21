@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount } from "svelte";
     import { i18n } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
@@ -133,7 +133,7 @@
         </div>
     {:else if error}
         <div class="text-center py-12 bg-white dark:bg-gray-800 rounded-lg shadow-sm">
-            <AlertCircle class="w-16 h-16 mx-auto text-red-400" />
+            <AlertCircle class="w-16 h-16 mx-auto text-danger-400" />
             <p class="mt-4 text-gray-700 dark:text-gray-300 font-medium">{error}</p>
             <p class="mt-1 text-gray-500 dark:text-gray-400 text-sm">ກະລຸນາລອງໃໝ່ອີກຄັ້ງ</p>
             <button
@@ -249,7 +249,7 @@
                         <button
                             onclick={() => deleteOrder(order)}
                             disabled={deletingOrderId === order.id}
-                            class="px-3 py-2 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                            class="px-3 py-2 text-danger-600 dark:text-danger-400 hover:bg-danger-50 dark:hover:bg-danger-900/20 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                         >
                             {#if deletingOrderId === order.id}
                                 <Loader2 class="w-5 h-5 animate-spin" />

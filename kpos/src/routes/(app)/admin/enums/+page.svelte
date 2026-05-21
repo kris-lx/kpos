@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { createQuery, createMutation, useQueryClient } from '@tanstack/svelte-query';
     import { get } from 'svelte/store';
     import { api } from '$lib/api';
@@ -243,7 +243,7 @@
                                             <Pencil class="w-4 h-4" />
                                         </button>
                                         <button onclick={() => confirmDelete(item)} disabled={item.isSystem}
-                                            class="p-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20 text-gray-400 hover:text-red-500 disabled:opacity-30 disabled:cursor-not-allowed">
+                                            class="p-1.5 rounded-lg hover:bg-danger-50 dark:hover:bg-danger-900/20 text-gray-400 hover:text-danger-500 disabled:opacity-30 disabled:cursor-not-allowed">
                                             <Trash2 class="w-4 h-4" />
                                         </button>
                                     </div>
@@ -267,7 +267,7 @@
         </div>
         <div class="p-5 space-y-4">
             <div>
-                <label for="add-type" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ປະເພດ (type) <span class="text-red-500">*</span></label>
+                <label for="add-type" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ປະເພດ (type) <span class="text-danger-500">*</span></label>
                 <input id="add-type" type="text" bind:value={addForm.type} placeholder="business_type"
                     list="type-list"
                     class="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary-500" />
@@ -277,7 +277,7 @@
             </div>
             <div class="grid grid-cols-2 gap-3">
                 <div>
-                    <label for="add-value" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Value <span class="text-red-500">*</span></label>
+                    <label for="add-value" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Value <span class="text-danger-500">*</span></label>
                     <input id="add-value" type="text" bind:value={addForm.value} placeholder="retail"
                         class="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary-500" />
                 </div>
@@ -288,7 +288,7 @@
                 </div>
             </div>
             <div>
-                <label for="add-label" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Label (ພາສາອັງກິດ) <span class="text-red-500">*</span></label>
+                <label for="add-label" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Label (ພາສາອັງກິດ) <span class="text-danger-500">*</span></label>
                 <input id="add-label" type="text" bind:value={addForm.label} placeholder="Retail Shop"
                     class="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary-500" />
             </div>

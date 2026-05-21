@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
@@ -67,11 +67,11 @@
     function getStatusConfig(status: string) {
         switch (status) {
             case "received":
-                return { bg: "bg-green-100 dark:bg-green-900/50", text: "text-green-700 dark:text-green-400", label: "ຮັບແລ້ວ", icon: Check };
+                return { bg: "bg-success-100 dark:bg-success-900/50", text: "text-success-700 dark:text-success-400", label: "ຮັບແລ້ວ", icon: Check };
             case "pending":
                 return { bg: "bg-amber-100 dark:bg-amber-900/50", text: "text-amber-700 dark:text-amber-400", label: "ລໍຖ້າ", icon: Clock };
             case "cancelled":
-                return { bg: "bg-red-100 dark:bg-red-900/50", text: "text-red-700 dark:text-red-400", label: "ຍົກເລີກ", icon: AlertCircle };
+                return { bg: "bg-danger-100 dark:bg-danger-900/50", text: "text-danger-700 dark:text-danger-400", label: "ຍົກເລີກ", icon: AlertCircle };
             default:
                 return { bg: "bg-gray-100 dark:bg-gray-700", text: "text-gray-600 dark:text-gray-400", label: status, icon: Clock };
         }
@@ -80,9 +80,11 @@
     async function loadData() {
         isLoading = true;
         try {
+            const activeBranchId = auth.activeBranchId;
             const params = new URLSearchParams({
                 page: currentPage.toString(),
                 limit: itemsPerPage.toString(),
+                ...(activeBranchId && { branchId: activeBranchId }),
             });
             if (searchQuery.trim()) {
                 params.append("search", searchQuery.trim());
@@ -92,8 +94,8 @@
             }
             const [poRes, vendorRes, prodRes] = await Promise.all([
                 api.get(`inventory/purchase-orders?${params}`).json<any>(),
-                api.get("inventory/vendors?limit=1000").json<any>(),
-                api.get("products?limit=1000").json<any>(),
+                api.get(`inventory/vendors?limit=1000${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>(),
+                api.get(`products?limit=1000${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>(),
             ]);
             purchaseOrders = poRes.data || [];
             totalItems = poRes.meta?.total || 0;
@@ -188,6 +190,81 @@
         }
     }
 
+    function downloadFile(content: string, filename: string, type: string) {
+        const blob = new Blob([content], { type });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
+    async function exportToCsv() {
+        try {
+            const activeBranchId = auth.activeBranchId;
+            const res = await api.get(`inventory/purchase-orders?limit=10000${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>();
+            const rows: any[] = res.data || [];
+            let csv = '﻿';
+            csv += 'ວັນທີ,ເລກ PO,ຜູ້ສະໜອງ,ຈຳນວນລາຍການ,ມູນຄ່າລວມ,ສະຖານະ\n';
+            for (const order of rows) {
+                const vendorName = vendors.find((v: any) => v.id === order.vendorId)?.name || order.vendor?.name || '';
+                const statusLabel = order.status === 'completed' ? 'ສຳເລັດ' : order.status === 'pending' ? 'ລໍຖ້າ' : order.status === 'draft' ? 'ຮ່າງ' : order.status;
+                const date = order.createdAt ? new Date(order.createdAt).toLocaleDateString('lo-LA') : '';
+                csv += `"${date}","${order.poNumber || order.orderNo || ''}","${vendorName}","${order.items?.length || 0}","${order.total || 0}","${statusLabel}"\n`;
+            }
+            downloadFile(csv, `purchase-orders-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
+            toast.success('ສົ່ງອອກ CSV ສຳເລັດ');
+        } catch {
+            toast.error('ສົ່ງອອກລົ້ມເຫລວ');
+        }
+    }
+
+    async function exportToPdf() {
+        try {
+            const activeBranchId = auth.activeBranchId;
+            const res = await api.get(`inventory/purchase-orders?limit=10000${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>();
+            const rows: any[] = res.data || [];
+            let totalValue = rows.reduce((s, r) => s + (r.total || r.totalAmount || 0), 0);
+
+            const rows_html = rows.map((order, i) => {
+                const vendorName = vendors.find((v: any) => v.id === order.vendorId)?.name || order.vendor?.name || '';
+                const statusLabel = order.status === 'received' ? 'ຮັບແລ້ວ' : order.status === 'pending' ? 'ລໍຖ້າ' : order.status === 'cancelled' ? 'ຍົກເລີກ' : order.status;
+                const date = order.createdAt ? new Date(order.createdAt).toLocaleDateString('lo-LA') : '';
+                return `<tr style="background:${i % 2 === 0 ? '#fff' : '#f9fafb'}">
+                    <td style="border:1px solid #e5e7eb;padding:8px">${date}</td>
+                    <td style="border:1px solid #e5e7eb;padding:8px">${order.poNumber || order.orderNo || ''}</td>
+                    <td style="border:1px solid #e5e7eb;padding:8px">${vendorName}</td>
+                    <td style="border:1px solid #e5e7eb;padding:8px;text-align:center">${order.items?.length || 0}</td>
+                    <td style="border:1px solid #e5e7eb;padding:8px;text-align:right">${(order.total || order.totalAmount || 0).toLocaleString()}</td>
+                    <td style="border:1px solid #e5e7eb;padding:8px">${statusLabel}</td>
+                </tr>`;
+            }).join('');
+
+            const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+                <style>body{font-family:'Noto Sans Lao','Phetsarath OT',sans-serif;margin:20px}
+                h2{text-align:center}table{width:100%;border-collapse:collapse;font-size:12px}
+                th{background:#4f46e5;color:#fff;border:1px solid #e5e7eb;padding:8px;text-align:left}
+                tfoot td{font-weight:bold;background:#ede9fe;border:1px solid #e5e7eb;padding:8px}
+                @media print{@page{size:A4 landscape;margin:10mm}}</style></head>
+                <body><h2>ລາຍການຄຳສັ່ງຊື້</h2>
+                <p>ວັນທີ: ${new Date().toLocaleDateString('lo-LA')}</p>
+                <table><thead><tr>
+                    <th>ວັນທີ</th><th>ເລກ PO</th><th>ຜູ້ສະໜອງ</th><th>ລາຍການ</th><th>ມູນຄ່າລວມ</th><th>ສະຖານະ</th>
+                </tr></thead><tbody>${rows_html}</tbody>
+                <tfoot><tr><td colspan="4">ລວມທັງໝົດ</td><td style="text-align:right">${totalValue.toLocaleString()}</td><td></td></tr></tfoot>
+                </table></body></html>`;
+
+            const win = window.open('', '_blank');
+            if (win) { win.document.write(html); win.document.close(); win.print(); }
+            toast.success('ສົ່ງອອກ PDF ສຳເລັດ');
+        } catch {
+            toast.error('ສົ່ງອອກລົ້ມເຫລວ');
+        }
+    }
+
     $effect(() => {
         auth.activeStoreId;
         loadData();
@@ -214,9 +291,13 @@
         </div>
 
         <div class="flex items-center gap-3">
-            <button class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-700 transition-all">
+            <button onclick={exportToCsv} class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-700 transition-all">
                 <Download class="w-4 h-4" />
-                ສົ່ງອອກ
+                CSV
+            </button>
+            <button onclick={exportToPdf} class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-700 transition-all">
+                <FileText class="w-4 h-4" />
+                PDF
             </button>
             <button
                 onclick={() => { resetForm(); showModal = true; }}
@@ -250,10 +331,10 @@
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
             <div class="flex items-center justify-between">
-                <div class="p-2 bg-green-100 dark:bg-green-900/50 rounded-lg">
-                    <Check class="w-5 h-5 text-green-600 dark:text-green-400" />
+                <div class="p-2 bg-success-100 dark:bg-success-900/50 rounded-lg">
+                    <Check class="w-5 h-5 text-success-600 dark:text-success-400" />
                 </div>
-                <span class="text-2xl font-bold text-green-600 dark:text-green-400">{stats.received}</span>
+                <span class="text-2xl font-bold text-success-600 dark:text-success-400">{stats.received}</span>
             </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">ຮັບແລ້ວ</p>
         </div>
@@ -441,7 +522,7 @@
                                 </select>
                                 <input type="number" bind:value={item.quantity} min="1" placeholder="ຈຳນວນ" class="w-24 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white text-sm" />
                                 <MoneyInput bind:value={item.unitCost} min={0} placeholder="ລາຄາ" class="w-28 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white text-sm" />
-                                <button type="button" onclick={() => removeItem(i)} class="p-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg">
+                                <button type="button" onclick={() => removeItem(i)} class="p-2 text-danger-500 hover:bg-danger-50 dark:hover:bg-danger-900/30 rounded-lg">
                                     <Trash2 class="w-4 h-4" />
                                 </button>
                             </div>

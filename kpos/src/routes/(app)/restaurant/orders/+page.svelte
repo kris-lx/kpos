@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
     import { onMount, onDestroy } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
@@ -97,10 +97,10 @@
                 };
             case "ready":
                 return {
-                    bg: "bg-green-100 dark:bg-green-900/30",
-                    text: "text-green-700 dark:text-green-400",
-                    border: "border-green-200 dark:border-green-800",
-                    dot: "bg-green-500 animate-pulse",
+                    bg: "bg-success-100 dark:bg-success-900/30",
+                    text: "text-success-700 dark:text-success-400",
+                    border: "border-success-200 dark:border-success-800",
+                    dot: "bg-success-500 animate-pulse",
                     icon: Bell,
                     label: t("restaurant.ready"),
                 };
@@ -115,10 +115,10 @@
                 };
             case "cancelled":
                 return {
-                    bg: "bg-red-100 dark:bg-red-900/30",
-                    text: "text-red-700 dark:text-red-400",
-                    border: "border-red-200 dark:border-red-800",
-                    dot: "bg-red-500",
+                    bg: "bg-danger-100 dark:bg-danger-900/30",
+                    text: "text-danger-700 dark:text-danger-400",
+                    border: "border-danger-200 dark:border-danger-800",
+                    dot: "bg-danger-500",
                     icon: XCircle,
                     label: t("restaurant.cancelled"),
                 };
@@ -139,9 +139,9 @@
     }
 
     function getElapsedColor(minutes: number): string {
-        if (minutes < 10) return "text-green-600 dark:text-green-400 bg-green-100 dark:bg-green-900/30";
+        if (minutes < 10) return "text-success-600 dark:text-success-400 bg-success-100 dark:bg-success-900/30";
         if (minutes < 20) return "text-amber-600 dark:text-amber-400 bg-amber-100 dark:bg-amber-900/30";
-        return "text-red-600 dark:text-red-400 bg-red-100 dark:bg-red-900/30";
+        return "text-danger-600 dark:text-danger-400 bg-danger-100 dark:bg-danger-900/30";
     }
 
     // Stats
@@ -226,7 +226,7 @@
             
             <a
                 href="/pos"
-                class="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-green-500 to-emerald-600 text-white rounded-xl text-sm font-medium hover:from-green-600 hover:to-emerald-700 transition-all shadow-md"
+                class="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-success-500 to-emerald-600 text-white rounded-xl text-sm font-medium hover:from-success-600 hover:to-emerald-700 transition-all shadow-md"
             >
                 <Plus class="w-4 h-4" />
                 {t("restaurant.newOrders")}
@@ -266,12 +266,12 @@
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">{t("restaurant.preparing")}</p>
         </div>
         
-        <div class="bg-white dark:bg-gray-800 rounded-xl p-4 shadow-sm border border-green-100 dark:border-green-900/30">
+        <div class="bg-white dark:bg-gray-800 rounded-xl p-4 shadow-sm border border-success-100 dark:border-success-900/30">
             <div class="flex items-center justify-between">
-                <div class="p-2 bg-green-100 dark:bg-green-900/30 rounded-lg">
-                    <Bell class="w-5 h-5 text-green-600 dark:text-green-400" />
+                <div class="p-2 bg-success-100 dark:bg-success-900/30 rounded-lg">
+                    <Bell class="w-5 h-5 text-success-600 dark:text-success-400" />
                 </div>
-                <span class="text-2xl font-bold text-green-600 dark:text-green-400">{stats.ready}</span>
+                <span class="text-2xl font-bold text-success-600 dark:text-success-400">{stats.ready}</span>
             </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">{t("restaurant.ready")}</p>
         </div>
@@ -427,7 +427,7 @@
                             {:else if order.status === "preparing"}
                                 <button
                                     onclick={() => updateOrderStatus(order.id, "ready")}
-                                    class="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-gradient-to-r from-green-500 to-emerald-600 text-white rounded-xl text-xs font-medium hover:from-green-600 hover:to-emerald-700 transition-all shadow-sm"
+                                    class="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-gradient-to-r from-success-500 to-emerald-600 text-white rounded-xl text-xs font-medium hover:from-success-600 hover:to-emerald-700 transition-all shadow-sm"
                                 >
                                     <Bell class="w-3.5 h-3.5" />
                                     {t("restaurant.markReady")}

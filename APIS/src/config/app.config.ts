@@ -17,13 +17,17 @@ const envSchema = z.object({
 
     // JWT
     JWT_SECRET: z.string().min(32),
-    JWT_EXPIRES_IN: z.string().default('15m'),
+    JWT_EXPIRES_IN: z.string().default('10h'),
     JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
 
     // External Services
     LINE_NOTIFY_TOKEN: z.string().optional(),
     SHOPEE_API_KEY: z.string().optional(),
     LAZADA_API_KEY: z.string().optional(),
+
+    // Email (Brevo)
+    BREVO_API_KEY: z.string().optional(),
+    APP_URL: z.string().url().optional().default('http://localhost:5173'),
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -64,4 +68,9 @@ export const jwtConfig = {
     expiresIn: config.JWT_EXPIRES_IN,
     refreshSecret: config.JWT_SECRET + '_refresh',
     refreshExpiresIn: config.JWT_REFRESH_EXPIRES_IN,
+};
+
+export const emailConfig = {
+    apiKey: config.BREVO_API_KEY || '',
+    appUrl: config.APP_URL || 'http://localhost:5173',
 };

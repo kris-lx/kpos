@@ -57,6 +57,13 @@
       "when": 1773044128200,
       "tag": "0007_superb_scrambler",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1779185063626,
+      "tag": "0008_common_alex_wilder",
+      "breakpoints": true
     }
   ]
 }

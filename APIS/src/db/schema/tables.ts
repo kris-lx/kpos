@@ -46,6 +46,12 @@ export const branches = pgTable('branches', {
     email: text('email'),
     taxId: text('tax_id'),
     logo: text('logo'),
+    // Owner / identity fields (Phase 2)
+    ownerName: text('owner_name'),
+    ownerPhone: text('owner_phone'),
+    ownerEmail: text('owner_email'),
+    registrationNo: text('registration_no'),
+    website: text('website'),
     receiptSettings: jsonb('receipt_settings'),
     isActive: boolean('is_active').notNull().default(true),
     isMain: boolean('is_main').notNull().default(false),
