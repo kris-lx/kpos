@@ -10,6 +10,7 @@
         "dev": "tsx watch src/index.ts",
         "start": "tsx src/index.ts",
         "build": "tsc --noEmitOnError false || exit 0",
+        "build:clean": "rm -rf dist && tsc --noEmitOnError false || exit 0",
         "start:prod": "NODE_ENV=production node dist/index.js",
         "db:generate": "drizzle-kit generate",
         "db:push": "drizzle-kit push",
