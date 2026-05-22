@@ -38,7 +38,19 @@
     let products = $state<any[]>([]);
     let branches = $state<any[]>([]);
 
-    // Filtered branches: "to" dropdown excludes selected "from" branch
+    // Branches scoped to what the current user can access
+    let accessibleBranches = $derived(
+        auth.isSuperAdmin || (auth.roleLevel ?? 7) <= 2
+            ? branches
+            : branches.filter(b => auth.accessibleBranchIds.includes(b.id))
+    );
+    // "From" dropdown: only branches user owns; "To" excludes selected "from"
+    let fromBranches = $derived(
+        auth.isSuperAdmin || (auth.roleLevel ?? 7) <= 2
+            ? branches
+            : branches.filter(b => auth.accessibleBranchIds.includes(b.id))
+    );
+    // "To" dropdown: all branches (can transfer to any branch in tenant) minus selected "from"
     let toBranches = $derived(branches.filter(b => b.id !== formData.fromBranchId));
 
     // Form
@@ -479,7 +491,7 @@
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຈາກສາຂາ *</label>
                         <select bind:value={formData.fromBranchId} required class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white">
                             <option value="">ເລືອກສາຂາ</option>
-                            {#each branches as branch (branch.id)}
+                            {#each fromBranches as branch (branch.id)}
                                 <option value={branch.id}>{branch.name}</option>
                             {/each}
                         </select>

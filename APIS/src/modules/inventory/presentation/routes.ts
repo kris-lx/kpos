@@ -851,10 +851,18 @@ inventoryRoutes.get('/stock-transfers', authenticate, branchFilter(), async (req
 });
 
 // Create stock transfer
-inventoryRoutes.post('/stock-transfers', authenticate, authorize('inventory:update'), async (req, res, next) => {
+inventoryRoutes.post('/stock-transfers', authenticate, authorize('inventory:update'), branchFilter(), async (req, res, next) => {
     try {
         const { items, fromBranchId, toBranchId, ...transferData } = req.body;
         const userId = req.user!.userId;
+        const filter = req.branchFilter;
+
+        // Branch access guard: non-HQ users can only initiate from their own branches
+        if (filter && filter.branchIds.length > 0) {
+            if (!filter.branchIds.includes(String(fromBranchId))) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'ບໍ່ມີສິດໂອນສິນຄ້າຈາກສາຂານີ້' } });
+            }
+        }
 
         // Validate: fromBranch and toBranch must be different
         if (fromBranchId === toBranchId) {
@@ -919,11 +927,12 @@ inventoryRoutes.post('/stock-transfers', authenticate, authorize('inventory:upda
 });
 
 // ─── Approve a stock transfer (deduct from source, add to destination) ───────
-inventoryRoutes.patch('/stock-transfers/:id/approve', authenticate, authorize('inventory:update'), async (req, res, next) => {
+inventoryRoutes.patch('/stock-transfers/:id/approve', authenticate, authorize('inventory:update'), branchFilter(), async (req, res, next) => {
     try {
         const { id } = req.params;
         const userId = req.user!.userId;
         const tenantId = req.authUser?.tenantId;
+        const filter = req.branchFilter;
 
         const transfer = await db.query.stockTransfers.findFirst({
             where: eq(stockTransfers.id, id),
@@ -939,6 +948,12 @@ inventoryRoutes.patch('/stock-transfers/:id/approve', authenticate, authorize('i
         // Tenant guard
         if (tenantId && transfer.tenantId && transfer.tenantId !== tenantId) {
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Access denied' } });
+        }
+        // Branch access guard: approver must have access to the source branch
+        if (filter && filter.branchIds.length > 0) {
+            if (!filter.branchIds.includes(String(transfer.fromBranchId)) && !filter.branchIds.includes(String(transfer.toBranchId))) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'ບໍ່ມີສິດອະນຸມັດການໂອນນີ້' } });
+            }
         }
 
         // Re-validate stock availability before committing
@@ -994,12 +1009,13 @@ inventoryRoutes.patch('/stock-transfers/:id/approve', authenticate, authorize('i
 });
 
 // ─── Reject a stock transfer ──────────────────────────────────────────────────
-inventoryRoutes.patch('/stock-transfers/:id/reject', authenticate, authorize('inventory:update'), async (req, res, next) => {
+inventoryRoutes.patch('/stock-transfers/:id/reject', authenticate, authorize('inventory:update'), branchFilter(), async (req, res, next) => {
     try {
         const { id } = req.params;
         const { reason } = req.body;
         const userId = req.user!.userId;
         const tenantId = req.authUser?.tenantId;
+        const filter = req.branchFilter;
 
         const transfer = await db.query.stockTransfers.findFirst({ where: eq(stockTransfers.id, id) });
         if (!transfer) {
@@ -1010,6 +1026,12 @@ inventoryRoutes.patch('/stock-transfers/:id/reject', authenticate, authorize('in
         }
         if (tenantId && transfer.tenantId && transfer.tenantId !== tenantId) {
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Access denied' } });
+        }
+        // Branch access guard
+        if (filter && filter.branchIds.length > 0) {
+            if (!filter.branchIds.includes(String(transfer.fromBranchId)) && !filter.branchIds.includes(String(transfer.toBranchId))) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'ບໍ່ມີສິດປະຕິເສດການໂອນນີ້' } });
+            }
         }
 
         await db.update(stockTransfers).set({ status: 'REJECTED', approvedBy: userId, approvedAt: new Date(), notes: reason ? String(reason) : transfer.notes }).where(eq(stockTransfers.id, id));

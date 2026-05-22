@@ -255,6 +255,7 @@ const MENU_STRUCTURE = [
         { key: 'reports.financial', label: 'Financial Report', labelLao: 'ລາຍງານການເງິນ', icon: 'DollarSign', path: '/reports/financial', requiredPermission: 'reports:view' },
         { key: 'reports.staff', label: 'Staff Report', labelLao: 'ລາຍງານພະນັກງານ', icon: 'UserCog', path: '/reports/staff', requiredPermission: 'reports:view' },
         { key: 'reports.customers', label: 'Customer Report', labelLao: 'ລາຍງານລູກຄ້າ', icon: 'Users', path: '/reports/customers', requiredPermission: 'reports:view' },
+        { key: 'reports.gl', label: 'GL / Finance & Compliance', labelLao: 'GL / ການເງິນ & ກວດກາ', icon: 'BookOpen', path: '/reports/gl', requiredPermission: 'reports:financial' },
     ]},
     { key: 'management', label: 'Management', labelLao: 'ຈັດການ', icon: 'Building2', requiredPermission: 'staff:view', children: [
         { key: 'management.branches', label: 'Branches', labelLao: 'ສາຂາ', icon: 'Building2', path: '/branches', requiredPermission: 'branches:view' },

@@ -24,6 +24,8 @@
         FileType,
         Printer,
         ChevronDown,
+        BookOpen,
+        ShieldCheck,
     } from "lucide-svelte";
 
     // State
@@ -670,6 +672,11 @@ ${lines.map(l => l === divider ? '<div class="divider"></div>' : `<div${l === 'K
                 <DollarSign class="w-8 h-8 text-success-500 mb-3" />
                 <p class="font-medium text-gray-900 dark:text-white">{t("reports.financial")}</p>
                 <p class="text-sm text-gray-500">{t("reports.financialDesc")}</p>
+            </a>
+            <a href="/reports/gl" class="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700 hover:border-violet-500 transition-colors">
+                <BookOpen class="w-8 h-8 text-violet-500 mb-3" />
+                <p class="font-medium text-gray-900 dark:text-white">GL / ການເງິນ & ການກວດກາ</p>
+                <p class="text-sm text-gray-500">P&L · ພາສີ · Audit Trail · Cash Flow</p>
             </a>
             <a href="/reports/staff" class="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700 hover:border-primary-500 transition-colors">
                 <Users class="w-8 h-8 text-purple-500 mb-3" />
