@@ -222,17 +222,6 @@
                     </a>
                 </div>
             </form>
-
-            <!-- Demo Accounts -->
-            <div class="mt-6 pt-6 border-t border-gray-100 dark:border-gray-700">
-                <p class="text-xs text-gray-500 dark:text-gray-400 text-center mb-3">Demo Account</p>
-                <div class="space-y-2 text-xs text-gray-600 dark:text-gray-400">
-                    <div class="flex justify-between p-2 bg-gray-50 dark:bg-gray-700 rounded-lg">
-                        <span>Admin:</span>
-                        <span class="font-mono text-gray-800 dark:text-gray-200">admin@kpos.la / Admin@123456</span>
-                    </div>
-                </div>
-            </div>
         </div>
 
         <!-- Footer -->
