@@ -746,14 +746,21 @@ userRoutes.get('/me/rules', authenticate, async (req, res) => {
                 columns: { role: true },
             });
             if (userRole?.role) {
-                const globalRole = await db.query.roles.findFirst({
+                // A tenant may have multiple global roles with the same name (nullable
+                // tenantId makes the unique index non-enforcing for NULLs). Pick the first
+                // global role that actually has role_rules assigned.
+                const globalRoles = await db.query.roles.findMany({
                     where: and(eq(roles.name, userRole.role), isNull(roles.tenantId)),
                 });
-                if (globalRole) {
-                    rrRows = await db.query.roleRules.findMany({
+                for (const globalRole of globalRoles) {
+                    const rows = await db.query.roleRules.findMany({
                         where: eq(roleRules.roleId, globalRole.id),
                         with: { rule: true },
                     });
+                    if (rows.length > 0) {
+                        rrRows = rows;
+                        break;
+                    }
                 }
             }
         }

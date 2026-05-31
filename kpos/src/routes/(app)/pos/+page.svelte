@@ -368,6 +368,7 @@
                     dueDate: creditDueDate || undefined,
                     discountType: cart.discountType,
                     discountValue: cart.discountValue,
+                    taxRate: cart.taxRate,
                     notes: "",
                 };
                 response = await api.post("sales/credit", { json: creditSaleData }).json<any>();
@@ -383,6 +384,7 @@
                     paymentMethod: paymentMethod.toUpperCase(),
                     discountType: cart.discountType,
                     discountValue: cart.discountValue,
+                    taxRate: cart.taxRate,
                     notes: "",
                     cashReceived:
                         paymentMethod === "cash" ? cashReceived : undefined,
@@ -845,7 +847,7 @@
                 <div
                     class="flex justify-between text-gray-600 dark:text-gray-400"
                 >
-                    <span>{t('pos.tax')} (7%)</span>
+                    <span>{t('pos.tax')} ({cart.taxRate}%)</span>
                     <span>{formatCurrency(cart.taxAmount)}</span>
                 </div>
                 <hr class="border-gray-200 dark:border-gray-700" />

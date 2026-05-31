@@ -8,7 +8,7 @@
 
 import { db } from '@/config/database.config';
 import { cache } from '@/config/redis.config';
-import { userRoleAssignments, roles } from '@/db/schema/tables';
+import { userRoleAssignments, roles, users } from '@/db/schema/tables';
 import { eq, and } from 'drizzle-orm';
 import { mergeMasks, type PermBit } from '../permissions';
 
@@ -62,7 +62,7 @@ export async function getUserMask(userId: string, tenantId: string): Promise<Use
     if (assignments.length === 0) {
         // Fallback: query user's direct roleId from users table
         const user = await db.query.users.findFirst({
-            where: eq(roles.id, userId),
+            where: eq(users.id, userId),
             columns: { roleId: true },
         });
 

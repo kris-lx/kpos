@@ -10,6 +10,9 @@ rbac-1M-10M-full-isolation-fixed.md
 APIS/prompt.md
 APIS/RBAC_AUDIT_REPORT.md
 DEPLOYMENT.md
+build-prod.ps1
+build-prod.sh
+nginx.conf
 
 # Temporary files
 temp_url.txt

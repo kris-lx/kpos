@@ -25,7 +25,7 @@ salesRoutes.post('/', authenticate, async (req, res, next) => {
             paymentMethodId,
             discountType,
             discountValue = 0,
-            taxRate = 7,
+            taxRate = 0,
             notes,
             orderType = 'WALKIN',
         } = req.body;
