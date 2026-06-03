@@ -7,7 +7,7 @@ import { appServer } from './infrastructure/http/server';
 import { connectDatabase, disconnectDatabase } from './config/database.config';
 import { connectRedis, disconnectRedis } from './config/redis.config';
 import { connectRabbitMQ, disconnectRabbitMQ } from './config/rabbitmq.config';
-import { startWorkers } from './infrastructure/workers';
+import { startWorkers, startScheduledJobs } from './infrastructure/workers';
 import { ensureSystemEnums } from './db/ensure-enums';
 import { ensureDefaultTenant } from './db/ensure-tenant';
 
@@ -27,6 +27,8 @@ async function main(): Promise<void> {
 
         // Start queue workers (stock-movement, activity-log, cache-invalidation)
         startWorkers();
+        // Start scheduled maintenance jobs (session cleanup, etc.)
+        startScheduledJobs();
 
         console.log('🚀 Starting server...');
         await appServer.start();

@@ -5,7 +5,10 @@
 import ky from 'ky';
 import { PUBLIC_API_URL } from '$env/static/public';
 
-const API_URL = PUBLIC_API_URL || 'http://localhost:5000/api/v1';
+if (!PUBLIC_API_URL) {
+    console.error('[KPOS] PUBLIC_API_URL is not set. Please add it to your .env file.');
+}
+const API_URL = PUBLIC_API_URL;
 
 // Simple API client for auth operations (no auth interceptor needed)
 const authClient = ky.create({

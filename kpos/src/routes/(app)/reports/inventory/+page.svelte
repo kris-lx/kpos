@@ -35,7 +35,7 @@
     let exporting = $state(false);
 
     // Page size options
-    const pageSizeOptions = [5, 10, 20, 50, 70, 100];
+    const pageSizeOptions = [5, 10, 20, 50, 70, 80, 100];
 
     // Data
     let inventoryReport = $state<any[]>([]);
@@ -350,7 +350,7 @@ ${filteredInventory.map((p, i) => { const st = getStockStatus(p.currentStock || 
     {/if}
 
     <!-- Pagination -->
-    {#if totalPages > 1}
+    {#if totalItems > 0}
         <div class="flex flex-col sm:flex-row items-center justify-between gap-4 mt-6">
             <div class="flex items-center gap-2">
                 <span class="text-sm text-gray-500 dark:text-gray-400">ສະແດງ:</span>

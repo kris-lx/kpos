@@ -3,9 +3,11 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, ROLE_LEVELS } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, ROLE_LEVELS, invalidateUserStoreCache } from '@/infrastructure/http/middleware/auth.middleware';
+import { permissionsToMask, maskToStrings } from '@/infrastructure/permissions';
+import { invalidateAllTenantPermissions, invalidateUserPermissions } from '@/infrastructure/services/permission.service';
 import { db } from '@/config/database.config';
-import { roles, users, permissionGroups, permissions } from '@/db/schema/tables';
+import { roles, users, permissionGroups, permissions, branches } from '@/db/schema/tables';
 import { eq, and, or, ilike, notInArray, isNull, desc, count, asc } from 'drizzle-orm';
 
 export const roleRoutes = Router();
@@ -244,6 +246,16 @@ roleRoutes.get('/', authenticate, authorize('roles:read'), async (req, res) => {
             conditions.push(or(eq(roles.tenantId, tenantId), isNull(roles.tenantId)));
         }
 
+        // Branch-scoped visibility:
+        // HQ / tenant admins (roleLevel ≤ 4) see every role in the tenant.
+        // Branch-level users (roleLevel ≥ 5) see only tenant-wide templates
+        // (branchId IS NULL) plus roles created for their own branch.
+        const roleLevel = authUser.roleLevel ?? 7;
+        const myBranchId = authUser.activeBranchId;
+        if (!isSuperAdmin && roleLevel >= 5 && myBranchId) {
+            conditions.push(or(isNull(roles.branchId), eq(roles.branchId, myBranchId)));
+        }
+
         if (isSuperAdmin || isAdmin) {
             // Admins (hq+, store_owner) see all roles within tenant scope
         } else {
@@ -355,9 +367,40 @@ roleRoutes.post('/', authenticate, authorize('roles:create'), async (req, res) =
             }
         }
 
-        // Check if role name already exists within tenant
+        // ── Branch ownership of the new role ─────────────────────────────────
+        // Branch-level callers (roleLevel ≥ 5) may ONLY create roles private to
+        // their own branch — they can never create a tenant-wide template.
+        // HQ / tenant admins (roleLevel ≤ 4) may create a tenant-wide template
+        // (no branchId) OR a role for a specific child branch (branchId in body).
+        const callerLevel = req.authUser?.roleLevel ?? 7;
+        let roleBranchId: string | null = null;
+        if (!req.authUser?.isSuperAdmin && callerLevel >= 5) {
+            roleBranchId = req.authUser?.activeBranchId || null;
+            if (!roleBranchId) {
+                return res.status(403).json({
+                    success: false,
+                    error: { code: 'FORBIDDEN', message: 'No branch context available to create a branch role' }
+                });
+            }
+        } else if (req.body.branchId) {
+            // HQ/admin explicitly targeting a child branch — validate same tenant
+            const targetBranch = await db.query.branches.findFirst({
+                where: eq(branches.id, req.body.branchId),
+                columns: { id: true, tenantId: true },
+            });
+            if (!targetBranch || (tenantId && targetBranch.tenantId !== tenantId)) {
+                return res.status(400).json({
+                    success: false,
+                    error: { code: 'INVALID_BRANCH', message: 'Branch not found in your tenant' }
+                });
+            }
+            roleBranchId = targetBranch.id;
+        }
+
+        // Check if role name already exists within the same tenant + branch scope
         const dupConds: any[] = [or(eq(roles.name, name), eq(roles.displayName, displayName || name))];
         if (tenantId) dupConds.push(eq(roles.tenantId, tenantId));
+        dupConds.push(roleBranchId ? eq(roles.branchId, roleBranchId) : isNull(roles.branchId));
         const existing = await db.query.roles.findFirst({
             where: and(...dupConds),
         });
@@ -380,13 +423,18 @@ roleRoutes.post('/', authenticate, authorize('roles:create'), async (req, res) =
             });
         }
 
+        const mask = permissionsToMask(permissions);
+
         const [role] = await db.insert(roles).values({
             tenantId: tenantId || null,
+            branchId: roleBranchId,
             name,
             displayName: displayName || name,
             description,
             permissions,
             isSystem: false,
+            maskLow:  mask.low,
+            maskHigh: mask.high,
         }).returning();
 
         res.status(201).json({ success: true, data: role });
@@ -412,6 +460,11 @@ roleRoutes.put('/:id', authenticate, authorize('roles:update'), async (req, res)
         const roleConds: any[] = [eq(roles.id, id)];
         if (tenantId && !req.authUser?.isSuperAdmin) {
             roleConds.push(eq(roles.tenantId, tenantId));
+        }
+        // Branch-level callers can only edit roles owned by their own branch
+        // (never tenant-wide templates or other branches' roles).
+        if (!req.authUser?.isSuperAdmin && (req.authUser?.roleLevel ?? 7) >= 5) {
+            roleConds.push(eq(roles.branchId, req.authUser?.activeBranchId ?? '__none__'));
         }
 
         const existing = await db.query.roles.findFirst({ where: and(...roleConds) });
@@ -468,16 +521,28 @@ roleRoutes.put('/:id', authenticate, authorize('roles:update'), async (req, res)
             }
         }
 
+        // Recompute bitmask whenever permissions change
+        const maskUpdate = permissions ? permissionsToMask(permissions) : null;
+
         const [role] = await db.update(roles)
             .set({
                 ...(name && { name }),
                 ...(displayName && { displayName }),
                 ...(description !== undefined && { description }),
                 ...(permissions && { permissions }),
+                ...(maskUpdate && {
+                    maskLow:  maskUpdate.low,
+                    maskHigh: maskUpdate.high,
+                }),
                 updatedAt: new Date(),
             })
             .where(eq(roles.id, id))
             .returning();
+
+        // Invalidate all cached permission masks for users of this tenant
+        if (role.tenantId) {
+            invalidateAllTenantPermissions(role.tenantId).catch(() => {});
+        }
 
         res.json({ success: true, data: role });
     } catch (error) {
@@ -501,6 +566,10 @@ roleRoutes.delete('/:id', authenticate, authorize('roles:delete'), async (req, r
         const delConds: any[] = [eq(roles.id, id)];
         if (tenantId && !req.authUser?.isSuperAdmin) {
             delConds.push(eq(roles.tenantId, tenantId));
+        }
+        // Branch-level callers can only delete roles owned by their own branch.
+        if (!req.authUser?.isSuperAdmin && (req.authUser?.roleLevel ?? 7) >= 5) {
+            delConds.push(eq(roles.branchId, req.authUser?.activeBranchId ?? '__none__'));
         }
 
         const existing = await db.query.roles.findFirst({ where: and(...delConds) });
@@ -561,9 +630,15 @@ roleRoutes.post('/:id/assign', authenticate, authorize('roles:update'), async (r
 
         // BE-64: Tenant-scoped role assignment
         const tenantId = req.authUser?.tenantId;
+        const callerLevel = req.authUser?.roleLevel ?? 7;
         const assignConds: any[] = [eq(roles.id, id)];
         if (tenantId && !req.authUser?.isSuperAdmin) {
             assignConds.push(or(eq(roles.tenantId, tenantId), isNull(roles.tenantId)));
+        }
+        // Branch-level callers may assign tenant-wide templates (branchId IS NULL)
+        // or roles owned by their own branch — never another branch's role.
+        if (!req.authUser?.isSuperAdmin && callerLevel >= 5) {
+            assignConds.push(or(isNull(roles.branchId), eq(roles.branchId, req.authUser?.activeBranchId ?? '__none__')));
         }
 
         const role = await db.query.roles.findFirst({ where: and(...assignConds) });
@@ -582,6 +657,17 @@ roleRoutes.post('/:id/assign', authenticate, authorize('roles:update'), async (r
             });
         }
 
+        // Privilege ladder: cannot grant a role more privileged than your own.
+        if (!req.authUser?.isSuperAdmin) {
+            const targetLevel = ROLE_LEVELS[role.name] ?? 7;
+            if (targetLevel < callerLevel) {
+                return res.status(403).json({
+                    success: false,
+                    error: { code: 'FORBIDDEN', message: 'Cannot assign a role with higher privileges than your own' }
+                });
+            }
+        }
+
         // Check if user exists (tenant-scoped)
         const userConds: any[] = [eq(users.id, userId)];
         if (tenantId && !req.authUser?.isSuperAdmin) {
@@ -595,11 +681,24 @@ roleRoutes.post('/:id/assign', authenticate, authorize('roles:update'), async (r
             });
         }
 
+        // Branch isolation: branch-level callers can only re-role users in their own branch.
+        if (!req.authUser?.isSuperAdmin && callerLevel >= 5 && user.branchId !== req.authUser?.activeBranchId) {
+            return res.status(403).json({
+                success: false,
+                error: { code: 'FORBIDDEN', message: 'Cannot assign roles to users outside your branch' }
+            });
+        }
+
         // Update user's role
         const [updatedUser] = await db.update(users)
             .set({ roleId: id, role: role.name, updatedAt: new Date() })
             .where(eq(users.id, userId))
             .returning();
+
+        // Invalidate the target user's cached identity + permission mask so the
+        // new role takes effect immediately instead of after the 5-min TTL.
+        if (tenantId) invalidateUserPermissions(userId, tenantId).catch(() => {});
+        invalidateUserStoreCache(userId).catch(() => {});
 
         res.json({ success: true, data: updatedUser });
     } catch (error) {

@@ -56,7 +56,7 @@
 
     let canAccess = $state(false);
     let userRole = $state<'super_admin' | 'admin' | 'store_owner' | 'manager' | 'other'>('other');
-    
+
     onMount(async () => {
         try {
             const user = auth.user;
@@ -64,20 +64,13 @@
                 goto("/login");
                 return;
             }
-            
-            // ກຳນົດສິດຕາມບົດບາດ
-            if (user.isSuperAdmin) {
-                userRole = 'super_admin';
+
+            // Allow all roles up to branch_admin / store_owner (level ≤ 5)
+            if (auth.roleLevel <= 5) {
                 canAccess = true;
-            } else if (user.role === 'admin') {
-                userRole = 'admin';
-                canAccess = true;
-            } else if (user.role === 'store_owner') {
-                userRole = 'store_owner';
-                canAccess = true;
-            } else if (user.role === 'manager') {
-                userRole = 'manager';
-                canAccess = true;
+                if (user.isSuperAdmin || auth.roleLevel <= 2) userRole = user.isSuperAdmin ? 'super_admin' : 'admin';
+                else if (user.role === 'store_owner') userRole = 'store_owner';
+                else userRole = 'manager';
             } else {
                 toast.error("ທ່ານບໍ່ມີສິດເຂົ້າເຖິງໜ້ານີ້");
                 goto("/dashboard");

@@ -34,11 +34,23 @@ const translations: Translations = {
 // Reactive locale state - this is the single source of truth
 let currentLocale = $state<Locale>(DEFAULT_LOCALE);
 
-// Initialize from localStorage
+// Initialize: prefer explicit locale key, then tenant config, then default
 if (browser) {
-    const stored = localStorage.getItem(LOCALE_KEY) as Locale | null;
-    if (stored && LOCALES.find((l) => l.code === stored)) {
-        currentLocale = stored;
+    const explicit = localStorage.getItem(LOCALE_KEY) as Locale | null;
+    if (explicit && LOCALES.find((l) => l.code === explicit)) {
+        currentLocale = explicit;
+    } else {
+        // Fall back to tenant config language
+        try {
+            const raw = localStorage.getItem('kpos_tenant_config');
+            if (raw) {
+                const { data } = JSON.parse(raw);
+                const lang = data?.language as Locale | null;
+                if (lang && LOCALES.find((l) => l.code === lang)) {
+                    currentLocale = lang;
+                }
+            }
+        } catch { /* ignore */ }
     }
 }
 

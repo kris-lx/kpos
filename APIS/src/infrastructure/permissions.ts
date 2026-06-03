@@ -162,83 +162,158 @@ export function legacyPermTobit(perm: string): PermBit | undefined {
 // ─── Legacy string → bitmask mapping ────────────────────────────────────
 
 const LEGACY_PERM_MAP: Record<string, PermBit> = {
-    // Sales
-    'sales:view':       P.SALE_VIEW,
-    'sales:read':       P.SALE_VIEW,
-    'sales:create':     P.SALE_CREATE,
-    'sales:void':       P.SALE_VOID,
-    'sales:refund':     P.SALE_REFUND,
-    'pos:view':         P.SALE_VIEW,
-    'pos:read':         P.SALE_VIEW,
-    // Products
-    'products:view':    P.PRODUCT_VIEW,
-    'products:read':    P.PRODUCT_VIEW,
-    'products:create':  P.PRODUCT_CREATE,
-    'products:update':  P.PRODUCT_UPDATE,
-    'products:delete':  P.PRODUCT_DELETE,
-    // Categories
-    'categories:view':  P.CATEGORY_MANAGE,
-    'categories:read':  P.CATEGORY_MANAGE,
-    'categories:create': P.CATEGORY_MANAGE,
-    'categories:update': P.CATEGORY_MANAGE,
-    'categories:delete': P.CATEGORY_MANAGE,
-    // Inventory
-    'inventory:view':   P.INVENTORY_VIEW,
-    'inventory:read':   P.INVENTORY_VIEW,
-    'inventory:create': P.INVENTORY_ADJUST,
-    'inventory:update': P.INVENTORY_ADJUST,
-    // Reports
-    'reports:view':     P.REPORT_SALES,
-    'reports:read':     P.REPORT_SALES,
-    'dashboard:view':   P.REPORT_DASHBOARD,
-    'dashboard:read':   P.REPORT_DASHBOARD,
-    // Staff
-    'staff:view':       P.STAFF_VIEW,
-    'staff:read':       P.STAFF_VIEW,
-    'staff:create':     P.STAFF_CREATE,
-    'staff:update':     P.STAFF_UPDATE,
-    'staff:delete':     P.STAFF_DELETE,
-    'users:view':       P.STAFF_VIEW,
-    'users:read':       P.STAFF_VIEW,
-    // Roles
-    'roles:view':       P.STAFF_ROLE_ASSIGN,
-    'roles:read':       P.STAFF_ROLE_ASSIGN,
-    'roles:create':     P.STAFF_ROLE_ASSIGN,
-    'roles:update':     P.STAFF_ROLE_ASSIGN,
-    // Store/Branch
-    'stores:view':      P.STORE_VIEW,
-    'stores:read':      P.STORE_VIEW,
-    'stores:create':    P.STORE_CREATE,
-    'stores:update':    P.STORE_UPDATE,
-    'stores:delete':    P.STORE_DELETE,
-    'branches:view':    P.BRANCH_MANAGE,
-    'branches:read':    P.BRANCH_MANAGE,
-    'branches:create':  P.BRANCH_MANAGE,
-    'branches:update':  P.BRANCH_MANAGE,
-    // Settings
-    'settings:view':    P.SETTINGS_MANAGE,
-    'settings:read':    P.SETTINGS_MANAGE,
-    'settings:update':  P.SETTINGS_MANAGE,
-    // Customers
-    'customers:view':   P.CUSTOMER_VIEW,
-    'customers:read':   P.CUSTOMER_VIEW,
-    'customers:create': P.CUSTOMER_CREATE,
-    'customers:update': P.CUSTOMER_UPDATE,
-    'customers:delete': P.CUSTOMER_DELETE,
-    // Promotions
-    'promotions:view':  P.PROMOTION_MANAGE,
-    'promotions:read':  P.PROMOTION_MANAGE,
-    'promotions:create': P.PROMOTION_MANAGE,
-    'promotions:update': P.PROMOTION_MANAGE,
-    'promotions:delete': P.PROMOTION_MANAGE,
-    // Payments
-    'payments:view':    P.BILLING_VIEW,
-    'payments:read':    P.BILLING_VIEW,
-    // Documents
-    'documents:view':   P.REPORT_SALES,
-    'documents:read':   P.REPORT_SALES,
-    // Restaurant
-    'restaurant:view':  P.SALE_VIEW,
-    'restaurant:read':  P.SALE_VIEW,
-    'restaurant:manage': P.SALE_CREATE,
+    // ── Sales ────────────────────────────────────────────────────────────────
+    'sales:view':         P.SALE_VIEW,
+    'sales:read':         P.SALE_VIEW,
+    'sales:create':       P.SALE_CREATE,
+    'sales:update':       P.SALE_CREATE,
+    'sales:delete':       P.SALE_VOID,
+    'sales:void':         P.SALE_VOID,
+    'sales:refund':       P.SALE_REFUND,
+    'sales:hold':         P.SALE_HOLD,
+    'pos:view':           P.SALE_VIEW,
+    'pos:read':           P.SALE_VIEW,
+    'pos:access':         P.SALE_VIEW,
+    'pos:discount':       P.SALE_DISCOUNT,
+    'pos:void':           P.SALE_VOID,
+    'pos:credit':         P.SALE_CREATE,
+    'pos:hold':           P.SALE_HOLD,
+    // ── Products ─────────────────────────────────────────────────────────────
+    'products:view':      P.PRODUCT_VIEW,
+    'products:read':      P.PRODUCT_VIEW,
+    'products:create':    P.PRODUCT_CREATE,
+    'products:update':    P.PRODUCT_UPDATE,
+    'products:delete':    P.PRODUCT_DELETE,
+    'products:import':    P.PRODUCT_IMPORT,
+    'products:export':    P.PRODUCT_EXPORT,
+    // ── Categories ───────────────────────────────────────────────────────────
+    'categories:view':    P.CATEGORY_MANAGE,
+    'categories:read':    P.CATEGORY_MANAGE,
+    'categories:create':  P.CATEGORY_MANAGE,
+    'categories:update':  P.CATEGORY_MANAGE,
+    'categories:delete':  P.CATEGORY_MANAGE,
+    // ── Inventory ────────────────────────────────────────────────────────────
+    'inventory:view':     P.INVENTORY_VIEW,
+    'inventory:read':     P.INVENTORY_VIEW,
+    'inventory:create':   P.INVENTORY_ADJUST,
+    'inventory:update':   P.INVENTORY_ADJUST,
+    'inventory:delete':   P.INVENTORY_ADJUST,
+    'inventory:adjust':   P.INVENTORY_ADJUST,
+    'inventory:transfer': P.INVENTORY_TRANSFER,
+    'inventory:stockin':  P.INVENTORY_ADJUST,
+    'inventory:stockout': P.INVENTORY_ADJUST,
+    'inventory:count':    P.INVENTORY_COUNT,
+    // ── Reports ──────────────────────────────────────────────────────────────
+    'reports:view':       P.REPORT_SALES,
+    'reports:read':       P.REPORT_SALES,
+    'reports:sales':      P.REPORT_SALES,
+    'reports:products':   P.REPORT_PRODUCT,
+    'reports:inventory':  P.REPORT_INVENTORY,
+    'reports:financial':  P.REPORT_FINANCIAL,
+    'reports:staff':      P.REPORT_STAFF,
+    'reports:customers':  P.REPORT_CUSTOMER,
+    'dashboard:view':     P.REPORT_DASHBOARD,
+    'dashboard:read':     P.REPORT_DASHBOARD,
+    // ── Staff ────────────────────────────────────────────────────────────────
+    'staff:view':         P.STAFF_VIEW,
+    'staff:read':         P.STAFF_VIEW,
+    'staff:create':       P.STAFF_CREATE,
+    'staff:update':       P.STAFF_UPDATE,
+    'staff:delete':       P.STAFF_DELETE,
+    'users:view':         P.STAFF_VIEW,
+    'users:read':         P.STAFF_VIEW,
+    'users:create':       P.STAFF_CREATE,
+    'users:update':       P.STAFF_UPDATE,
+    'users:delete':       P.STAFF_DELETE,
+    // ── Roles ────────────────────────────────────────────────────────────────
+    'roles:view':         P.STAFF_ROLE_ASSIGN,
+    'roles:read':         P.STAFF_ROLE_ASSIGN,
+    'roles:create':       P.STAFF_ROLE_ASSIGN,
+    'roles:update':       P.STAFF_ROLE_ASSIGN,
+    'roles:delete':       P.STAFF_ROLE_ASSIGN,
+    // ── Store / Branch ───────────────────────────────────────────────────────
+    'stores:view':        P.STORE_VIEW,
+    'stores:read':        P.STORE_VIEW,
+    'stores:create':      P.STORE_CREATE,
+    'stores:update':      P.STORE_UPDATE,
+    'stores:delete':      P.STORE_DELETE,
+    'branches:view':      P.BRANCH_MANAGE,
+    'branches:read':      P.BRANCH_MANAGE,
+    'branches:create':    P.BRANCH_MANAGE,
+    'branches:update':    P.BRANCH_MANAGE,
+    'branches:delete':    P.BRANCH_MANAGE,
+    // ── Settings ─────────────────────────────────────────────────────────────
+    'settings:view':      P.SETTINGS_MANAGE,
+    'settings:read':      P.SETTINGS_MANAGE,
+    'settings:update':    P.SETTINGS_MANAGE,
+    // ── Customers ────────────────────────────────────────────────────────────
+    'customers:view':     P.CUSTOMER_VIEW,
+    'customers:read':     P.CUSTOMER_VIEW,
+    'customers:create':   P.CUSTOMER_CREATE,
+    'customers:update':   P.CUSTOMER_UPDATE,
+    'customers:delete':   P.CUSTOMER_DELETE,
+    // ── Promotions ───────────────────────────────────────────────────────────
+    'promotions:view':    P.PROMOTION_MANAGE,
+    'promotions:read':    P.PROMOTION_MANAGE,
+    'promotions:create':  P.PROMOTION_MANAGE,
+    'promotions:update':  P.PROMOTION_MANAGE,
+    'promotions:delete':  P.PROMOTION_MANAGE,
+    // ── Payments ─────────────────────────────────────────────────────────────
+    'payments:view':      P.BILLING_VIEW,
+    'payments:read':      P.BILLING_VIEW,
+    'payments:create':    P.BILLING_MANAGE,
+    'payments:manage':    P.BILLING_MANAGE,
+    'payments:settle':    P.BILLING_MANAGE,
+    'payments:void':      P.SALE_VOID,
+    'payments:refund':    P.SALE_REFUND,
+    // ── Documents ────────────────────────────────────────────────────────────
+    'documents:view':     P.RECEIPT_MANAGE,
+    'documents:read':     P.RECEIPT_MANAGE,
+    'documents:create':   P.RECEIPT_MANAGE,
+    'documents:update':   P.RECEIPT_MANAGE,
+    'documents:delete':   P.RECEIPT_MANAGE,
+    // ── Restaurant / Tables ──────────────────────────────────────────────────
+    'restaurant:view':    P.SALE_VIEW,
+    'restaurant:read':    P.SALE_VIEW,
+    'restaurant:manage':  P.SALE_CREATE,
+    'tables:view':        P.SALE_VIEW,
+    'tables:read':        P.SALE_VIEW,
+    'tables:create':      P.SALE_CREATE,
+    'tables:update':      P.SALE_CREATE,
+    'tables:delete':      P.SALE_VOID,
 };
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Utilities
+// ═══════════════════════════════════════════════════════════════════════════
+
+// All known low bits 0-61 + high bits 0-7 — PostgreSQL BIGINT signed max is 2^63-1.
+// Setting only the bits actually defined keeps the value within safe bounds.
+const ALL_LOW:  bigint = (1n << 62n) - 1n;  // bits 0-61
+const ALL_HIGH: bigint = (1n << 8n)  - 1n;  // bits 0-7
+/** All-permissions mask — used for wildcard '*'. Fits in PostgreSQL signed BIGINT. */
+const ALL_BITS: PermBit = { low: ALL_LOW, high: ALL_HIGH };
+
+/**
+ * Convert a permission string array to a combined bitmask.
+ * Unmapped strings are ignored (handled by string-array fallback in authorize()).
+ * The wildcard string '*' sets every bit.
+ */
+export function permissionsToMask(perms: string[]): PermBit {
+    if (perms.includes('*')) return ALL_BITS;
+    const bits = perms.map(p => LEGACY_PERM_MAP[p]).filter(Boolean) as PermBit[];
+    return combinePerm(...bits);
+}
+
+/**
+ * Serialise a PermBit as { low: string, high: string } for JSON/Redis storage.
+ * BigInt does not survive JSON.stringify; always store as decimal strings.
+ */
+export function maskToStrings(mask: PermBit): { low: string; high: string } {
+    return { low: mask.low.toString(), high: mask.high.toString() };
+}
+
+/** Deserialise from { low: string, high: string } back to PermBit. */
+export function stringsToMask(s: { low: string; high: string }): PermBit {
+    return { low: BigInt(s.low || '0'), high: BigInt(s.high || '0') };
+}

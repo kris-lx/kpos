@@ -31,7 +31,7 @@
     let itemsPerPage = $state(20);
     let showExportMenu = $state(false);
     let exporting = $state(false);
-    let pageSizeOptions = [5, 10, 20, 50, 70, 100];
+    let pageSizeOptions = [5, 10, 20, 50, 70, 80, 100];
     let totalItems = $state(0);
     let searchTimeout: ReturnType<typeof setTimeout>;
 
@@ -366,7 +366,7 @@ ${staffReports.map((s: any, i: number) => `<tr><td>${i + 1}</td><td>${s.name || 
     {/if}
 
     <!-- Pagination -->
-    {#if totalPages > 1}
+    {#if totalItems > 0}
         <div class="flex flex-col sm:flex-row items-center justify-between gap-4 mt-6">
             <div class="flex items-center gap-2">
                 <span class="text-sm text-gray-500 dark:text-gray-400">ສະແດງ:</span>

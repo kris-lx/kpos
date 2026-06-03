@@ -32,13 +32,8 @@
     );
 
     onMount(async () => {
-        const user = auth.user;
-        if (!user) { goto("/login"); return; }
-        const allowedRoles = ['admin', 'hq_admin', 'hq_manager', 'branch_admin', 'store_owner'];
-        if (!user.isSuperAdmin && !allowedRoles.includes(user.role)) {
-            goto("/dashboard");
-            return;
-        }
+        if (!auth.user) { goto("/login"); return; }
+        if (auth.roleLevel > 5) { goto("/dashboard"); return; }
         await loadPositions();
     });
 

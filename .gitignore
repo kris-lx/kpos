@@ -17,7 +17,5 @@ nginx.conf
 # Temporary files
 temp_url.txt
 
-# Docker files
-docker/
-docker-compose.yml
-**/Dockerfile
+# Docker runtime secrets only (init scripts are safe to track)
+# docker-compose.yml, Dockerfiles, and .dockerignore are tracked — no secrets inside

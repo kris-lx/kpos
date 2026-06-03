@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, branchFilter, ensureScopeAccess, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, branchFilter, ensureScopeAccess, isAdmin, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { db } from '@/config/database.config';
 import { branches, stores, users } from '@/db/schema/tables';
 import { eq, and, inArray, ne, asc, count, sql, or } from 'drizzle-orm';
@@ -197,7 +197,7 @@ branchRoutes.put('/:id', authenticate, authorize('branches:update'), async (req,
         const existing = await db.query.branches.findFirst({ where: and(...updConds) });
         if (!existing) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Branch not found or no access' } });
         // For branch records (no storeId/branchId field), scope check is: branch_admin can only edit their own branch
-        if (!req.authUser!.isSuperAdmin && req.authUser!.role !== 'admin' && !req.authUser!.permissions.includes('*')) {
+        if (!isAdmin(req) && !req.authUser!.permissions.includes('*')) {
             if (req.authUser!.roleLevel > 4 && !req.authUser!.accessibleBranchIds?.includes(existing.id)) {
                 return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
             }
@@ -242,7 +242,7 @@ branchRoutes.delete('/:id', authenticate, authorize('branches:delete'), async (r
         if (tenantId && !req.authUser?.isSuperAdmin) delConds.push(eq(branches.tenantId, tenantId));
         const existing = await db.query.branches.findFirst({ where: and(...delConds) });
         if (!existing) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Branch not found or no access' } });
-        if (!req.authUser!.isSuperAdmin && req.authUser!.role !== 'admin' && !req.authUser!.permissions.includes('*')) {
+        if (!isAdmin(req) && !req.authUser!.permissions.includes('*')) {
             if (req.authUser!.roleLevel > 4 && !req.authUser!.accessibleBranchIds?.includes(existing.id)) {
                 return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
             }

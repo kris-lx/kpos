@@ -58,7 +58,11 @@ export async function ensureDefaultTenant(): Promise<void> {
             'price_levels', 'product_price_levels', 'sku_variants',
             'documents', 'document_templates', 'settings',
             'notifications', 'activity_logs', 'store_requests',
-            'system_enums', 'role_rules', 'menu_permissions',
+            'role_rules',
+            // NOTE: system_enums, menu_permissions, permissions, permission_groups
+            // are GLOBAL (shared across tenants) — they intentionally have no
+            // tenant_id. Do not add them here or it creates schema drift that
+            // breaks drizzle-kit push/generate.
         ];
 
         for (const table of tablesToPatch) {

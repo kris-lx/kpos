@@ -36,11 +36,24 @@
     let showExportMenu = $state(false);
     let exporting = $state(false);
 
+    // Pagination
+    const PAGE_SIZE = 10;
+    let salesPage = $state(1);
+    let productsPage = $state(1);
+    let customersPage = $state(1);
+
     // Data
     let summary = $state<any>({});
     let salesData = $state<any[]>([]);
     let topProducts = $state<any[]>([]);
     let topCustomers = $state<any[]>([]);
+
+    let pagedSales = $derived(salesData.slice((salesPage - 1) * PAGE_SIZE, salesPage * PAGE_SIZE));
+    let salesTotalPages = $derived(Math.max(1, Math.ceil(salesData.length / PAGE_SIZE)));
+    let pagedProducts = $derived(topProducts.slice((productsPage - 1) * PAGE_SIZE, productsPage * PAGE_SIZE));
+    let productsTotalPages = $derived(Math.max(1, Math.ceil(topProducts.length / PAGE_SIZE)));
+    let pagedCustomers = $derived(topCustomers.slice((customersPage - 1) * PAGE_SIZE, customersPage * PAGE_SIZE));
+    let customersTotalPages = $derived(Math.max(1, Math.ceil(topCustomers.length / PAGE_SIZE)));
 
     // Date range labels
     const dateRangeLabels = $derived({
@@ -583,7 +596,7 @@ ${lines.map(l => l === divider ? '<div class="divider"></div>' : `<div${l === 'K
                         </div>
                     {:else}
                         <div class="space-y-3">
-                            {#each salesData.slice(0, 10) as sale, index}
+                            {#each pagedSales as sale}
                                 <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
                                     <div>
                                         <p class="font-medium text-gray-900 dark:text-white">{sale.date}</p>
@@ -595,6 +608,15 @@ ${lines.map(l => l === divider ? '<div class="divider"></div>' : `<div${l === 'K
                                 </div>
                             {/each}
                         </div>
+                        {#if salesData.length > 0}
+                            <div class="flex items-center justify-between mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
+                                <span class="text-sm text-gray-500">{t("common.page") || "ໜ້າ"} {salesPage}/{salesTotalPages}</span>
+                                <div class="flex gap-2">
+                                    <button onclick={() => salesPage = Math.max(1, salesPage - 1)} disabled={salesPage <= 1} class="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 disabled:opacity-40 hover:bg-gray-100 dark:hover:bg-gray-700">‹</button>
+                                    <button onclick={() => salesPage = Math.min(salesTotalPages, salesPage + 1)} disabled={salesPage >= salesTotalPages} class="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 disabled:opacity-40 hover:bg-gray-100 dark:hover:bg-gray-700">›</button>
+                                </div>
+                            </div>
+                        {/if}
                     {/if}
                 {:else if selectedReport === "products"}
                     <!-- Top Products -->
@@ -607,10 +629,10 @@ ${lines.map(l => l === divider ? '<div class="divider"></div>' : `<div${l === 'K
                         </div>
                     {:else}
                         <div class="space-y-4">
-                            {#each topProducts as product, index}
+                            {#each pagedProducts as product, index}
                                 <div class="flex items-center gap-4 p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
                                     <div class="w-10 h-10 rounded-full bg-primary-100 dark:bg-primary-900/30 flex items-center justify-center font-bold text-primary-600">
-                                        {product.rank || index + 1}
+                                        {product.rank || (productsPage - 1) * PAGE_SIZE + index + 1}
                                     </div>
                                     <div class="flex-1">
                                         <p class="font-medium text-gray-900 dark:text-white">{product.productName}</p>
@@ -623,6 +645,15 @@ ${lines.map(l => l === divider ? '<div class="divider"></div>' : `<div${l === 'K
                                 </div>
                             {/each}
                         </div>
+                        {#if topProducts.length > 0}
+                            <div class="flex items-center justify-between mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
+                                <span class="text-sm text-gray-500">{t("common.page") || "ໜ້າ"} {productsPage}/{productsTotalPages}</span>
+                                <div class="flex gap-2">
+                                    <button onclick={() => productsPage = Math.max(1, productsPage - 1)} disabled={productsPage <= 1} class="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 disabled:opacity-40 hover:bg-gray-100 dark:hover:bg-gray-700">‹</button>
+                                    <button onclick={() => productsPage = Math.min(productsTotalPages, productsPage + 1)} disabled={productsPage >= productsTotalPages} class="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 disabled:opacity-40 hover:bg-gray-100 dark:hover:bg-gray-700">›</button>
+                                </div>
+                            </div>
+                        {/if}
                     {/if}
                 {:else}
                     <!-- Top Customers -->
@@ -635,10 +666,10 @@ ${lines.map(l => l === divider ? '<div class="divider"></div>' : `<div${l === 'K
                         </div>
                     {:else}
                         <div class="space-y-4">
-                            {#each topCustomers as customer, index}
+                            {#each pagedCustomers as customer, index}
                                 <div class="flex items-center gap-4 p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
                                     <div class="w-10 h-10 rounded-full bg-purple-100 dark:bg-purple-900/30 flex items-center justify-center font-bold text-purple-600">
-                                        {customer.rank || index + 1}
+                                        {customer.rank || (customersPage - 1) * PAGE_SIZE + index + 1}
                                     </div>
                                     <div class="flex-1">
                                         <p class="font-medium text-gray-900 dark:text-white">{customer.name}</p>
@@ -651,6 +682,15 @@ ${lines.map(l => l === divider ? '<div class="divider"></div>' : `<div${l === 'K
                                 </div>
                             {/each}
                         </div>
+                        {#if topCustomers.length > 0}
+                            <div class="flex items-center justify-between mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
+                                <span class="text-sm text-gray-500">{t("common.page") || "ໜ້າ"} {customersPage}/{customersTotalPages}</span>
+                                <div class="flex gap-2">
+                                    <button onclick={() => customersPage = Math.max(1, customersPage - 1)} disabled={customersPage <= 1} class="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 disabled:opacity-40 hover:bg-gray-100 dark:hover:bg-gray-700">‹</button>
+                                    <button onclick={() => customersPage = Math.min(customersTotalPages, customersPage + 1)} disabled={customersPage >= customersTotalPages} class="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 disabled:opacity-40 hover:bg-gray-100 dark:hover:bg-gray-700">›</button>
+                                </div>
+                            </div>
+                        {/if}
                     {/if}
                 {/if}
             </div>

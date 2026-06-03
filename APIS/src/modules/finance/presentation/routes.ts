@@ -48,10 +48,35 @@ financeRoutes.get('/pl', authenticate, authorize('reports:financial'), branchFil
         ];
         if (tenantId && !isSuperAdmin) baseConds.push(eq(transactions.tenantId, tenantId));
 
-        // Branch scope
+        // Branch scope — validate the requested branch is within the caller's
+        // scope using path-aware rules (tenant-admin: any branch in tenant;
+        // HQ admin/manager: own branch + descendants via branch_path; branch
+        // user: own branch). This matches what the branches dropdown offers, so
+        // HQ users can drill into child branches instead of getting a 403.
         let effectiveBranchId: string | null = null;
         if (qBranchId && !isSuperAdmin) {
-            if (filter && filter.branchIds.length > 0 && !filter.branchIds.includes(String(qBranchId))) {
+            const reqBranch = await dbRead.query.branches.findFirst({
+                where: eq(branches.id, String(qBranchId)),
+                columns: { id: true, tenantId: true, branchPath: true },
+            });
+            const u = req.authUser!;
+            const sameTenant = !tenantId || reqBranch?.tenantId === tenantId;
+            let allowed = false;
+            if (reqBranch && sameTenant) {
+                const path = reqBranch.branchPath || '';
+                if (u.roleLevel <= 2) {
+                    // tenant admin — any branch within the (already-checked) tenant
+                    allowed = true;
+                } else if (u.roleLevel <= 4) {
+                    // HQ admin/manager — own branch + descendants via materialized path
+                    allowed = (u.accessibleBranchPaths || []).some(p => path === p || path.startsWith(p + '.'));
+                } else {
+                    // branch user — exact branch membership (branchPath is code-based,
+                    // so match by id, not by path-includes-uuid)
+                    allowed = (u.accessibleBranchIds || []).includes(reqBranch.id);
+                }
+            }
+            if (!allowed) {
                 return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
             }
             effectiveBranchId = String(qBranchId);
@@ -68,8 +93,8 @@ financeRoutes.get('/pl', authenticate, authorize('reports:financial'), branchFil
             .select({
                 branchId: transactions.branchId,
                 revenue: sum(transactions.total),
-                discount: sum(transactions.discount),
-                tax: sum(transactions.tax),
+                discount: sum(transactions.discountAmount),
+                tax: sum(transactions.taxAmount),
                 txCount: count(),
             })
             .from(transactions)
@@ -183,8 +208,8 @@ financeRoutes.get('/tax-summary', authenticate, authorize('reports:financial'), 
                 period: dateTrunc,
                 branchId: transactions.branchId,
                 grossSales: sum(transactions.total),
-                discount: sum(transactions.discount),
-                taxAmount: sum(transactions.tax),
+                discount: sum(transactions.discountAmount),
+                taxAmount: sum(transactions.taxAmount),
                 txCount: count(),
             })
             .from(transactions)

@@ -10,6 +10,7 @@ import { createServer, type Server as HttpServer } from 'http';
 import { Server as SocketServer } from 'socket.io';
 import { appConfig } from '@/config/app.config';
 import { isDatabaseConnected } from '@/config/database.config';
+import { isRedisAvailable } from '@/config/redis.config';
 import { errorHandler, notFoundHandler } from './middleware/error.middleware';
 import { requestLogger } from './middleware/logger.middleware';
 import { rateLimiter } from './middleware/rateLimit.middleware';
@@ -21,14 +22,25 @@ export class AppServer {
     private app: Application;
     private httpServer: HttpServer;
     private io: SocketServer;
+    private corsOrigins: string | string[];
 
     constructor() {
         this.app = express();
         this.httpServer = createServer(this.app);
+
+        // Guard: CORS_ORIGIN must be set to an explicit allow-list in production
+        if (appConfig.isProduction && !process.env.CORS_ORIGIN) {
+            throw new Error('CORS_ORIGIN env var must be set in production');
+        }
+        this.corsOrigins = appConfig.isProduction
+            ? (process.env.CORS_ORIGIN!.split(',').map(o => o.trim()))
+            : '*';
+
         this.io = new SocketServer(this.httpServer, {
             cors: {
-                origin: '*',
+                origin: this.corsOrigins,
                 methods: ['GET', 'POST'],
+                credentials: true,
             },
         });
 
@@ -39,21 +51,24 @@ export class AppServer {
     }
 
     private setupMiddleware(): void {
+        // BigInt → string so JSON.stringify never throws on bitmask fields
+        this.app.set('json replacer', (_key: string, value: unknown) =>
+            typeof value === 'bigint' ? value.toString() : value
+        );
+
         // Security
         this.app.use(helmet());
         this.app.use(cors({
-            origin: appConfig.isProduction
-                ? process.env.CORS_ORIGIN?.split(',')
-                : '*',
+            origin: this.corsOrigins,
             credentials: true,
         }));
 
         // Rate limiting
         this.app.use(rateLimiter);
 
-        // Body parsing + cookies
-        this.app.use(express.json({ limit: '50mb' }));
-        this.app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+        // Body parsing + cookies — tight global limit; upload routes override per-route
+        this.app.use(express.json({ limit: '2mb' }));
+        this.app.use(express.urlencoded({ extended: true, limit: '2mb' }));
         this.app.use(cookieParser());
 
         // Security: input sanitization + no-cache API headers
@@ -63,16 +78,18 @@ export class AppServer {
         // Logging
         this.app.use(requestLogger);
 
-        // Health check
+        // Health check — includes Redis; load balancers use this
         this.app.get('/health', (_, res) => {
-            const dbOk = isDatabaseConnected();
-            const status = dbOk ? 'ok' : 'degraded';
-            res.status(dbOk ? 200 : 503).json({
-                status,
-                timestamp: new Date().toISOString(),
+            const dbOk    = isDatabaseConnected();
+            const redisOk = isRedisAvailable();
+            const allOk   = dbOk && redisOk;
+            res.status(allOk ? 200 : 503).json({
+                status:      allOk ? 'ok' : 'degraded',
+                timestamp:   new Date().toISOString(),
                 environment: appConfig.env,
                 services: {
-                    database: dbOk ? 'connected' : 'disconnected',
+                    database: dbOk    ? 'connected' : 'disconnected',
+                    redis:    redisOk ? 'connected' : 'disconnected',
                 },
             });
         });

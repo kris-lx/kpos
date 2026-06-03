@@ -5,6 +5,15 @@
     import { cn } from "$utils";
     import { Eye, EyeOff, Store, Sun, Moon, Globe } from "lucide-svelte";
     import { toast } from "svelte-sonner";
+    import { browser } from "$app/environment";
+    import { LOCAL_STORAGE_KEYS } from "$lib/config";
+
+    // Clear any stale auth state so the login form always starts fresh
+    if (browser && !auth.isAuthenticated) {
+        localStorage.removeItem(LOCAL_STORAGE_KEYS.ACCESS_TOKEN);
+        localStorage.removeItem(LOCAL_STORAGE_KEYS.REFRESH_TOKEN);
+        localStorage.removeItem(LOCAL_STORAGE_KEYS.USER);
+    }
 
     let email = $state("");
     let password = $state("");

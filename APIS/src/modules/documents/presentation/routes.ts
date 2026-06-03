@@ -4,6 +4,7 @@
 
 import { Router } from 'express';
 import { authenticate, authorize, branchFilter, applyScopeFilter, ensureScopeAccess, buildScopeCondition, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { DEFAULT_SETTINGS } from '@/shared/constants';
 import { db } from '@/config/database.config';
 import { documents, settings } from '@/db/schema/tables';
 import { eq, and, or, ilike, isNull, gte, lte, desc, count, sql } from 'drizzle-orm';
@@ -731,7 +732,12 @@ documentRoutes.get('/settings', authenticate, async (req, res, next) => {
             return acc;
         }, {} as Record<string, unknown>);
 
-        // Default settings
+        // Load tax rate from pos settings if available
+        const posSettings = await db.query.settings.findFirst({
+            where: (s, { eq: eq2, and: and2 }) => and2(eq2(s.category, 'pos'), eq2(s.key, 'defaultTaxRate')),
+        });
+        const taxRate = posSettings ? Number(posSettings.value) : DEFAULT_SETTINGS.defaultTaxRate;
+
         const defaultSettings = {
             logo: '',
             companyName: '',
@@ -741,8 +747,8 @@ documentRoutes.get('/settings', authenticate, async (req, res, next) => {
             companyTaxId: '',
             invoicePrefix: 'INV',
             taxInvoicePrefix: 'TXI',
-            defaultTaxRate: 10,
-            footerText: 'ຂອບໃຈທີ່ໃຊ້ບໍລິການ',
+            defaultTaxRate: taxRate,
+            footerText: DEFAULT_SETTINGS.footerText,
             showLogo: true,
             showQRCode: false,
             paperSize: 'A4',

@@ -3,12 +3,16 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
+import multer from 'multer';
+import * as XLSX from 'xlsx';
 import { authenticate, authorize, branchFilter, applyScopeFilter, ensureScopeAccess, buildScopeCondition, buildBranchIdScope, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { db, dbRead } from '@/config/database.config';
 import { products, categories, priceLevels, productPriceLevels, skuVariants, inventory, productStores } from '@/db/schema/tables';
 import { eq, and, or, ne, ilike, inArray, isNotNull, isNull, desc, asc, count, sql } from 'drizzle-orm';
 
 export const productRoutes = Router();
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PRICE LEVEL ROUTES (Must be before /:id to avoid conflicts)
@@ -573,7 +577,7 @@ productRoutes.get('/lookup/:code', authenticate, async (req, res, next) => {
             lookupConds.push(eq(products.tenantId, tenantId));
         }
         const branchIds = req.authUser?.accessibleBranchIds || [];
-        if (branchIds.length > 0 && !req.authUser?.isSuperAdmin && req.authUser?.role !== 'admin') {
+        if (branchIds.length > 0 && !isAdmin(req)) {
             lookupConds.push(inArray(products.branchId, branchIds));
         }
 
@@ -951,6 +955,99 @@ productRoutes.delete('/:id', authenticate, authorize('products:delete'), async (
         await invalidateQueryCache('products*');
         await invalidateQueryCache('inventory*');
         res.json({ success: true, data: { message: 'Product deleted' } });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// IMPORT PRODUCTS FROM EXCEL
+// ═══════════════════════════════════════════════════════════════════════════
+productRoutes.post('/import/excel', authenticate, authorize('products:import'), upload.single('file'), async (req, res, next) => {
+    try {
+        if (!req.file) return res.status(400).json({ success: false, error: { code: 'BAD_REQUEST', message: 'No file uploaded' } });
+
+        // Magic byte validation: XLSX/XLS/CSV are ZIP-based (PK\x03\x04) or plaintext
+        const buf = req.file.buffer;
+        const isZipBased   = buf[0] === 0x50 && buf[1] === 0x4B && buf[2] === 0x03 && buf[3] === 0x04;
+        const isOldXLS     = buf[0] === 0xD0 && buf[1] === 0xCF && buf[2] === 0x11 && buf[3] === 0xE0;
+        const isCSVish     = req.file.originalname.toLowerCase().endsWith('.csv');
+        if (!isZipBased && !isOldXLS && !isCSVish) {
+            return res.status(400).json({ success: false, error: { code: 'INVALID_FILE', message: 'File must be a valid Excel (.xlsx, .xls) or CSV file' } });
+        }
+
+        const branchId = req.body.branchId || req.authUser?.activeBranchId || req.user!.branchId;
+        const tenantId = req.authUser?.isSuperAdmin ? undefined : req.authUser?.tenantId;
+
+        if (!branchId) return res.status(400).json({ success: false, error: { code: 'BAD_REQUEST', message: 'branchId is required' } });
+
+        const workbook = XLSX.read(buf, { type: 'buffer' });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const rows: any[] = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+
+        if (!rows.length) return res.status(400).json({ success: false, error: { code: 'BAD_REQUEST', message: 'Excel file is empty' } });
+
+        // Fetch categories for name→id lookup
+        const catRows = await db.query.categories.findMany({ columns: { id: true, name: true } });
+        const catMap = new Map(catRows.map(c => [c.name.toLowerCase().trim(), c.id]));
+
+        const created: any[] = [];
+        const errors: { row: number; message: string }[] = [];
+
+        for (let i = 0; i < rows.length; i++) {
+            const row = rows[i];
+            const rowNum = i + 2; // Excel row (1-indexed header)
+
+            const name = String(row['name'] || row['ຊື່ສິນຄ້າ'] || '').trim();
+            if (!name) { errors.push({ row: rowNum, message: 'name is required' }); continue; }
+
+            const price = parseFloat(row['price'] || row['ລາຄາຂາຍ'] || 0);
+            if (isNaN(price) || price < 0) { errors.push({ row: rowNum, message: 'invalid price' }); continue; }
+
+            const catName = String(row['category'] || row['ໝວດໝູ່'] || '').trim().toLowerCase();
+            const categoryId = catName ? (catMap.get(catName) ?? null) : null;
+
+            const productData: any = {
+                name,
+                sku: String(row['sku'] || row['SKU'] || '').trim() || null,
+                barcode: String(row['barcode'] || row['ບາໂຄດ'] || '').trim() || null,
+                price,
+                cost: parseFloat(row['cost'] || row['ລາຄາທຶນ'] || 0) || 0,
+                unit: String(row['unit'] || row['ໜ່ວຍ'] || 'piece').trim(),
+                categoryId,
+                branchId,
+                tenantId: tenantId ?? null,
+                isActive: true,
+                isVat: true,
+                vatRate: 7,
+                trackStock: true,
+                lowStockThreshold: parseInt(row['lowStockThreshold'] || 10),
+                allowDecimal: false,
+                sortOrder: 0,
+                tags: [],
+            };
+
+            try {
+                const [inserted] = await db.insert(products).values(productData).returning();
+                created.push(inserted);
+            } catch (e: any) {
+                errors.push({ row: rowNum, message: e.message ?? 'Insert failed' });
+            }
+        }
+
+        if (created.length) {
+            await invalidateQueryCache('products*');
+            await invalidateQueryCache('inventory*');
+        }
+
+        res.json({
+            success: true,
+            data: {
+                total: rows.length,
+                created: created.length,
+                errors,
+            }
+        });
     } catch (error) {
         next(error);
     }

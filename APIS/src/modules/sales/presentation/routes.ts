@@ -115,21 +115,71 @@ salesRoutes.post('/', authenticate, async (req, res, next) => {
             if (method) { methodId = method.id; methodName = method.name; }
         }
 
-        // BE-52: Create transaction with tenantId
-        const [transaction] = await db.insert(transactions).values({
-            tenantId: saleTenantId,
-            transactionNo, type: 'SALE', status: 'COMPLETED', branchId, storeId, userId, customerId, memberId, orderType,
-            subtotal, discountType, discountValue, discountAmount, taxAmount, total: totalAmount, received: totalAmount, change: 0, note: notes,
-        }).returning();
+        // ── Atomic write: transaction + items + payment + inventory deduction ──
+        const transaction = await db.transaction(async (tx) => {
+            // 1. Pre-check stock for all tracked items (read with row lock)
+            for (const item of items) {
+                const product = txItems.find(t => t.productId === item.productId);
+                if (!product) continue;
+                const inv = await tx.query.inventory.findFirst({
+                    where: and(eq(inventory.productId, item.productId), eq(inventory.branchId, branchId)),
+                    // Acquire row-level lock to prevent concurrent oversell
+                    ...({ for: 'update' } as any),
+                });
+                if (inv && inv.quantity < item.quantity) {
+                    throw Object.assign(new Error(`Insufficient stock for product ${item.productId}`), { statusCode: 400, code: 'INSUFFICIENT_STOCK' });
+                }
+            }
 
-        // BE-53: Create items with tenantId
-        if (txItems.length > 0) {
-            await db.insert(transactionItems).values(txItems.map(ti => ({ ...ti, transactionId: transaction.id, tenantId: saleTenantId })));
-        }
+            // 2. Insert transaction
+            const [newTransaction] = await tx.insert(transactions).values({
+                tenantId: saleTenantId,
+                transactionNo, type: 'SALE', status: 'COMPLETED', branchId, storeId, userId, customerId, memberId, orderType,
+                subtotal: Math.round(subtotal * 100) / 100,
+                discountType, discountValue,
+                discountAmount: Math.round(discountAmount * 100) / 100,
+                taxAmount: Math.round(taxAmount * 100) / 100,
+                total: Math.round(totalAmount * 100) / 100,
+                received: Math.round(totalAmount * 100) / 100,
+                change: 0, note: notes,
+            }).returning();
 
-        // Create payment
-        if (methodId) {
-            await db.insert(transactionPayments).values({ transactionId: transaction.id, methodId, methodName, amount: totalAmount });
+            // 3. Insert items
+            if (txItems.length > 0) {
+                await tx.insert(transactionItems).values(txItems.map(ti => ({ ...ti, transactionId: newTransaction.id, tenantId: saleTenantId })));
+            }
+
+            // 4. Insert payment
+            if (methodId) {
+                await tx.insert(transactionPayments).values({ transactionId: newTransaction.id, methodId, methodName, amount: Math.round(totalAmount * 100) / 100 });
+            }
+
+            // 5. Deduct inventory synchronously (RabbitMQ deduction happens outside tx below)
+            for (const item of items) {
+                const inv = await tx.query.inventory.findFirst({ where: and(eq(inventory.productId, item.productId), eq(inventory.branchId, branchId)) });
+                if (inv) {
+                    const previousQty = inv.quantity;
+                    const newQty = Math.max(0, previousQty - item.quantity);
+                    await tx.update(inventory).set({ quantity: newQty, available: Math.max(0, newQty - (inv.reserved ?? 0)) }).where(eq(inventory.id, inv.id));
+                    await tx.insert(stockMovements).values({
+                        tenantId: saleTenantId,
+                        productId: item.productId, branchId, storeId, type: 'OUT',
+                        quantity: item.quantity, previousQty, newQty,
+                        reason: 'Sale', reference: newTransaction.id, referenceType: 'SALE', userId,
+                    });
+                }
+            }
+
+            return newTransaction;
+        });
+
+        // Publish async events after commit (best-effort, non-blocking)
+        for (const item of items) {
+            publish(QUEUES.STOCK_MOVEMENT, {
+                productId: item.productId, branchId, storeId, type: 'OUT',
+                quantity: item.quantity, reason: 'Sale', reference: transaction.id,
+                referenceType: 'SALE', userId,
+            });
         }
 
         // Fetch full transaction with relations
@@ -137,36 +187,6 @@ salesRoutes.post('/', authenticate, async (req, res, next) => {
             where: eq(transactions.id, transaction.id),
             with: { items: { with: { product: true } }, customer: true, payments: true },
         });
-
-        // Publish stock deduction to RabbitMQ (async) or fall back to sync
-        for (const item of items) {
-            const published = publish(QUEUES.STOCK_MOVEMENT, {
-                productId: item.productId,
-                branchId,
-                storeId,
-                type: 'OUT',
-                quantity: item.quantity,
-                reason: 'Sale',
-                reference: transaction.id,
-                referenceType: 'SALE',
-                userId,
-            });
-
-            if (!published) {
-                const inv = await db.query.inventory.findFirst({ where: and(eq(inventory.productId, item.productId), eq(inventory.branchId, branchId)) });
-                if (inv) {
-                    const previousQty = inv.quantity;
-                    const newQty = previousQty - item.quantity;
-                    await db.update(inventory).set({ quantity: newQty, available: newQty - inv.reserved }).where(eq(inventory.id, inv.id));
-                    await db.insert(stockMovements).values({
-                        tenantId: saleTenantId,
-                        productId: item.productId, branchId, storeId, type: 'OUT',
-                        quantity: item.quantity, previousQty, newQty,
-                        reason: 'Sale', reference: transaction.id, referenceType: 'SALE', userId,
-                    });
-                }
-            }
-        }
 
         // Invalidate dashboard & inventory caches after sale
         invalidateQueryCache('dashboard*').catch(() => {});
@@ -303,21 +323,29 @@ salesRoutes.post('/:id([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{
             return res.status(400).json({ success: false, error: { code: 'ALREADY_VOIDED', message: 'Transaction already voided' } });
         }
 
-        await db.update(transactions).set({ status: 'VOIDED', voidReason: reason }).where(eq(transactions.id, req.params.id));
+        // Atomic void: status update + inventory restore in one transaction
+        await db.transaction(async (tx) => {
+            // Optimistic check: only update if still COMPLETED (prevents double-void race)
+            const [updated] = await tx.update(transactions)
+                .set({ status: 'VOIDED', voidReason: reason })
+                .where(and(eq(transactions.id, req.params.id), eq(transactions.status, 'COMPLETED')))
+                .returning({ id: transactions.id });
+            if (!updated) throw Object.assign(new Error('Already voided or not in COMPLETED state'), { statusCode: 409, code: 'CONFLICT' });
 
-        for (const item of transaction.items) {
-            const inv = await db.query.inventory.findFirst({ where: and(eq(inventory.productId, item.productId), eq(inventory.branchId, transaction.branchId)) });
-            if (inv) {
-                const previousQty = inv.quantity;
-                const newQty = previousQty + item.quantity;
-                await db.update(inventory).set({ quantity: newQty, available: newQty - inv.reserved }).where(eq(inventory.id, inv.id));
-                await db.insert(stockMovements).values({
-                    productId: item.productId, branchId: transaction.branchId, type: 'IN',
-                    quantity: item.quantity, previousQty, newQty,
-                    reason: `Void: ${reason || 'No reason provided'}`, reference: transaction.id, referenceType: 'VOID', userId: req.authUser?.userId || req.user?.userId || '',
-                });
+            for (const item of transaction.items) {
+                const inv = await tx.query.inventory.findFirst({ where: and(eq(inventory.productId, item.productId), eq(inventory.branchId, transaction.branchId)) });
+                if (inv) {
+                    const previousQty = inv.quantity;
+                    const newQty = previousQty + item.quantity;
+                    await tx.update(inventory).set({ quantity: newQty, available: newQty - (inv.reserved ?? 0) }).where(eq(inventory.id, inv.id));
+                    await tx.insert(stockMovements).values({
+                        productId: item.productId, branchId: transaction.branchId, type: 'IN',
+                        quantity: item.quantity, previousQty, newQty,
+                        reason: `Void: ${reason || 'No reason provided'}`, reference: transaction.id, referenceType: 'VOID', userId: req.authUser?.userId || req.user?.userId || '',
+                    });
+                }
             }
-        }
+        });
 
         // Invalidate caches after void
         invalidateQueryCache('dashboard*').catch(() => {});
@@ -372,35 +400,50 @@ salesRoutes.post('/:id([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{
         const transactionNo = `REF-${transaction.branchId.slice(-4)}-${today}-${String(refCnt + 1).padStart(4, '0')}`;
 
         const refundTenantId = req.authUser?.tenantId || req.user?.tenantId;
-        const [refund] = await db.insert(transactions).values({
-            tenantId: refundTenantId,
-            transactionNo, type: 'REFUND', status: 'COMPLETED', branchId: transaction.branchId,
-            userId: req.authUser?.userId || req.user?.userId || '', customerId: transaction.customerId, memberId: transaction.memberId,
-            orderType: transaction.orderType, subtotal: -refundAmount, discountAmount: 0, taxAmount: 0,
-            total: -refundAmount, received: 0, change: refundAmount, refundReason: reason, parentId: transaction.id,
-        }).returning();
+        const userId = req.authUser?.userId || req.user?.userId || '';
 
-        await db.insert(transactionItems).values(itemsToRefund.map((item: any) => ({
-            transactionId: refund.id, productId: item.productId, productName: item.productName,
-            quantity: -item.quantity, unitPrice: item.unitPrice, cost: item.cost || 0,
-            total: -(item.total || (item.unitPrice * item.quantity)),
-        })));
+        // Atomic refund: parent status + refund record + items + inventory restore
+        const refund = await db.transaction(async (tx) => {
+            // Lock parent first (prevent double-refund race)
+            const [parentLocked] = await tx.update(transactions)
+                .set({ status: 'REFUNDED' })
+                .where(and(eq(transactions.id, req.params.id), eq(transactions.status, 'COMPLETED')))
+                .returning({ id: transactions.id });
+            if (!parentLocked) throw Object.assign(new Error('Transaction not in COMPLETED state — already refunded?'), { statusCode: 409, code: 'CONFLICT' });
 
-        for (const item of itemsToRefund) {
-            const inv = await db.query.inventory.findFirst({ where: and(eq(inventory.productId, item.productId), eq(inventory.branchId, transaction.branchId)) });
-            if (inv) {
-                const previousQty = inv.quantity;
-                const newQty = previousQty + item.quantity;
-                await db.update(inventory).set({ quantity: newQty, available: newQty - inv.reserved }).where(eq(inventory.id, inv.id));
-                await db.insert(stockMovements).values({
-                    productId: item.productId, branchId: transaction.branchId, type: 'IN',
-                    quantity: item.quantity, previousQty, newQty,
-                    reason: `Refund: ${reason || 'No reason provided'}`, reference: refund.id, referenceType: 'REFUND', userId: req.authUser?.userId || req.user?.userId || '',
-                });
+            const [refundRecord] = await tx.insert(transactions).values({
+                tenantId: refundTenantId,
+                transactionNo, type: 'REFUND', status: 'COMPLETED', branchId: transaction.branchId,
+                userId, customerId: transaction.customerId, memberId: transaction.memberId,
+                orderType: transaction.orderType,
+                subtotal:       Math.round(-refundAmount * 100) / 100,
+                discountAmount: 0, taxAmount: 0,
+                total:          Math.round(-refundAmount * 100) / 100,
+                received: 0, change: Math.round(refundAmount * 100) / 100,
+                refundReason: reason, parentId: transaction.id,
+            }).returning();
+
+            await tx.insert(transactionItems).values(itemsToRefund.map((item: any) => ({
+                transactionId: refundRecord.id, productId: item.productId, productName: item.productName,
+                quantity: -item.quantity, unitPrice: item.unitPrice, cost: item.cost || 0,
+                total: Math.round(-(item.total || (item.unitPrice * item.quantity)) * 100) / 100,
+            })));
+
+            for (const item of itemsToRefund) {
+                const inv = await tx.query.inventory.findFirst({ where: and(eq(inventory.productId, item.productId), eq(inventory.branchId, transaction.branchId)) });
+                if (inv) {
+                    const previousQty = inv.quantity;
+                    const newQty = previousQty + item.quantity;
+                    await tx.update(inventory).set({ quantity: newQty, available: newQty - (inv.reserved ?? 0) }).where(eq(inventory.id, inv.id));
+                    await tx.insert(stockMovements).values({
+                        productId: item.productId, branchId: transaction.branchId, type: 'IN',
+                        quantity: item.quantity, previousQty, newQty,
+                        reason: `Refund: ${reason || 'No reason provided'}`, reference: refundRecord.id, referenceType: 'REFUND', userId,
+                    });
+                }
             }
-        }
-
-        await db.update(transactions).set({ status: 'REFUNDED' }).where(eq(transactions.id, req.params.id));
+            return refundRecord;
+        });
 
         const fullRefund = await db.query.transactions.findFirst({ where: eq(transactions.id, refund.id), with: { items: true } });
         res.json({ success: true, data: fullRefund });
@@ -1029,10 +1072,21 @@ salesRoutes.post('/credit/:id/payment', authenticate, async (req, res, next) => 
         if (!ensureScopeAccess(transaction, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this transaction' } });
         if (!transaction.isCredit) return res.status(400).json({ success: false, error: { code: 'NOT_CREDIT', message: 'Transaction is not a credit sale' } });
 
-        const remaining = transaction.total - transaction.paidAmount;
+        // Validate payment amount
+        if (!amount || amount <= 0) return res.status(400).json({ success: false, error: { code: 'INVALID_AMOUNT', message: 'Payment amount must be greater than 0' } });
+
+        const remaining = Math.round((transaction.total - transaction.paidAmount) * 100) / 100;
         if (amount > remaining) return res.status(400).json({ success: false, error: { code: 'AMOUNT_EXCEEDS', message: 'Payment amount exceeds remaining balance' } });
 
-        const newPaidAmount = transaction.paidAmount + amount;
+        // Idempotency: reject duplicate reference within the same transaction
+        if (reference) {
+            const dup = await db.query.transactionPayments.findFirst({
+                where: and(eq(transactionPayments.transactionId, transactionId), eq(transactionPayments.reference, reference)),
+            });
+            if (dup) return res.json({ success: true, data: dup, idempotent: true });
+        }
+
+        const newPaidAmount = Math.round((transaction.paidAmount + amount) * 100) / 100;
         const newStatus = newPaidAmount >= transaction.total ? 'PAID' : 'PARTIAL';
 
         const [updated] = await db.update(transactions).set({ paidAmount: newPaidAmount, creditStatus: newStatus }).where(eq(transactions.id, transactionId)).returning();

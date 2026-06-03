@@ -593,7 +593,7 @@ reportRoutes.get('/products', authenticate, branchFilter(), async (req, res, nex
 // ═══════════════════════════════════════════════════════════════════════════
 // FINANCIAL REPORT
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/financial', authenticate, branchFilter(), async (req, res, next) => {
+reportRoutes.get('/financial', authenticate, authorize('reports:financial'), branchFilter(), async (req, res, next) => {
     try {
         const { period = 'month' } = req.query;
         const filter = req.branchFilter;

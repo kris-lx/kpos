@@ -4,10 +4,10 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, ROLE_LEVELS } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, ROLE_LEVELS, invalidateRoleRulesCache } from '@/infrastructure/http/middleware/auth.middleware';
 import { db } from '@/config/database.config';
-import { rules, roleRules } from '@/db/schema/tables';
-import { eq, and, or, isNull, ilike, desc, asc } from 'drizzle-orm';
+import { rules, roleRules, roles } from '@/db/schema/tables';
+import { eq, and, or, isNull, ilike, desc, asc, inArray } from 'drizzle-orm';
 
 export const rulesRoutes = Router();
 
@@ -142,8 +142,18 @@ rulesRoutes.delete('/:id', authenticate, authorize('roles:delete'), async (req, 
 // GET /rules/:id/role-rules — get all role assignments for a rule
 rulesRoutes.get('/:id/role-rules', authenticate, authorize('roles:read'), async (req, res, next) => {
     try {
+        const authUser = req.authUser!;
+        const tenantId = authUser.tenantId;
+
+        // R2: only expose role-rule assignments within the caller's tenant — a
+        // system rule (tenantId NULL) otherwise leaks other tenants' role names.
+        const conds: any[] = [eq(roleRules.ruleId, req.params.id)];
+        if (!authUser.isSuperAdmin && tenantId) {
+            conds.push(eq(roleRules.tenantId, tenantId));
+        }
+
         const rows = await db.query.roleRules.findMany({
-            where: eq(roleRules.ruleId, req.params.id),
+            where: and(...conds),
             with: { role: { columns: { id: true, name: true, displayName: true } } },
         });
         res.json({ success: true, data: rows });
@@ -164,6 +174,30 @@ rulesRoutes.put('/role-rules/assign', authenticate, authorize('roles:update'), a
         const authUser = req.authUser!;
         const tenantId = authUser.tenantId;
 
+        // R1: the target role must belong to the caller's tenant (super admin: any).
+        // role_rules drive authorizeRule() CRUD, so this prevents granting effective
+        // permissions to another tenant's role.
+        const roleConds: any[] = [eq(roles.id, roleId)];
+        if (!authUser.isSuperAdmin && tenantId) roleConds.push(eq(roles.tenantId, tenantId));
+        const role = await db.query.roles.findFirst({ where: and(...roleConds) });
+        if (!role) {
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Role not found or no access' } });
+        }
+
+        // R1: every ruleId must resolve to a tenant-owned or system (tenantId NULL) rule.
+        const ruleIds = [...new Set(assignments.map((a: any) => a.ruleId).filter(Boolean))];
+        if (ruleIds.length > 0) {
+            const ruleConds: any[] = [inArray(rules.id, ruleIds as string[])];
+            if (!authUser.isSuperAdmin && tenantId) ruleConds.push(or(eq(rules.tenantId, tenantId), isNull(rules.tenantId)));
+            const validRules = await db.query.rules.findMany({ where: and(...ruleConds), columns: { id: true } });
+            if (validRules.length !== ruleIds.length) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'One or more rules are not accessible' } });
+            }
+        }
+
+        // Own the assignment by the role's tenant (not the raw caller tenant).
+        const rrTenantId = role.tenantId ?? tenantId;
+
         for (const a of assignments) {
             const existing = await db.query.roleRules.findFirst({
                 where: and(eq(roleRules.roleId, roleId), eq(roleRules.ruleId, a.ruleId)),
@@ -175,7 +209,7 @@ rulesRoutes.put('/role-rules/assign', authenticate, authorize('roles:update'), a
                     .where(eq(roleRules.id, existing.id));
             } else {
                 await db.insert(roleRules).values({
-                    tenantId,
+                    tenantId: rrTenantId,
                     roleId,
                     ruleId: a.ruleId,
                     canRead: a.canRead ?? true,
@@ -185,6 +219,9 @@ rulesRoutes.put('/role-rules/assign', authenticate, authorize('roles:update'), a
                 });
             }
         }
+
+        // Role permissions changed → invalidate cached role-rules for this role.
+        invalidateRoleRulesCache(roleId).catch(() => {});
 
         res.json({ success: true, data: { message: 'Rules assigned' } });
     } catch (error) {

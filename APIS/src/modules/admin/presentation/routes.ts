@@ -3,11 +3,14 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, requireSuperAdmin, requireAdmin, requireTenantAdmin, isSuperAdmin, isAdmin, invalidateRoleRulesCache, invalidateAllUserStoreCache, invalidateUserStoreCache, branchFilter, buildTenantCondition } from '@/infrastructure/http/middleware/auth.middleware';
+import { totalmem, freemem } from 'os';
+import { authenticate, requireSuperAdmin, requireAdmin, requireTenantAdmin, isSuperAdmin, isAdmin, invalidateRoleRulesCache, invalidateAllUserStoreCache, invalidateUserStoreCache, branchFilter, buildTenantCondition, ROLE_LEVELS } from '@/infrastructure/http/middleware/auth.middleware';
+import { permissionsToMask } from '@/infrastructure/permissions';
+import { invalidateAllTenantPermissions } from '@/infrastructure/services/permission.service';
 import { db } from '@/config/database.config';
 import { publish, QUEUES, isRabbitMQConnected } from '@/config/rabbitmq.config';
 import argon2 from 'argon2';
-import { tenants, users, sessions, roles, rules, roleRules, permissionGroups, permissions, menuPermissions, stores, userStores, productStores, storeRequests, branches, activityLogs, transactions, transactionItems, transactionPayments, heldSales, orders, orderItems, reservations, tables, cashMovements, shifts, cashRegisters, stockTransferItems, stockTransfers, stockMovements, stockCounts, stockCountItems, inventory, purchaseOrderItems, purchaseOrders, vendors, billOfMaterials, productPriceLevels, skuVariants, products, categories, priceLevels, pointsHistory, customers, pointHistory, members, membershipTiers, pointSettings, promotions, coupons, paymentMethods, discounts, systemEnums } from '@/db/schema/tables';
+import { tenants, users, sessions, roles, rules, roleRules, permissionGroups, permissions, menuPermissions, stores, userStores, productStores, storeRequests, branches, activityLogs, transactions, transactionItems, transactionPayments, heldSales, orders, orderItems, reservations, tables, cashMovements, shifts, cashRegisters, stockTransferItems, stockTransfers, stockMovements, stockCounts, stockCountItems, inventory, purchaseOrderItems, purchaseOrders, vendors, billOfMaterials, productPriceLevels, skuVariants, products, categories, priceLevels, pointsHistory, customers, pointHistory, members, membershipTiers, pointSettings, promotions, coupons, paymentMethods, discounts, settlements, documents, documentTemplates, settings, notifications, systemEnums } from '@/db/schema/tables';
 import { eq, and, or, ne, ilike, inArray, notInArray, gte, lte, desc, asc, count, sum, sql, isNull, isNotNull } from 'drizzle-orm';
 import { ENUM_SEED_DATA } from '@/modules/settings/presentation/routes';
 
@@ -38,32 +41,12 @@ adminRoutes.post('/register-and-apply', async (req, res, next) => {
             documents,
         } = req.body;
 
-        // Validate required fields
+        // Validate all required fields AND password length BEFORE touching Cloudinary
         if (!name || !email || !password || !storeName || !storeCode) {
             return res.status(400).json({
                 success: false,
                 error: { code: 'VALIDATION_ERROR', message: 'name, email, password, storeName, storeCode are required' }
             });
-        }
-
-        // Upload documents (base64) to cloud storage if provided
-        let documentUrls: string[] = [];
-        if (Array.isArray(documents) && documents.length > 0) {
-            try {
-                const { uploadService } = await import('@/infrastructure/services/upload.service');
-                for (const doc of documents) {
-                    const base64Data = typeof doc === 'string' ? doc : doc?.data;
-                    if (base64Data) {
-                        const result = await uploadService.uploadSingle(base64Data, {
-                            folder: 'kpos/kyc-documents',
-                            resourceType: 'auto',
-                        });
-                        if (result?.url) documentUrls.push(result.url);
-                    }
-                }
-            } catch (uploadErr) {
-                console.warn('[Register] Document upload failed (non-blocking):', uploadErr instanceof Error ? uploadErr.message : uploadErr);
-            }
         }
 
         if (password.length < 8) {
@@ -73,13 +56,46 @@ adminRoutes.post('/register-and-apply', async (req, res, next) => {
             });
         }
 
-        // Check email uniqueness
+        // Check email uniqueness before uploading files
         const existing = await db.query.users.findFirst({ where: eq(users.email, String(email).toLowerCase()) });
         if (existing) {
             return res.status(409).json({
                 success: false,
                 error: { code: 'EMAIL_EXISTS', message: 'Email already registered' }
             });
+        }
+
+        // Upload documents to Cloudinary. Must happen after all validation passes so
+        // we never orphan files in the cloud on a rejected request.
+        // If Cloudinary is not configured or the upload fails, we store an empty array
+        // instead of falling back to bare filenames (which would be unviewable in the UI).
+        let documentUrls: string[] = [];
+        if (Array.isArray(documents) && documents.length > 0) {
+            try {
+                const { uploadService } = await import('@/infrastructure/services/upload.service');
+                const uploadErrors: string[] = [];
+                for (const doc of documents) {
+                    const base64Data = typeof doc === 'string' ? doc : doc?.data;
+                    if (base64Data) {
+                        try {
+                            const result = await uploadService.uploadSingle(base64Data, {
+                                folder: 'kpos/kyc-documents',
+                                resourceType: 'auto',
+                            });
+                            if (result?.url) documentUrls.push(result.url);
+                        } catch (singleErr) {
+                            const fname = typeof doc === 'object' ? (doc?.name || 'file') : 'file';
+                            uploadErrors.push(fname);
+                            console.warn(`[Register] Failed to upload doc "${fname}":`, singleErr instanceof Error ? singleErr.message : singleErr);
+                        }
+                    }
+                }
+                if (uploadErrors.length > 0) {
+                    console.warn(`[Register] ${uploadErrors.length}/${documents.length} documents failed to upload:`, uploadErrors);
+                }
+            } catch (uploadErr) {
+                console.warn('[Register] Document upload skipped (Cloudinary not configured or error):', uploadErr instanceof Error ? uploadErr.message : uploadErr);
+            }
         }
 
         const hashedPassword = await argon2.hash(String(password));
@@ -106,7 +122,9 @@ adminRoutes.post('/register-and-apply', async (req, res, next) => {
                 storePhone: storePhone ? String(storePhone) : undefined,
                 storeEmail: storeEmail ? String(storeEmail) : undefined,
                 reason: reason ? String(reason) : undefined,
-                documents: documentUrls.length > 0 ? documentUrls : (Array.isArray(documents) ? documents.map((d: any) => typeof d === 'string' ? d : d?.name || 'document').filter(Boolean) : []),
+                // Only store actual Cloudinary URLs — never fall back to bare filenames
+                // (which would be unviewable in the admin review UI).
+                documents: documentUrls,
                 metadata: {
                     businessType: businessType || 'retail',
                     ownerIdType: ownerIdType || 'national_id',
@@ -281,6 +299,18 @@ adminRoutes.post('/requests/:id/approve', authenticate, requireAdmin(), async (r
             });
         }
 
+        // F3: Approval gating.
+        // - new_store / new_tenant CREATE a brand-new tenant → platform-level, super admin only.
+        // - new_branch must belong to the approver's own tenant.
+        if (!req.authUser?.isSuperAdmin) {
+            if (request.type === 'new_store' || request.type === 'new_tenant') {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Only a super admin can approve new store/tenant registrations' } });
+            }
+            if (request.tenantId && request.tenantId !== req.authUser?.tenantId) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this request' } });
+            }
+        }
+
         // Process based on request type
         let createdEntity: any = null;
         let createdTenant: any = null;
@@ -292,8 +322,25 @@ adminRoutes.post('/requests/:id/approve', authenticate, requireAdmin(), async (r
             // If the request already has a tenantId (e.g. existing merchant adding a branch), use that
             if (request.tenantId) tenantId = request.tenantId;
 
+            // Compute materialized branchPath. A new branch is parented under the
+            // tenant's main (HQ) branch when one exists, else it becomes a root.
+            let parentBranchId: string | null = null;
+            let branchPath = request.branchCode;
+            if (tenantId) {
+                const mainBranch = await db.query.branches.findFirst({
+                    where: and(eq(branches.tenantId, tenantId), eq(branches.isMain, true)),
+                    columns: { id: true, branchPath: true },
+                });
+                if (mainBranch?.branchPath) {
+                    parentBranchId = mainBranch.id;
+                    branchPath = `${mainBranch.branchPath}.${request.branchCode}`;
+                }
+            }
+
             const [br] = await db.insert(branches).values({
                 tenantId,
+                parentBranchId,
+                branchPath,
                 name: request.branchName, code: request.branchCode,
                 address: request.branchAddress, phone: request.branchPhone, email: request.branchEmail, isActive: true,
             }).returning();
@@ -330,12 +377,15 @@ adminRoutes.post('/requests/:id/approve', authenticate, requireAdmin(), async (r
             createdTenant = newTenant;
             const tenantId = newTenant.id;
 
-            // Create default branch under the new tenant
+            // Create default (HQ) branch under the new tenant. It is the root of the
+            // tenant's branch tree, so its materialized path is just its own code.
             let targetBranchId = request.branchId;
             if (!targetBranchId || targetBranchId === '') {
+                const hqCode = `BR-${request.storeCode}`;
                 const [defaultBranch] = await db.insert(branches).values({
                     tenantId,
-                    name: `${request.storeName} - ສາຂາຫຼັກ`, code: `BR-${request.storeCode}`,
+                    name: `${request.storeName} - ສາຂາຫຼັກ`, code: hqCode,
+                    branchPath: hqCode,
                     address: request.storeAddress, phone: request.storePhone, email: request.storeEmail,
                     isActive: true, isMain: true,
                 }).returning();
@@ -457,6 +507,17 @@ adminRoutes.post('/requests/:id/reject', authenticate, requireAdmin(), async (re
             });
         }
 
+        // F3: new_store/new_tenant belong to the platform registration queue (super admin);
+        // new_branch rejections are limited to the approver's own tenant.
+        if (!req.authUser?.isSuperAdmin) {
+            if (request.type === 'new_store' || request.type === 'new_tenant') {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Only a super admin can process new store/tenant registrations' } });
+            }
+            if (request.tenantId && request.tenantId !== req.authUser?.tenantId) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this request' } });
+            }
+        }
+
         if (request.status !== 'pending') {
             return res.status(400).json({
                 success: false,
@@ -547,7 +608,7 @@ adminRoutes.get('/branches', authenticate, requireTenantAdmin(), branchFilter(),
  */
 adminRoutes.post('/branches', authenticate, requireTenantAdmin(), async (req, res, next) => {
     try {
-        const { name, code, address, phone, email, taxId, logo, isMain, settings } = req.body;
+        const { name, code, address, phone, email, taxId, logo, isMain, settings, parentBranchId } = req.body;
 
         if (!name || !String(name).trim()) {
             return res.status(400).json({ success: false, error: { code: 'VALIDATION', message: 'Branch name is required' } });
@@ -556,7 +617,12 @@ adminRoutes.post('/branches', authenticate, requireTenantAdmin(), async (req, re
             return res.status(400).json({ success: false, error: { code: 'VALIDATION', message: 'Branch code is required' } });
         }
 
-        const existing = await db.query.branches.findFirst({ where: eq(branches.code, String(code).trim()) });
+        const tenantId = req.authUser?.tenantId || req.user?.tenantId;
+        const trimmedCode = String(code).trim();
+
+        const dupConds: any[] = [eq(branches.code, trimmedCode)];
+        if (tenantId) dupConds.push(eq(branches.tenantId, tenantId));
+        const existing = await db.query.branches.findFirst({ where: and(...dupConds) });
         if (existing) {
             return res.status(400).json({
                 success: false,
@@ -565,13 +631,25 @@ adminRoutes.post('/branches', authenticate, requireTenantAdmin(), async (req, re
         }
 
         if (isMain) {
-            await db.update(branches).set({ isMain: false }).where(eq(branches.isMain, true));
+            await db.update(branches).set({ isMain: false })
+                .where(and(eq(branches.isMain, true), ...(tenantId ? [eq(branches.tenantId, tenantId)] : [])));
         }
 
-        const tenantId = req.authUser?.tenantId || req.user?.tenantId;
+        // Compute materialized branchPath: parent.path + '.' + code, or code for a root.
+        let branchPath = trimmedCode;
+        if (parentBranchId) {
+            const parent = await db.query.branches.findFirst({
+                where: eq(branches.id, parentBranchId),
+                columns: { branchPath: true },
+            });
+            if (parent?.branchPath) branchPath = `${parent.branchPath}.${trimmedCode}`;
+        }
+
         const [branch] = await db.insert(branches).values({
             tenantId,
-            name: String(name).trim(), code: String(code).trim(),
+            parentBranchId: parentBranchId || null,
+            branchPath,
+            name: String(name).trim(), code: trimmedCode,
             address: address || undefined, phone: phone || undefined, email: email || undefined,
             taxId: taxId || undefined, logo: logo || undefined,
             isMain: isMain || false, settings: settings || {},
@@ -881,6 +959,30 @@ adminRoutes.get('/stores/:id/users', authenticate, async (req, res, next) => {
  */
 adminRoutes.put('/stores/:id/update', authenticate, async (req, res, next) => {
     try {
+        const authUser = req.authUser!;
+
+        // Ownership/tenant guard: the target store must belong to the caller's tenant,
+        // and non-admins must have manage access to it. Prevents cross-tenant edits.
+        const target = await db.query.stores.findFirst({
+            where: eq(stores.id, req.params.id),
+            columns: { id: true, tenantId: true },
+        });
+        if (!target) {
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Store not found' } });
+        }
+        if (!authUser.isSuperAdmin) {
+            if (target.tenantId && target.tenantId !== authUser.tenantId) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this store' } });
+            }
+            // Branch/store-level users must have manage rights on this specific store.
+            if (authUser.roleLevel > 2) {
+                const access = authUser.accessibleStores.find(s => s.storeId === req.params.id);
+                if (!access?.canManage) {
+                    return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No manage access to this store' } });
+                }
+            }
+        }
+
         const { name, address, phone, email, description, settings } = req.body;
         const updateData: Record<string, unknown> = {};
         if (name !== undefined) updateData.name = name;
@@ -891,9 +993,6 @@ adminRoutes.put('/stores/:id/update', authenticate, async (req, res, next) => {
         if (settings !== undefined) updateData.settings = settings;
 
         const [store] = await db.update(stores).set(updateData).where(eq(stores.id, req.params.id)).returning();
-        if (!store) {
-            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Store not found' } });
-        }
         res.json({ success: true, data: store });
     } catch (error: any) {
         next(error);
@@ -1252,7 +1351,7 @@ adminRoutes.get('/users', authenticate, requireTenantAdmin(), branchFilter(), as
 /**
  * PUT /admin/users/:id/super-admin - Toggle Super Admin status
  */
-adminRoutes.put('/users/:id/super-admin', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.put('/users/:id/super-admin', authenticate, requireSuperAdmin(), async (req, res, next) => {
     try {
         const { id } = req.params;
         const { isSuperAdmin: newStatus } = req.body;
@@ -1497,7 +1596,9 @@ adminRoutes.get('/roles', authenticate, requireTenantAdmin(), async (req, res, n
  * MUST be before /roles/:id to prevent Express matching 'templates' as :id
  */
 adminRoutes.get('/roles/templates', authenticate, requireTenantAdmin(), async (req, res) => {
-    res.json({ success: true, data: DEFAULT_ROLES });
+    // Add a stable id so frontend keyed-each blocks don't crash on undefined
+    const templates = DEFAULT_ROLES.map(r => ({ ...r, id: r.name }));
+    res.json({ success: true, data: templates });
 });
 
 /**
@@ -1509,16 +1610,20 @@ adminRoutes.post('/roles/seed', authenticate, requireAdmin(), async (req, res, n
         const results = [];
 
         for (const roleData of DEFAULT_ROLES) {
+            const mask = permissionsToMask(roleData.permissions);
             const existing = await db.query.roles.findFirst({ where: eq(roles.name, roleData.name) });
-            
+
             if (existing) {
                 const [updated] = await db.update(roles).set({
                     displayName: roleData.displayName, description: roleData.description,
                     permissions: roleData.permissions, isSystem: roleData.isSystem,
+                    maskLow: mask.low, maskHigh: mask.high,
                 }).where(eq(roles.name, roleData.name)).returning();
                 results.push({ ...updated, action: 'updated' });
             } else {
-                const [created] = await db.insert(roles).values(roleData).returning();
+                const [created] = await db.insert(roles).values({
+                    ...roleData, maskLow: mask.low, maskHigh: mask.high,
+                }).returning();
                 results.push({ ...created, action: 'created' });
             }
         }
@@ -1562,17 +1667,43 @@ adminRoutes.post('/roles', authenticate, requireTenantAdmin(), async (req, res, 
 
         // Super-admin creates global roles (tenantId=null); others create tenant-scoped roles
         const roleTenantId = req.authUser?.isSuperAdmin ? null : (req.authUser?.tenantId || req.user?.tenantId || null);
-        const dupCond = roleTenantId
-            ? and(eq(roles.name, name), eq(roles.tenantId, roleTenantId))
-            : and(eq(roles.name, name), isNull(roles.tenantId));
-        const existing = await db.query.roles.findFirst({ where: dupCond });
+
+        // Privilege ladder: cannot create a role more privileged than your own.
+        const callerLevel = req.authUser?.roleLevel ?? 7;
+        if (!req.authUser?.isSuperAdmin && callerLevel > 2) {
+            const targetLevel = ROLE_LEVELS[name] ?? 7;
+            if (targetLevel < callerLevel) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot create a role with higher privileges than your own' } });
+            }
+        }
+
+        // Branch ownership: branch-level callers (level >= 5) may only create roles
+        // private to their own branch — never tenant-wide templates.
+        let roleBranchId: string | null = null;
+        if (!req.authUser?.isSuperAdmin && callerLevel >= 5) {
+            roleBranchId = req.authUser?.activeBranchId || null;
+            if (!roleBranchId) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No branch context available to create a branch role' } });
+            }
+        }
+
+        const dupConds: any[] = [eq(roles.name, name)];
+        dupConds.push(roleTenantId ? eq(roles.tenantId, roleTenantId) : isNull(roles.tenantId));
+        dupConds.push(roleBranchId ? eq(roles.branchId, roleBranchId) : isNull(roles.branchId));
+        const existing = await db.query.roles.findFirst({ where: and(...dupConds) });
         if (existing) {
             return res.status(400).json({
                 success: false,
                 error: { code: 'DUPLICATE', message: 'Role name already exists' }
             });
         }
-        const [role] = await db.insert(roles).values({ tenantId: roleTenantId, name, displayName, description, permissions: permissions || [], isSystem: false }).returning();
+        const perms = permissions || [];
+        const mask = permissionsToMask(perms);
+        const [role] = await db.insert(roles).values({
+            tenantId: roleTenantId, branchId: roleBranchId, name, displayName, description,
+            permissions: perms, isSystem: false,
+            maskLow: mask.low, maskHigh: mask.high,
+        }).returning();
 
         // Log activity
         await logActivity(req.authUser!.userId, 'role_created', `ສ້າງບົດບາດ: ${displayName}`, { roleId: role.id }, req);
@@ -1591,12 +1722,34 @@ adminRoutes.patch('/roles/:id', authenticate, requireTenantAdmin(), async (req, 
         const { id } = req.params;
         const { name, displayName, description, permissions } = req.body;
 
-        const existing = await db.query.roles.findFirst({ where: eq(roles.id, id) });
+        // Tenant + branch scoped lookup — a tenant/branch admin can only touch
+        // roles they own (prevents cross-tenant / cross-branch edits).
+        const callerLevel = req.authUser?.roleLevel ?? 7;
+        const patchConds: any[] = [eq(roles.id, id)];
+        if (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) {
+            patchConds.push(eq(roles.tenantId, req.authUser.tenantId));
+        }
+        if (!req.authUser?.isSuperAdmin && callerLevel >= 5) {
+            patchConds.push(eq(roles.branchId, req.authUser?.activeBranchId ?? '__none__'));
+        }
+        const existing = await db.query.roles.findFirst({ where: and(...patchConds) });
         if (!existing) {
             return res.status(404).json({
                 success: false,
                 error: { code: 'NOT_FOUND', message: 'Role not found' }
             });
+        }
+
+        // System roles are immutable; and you cannot edit a role above your level.
+        if (existing.isSystem) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot modify system roles' } });
+        }
+        if (!req.authUser?.isSuperAdmin && callerLevel > 2) {
+            const existingLevel = ROLE_LEVELS[existing.name] ?? 7;
+            const targetLevel = ROLE_LEVELS[name || existing.name] ?? 7;
+            if (existingLevel < callerLevel || targetLevel < callerLevel) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot modify a role with higher privileges than your own' } });
+            }
         }
 
         if (name && name !== existing.name) {
@@ -1613,12 +1766,22 @@ adminRoutes.patch('/roles/:id', authenticate, requireTenantAdmin(), async (req, 
             }
         }
 
+        const newPerms = permissions || (existing.permissions as string[]);
+        const mask = permissionsToMask(newPerms);
+
         const [role] = await db.update(roles).set({
             name: name || existing.name,
             displayName: displayName || existing.displayName,
             description: description !== undefined ? description : existing.description,
-            permissions: permissions || existing.permissions,
+            permissions: newPerms,
+            maskLow: mask.low,
+            maskHigh: mask.high,
         }).where(eq(roles.id, id)).returning();
+
+        // Invalidate cached permission masks for all users of this tenant
+        if (role.tenantId) {
+            invalidateAllTenantPermissions(role.tenantId).catch(() => {});
+        }
 
         // Log activity
         await logActivity(req.authUser!.userId, 'role_updated', `ແກ້ໄຂບົດບາດ: ${role.displayName}`, { roleId: role.id }, req);
@@ -1636,7 +1799,17 @@ adminRoutes.delete('/roles/:id', authenticate, requireTenantAdmin(), async (req,
     try {
         const { id } = req.params;
 
-        const role = await db.query.roles.findFirst({ where: eq(roles.id, id) });
+        // Tenant + branch scoped lookup/delete — prevents cross-tenant/branch deletion.
+        const callerLevel = req.authUser?.roleLevel ?? 7;
+        const delConds: any[] = [eq(roles.id, id)];
+        if (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) {
+            delConds.push(eq(roles.tenantId, req.authUser.tenantId));
+        }
+        if (!req.authUser?.isSuperAdmin && callerLevel >= 5) {
+            delConds.push(eq(roles.branchId, req.authUser?.activeBranchId ?? '__none__'));
+        }
+
+        const role = await db.query.roles.findFirst({ where: and(...delConds) });
 
         if (!role) {
             return res.status(404).json({
@@ -1660,7 +1833,7 @@ adminRoutes.delete('/roles/:id', authenticate, requireTenantAdmin(), async (req,
             });
         }
 
-        await db.delete(roles).where(eq(roles.id, id));
+        await db.delete(roles).where(and(...delConds));
 
         // Log activity
         await logActivity(req.authUser!.userId, 'role_deleted', `ລຶບບົດບາດ: ${role.displayName}`, { roleId: id }, req);
@@ -1903,8 +2076,8 @@ adminRoutes.get('/system/health', authenticate, requireAdmin(), async (req, res,
 
         // Get memory usage
         const memUsage = process.memoryUsage();
-        const totalMem = require('os').totalmem();
-        const freeMem = require('os').freemem();
+        const totalMem = totalmem();
+        const freeMem = freemem();
         const usedMemPercent = Math.round(((totalMem - freeMem) / totalMem) * 100);
 
         // Calculate uptime
@@ -3714,6 +3887,50 @@ adminRoutes.post('/backfill-user-stores', authenticate, requireAdmin(), async (r
                 message: 'Backfill complete',
                 total: usersWithoutStores.length,
                 created,
+                skipped,
+            },
+        });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BITMASK MIGRATION — compute maskLow/maskHigh for all existing roles
+// POST /admin/migrate-role-masks  (Super Admin only)
+// ═══════════════════════════════════════════════════════════════════════════
+adminRoutes.post('/migrate-role-masks', authenticate, requireSuperAdmin(), async (req, res, next) => {
+    try {
+        const allRoles = await db.query.roles.findMany({
+            columns: { id: true, permissions: true, maskLow: true, maskHigh: true },
+        });
+
+        let updated = 0;
+        let skipped = 0;
+
+        for (const role of allRoles) {
+            const perms = (role.permissions as string[]) || [];
+            const mask  = permissionsToMask(perms);
+
+            // Skip if already correct (compare as BigInt)
+            if (BigInt(role.maskLow ?? 0) === mask.low && BigInt(role.maskHigh ?? 0) === mask.high) {
+                skipped++;
+                continue;
+            }
+
+            await db.update(roles)
+                .set({ maskLow: mask.low, maskHigh: mask.high, updatedAt: new Date() })
+                .where(eq(roles.id, role.id));
+
+            updated++;
+        }
+
+        res.json({
+            success: true,
+            data: {
+                message: 'Bitmask migration complete',
+                total: allRoles.length,
+                updated,
                 skipped,
             },
         });

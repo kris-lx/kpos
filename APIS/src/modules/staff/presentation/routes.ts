@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, branchFilter, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, branchFilter, getRoleLevel, ROLE_LEVELS, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { db } from '@/config/database.config';
 import { users, userStores, roles, branches } from '@/db/schema/tables';
 import { eq, and, or, ilike, inArray, notInArray, isNull, desc, asc, count } from 'drizzle-orm';
@@ -192,8 +192,8 @@ staffRoutes.get('/:id', authenticate, authorize('staff:read'), async (req, res, 
             return;
         }
 
-        // Non-superadmins cannot view super_admin or admin users
-        if (!isSuperAdmin && (staff.isSuperAdmin || staff.role === 'super_admin' || staff.role === 'admin')) {
+        // Non-superadmins cannot view super_admin or admin-level users (role level ≤ 2)
+        if (!isSuperAdmin && (staff.isSuperAdmin || getRoleLevel(staff.role ?? '', false) <= 2)) {
             res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot view this user' } });
             return;
         }
@@ -227,6 +227,16 @@ staffRoutes.post('/', authenticate, branchFilter(), authorize('staff:create'), a
         if (!email || !password || !name) {
             res.status(400).json({ success: false, error: { code: 'VAL_001', message: 'Email, password, and name are required' } });
             return;
+        }
+
+        // Privilege ladder: a caller can only create staff strictly less privileged
+        // than themselves (e.g. branch_admin → manager/staff, never another admin).
+        if (!authUser?.isSuperAdmin) {
+            const targetRoleLevel = ROLE_LEVELS[role || 'staff'] ?? 7;
+            if (targetRoleLevel < (authUser?.roleLevel ?? 7)) {
+                res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot create staff with higher privileges than your own' } });
+                return;
+            }
         }
 
         // Check if email exists (tenant-scoped for multi-tenancy)

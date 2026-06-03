@@ -15,6 +15,7 @@ import postgres from 'postgres';
 import { eq, and, sql } from 'drizzle-orm';
 import argon2 from 'argon2';
 import * as schema from './schema';
+import { permissionsToMask } from '../infrastructure/permissions';
 import {
     tenants, branches, stores, users, userStores, roles, rules, roleRules,
     categories, products, inventory,
@@ -330,18 +331,26 @@ async function seedDemo() {
     if (!hqBranch) {
         [hqBranch] = await db.insert(branches).values({
             tenantId,
-            name: 'Headquarters', code: 'HQ', isMain: true, isActive: true,
+            name: 'Headquarters', code: 'HQ',
+            // HQ is the root of the branch tree — its materialized path is its own code.
+            branchPath: 'HQ',
+            isMain: true, isActive: true,
         }).returning();
         console.log(`   + Created HQ branch: ${hqBranch.name} (${hqBranch.code})`);
     } else {
-        if (!hqBranch.tenantId) {
-            await db.update(branches).set({ tenantId }).where(eq(branches.id, hqBranch.id));
-            hqBranch = { ...hqBranch, tenantId };
+        // Backfill tenantId and branchPath on a pre-existing HQ branch so the
+        // whole hierarchy (and HQ-level path-prefix scoping) works correctly.
+        const patch: Record<string, unknown> = {};
+        if (!hqBranch.tenantId) patch.tenantId = tenantId;
+        if (!hqBranch.branchPath) patch.branchPath = hqBranch.code || 'HQ';
+        if (Object.keys(patch).length > 0) {
+            await db.update(branches).set(patch).where(eq(branches.id, hqBranch.id));
+            hqBranch = { ...hqBranch, ...patch };
         }
         console.log(`   - HQ branch exists: ${hqBranch.name}`);
     }
     const hqBranchId = hqBranch.id;
-    const hqPath = hqBranch.branchPath || 'hq';
+    const hqPath = hqBranch.branchPath || 'HQ';
 
     // ── Step 2: HQ Store ──────────────────────────────────────────────────
     console.log('2️⃣  Ensuring HQ store...');
@@ -556,6 +565,53 @@ async function seedDemo() {
     }
     console.log('   ✅ Branches ready');
 
+    // ── Step 10.5: Branch-scoped (private) role demo ──────────────────────
+    // Showcases the new RBAC model: a role owned by a single branch
+    // (roles.branchId set) that is invisible to other branches. HQ-created
+    // roles remain tenant-wide templates (branchId = null).
+    console.log('🔟·5  Creating a branch-private demo role...');
+    const branch1Id = branchIds['branch1'];
+    const branch1StoreId = storeIds['branch1'];
+    let branch1Role = await db.query.roles.findFirst({
+        where: and(eq(roles.tenantId, tenantId), eq(roles.branchId, branch1Id), eq(roles.name, 'branch1_cashier')),
+    });
+    if (!branch1Role) {
+        const branch1Perms = ['dashboard:view', 'sales:view', 'sales:create', 'products:view', 'customers:view', 'payments:view', 'payments:create', 'documents:view'];
+        [branch1Role] = await db.insert(roles).values({
+            tenantId,
+            branchId: branch1Id,
+            name: 'branch1_cashier',
+            displayName: 'Cashier (Branch 1 only)',
+            description: 'ພະນັກງານຂາຍ — ສະເພາະສາຂາ 1 (branch-private role)',
+            permissions: branch1Perms,
+            isSystem: false,
+            maskLow: permissionsToMask(branch1Perms).low,
+            maskHigh: permissionsToMask(branch1Perms).high,
+        }).returning();
+        console.log('   + Branch-private role: Cashier (Branch 1 only)');
+    }
+
+    // Assign a staff member to the branch-private role to prove isolation.
+    const branch1StaffEmail = 'branch1.staff@kpos.la';
+    let branch1Staff = await db.query.users.findFirst({
+        where: and(eq(users.tenantId, tenantId), eq(users.email, branch1StaffEmail)),
+    });
+    if (!branch1Staff) {
+        const hashedBranchStaff = await argon2.hash(DEMO_PASSWORD);
+        [branch1Staff] = await db.insert(users).values({
+            tenantId, email: branch1StaffEmail, password: hashedBranchStaff,
+            name: 'ທ. ພະນັກງານສາຂາ 1 (Branch-private role)',
+            role: 'branch1_cashier', roleId: branch1Role.id,
+            branchId: branch1Id, isActive: true,
+        }).returning();
+        await db.insert(userStores).values({
+            tenantId, userId: branch1Staff.id, storeId: branch1StoreId, branchId: branch1Id,
+            canRead: true, canWrite: true, isDefault: true,
+        });
+        console.log(`   + ${branch1StaffEmail} (branch1_cashier)`);
+    }
+    console.log('   ✅ Branch-private role ready');
+
     // ── Step 11: Demo Users ───────────────────────────────────────────────
     console.log('1️⃣1️⃣  Creating demo users...');
     const hashedPassword = await argon2.hash(DEMO_PASSWORD);
@@ -678,7 +734,7 @@ async function seedDemo() {
             if (!invExists) {
                 await db.insert(inventory).values({
                     tenantId, productId: existing.id, branchId: hqBranchId,
-                    quantity: p.qty, reservedQuantity: 0,
+                    quantity: p.qty, reserved: 0, available: p.qty,
                 });
             }
             console.log(`   + Product: ${p.name} (stock: ${p.qty})`);
@@ -709,6 +765,31 @@ async function seedDemo() {
     console.log('   ✅ Vendors ready');
 
     // ── Step 15: Membership Tiers + Point Settings ────────────────────────
+    // ── Seed default tenant settings (currency, timezone, language, tax, payments) ──
+    const DEFAULT_TENANT_SETTINGS: Array<{ category: string; key: string; value: any }> = [
+        { category: 'store',    key: 'currency',        value: 'LAK' },
+        { category: 'store',    key: 'currencySymbol',  value: '₭' },
+        { category: 'store',    key: 'currencyIsoCode', value: '418' },
+        { category: 'store',    key: 'timezone',        value: 'Asia/Vientiane' },
+        { category: 'store',    key: 'country',         value: 'LA' },
+        { category: 'display',  key: 'language',        value: 'lo' },
+        { category: 'display',  key: 'theme',           value: 'system' },
+        { category: 'pos',      key: 'defaultTaxRate',  value: 10 },
+        { category: 'pos',      key: 'enableTax',       value: true },
+        { category: 'pos',      key: 'priceIncludesTax',value: true },
+        { category: 'payments', key: 'qrMerchantCode',  value: '' },
+        { category: 'payments', key: 'qrCurrencyCode',  value: '418' },
+    ];
+    for (const row of DEFAULT_TENANT_SETTINGS) {
+        const exists = await db.query.settings.findFirst({
+            where: and(eq(settings.tenantId, tenantId), eq(settings.category, row.category), eq(settings.key, row.key)),
+        });
+        if (!exists) {
+            await db.insert(settings).values({ tenantId, ...row });
+        }
+    }
+    console.log('   ✅ Default tenant settings seeded (currency, timezone, language, tax, payments)');
+
     console.log('1️⃣5️⃣  Seeding loyalty...');
     const TIERS = [
         { name: 'Bronze', minPoints: 0, pointMultiplier: 1.0, discountPercent: 0, color: '#CD7F32', sortOrder: 0 },
@@ -993,6 +1074,7 @@ async function seedDemo() {
     console.log(`  Level 5  Branch Admin     branch.admin@kpos.la`);
     console.log(`  Level 6  Branch Manager   branch.manager@kpos.la`);
     console.log(`  Level 7  Cashier          cashier@kpos.la`);
+    console.log(`  Level 7  Branch1 Staff    branch1.staff@kpos.la  (branch-private role)`);
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     console.log(`  Tenant:  ${defaultTenant.name} (${defaultTenant.code})`);
     console.log(`  Branch:  ${hqBranch.name} + 2 demo branches`);

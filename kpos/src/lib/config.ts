@@ -11,6 +11,7 @@ export const LOCAL_STORAGE_KEYS = {
     ACCESSIBLE_STORES: 'kpos_accessible_stores',
     RULES: 'kpos_user_rules',
     THEME: 'kpos_theme',
+    TENANT_CONFIG: 'kpos_tenant_config',
 } as const;
 
 /** Polling intervals in milliseconds */

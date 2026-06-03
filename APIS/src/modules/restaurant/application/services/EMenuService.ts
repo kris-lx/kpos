@@ -131,12 +131,20 @@ export class EMenuService {
 
             const orderItemsData: CreateOrderItemDTO[] = await Promise.all(
                 items.map(async (item) => {
-                    const product = await db.query.products.findFirst({ where: eq(products.id, item.itemId) });
+                    // Only accept products that actually belong to this branch and are
+                    // active — never trust the client-supplied name/price, and reject
+                    // cross-branch/cross-tenant product injection.
+                    const product = await db.query.products.findFirst({
+                        where: and(eq(products.id, item.itemId), eq(products.branchId, branchId), eq(products.isActive, true)),
+                    });
+                    if (!product) {
+                        throw new Error(`Item ${item.itemId} is not available for this branch`);
+                    }
                     return {
-                        productId: item.itemId,
-                        productName: product?.name || item.name,
+                        productId: product.id,
+                        productName: product.name,
                         quantity: item.quantity,
-                        unitPrice: product?.price || item.price,
+                        unitPrice: product.price,
                         note: item.specialRequest,
                     };
                 })

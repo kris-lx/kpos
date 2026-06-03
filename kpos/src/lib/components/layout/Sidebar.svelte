@@ -130,19 +130,20 @@
         return iconMap[name] || Package;
     }
 
-    // Auto-expand parent menu matching current route
+    // Auto-expand only the active parent menu; collapse all others (accordion)
     $effect(() => {
         const pathname = $page.url.pathname;
+        let activeId: string | null = null;
         for (const item of menuItems) {
             if (item.children) {
                 const hasActiveChild = item.children.some(
                     (child) => child.href && (pathname === child.href || pathname.startsWith(child.href + "/"))
                 );
-                if (hasActiveChild && !expandedMenus.has(item.id)) {
-                    expandedMenus.add(item.id);
-                    expandedMenus = new Set(expandedMenus);
-                }
+                if (hasActiveChild) { activeId = item.id; break; }
             }
+        }
+        if (activeId) {
+            expandedMenus = new Set([activeId]);
         }
     });
 
@@ -243,12 +244,12 @@
     });
 
     function toggleMenu(menuId: string) {
+        // Accordion: opening a menu collapses all others
         if (expandedMenus.has(menuId)) {
-            expandedMenus.delete(menuId);
+            expandedMenus = new Set();
         } else {
-            expandedMenus.add(menuId);
+            expandedMenus = new Set([menuId]);
         }
-        expandedMenus = new Set(expandedMenus);
     }
 
     function isActive(href?: string): boolean {

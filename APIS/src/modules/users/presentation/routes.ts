@@ -11,6 +11,18 @@ import argon2 from 'argon2';
 
 export const userRoutes = Router();
 
+// Never expose password hash, 2FA secret, or session tokens in API responses
+const USER_SAFE_COLUMNS = {
+    password: false,
+    twoFASecret: false,
+} as const;
+
+/** Strip sensitive fields from a user object returned by .returning() */
+function stripSensitive<T extends { password?: unknown; twoFASecret?: unknown }>(u: T) {
+    const { password: _p, twoFASecret: _t, ...safe } = u;
+    return safe;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // GET ALL USERS
 // ═══════════════════════════════════════════════════════════════════════════
@@ -64,6 +76,7 @@ userRoutes.get('/', authenticate, authorize('users:read'), branchFilter(), async
         const [userRows, [{ value: total }]] = await Promise.all([
             db.query.users.findMany({
                 where: whereClause,
+                columns: USER_SAFE_COLUMNS,
                 offset: skip,
                 limit: parseInt(limit as string),
                 orderBy: desc(users.createdAt),
@@ -98,6 +111,7 @@ userRoutes.get('/:id', authenticate, authorize('users:read'), async (req, res) =
     try {
         const user = await db.query.users.findFirst({
             where: eq(users.id, req.params.id),
+            columns: USER_SAFE_COLUMNS,
             with: { branch: true, roleRelation: true },
         });
 
@@ -178,7 +192,7 @@ userRoutes.post('/', authenticate, authorize('users:create'), async (req, res) =
             isActive,
         }).returning();
 
-        res.status(201).json({ success: true, data: user });
+        res.status(201).json({ success: true, data: stripSensitive(user) });
     } catch (error) {
         console.error('Create user error:', error);
         res.status(500).json({
@@ -241,7 +255,7 @@ userRoutes.put('/:id', authenticate, authorize('users:update'), async (req, res)
             .where(eq(users.id, id))
             .returning();
 
-        res.json({ success: true, data: user });
+        res.json({ success: true, data: stripSensitive(user) });
     } catch (error) {
         console.error('Update user error:', error);
         res.status(500).json({
@@ -321,7 +335,7 @@ userRoutes.patch('/:id/toggle-active', authenticate, authorize('users:update'), 
             .where(eq(users.id, id))
             .returning();
 
-        res.json({ success: true, data: user });
+        res.json({ success: true, data: stripSensitive(user) });
     } catch (error) {
         console.error('Toggle user active error:', error);
         res.status(500).json({
@@ -338,6 +352,7 @@ userRoutes.get('/:id/permissions', authenticate, authorize('users:read'), async 
     try {
         const user = await db.query.users.findFirst({
             where: eq(users.id, req.params.id),
+            columns: USER_SAFE_COLUMNS,
             with: { roleRelation: true },
         });
 
@@ -432,7 +447,7 @@ userRoutes.put('/:id/permissions', authenticate, authorize('users:update'), asyn
 
         res.json({
             success: true,
-            data: user,
+            data: stripSensitive(user),
             message: 'User permissions updated successfully'
         });
     } catch (error) {
@@ -837,7 +852,7 @@ userRoutes.put('/me/profile', authenticate, async (req, res) => {
             .where(eq(users.id, currentUser.userId))
             .returning();
 
-        res.json({ success: true, data: user });
+        res.json({ success: true, data: stripSensitive(user) });
     } catch (error) {
         console.error('Update profile error:', error);
         res.status(500).json({

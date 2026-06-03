@@ -23,7 +23,7 @@
         try {
             const user = auth.user;
             if (!user) { goto("/login"); return; }
-            if (user.isSuperAdmin || user.role === 'admin') {
+            if (auth.roleLevel <= 2) {
                 canAccess = true;
             } else {
                 toast.error("ທ່ານບໍ່ມີສິດເຂົ້າເຖິງໜ້ານີ້");
@@ -149,13 +149,27 @@
     }
 
     function isImageUrl(url: string) {
+        if (!url) return false;
+        // Cloudinary image resource type in URL path
+        if (/\/image\/upload\//i.test(url)) return true;
         return /\.(jpg|jpeg|png|gif|webp|svg|bmp)(\?|$)/i.test(url);
     }
     function isPdfUrl(url: string) {
+        if (!url) return false;
+        // Cloudinary raw resource (PDFs, Word docs, etc.) or explicit .pdf extension
+        if (/\/raw\/upload\//i.test(url)) return true;
         return /\.pdf(\?|$)/i.test(url);
     }
+    function isDocUrl(url: string) {
+        return /\.(doc|docx|xls|xlsx|ppt|pptx)(\?|$)/i.test(url);
+    }
     function getFileName(url: string) {
+        if (!url) return 'ເອກະສານ';
         try { return decodeURIComponent(url.split('/').pop()?.split('?')[0] || 'ເອກະສານ'); } catch { return 'ເອກະສານ'; }
+    }
+    /** True if the URL is a real hosted URL (Cloudinary, http/https), not a bare filename */
+    function isViewableUrl(url: string) {
+        return url.startsWith('http://') || url.startsWith('https://') || url.startsWith('/');
     }
 
     function goToPage(page: number) {
@@ -556,10 +570,23 @@
                             </p>
                             <div class="grid grid-cols-2 gap-2">
                                 {#each req.documents as docUrl, i}
-                                    {@const img = isImageUrl(docUrl)}
-                                    {@const pdf = isPdfUrl(docUrl)}
+                                    {@const viewable = isViewableUrl(docUrl)}
+                                    {@const img = viewable && isImageUrl(docUrl)}
+                                    {@const pdf = viewable && isPdfUrl(docUrl)}
+                                    {@const doc = viewable && isDocUrl(docUrl)}
                                     {@const fname = getFileName(docUrl)}
-                                    {#if img}
+                                    {#if !viewable}
+                                        <!-- Upload failed — show filename-only placeholder -->
+                                        <div class="flex items-center gap-2 p-3 bg-amber-50 dark:bg-amber-900/20 rounded-xl border border-amber-200 dark:border-amber-700/50">
+                                            <div class="w-8 h-8 bg-amber-100 dark:bg-amber-900/30 rounded-lg flex items-center justify-center shrink-0">
+                                                <FileText class="w-4 h-4 text-amber-500" />
+                                            </div>
+                                            <div class="flex-1 min-w-0">
+                                                <p class="text-xs font-medium text-gray-700 dark:text-gray-200 truncate">{docUrl}</p>
+                                                <p class="text-xs text-amber-600 dark:text-amber-400">ອັບໂຫຼດບໍ່ສຳເລັດ</p>
+                                            </div>
+                                        </div>
+                                    {:else if img}
                                         <button onclick={() => openDocViewer(docUrl)} class="relative group rounded-xl overflow-hidden border-2 border-transparent hover:border-violet-400 transition-all aspect-video bg-gray-200 dark:bg-gray-700">
                                             <img src={docUrl} alt={fname} class="w-full h-full object-cover" loading="lazy" />
                                             <div class="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-all flex items-center justify-center">
@@ -569,18 +596,24 @@
                                     {:else}
                                         <a href={docUrl} target="_blank" rel="noopener noreferrer"
                                             class="flex items-center gap-2 p-3 bg-white dark:bg-gray-700 rounded-xl border border-gray-200 dark:border-gray-600 hover:border-violet-400 transition-all group">
-                                            <div class={cn("w-8 h-8 rounded-lg flex items-center justify-center shrink-0", pdf ? 'bg-danger-100 dark:bg-danger-900/30' : 'bg-blue-100 dark:bg-blue-900/30')}>
-                                                <FileText class={cn("w-4 h-4", pdf ? 'text-danger-500' : 'text-blue-500')} />
+                                            <div class={cn("w-8 h-8 rounded-lg flex items-center justify-center shrink-0",
+                                                pdf ? 'bg-danger-100 dark:bg-danger-900/30' : doc ? 'bg-blue-100 dark:bg-blue-900/30' : 'bg-gray-100 dark:bg-gray-600')}>
+                                                <FileText class={cn("w-4 h-4", pdf ? 'text-danger-500' : doc ? 'text-blue-500' : 'text-gray-500')} />
                                             </div>
                                             <div class="flex-1 min-w-0">
                                                 <p class="text-xs font-medium text-gray-700 dark:text-gray-200 truncate">{fname}</p>
-                                                <p class="text-xs text-gray-400">{pdf ? 'PDF' : 'ເອກະສານ'}</p>
+                                                <p class="text-xs text-gray-400">{pdf ? 'PDF' : doc ? 'ເອກະສານ Office' : 'ໄຟລ໌'}</p>
                                             </div>
                                             <ExternalLink class="w-3.5 h-3.5 text-gray-400 group-hover:text-violet-500 shrink-0 transition-colors" />
                                         </a>
                                     {/if}
                                 {/each}
                             </div>
+                        </div>
+                    {:else}
+                        <div class="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 p-4 text-center">
+                            <FileText class="w-8 h-8 mx-auto mb-2 text-gray-300 dark:text-gray-600" />
+                            <p class="text-xs text-gray-400">ບໍ່ມີເອກະສານແນບ</p>
                         </div>
                     {/if}
 
@@ -639,14 +672,25 @@
                         <img src={selectedDocUrl} alt="document" class="max-w-full max-h-full object-contain rounded-lg" />
                     {:else if isPdfUrl(selectedDocUrl)}
                         <iframe src={selectedDocUrl} title="PDF Viewer" class="w-full h-full min-h-[70vh] rounded-lg" frameborder="0"></iframe>
-                    {:else}
-                        <div class="text-center text-gray-400">
-                            <FileText class="w-16 h-16 mx-auto mb-3 opacity-40" />
-                            <p class="text-sm">ບໍ່ສາມາດສະແດງໄຟລ໌ນີ້ໃນ Preview</p>
+                    {:else if isViewableUrl(selectedDocUrl)}
+                        <!-- Office docs, zip, etc. — can't preview inline, provide a direct link -->
+                        <div class="text-center text-gray-400 space-y-4">
+                            <FileText class="w-16 h-16 mx-auto opacity-40" />
+                            <div>
+                                <p class="text-sm font-medium text-gray-300">ບໍ່ສາມາດສະແດງໄຟລ໌ນີ້ໃນ Preview</p>
+                                <p class="text-xs text-gray-500 mt-1">{getFileName(selectedDocUrl)}</p>
+                            </div>
                             <a href={selectedDocUrl} target="_blank" rel="noopener noreferrer"
-                                class="mt-3 inline-flex items-center gap-1.5 text-violet-400 hover:text-violet-300 text-sm">
+                                class="inline-flex items-center gap-1.5 px-4 py-2 bg-violet-600 hover:bg-violet-500 text-white rounded-lg text-sm transition-colors">
                                 <ExternalLink class="w-4 h-4" /> ດາວໂຫຼດ / ເປີດ
                             </a>
+                        </div>
+                    {:else}
+                        <!-- Not a valid URL (upload failed) -->
+                        <div class="text-center text-gray-400 space-y-3">
+                            <FileText class="w-16 h-16 mx-auto opacity-30" />
+                            <p class="text-sm text-amber-400">ເອກະສານນີ້ບໍ່ໄດ້ຖືກອັບໂຫຼດສຳເລັດ</p>
+                            <p class="text-xs text-gray-500">{selectedDocUrl}</p>
                         </div>
                     {/if}
                 </div>
@@ -658,13 +702,18 @@
                                 class={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium shrink-0 transition-colors",
                                     selectedDocUrl === docUrl
                                         ? 'bg-violet-600 text-white'
-                                        : 'bg-gray-700 text-gray-300 hover:bg-gray-600')}>
+                                        : isViewableUrl(docUrl)
+                                            ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                                            : 'bg-amber-900/40 text-amber-400 cursor-pointer hover:bg-amber-900/60')}>
                                 {#if isImageUrl(docUrl)}
                                     <ImageIcon class="w-3.5 h-3.5" />
+                                {:else if isPdfUrl(docUrl)}
+                                    <FileText class="w-3.5 h-3.5" />
                                 {:else}
                                     <FileText class="w-3.5 h-3.5" />
                                 {/if}
                                 ໄຟລ໌ {i + 1}
+                                {#if !isViewableUrl(docUrl)}<span class="text-amber-400 ml-0.5">⚠</span>{/if}
                             </button>
                         {/each}
                     </div>

@@ -26,11 +26,13 @@ authRoutes.post('/login',
 );
 
 authRoutes.post('/register',
+    authRateLimiter,                 // Prevent account-creation floods
     validateBody(RegisterDto),
     (req, res, next) => authController.register(req, res, next)
 );
 
 authRoutes.post('/refresh',
+    authRateLimiter,                 // Prevent refresh token brute-force
     validateBody(RefreshTokenDto),
     (req, res, next) => authController.refresh(req, res, next)
 );
@@ -84,7 +86,7 @@ authRoutes.post('/forgot-password', authRateLimiter, async (req, res, next) => {
 });
 
 // Reset password — validate token from Redis, update password, delete token
-authRoutes.post('/reset-password', async (req, res, next) => {
+authRoutes.post('/reset-password', authRateLimiter, async (req, res, next) => {
     try {
         const { token, password } = req.body as { token?: string; password?: string };
 

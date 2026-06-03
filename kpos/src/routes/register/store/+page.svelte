@@ -194,8 +194,9 @@
                 error = res.error?.message || "ສົ່ງຄຳຮ້ອງບໍ່ສຳເລັດ";
             }
         } catch (err: any) {
-            error = err?.response?.json?.().then((j: any) => j?.error?.message).catch(() => null) 
-                || err?.message || "ເກີດຂໍ້ຜິດພາດ ກະລຸນາລອງໃໝ່";
+            let msg = "";
+            try { msg = (await err?.response?.json())?.error?.message ?? ""; } catch { /* ignore */ }
+            error = msg || err?.message || "ເກີດຂໍ້ຜິດພາດ ກະລຸນາລອງໃໝ່";
         } finally {
             isLoading = false;
         }
@@ -493,7 +494,7 @@
                             <div class="grid grid-cols-2 gap-2 text-sm">
                                 <span class="text-gray-500 dark:text-gray-400">ຊື່ຮ້ານ:</span><span class="text-gray-900 dark:text-white font-medium">{form.storeName}</span>
                                 <span class="text-gray-500 dark:text-gray-400">ລະຫັດ:</span><span class="text-gray-900 dark:text-white font-medium">{form.storeCode}</span>
-                                <span class="text-gray-500 dark:text-gray-400">ປະເພດ:</span><span class="text-gray-900 dark:text-white font-medium">{form.businessType}</span>
+                                <span class="text-gray-500 dark:text-gray-400">ປະເພດ:</span><span class="text-gray-900 dark:text-white font-medium">{businessTypes.find(b => b.value === form.businessType)?.label ?? form.businessType}</span>
                                 <span class="text-gray-500 dark:text-gray-400">ເບີໂທ:</span><span class="text-gray-900 dark:text-white font-medium">{form.storePhone}</span>
                             </div>
                         </div>
@@ -503,7 +504,7 @@
                                 <h3 class="font-medium text-gray-900 dark:text-white text-sm">KYC</h3>
                             </div>
                             <div class="grid grid-cols-2 gap-2 text-sm">
-                                <span class="text-gray-500 dark:text-gray-400">ປະເພດໄອດີ:</span><span class="text-gray-900 dark:text-white font-medium">{form.ownerIdType}</span>
+                                <span class="text-gray-500 dark:text-gray-400">ປະເພດໄອດີ:</span><span class="text-gray-900 dark:text-white font-medium">{idTypes.find(t => t.value === form.ownerIdType)?.label ?? form.ownerIdType}</span>
                                 <span class="text-gray-500 dark:text-gray-400">ເລກທີ:</span><span class="text-gray-900 dark:text-white font-medium">{form.ownerIdNumber}</span>
                                 <span class="text-gray-500 dark:text-gray-400">ເອກະສານ:</span><span class="text-gray-900 dark:text-white font-medium">{form.documents.length} ໄຟລ໌</span>
                             </div>

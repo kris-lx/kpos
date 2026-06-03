@@ -12,8 +12,8 @@ import { eq, inArray, and, isNull, sql, type SQL } from 'drizzle-orm';
 import { users, userStores, roleRules as roleRulesTable, tenants, roles, branches } from '@/db/schema/tables';
 import { SYSTEM_ROLE_PERMISSIONS } from '@/shared/systemRolePermissions';
 import type { PgColumn } from 'drizzle-orm/pg-core';
-import { hasPerm, type PermBit } from '@/infrastructure/permissions';
-import { getUserMask } from '@/infrastructure/services/permission.service';
+import { hasPerm, permissionsToMask, maskToStrings, stringsToMask, legacyPermTobit, type PermBit } from '@/infrastructure/permissions';
+import { getUserMask, invalidateUserPermissions } from '@/infrastructure/services/permission.service';
 
 /** Legacy JWT payload shape — kept for backward compat on req.user */
 export interface JwtPayload {
@@ -61,12 +61,14 @@ export function getRoleLevel(role: string, isSuperAdmin: boolean): number {
 /** Returns true if the user can access branches beyond their own (HQ or above). */
 export function canAccessBranch(user: AuthenticatedUser, targetBranchPath: string): boolean {
     if (user.isSuperAdmin || user.roleLevel <= 2) return true;
+    const paths = user.accessibleBranchPaths || [];
     if (user.roleLevel <= 4) {
-        return user.accessibleBranchPaths.some(
-            p => targetBranchPath === p || targetBranchPath.startsWith(p + '.')
-        );
+        // HQ admin/manager: own branch + all descendants via materialized path.
+        return paths.some(p => targetBranchPath === p || targetBranchPath.startsWith(p + '.'));
     }
-    return user.accessibleBranchIds.some(id => targetBranchPath.includes(id));
+    // Branch-level user: own branch only. branch_path is code-based, so match the
+    // exact path (the old `accessibleBranchIds.includes(uuid-in-path)` never matched).
+    return paths.some(p => targetBranchPath === p);
 }
 
 /** Identity-only JWT payload (BE-02) */
@@ -223,7 +225,7 @@ async function loadUserStoreAccess(userId: string): Promise<UserStoreAccess[]> {
     return result;
 }
 
-// Cached auth user data (user + permissions) — skips User DB lookup per request
+// Cached auth user data (user + permissions + bitmask) — skips User DB lookup per request
 interface CachedAuthUser {
     isActive: boolean;
     email: string;
@@ -234,6 +236,9 @@ interface CachedAuthUser {
     role: string;
     roleId: string | null;
     roleLevel: number;
+    // Bitmask representation of permissions (BigInt stored as decimal strings for JSON compat)
+    maskLow: string;
+    maskHigh: string;
 }
 
 async function loadCachedAuthUser(userId: string): Promise<CachedAuthUser | null> {
@@ -288,16 +293,23 @@ async function loadCachedAuthUser(userId: string): Promise<CachedAuthUser | null
         }
     }
 
+    const mergedPermissions = [...new Set([...rolePerms, ...userPerms])];
+    // Compute bitmask from merged permission strings — O(n) once, then O(1) per check
+    const mask = permissionsToMask(mergedPermissions);
+    const { low: maskLow, high: maskHigh } = maskToStrings(mask);
+
     const result: CachedAuthUser = {
         isActive: user.isActive,
         email: user.email,
         branchId: user.branchId || '',
         tenantId: user.tenantId || null,
         isSuperAdmin: user.isSuperAdmin,
-        permissions: [...new Set([...rolePerms, ...userPerms])],
+        permissions: mergedPermissions,
         role: user.role,
         roleId: user.roleId,
         roleLevel: getRoleLevel(user.role, user.isSuperAdmin),
+        maskLow,
+        maskHigh,
     };
 
     await cache.set(cacheKey, result, CACHE_TTL);
@@ -533,15 +545,15 @@ export function platformScopeGuard() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// LEGACY PERMISSION MIDDLEWARE
+// PERMISSION MIDDLEWARE  (bitmask-primary, string-array fallback)
 // ═══════════════════════════════════════════════════════════════════════════
 
-export function authorize(...permissions: string[]) {
-    return async (
+export function authorize(...permStrings: string[]) {
+    return (
         req: Request,
         res: Response,
         next: NextFunction
-    ): Promise<void> => {
+    ): void => {
         try {
             if (!req.user || !req.authUser) {
                 throw ApiError.unauthorized();
@@ -553,23 +565,32 @@ export function authorize(...permissions: string[]) {
                 return;
             }
 
-            const userPermissions = req.authUser.permissions;
+            // ── Primary: bitmask check (O(1) bitwise AND, no array scan) ──────
+            const maskLow  = BigInt(req.authUser.maskLow  || '0');
+            const maskHigh = BigInt(req.authUser.maskHigh || '0');
+            const hasMask  = maskLow !== 0n || maskHigh !== 0n;
 
-            // Check if user has any of the required permissions
-            // Treat :view and :read as equivalent
-            const hasPermission = permissions.some((p) => {
-                if (userPermissions.includes(p) || userPermissions.includes('*')) return true;
-                // Check :view/:read equivalence
-                if (p.endsWith(':read') && userPermissions.includes(p.replace(':read', ':view'))) return true;
-                if (p.endsWith(':view') && userPermissions.includes(p.replace(':view', ':read'))) return true;
+            if (hasMask) {
+                const passedBitmask = permStrings.some(p => {
+                    const bit = legacyPermTobit(p);
+                    return bit ? hasPerm(maskLow, maskHigh, bit) : false;
+                });
+                if (passedBitmask) { next(); return; }
+            }
+
+            // ── Fallback: string array (covers '*' wildcard + unmapped strings) ─
+            const userPermissions = req.authUser.permissions;
+            const passedString = permStrings.some((p) => {
+                if (userPermissions.includes('*')) return true;
+                if (userPermissions.includes(p)) return true;
+                if (p.endsWith(':read')  && userPermissions.includes(p.replace(':read',  ':view'))) return true;
+                if (p.endsWith(':view')  && userPermissions.includes(p.replace(':view',  ':read'))) return true;
                 return false;
             });
 
-            if (!hasPermission) {
-                throw ApiError.forbidden('Insufficient permissions');
-            }
+            if (passedString) { next(); return; }
 
-            next();
+            throw ApiError.forbidden('Insufficient permissions');
         } catch (error) {
             next(error);
         }
@@ -943,8 +964,8 @@ export function ensureScopeAccess(
     // Super Admins bypass all restrictions
     if (req.authUser.isSuperAdmin) return true;
     
-    // System Admins (Tenant Admins) are restricted to their tenant
-    const isTenantAdmin = req.authUser.role === 'admin' || req.authUser.permissions.includes('*');
+    // Tenant Admins (role level ≤ 2) are restricted to their own tenant
+    const isTenantAdmin = getRoleLevel(req.authUser.role, req.authUser.isSuperAdmin) <= 2 || req.authUser.permissions.includes('*');
     if (isTenantAdmin) {
         // If the record has a tenantId, it MUST match the admin's tenantId
         if (record.tenantId && record.tenantId !== req.authUser.tenantId) {
@@ -1004,16 +1025,15 @@ export function isSuperAdmin(req: Request): boolean {
 }
 
 /**
- * Check if user is Admin (Super Admin or admin role)
+ * Check if user is Admin (Super Admin or role level ≤ 2: admin, tenant_admin)
  */
 export function isAdmin(req: Request): boolean {
     if (!req.authUser) return false;
-    return req.authUser.isSuperAdmin || req.authUser.role === 'admin';
+    return req.authUser.isSuperAdmin || getRoleLevel(req.authUser.role, false) <= 2;
 }
 
 /**
- * Middleware to require Admin access (Super Admin or admin role)
- * Use this for admin routes that both Super Admin and Admin can access
+ * Middleware to require Admin access (Super Admin or role level ≤ 2)
  */
 export function requireAdmin() {
     return (req: Request, res: Response, next: NextFunction): void => {
@@ -1022,7 +1042,7 @@ export function requireAdmin() {
                 throw ApiError.unauthorized('Not authenticated');
             }
 
-            if (!req.authUser.isSuperAdmin && req.authUser.role !== 'admin') {
+            if (!req.authUser.isSuperAdmin && getRoleLevel(req.authUser.role, false) > 2) {
                 throw ApiError.forbidden('Admin access required');
             }
 
@@ -1090,10 +1110,10 @@ export function requireRoles(...roles: string[]) {
 /**
  * Middleware factory: require a specific bitmask permission.
  * Usage: requirePerm(P.PRODUCT_CREATE)
- * Super Admin bypasses. Falls back to legacy authorize() check during migration.
+ * Reads the bitmask cached on req.authUser — zero extra DB/Redis calls.
  */
 export function requirePerm(perm: PermBit) {
-    return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    return (req: Request, res: Response, next: NextFunction): void => {
         try {
             if (!req.authUser) {
                 throw ApiError.unauthorized();
@@ -1105,19 +1125,17 @@ export function requirePerm(perm: PermBit) {
                 return;
             }
 
-            // Resolve bitmask from cache/DB
-            const tenantId = req.authUser.tenantId;
-            if (tenantId) {
-                const mask = await getUserMask(req.authUser.userId, tenantId);
-                if (hasPerm(mask.mask_low, mask.mask_high, perm)) {
-                    next();
-                    return;
-                }
+            // Wildcard string permission
+            if (req.authUser.permissions.includes('*')) {
+                next();
+                return;
             }
 
-            // Fall back to legacy string permissions during migration
-            const userPermissions = req.authUser.permissions;
-            if (userPermissions.includes('*')) {
+            // Bitmask check — O(1), mask already in req.authUser from loadCachedAuthUser
+            const maskLow  = BigInt(req.authUser.maskLow  || '0');
+            const maskHigh = BigInt(req.authUser.maskHigh || '0');
+
+            if (hasPerm(maskLow, maskHigh, perm)) {
                 next();
                 return;
             }

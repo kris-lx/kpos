@@ -6,8 +6,8 @@
 import { consume, subscribeCacheInvalidation, QUEUES, isRabbitMQConnected } from '@/config/rabbitmq.config';
 import { cache } from '@/config/redis.config';
 import { db } from '@/config/database.config';
-import { inventory, stockMovements, activityLogs, notifications } from '@/db/schema/tables';
-import { eq, and } from 'drizzle-orm';
+import { inventory, stockMovements, activityLogs, notifications, sessions } from '@/db/schema/tables';
+import { eq, and, lt, isNotNull } from 'drizzle-orm';
 import { SocketEventEmitter } from '@/infrastructure/http/socket';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -184,6 +184,21 @@ export async function queueAssetCleanup(publicIds: string[], reason?: string): P
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Session Cleanup — delete revoked sessions older than 7 days
+// Runs every 6 hours to prevent unbounded session table growth
+// ═══════════════════════════════════════════════════════════════════════════
+async function cleanupExpiredSessions(): Promise<void> {
+    try {
+        const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+        const result = await db.delete(sessions)
+            .where(and(isNotNull(sessions.revokedAt), lt(sessions.revokedAt, cutoff)));
+        console.log(`[SessionCleanup] Deleted old revoked sessions (cutoff: ${cutoff.toISOString()})`);
+    } catch (err) {
+        console.error('[SessionCleanup] Failed:', err);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Start all workers
 // ═══════════════════════════════════════════════════════════════════════════
 export function startWorkers(): void {
@@ -199,4 +214,11 @@ export function startWorkers(): void {
     subscribeCacheInvalidation(handleCacheInvalidation);
 
     console.log('✅ Queue workers started: stock-movement, activity-log, notification, asset-cleanup, cache-invalidation');
+}
+
+export function startScheduledJobs(): void {
+    // Session cleanup: run immediately then every 6 hours
+    cleanupExpiredSessions();
+    setInterval(cleanupExpiredSessions, 6 * 60 * 60 * 1000);
+    console.log('✅ Scheduled jobs started: session-cleanup (every 6h)');
 }

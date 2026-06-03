@@ -76,6 +76,9 @@
     let imagePreview = $state<string | null>(null);
     let isUploading = $state(false);
 
+    // Excel import
+    let isImporting = $state(false);
+
     // Form
     let formData = $state({
         name: "",
@@ -431,6 +434,31 @@
         URL.revokeObjectURL(url);
     }
 
+    async function importFromExcel(e: Event) {
+        const file = (e.target as HTMLInputElement).files?.[0];
+        if (!file) return;
+        (e.target as HTMLInputElement).value = '';
+
+        isImporting = true;
+        try {
+            const formData = new FormData();
+            formData.append('file', file);
+            const res = await api.post('products/import/excel', { body: formData }).json<{ success: boolean; data: { total: number; created: number; errors: { row: number; message: string }[] } }>();
+            if (res.success) {
+                toast.success(`ນຳເຂົ້າ ${res.data.created}/${res.data.total} ລາຍການ`);
+                if (res.data.errors.length) {
+                    console.warn('Import errors:', res.data.errors);
+                    toast.warning(`${res.data.errors.length} ແຖວມີຂໍ້ຜິດພາດ — ກວດສອບ console`);
+                }
+                await loadData();
+            }
+        } catch (err: any) {
+            toast.error('ນຳເຂົ້າບໍ່ສຳເລັດ');
+        } finally {
+            isImporting = false;
+        }
+    }
+
     function exportToCsv() {
         let csv = '﻿';
         csv += 'ຊື່ສິນຄ້າ,SKU,ບາໂຄດ,ໝວດໝູ່,ລາຄາຂາຍ,ລາຄາທຶນ,ສະຕ໋ອກ,ສະຖານະ\n';
@@ -475,12 +503,15 @@
 
         <div class="flex items-center gap-3">
             <StoreBranchSelector onchange={() => loadData()} />
-            <button
-                class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-700 transition-all"
-            >
-                <Upload class="w-4 h-4" />
-                ນຳເຂົ້າ
-            </button>
+            <label class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-700 transition-all cursor-pointer {isImporting ? 'opacity-60 pointer-events-none' : ''}">
+                {#if isImporting}
+                    <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
+                {:else}
+                    <Upload class="w-4 h-4" />
+                {/if}
+                ນຳເຂົ້າ Excel
+                <input type="file" accept=".xlsx,.xls,.csv" class="hidden" onchange={importFromExcel} disabled={isImporting} />
+            </label>
             <button
                 onclick={exportToCsv}
                 class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-700 transition-all"

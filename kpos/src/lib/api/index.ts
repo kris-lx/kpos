@@ -64,7 +64,10 @@ const afterResponse: AfterResponseHook = async (_request, _options, response) =>
         localStorage.removeItem(ACCESS_TOKEN_KEY);
         localStorage.removeItem(REFRESH_TOKEN_KEY);
         localStorage.removeItem(USER_KEY);
-        window.location.href = '/login';
+        // Only redirect if not already on the login page — prevents redirect loop
+        if (!window.location.pathname.startsWith('/login')) {
+            window.location.href = '/login';
+        }
     }
     return response;
 };

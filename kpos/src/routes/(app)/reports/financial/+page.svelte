@@ -49,6 +49,14 @@
     let revenueChange = $derived(financialData.previousRevenue > 0 ? ((financialData.revenue - financialData.previousRevenue) / financialData.previousRevenue * 100).toFixed(1) : 0);
     let expenseChange = $derived(financialData.previousExpenses > 0 ? ((financialData.expenses - financialData.previousExpenses) / financialData.previousExpenses * 100).toFixed(1) : 0);
 
+    // Pagination for daily data
+    const DAILY_PAGE_SIZE = 15;
+    let dailyPage = $state(1);
+    let pagedDailyData = $derived((financialData.dailyData || []).slice((dailyPage - 1) * DAILY_PAGE_SIZE, dailyPage * DAILY_PAGE_SIZE));
+    let dailyTotalPages = $derived(Math.max(1, Math.ceil((financialData.dailyData || []).length / DAILY_PAGE_SIZE)));
+
+    $effect(() => { periodFilter; dailyPage = 1; });
+
     async function loadData() {
         isLoading = true;
         try {
@@ -355,8 +363,8 @@ ${(financialData.paymentMethods || []).map((p: any) => `<tr><td>${p.methodName |
             <!-- Daily Summary -->
             <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm p-6">
                 <h3 class="text-lg font-bold text-gray-900 dark:text-white mb-4">ສະຫຼຸບລາຍວັນ</h3>
-                <div class="space-y-3 max-h-80 overflow-y-auto">
-                    {#each financialData.dailyData || [] as day (day.date)}
+                <div class="space-y-3">
+                    {#each pagedDailyData as day (day.date)}
                         <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
                             <div>
                                 <p class="font-medium text-gray-900 dark:text-white">{day.date}</p>
@@ -375,6 +383,15 @@ ${(financialData.paymentMethods || []).map((p: any) => `<tr><td>${p.methodName |
                         </div>
                     {/if}
                 </div>
+                {#if (financialData.dailyData || []).length > 0}
+                    <div class="flex items-center justify-between mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
+                        <span class="text-sm text-gray-500">ໜ້າ {dailyPage}/{dailyTotalPages} · {(financialData.dailyData || []).length} ວັນ</span>
+                        <div class="flex gap-2">
+                            <button onclick={() => dailyPage = Math.max(1, dailyPage - 1)} disabled={dailyPage <= 1} class="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 disabled:opacity-40 hover:bg-gray-100 dark:hover:bg-gray-700">‹</button>
+                            <button onclick={() => dailyPage = Math.min(dailyTotalPages, dailyPage + 1)} disabled={dailyPage >= dailyTotalPages} class="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 disabled:opacity-40 hover:bg-gray-100 dark:hover:bg-gray-700">›</button>
+                        </div>
+                    </div>
+                {/if}
             </div>
         </div>
     {/if}

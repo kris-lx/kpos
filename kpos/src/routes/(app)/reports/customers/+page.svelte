@@ -25,7 +25,7 @@
     // Pagination state for top customers
     let currentPage = $state(1);
     let itemsPerPage = $state(10);
-    let pageSizeOptions = [5, 10, 20, 50, 70, 100];
+    let pageSizeOptions = [5, 10, 20, 50, 70, 80, 100];
     let totalItems = $state(0);
     let searchQuery = $state("");
     let searchTimeout: ReturnType<typeof setTimeout>;

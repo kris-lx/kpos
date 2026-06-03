@@ -4,8 +4,30 @@
     import { onMount } from "svelte";
     import { toast } from "svelte-sonner";
     import { auth } from "$stores";
-    import { Plus, Loader2, X, CreditCard, Wallet, Edit, AlertCircle, RefreshCw } from "lucide-svelte";
+    import { tenantSettings } from "$lib/stores/settings.svelte";
+    import { Plus, Loader2, X, CreditCard, Wallet, Edit, AlertCircle, RefreshCw, QrCode, Save } from "lucide-svelte";
     const t = i18n.t;
+
+    // QR / EMVco merchant config
+    let qrMerchantCode = $state(tenantSettings.qrMerchantCode);
+    let qrCurrencyCode = $state(tenantSettings.qrCurrencyCode);
+    let savingQr = $state(false);
+
+    async function saveQrSettings() {
+        savingQr = true;
+        try {
+            await Promise.all([
+                api.put('settings/payments/qrMerchantCode', { json: { value: qrMerchantCode } }).json(),
+                api.put('settings/payments/qrCurrencyCode', { json: { value: qrCurrencyCode } }).json(),
+            ]);
+            tenantSettings.patch({ qrMerchantCode, qrCurrencyCode });
+            toast.success('ບັນທຶກ QR Settings ສຳເລັດ');
+        } catch (e) {
+            toast.error('ບັນທຶກ QR Settings ບໍ່ສຳເລັດ');
+        } finally {
+            savingQr = false;
+        }
+    }
 
     let paymentMethods = $state<any[]>([]);
     let loading = $state(true);
@@ -271,6 +293,53 @@
             {/each}
         </div>
     {/if}
+
+    <!-- QR / EMVco Merchant Config -->
+    <div class="mt-8 pt-6 border-t border-gray-200 dark:border-gray-700">
+        <h2 class="flex items-center gap-2 text-lg font-semibold text-gray-900 dark:text-white mb-4">
+            <QrCode class="w-5 h-5 text-primary-500" />
+            QR Code / EMVco ການຕັ້ງຄ່າ
+        </h2>
+        <div class="bg-gray-50 dark:bg-gray-700/50 rounded-xl p-5 space-y-4 max-w-lg">
+            <div>
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    Merchant Account / Payment Code
+                </label>
+                <input
+                    type="text"
+                    bind:value={qrMerchantCode}
+                    placeholder="e.g. LA.BCEL.0102012345678"
+                    class="w-full rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-white"
+                />
+                <p class="text-xs text-gray-400 mt-1">ລະຫັດ merchant ສຳລັບສ້າງ EMVco QR Code ໃນໃບບິນ</p>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    Currency ISO Code (ISO 4217 numeric)
+                </label>
+                <input
+                    type="text"
+                    bind:value={qrCurrencyCode}
+                    placeholder="418"
+                    maxlength="3"
+                    class="w-full rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-white"
+                />
+                <p class="text-xs text-gray-400 mt-1">418 = LAK · 764 = THB · 840 = USD · 978 = EUR</p>
+            </div>
+            <button
+                onclick={saveQrSettings}
+                disabled={savingQr}
+                class="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-xl hover:bg-primary-700 disabled:opacity-60 text-sm font-medium"
+            >
+                {#if savingQr}
+                    <Loader2 class="w-4 h-4 animate-spin" />
+                {:else}
+                    <Save class="w-4 h-4" />
+                {/if}
+                ບັນທຶກ QR Settings
+            </button>
+        </div>
+    </div>
 </div>
 
 {#if showModal}

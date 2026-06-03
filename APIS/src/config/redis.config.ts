@@ -13,7 +13,7 @@ let redisErrorLogged = false;
 // In-memory fallback when Redis is unavailable
 const memoryStore = new Map<string, { value: string; expiry?: number }>();
 
-function isRedisAvailable(): boolean {
+export function isRedisAvailable(): boolean {
     return redis !== null && redisConnected;
 }
 

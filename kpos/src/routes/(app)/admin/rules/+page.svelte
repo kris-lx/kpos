@@ -157,9 +157,7 @@
 
     // ── Lifecycle ──
     onMount(async () => {
-        const user = auth.user;
-        const allowedRoles = ['admin', 'branch_admin', 'store_owner', 'hq_admin', 'hq_manager'];
-        if (!user?.isSuperAdmin && !allowedRoles.includes(user?.role ?? '')) {
+        if (auth.roleLevel > 5) {
             goto("/dashboard");
             return;
         }

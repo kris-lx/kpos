@@ -3,7 +3,8 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, isAdmin } from '@/infrastructure/http/middleware/auth.middleware';
+import { DEFAULT_SETTINGS } from '@/shared/constants';
 import { db } from '@/config/database.config';
 import { settings, documents, documentTemplates, notifications, systemEnums, branches } from '@/db/schema/tables';
 import { eq, and, or, isNull, inArray, desc, asc, count, sql } from 'drizzle-orm';
@@ -285,6 +286,41 @@ settingRoutes.get('/category/:category', authenticate, async (req, res, next) =>
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// RECEIPT DESIGN — must be before /:category/:key wildcard
+// ═══════════════════════════════════════════════════════════════════════════
+settingRoutes.get('/receipt/design', authenticate, async (req, res, next) => {
+    try {
+        const branchId = req.query.branchId ? String(req.query.branchId) : (req.authUser?.activeBranchId || req.user!.branchId);
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+
+        const rows = await getSettingsForBranch('receipt', branchId, tenantId);
+        const designRow = rows.find(r => r.key === 'design');
+
+        if (!designRow) {
+            return res.json({ success: true, data: null });
+        }
+
+        const value = designRow.value as Record<string, unknown>;
+        res.json({ success: true, data: value });
+    } catch (error) {
+        next(error);
+    }
+});
+
+settingRoutes.put('/receipt/design', authenticate, authorize('settings:update'), async (req, res, next) => {
+    try {
+        const branchId = req.body.branchId || req.authUser?.activeBranchId || req.user!.branchId;
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        const { value } = req.body;
+
+        const setting = await upsertSetting('receipt', 'design', value, branchId, tenantId);
+        res.json({ success: true, data: setting });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // GET SINGLE SETTING
 // ═══════════════════════════════════════════════════════════════════════════
 settingRoutes.get('/:category/:key', authenticate, async (req, res, next) => {
@@ -323,7 +359,7 @@ settingRoutes.put('/:category/:key', authenticate, authorize('settings:update'),
     try {
         const { category, key } = req.params;
         const { value, isGlobal = false } = req.body;
-        const isSuperOrAdmin = req.authUser?.isSuperAdmin || req.authUser?.role === 'admin';
+        const isSuperOrAdmin = isAdmin(req);
         
         // Only super admins and admins can set global settings or modify other branches
         const effectiveGlobal = isGlobal && isSuperOrAdmin;
@@ -344,7 +380,7 @@ settingRoutes.put('/:category/:key', authenticate, authorize('settings:update'),
 settingRoutes.post('/bulk', authenticate, authorize('settings:update'), async (req, res, next) => {
     try {
         const { settings, isGlobal = false } = req.body;
-        const isSuperOrAdmin = req.authUser?.isSuperAdmin || req.authUser?.role === 'admin';
+        const isSuperOrAdmin = isAdmin(req);
         
         // Only super admins and admins can set global settings or modify other branches
         const effectiveGlobal = isGlobal && isSuperOrAdmin;
@@ -405,32 +441,38 @@ settingRoutes.get('/template/default', authenticate, authorize('settings:read'),
             phone: '',
             taxId: '',
             logo: '',
-            currency: 'LAK',
-            currencySymbol: '₭',
-            timezone: 'Asia/Vientiane',
+            currency:        DEFAULT_SETTINGS.currency,
+            currencySymbol:  DEFAULT_SETTINGS.currencySymbol,
+            currencyIsoCode: DEFAULT_SETTINGS.currencyIsoCode,
+            timezone:        DEFAULT_SETTINGS.timezone,
+            country:         DEFAULT_SETTINGS.country,
         },
         pos: {
-            defaultTaxRate: 10,
-            enableTax: true,
-            priceIncludesTax: true,
-            allowNegativeStock: false,
-            requireCustomer: false,
-            defaultPaymentMethod: 'CASH',
+            defaultTaxRate:      DEFAULT_SETTINGS.defaultTaxRate,
+            enableTax:           DEFAULT_SETTINGS.enableTax,
+            priceIncludesTax:    DEFAULT_SETTINGS.priceIncludesTax,
+            allowNegativeStock:  DEFAULT_SETTINGS.allowNegativeStock,
+            requireCustomer:     DEFAULT_SETTINGS.requireCustomer,
+            defaultPaymentMethod: DEFAULT_SETTINGS.defaultPaymentMethod,
             printReceipt: true,
             showProductImages: true,
         },
         receipt: {
-            width: '80mm',
-            showLogo: true,
-            showTaxDetails: true,
-            footerText: 'ຂອບໃຈທີ່ໃຊ້ບໍລິການ!',
-            paperSize: '80mm',
+            width:          DEFAULT_SETTINGS.receiptWidth,
+            showLogo:       DEFAULT_SETTINGS.showLogo,
+            showTaxDetails: DEFAULT_SETTINGS.showTaxDetails,
+            footerText:     DEFAULT_SETTINGS.footerText,
+            paperSize:      DEFAULT_SETTINGS.receiptWidth,
         },
         display: {
-            theme: 'system',
-            language: 'lo',
-            showCustomerDisplay: false,
-            customerDisplayUrl: '',
+            theme:               DEFAULT_SETTINGS.theme,
+            language:            DEFAULT_SETTINGS.language,
+            showCustomerDisplay: DEFAULT_SETTINGS.showCustomerDisplay,
+            customerDisplayUrl:  '',
+        },
+        payments: {
+            qrMerchantCode:  DEFAULT_SETTINGS.qrMerchantCode,
+            qrCurrencyCode:  DEFAULT_SETTINGS.qrCurrencyCode,
         },
         notifications: {
             lowStockAlert: true,
@@ -452,24 +494,30 @@ settingRoutes.post('/initialize', authenticate, authorize('settings:update'), as
 
         const defaultSettings: Record<string, Record<string, unknown>> = {
             store: {
-                name: 'My Store',
-                currency: 'LAK',
-                currencySymbol: '₭',
-                timezone: 'Asia/Vientiane',
+                name:            'My Store',
+                currency:        DEFAULT_SETTINGS.currency,
+                currencySymbol:  DEFAULT_SETTINGS.currencySymbol,
+                currencyIsoCode: DEFAULT_SETTINGS.currencyIsoCode,
+                timezone:        DEFAULT_SETTINGS.timezone,
+                country:         DEFAULT_SETTINGS.country,
             },
             pos: {
-                defaultTaxRate: 10,
-                enableTax: true,
-                priceIncludesTax: true,
-                allowNegativeStock: false,
+                defaultTaxRate:     DEFAULT_SETTINGS.defaultTaxRate,
+                enableTax:          DEFAULT_SETTINGS.enableTax,
+                priceIncludesTax:   DEFAULT_SETTINGS.priceIncludesTax,
+                allowNegativeStock: DEFAULT_SETTINGS.allowNegativeStock,
             },
             receipt: {
-                width: '80mm',
-                showLogo: true,
+                width:    DEFAULT_SETTINGS.receiptWidth,
+                showLogo: DEFAULT_SETTINGS.showLogo,
             },
             display: {
-                theme: 'system',
-                language: 'lo',
+                theme:    DEFAULT_SETTINGS.theme,
+                language: DEFAULT_SETTINGS.language,
+            },
+            payments: {
+                qrMerchantCode: DEFAULT_SETTINGS.qrMerchantCode,
+                qrCurrencyCode: DEFAULT_SETTINGS.qrCurrencyCode,
             },
         };
 
@@ -735,40 +783,6 @@ settingRoutes.get('/receipt/preview', authenticate, async (req, res, next) => {
 
         res.setHeader('Content-Type', 'text/html');
         res.send(html);
-    } catch (error) {
-        next(error);
-    }
-});
-
-// Get receipt design (saved layout elements from documents/design page)
-settingRoutes.get('/receipt/design', authenticate, async (req, res, next) => {
-    try {
-        const branchId = req.query.branchId ? String(req.query.branchId) : (req.authUser?.activeBranchId || req.user!.branchId);
-        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
-
-        const rows = await getSettingsForBranch('receipt', branchId, tenantId);
-        const designRow = rows.find(r => r.key === 'design');
-
-        if (!designRow) {
-            return res.json({ success: true, data: null });
-        }
-
-        const value = designRow.value as Record<string, unknown>;
-        res.json({ success: true, data: value });
-    } catch (error) {
-        next(error);
-    }
-});
-
-// Save receipt design (called from documents/design page)
-settingRoutes.put('/receipt/design', authenticate, authorize('documents:update'), async (req, res, next) => {
-    try {
-        const branchId = req.body.branchId || req.authUser?.activeBranchId || req.user!.branchId;
-        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
-        const { value } = req.body;
-
-        const setting = await upsertSetting('receipt', 'design', value, branchId, tenantId);
-        res.json({ success: true, data: setting });
     } catch (error) {
         next(error);
     }

@@ -5,6 +5,7 @@
     import QRCode from 'qrcode';
     import { t } from "$lib/i18n/index.svelte";
     import { toast } from "svelte-sonner";
+    import { tenantSettings } from "$lib/stores/settings.svelte";
     import {
         Save,
         Eye,
@@ -85,6 +86,9 @@
     // QR code data URL cache (generated on-demand)
     let qrDataUrl = $state<string>('');
     let qrFormat = $state<'iso' | 'emvco'>('iso');
+    // Pre-populate from tenant settings (loaded from DB via settings store)
+    let emvcoMerchantCode = $state<string>(tenantSettings.qrMerchantCode);
+    let qrUploadedImageUrl = $state<string>('');
     const QR_PREVIEW_TEXT = 'https://kpos.example.com/receipt/preview';
 
     // EMVco TLV (Tag-Length-Value) encoding
@@ -109,32 +113,33 @@
         // Merchant Account Information (ID 26-51)
         const merchantInfo = encodeTLV('26', data.merchantAccount || '00020101021226580016TH.PROMPTPAY011511234567890352034005802TH530376454541612.34545802TH5910TEST STORE6007BANGKOK6304');
         
-        // Transaction Currency (ID 53)
-        const currency = encodeTLV('53', data.currency || '764'); // 764 = THB
-        
+        // Transaction Currency (ID 53) — from tenant settings
+        const currCode = data.currency || tenantSettings.qrCurrencyCode || tenantSettings.currencyIsoCode;
+        const currency = encodeTLV('53', currCode);
+
         // Transaction Amount (ID 54)
         const amount = data.amount ? encodeTLV('54', data.amount.toFixed(2)) : '';
-        
+
         // Tip or Convenience Fee Indicator (ID 55)
         const tipIndicator = encodeTLV('55', '02');
-        
-        // Transaction Currency (ID 56)
-        const tipCurrency = encodeTLV('56', '764');
+
+        // Transaction Currency (ID 56) — same as main currency
+        const tipCurrency = encodeTLV('56', currCode);
         
         // Tip or Convenience Fee Amount (ID 57)
         const tipAmount = encodeTLV('57', '0.00');
         
-        // Country Code (ID 58)
-        const countryCode = encodeTLV('58', 'TH');
-        
+        // Country Code (ID 58) — from tenant settings
+        const countryCode = encodeTLV('58', tenantSettings.config.country || 'LA');
+
         // Merchant Name (ID 59)
-        const merchantName = encodeTLV('59', data.merchantAccount?.split(':')[0] || 'TEST STORE');
-        
-        // Merchant City (ID 60)
-        const merchantCity = encodeTLV('60', 'BANGKOK');
-        
+        const merchantName = encodeTLV('59', data.merchantAccount?.split(':')[0] || 'STORE');
+
+        // Merchant City (ID 60) — generic placeholder
+        const merchantCity = encodeTLV('60', 'VIENTIANE');
+
         // Postal Code (ID 61)
-        const postalCode = encodeTLV('61', '10100');
+        const postalCode = encodeTLV('61', '01000');
         
         // Additional Data Field Template (ID 62)
         const additionalData = encodeTLV('62', data.transactionId ? encodeTLV('05', data.transactionId) : '');
@@ -167,15 +172,29 @@
         try {
             let qrData = text;
             if (qrFormat === 'emvco') {
+                if (!emvcoMerchantCode.trim()) {
+                    // No merchant code — use uploaded image or blank
+                    qrDataUrl = qrUploadedImageUrl;
+                    return;
+                }
                 qrData = generateEMVcoPayload({
-                    merchantAccount: 'TH.PROMPTPAY0115112345678903',
-                    amount: 123.45,
-                    currency: '764',
-                    transactionId: 'TXN123456789'
+                    merchantAccount: emvcoMerchantCode.trim(),
+                    currency: tenantSettings.qrCurrencyCode || tenantSettings.currencyIsoCode,
                 });
             }
             qrDataUrl = await QRCode.toDataURL(qrData, { width: 80, margin: 1, errorCorrectionLevel: 'M' });
         } catch { qrDataUrl = ''; }
+    }
+
+    async function handleQrImageUpload(e: Event) {
+        const file = (e.target as HTMLInputElement).files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+            qrUploadedImageUrl = reader.result as string;
+            qrDataUrl = qrUploadedImageUrl;
+        };
+        reader.readAsDataURL(file);
     }
 
     $effect(() => { generateQrPreview(); });
@@ -1069,28 +1088,50 @@
 
                         <!-- QR Code Format -->
                         {#if selectedElement.type === "qrcode"}
-                            <div>
-                                <label
-                                    for="qr-format"
-                                    class="block text-xs text-gray-500 dark:text-gray-400 mb-1"
-                                    >QR Code Format</label
-                                >
-                                <select
-                                    id="qr-format"
-                                    bind:value={qrFormat}
-                                    onchange={() => generateQrPreview()}
-                                    class="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm px-3 py-2 text-gray-900 dark:text-white"
-                                >
-                                    <option value="iso">ISO (Standard)</option>
-                                    <option value="emvco">EMVco (Payment)</option>
-                                </select>
-                                <p class="text-xs text-gray-400 mt-1">
-                                    {#if qrFormat === 'iso'}
-                                        Standard ISO 18004 QR Code format
-                                    {:else}
-                                        EMVco QR Code Specification for payment systems
+                            <div class="space-y-3">
+                                <div>
+                                    <label for="qr-format" class="block text-xs text-gray-500 dark:text-gray-400 mb-1">QR Code Format</label>
+                                    <select
+                                        id="qr-format"
+                                        bind:value={qrFormat}
+                                        onchange={() => generateQrPreview()}
+                                        class="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm px-3 py-2 text-gray-900 dark:text-white"
+                                    >
+                                        <option value="iso">ISO (Standard)</option>
+                                        <option value="emvco">EMVco (Payment)</option>
+                                    </select>
+                                </div>
+
+                                {#if qrFormat === 'emvco'}
+                                    <div>
+                                        <label for="emvco-code" class="block text-xs text-gray-500 dark:text-gray-400 mb-1">Merchant Account / Payment Code</label>
+                                        <input
+                                            id="emvco-code"
+                                            type="text"
+                                            bind:value={emvcoMerchantCode}
+                                            oninput={() => generateQrPreview()}
+                                            placeholder="e.g. LA.BCEL.01234567890"
+                                            class="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm px-3 py-2 text-gray-900 dark:text-white"
+                                        />
+                                        <p class="text-xs text-gray-400 mt-1">EMVco QR — enter your payment merchant ID</p>
+                                    </div>
+
+                                    {#if !emvcoMerchantCode.trim()}
+                                        <div>
+                                            <p class="text-xs text-amber-500 mb-1">No merchant code — upload a static QR image instead</p>
+                                            <label class="flex items-center gap-2 px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600 text-sm text-gray-700 dark:text-gray-300">
+                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+                                                {qrUploadedImageUrl ? 'Replace QR Image' : 'Upload QR Image'}
+                                                <input type="file" accept="image/*" class="hidden" onchange={handleQrImageUpload} />
+                                            </label>
+                                            {#if qrUploadedImageUrl}
+                                                <img src={qrUploadedImageUrl} alt="QR" class="mt-2 w-16 h-16 rounded border" />
+                                            {/if}
+                                        </div>
                                     {/if}
-                                </p>
+                                {:else}
+                                    <p class="text-xs text-gray-400">Standard ISO 18004 QR Code — encodes the receipt URL</p>
+                                {/if}
                             </div>
                         {/if}
 

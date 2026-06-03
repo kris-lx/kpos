@@ -12,36 +12,68 @@ export function cn(...inputs: ClassValue[]): string {
     return twMerge(clsx(inputs));
 }
 
-/**
- * Format number as Lao Kip currency (₭)
- */
-export function formatCurrency(amount: number): string {
-    if (amount == null || isNaN(amount)) return '₭0.00';
-    const formatted = new Intl.NumberFormat('en-US', {
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
-    }).format(amount);
-    return `₭${formatted}`;
+// Lazy import to avoid circular dependency — settings store imports api which imports utils
+function getCurrencySymbol(): string {
+    if (typeof window === 'undefined') return '₭';
+    try {
+        const raw = localStorage.getItem('kpos_tenant_config');
+        if (raw) {
+            const { data } = JSON.parse(raw);
+            return data?.currencySymbol || '₭';
+        }
+    } catch { /* ignore */ }
+    return '₭';
+}
+
+function getDisplayLocale(): string {
+    if (typeof localStorage === 'undefined') return 'lo-LA';
+    try {
+        const raw = localStorage.getItem('kpos_tenant_config');
+        if (raw) {
+            const { data } = JSON.parse(raw);
+            const lang = data?.language;
+            if (lang) return LOCALE_BCP47[lang] || 'lo-LA';
+        }
+        // Fall back to i18n locale key
+        const stored = localStorage.getItem('kpos_locale');
+        if (stored && LOCALE_BCP47[stored]) return LOCALE_BCP47[stored];
+    } catch { /* ignore */ }
+    return 'lo-LA';
 }
 
 /**
- * Format number as currency with custom symbol
+ * Format number as currency using the tenant's configured symbol.
+ * Symbol is read from cached tenant config in localStorage.
  */
-export function formatCurrencyWithSymbol(amount: number | null | undefined, symbol: string = '₭', decimals: number = 0): string {
-    if (amount == null || isNaN(Number(amount))) return `${symbol}0`;
-    const formatted = new Intl.NumberFormat('lo-LA', {
+export function formatCurrency(amount: number, symbol?: string): string {
+    const sym = symbol ?? getCurrencySymbol();
+    if (amount == null || isNaN(amount)) return `${sym}0`;
+    const formatted = new Intl.NumberFormat(getDisplayLocale(), {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 2,
+    }).format(amount);
+    return `${sym}${formatted}`;
+}
+
+/**
+ * Format number as currency with explicit symbol and decimal control.
+ */
+export function formatCurrencyWithSymbol(amount: number | null | undefined, symbol?: string, decimals: number = 0): string {
+    const sym = symbol ?? getCurrencySymbol();
+    if (amount == null || isNaN(Number(amount))) return `${sym}0`;
+    const formatted = new Intl.NumberFormat(getDisplayLocale(), {
         minimumFractionDigits: decimals,
         maximumFractionDigits: decimals,
     }).format(Number(amount));
-    return `${symbol}${formatted}`;
+    return `${sym}${formatted}`;
 }
 
 /**
- * Format number with commas
+ * Format number with locale-aware thousands separators.
  */
 export function formatNumber(num: number | null | undefined, decimals = 0): string {
     if (num === null || num === undefined || isNaN(Number(num))) return '0';
-    return new Intl.NumberFormat('lo-LA', {
+    return new Intl.NumberFormat(getDisplayLocale(), {
         minimumFractionDigits: decimals,
         maximumFractionDigits: decimals,
     }).format(Number(num));

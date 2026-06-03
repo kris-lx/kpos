@@ -6,6 +6,7 @@ import {
     pgTable, uuid, text, boolean, timestamp, integer, doublePrecision,
     jsonb, index, uniqueIndex, bigint,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TENANT / ORGANIZATION
@@ -110,17 +111,21 @@ export const sessions = pgTable('sessions', {
 export const roles = pgTable('roles', {
     id: uuid('id').primaryKey().defaultRandom(),
     tenantId: uuid('tenant_id'),
+    // null  = tenant-wide role (visible to all branches)
+    // uuid  = branch-specific role (visible only to that branch + HQ)
+    branchId: uuid('branch_id'),
     name: text('name').notNull(),
     displayName: text('display_name').notNull(),
     description: text('description'),
     permissions: text('permissions').array().notNull().default([]),
     isSystem: boolean('is_system').notNull().default(false),
-    maskLow: bigint('mask_low', { mode: 'number' }).notNull().default(0),
-    maskHigh: bigint('mask_high', { mode: 'number' }).notNull().default(0),
+    maskLow: bigint('mask_low', { mode: 'bigint' }).notNull().default(sql`0`),
+    maskHigh: bigint('mask_high', { mode: 'bigint' }).notNull().default(sql`0`),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (t) => [
-    uniqueIndex('roles_tenant_name_idx').on(t.tenantId, t.name),
+    uniqueIndex('roles_tenant_branch_name_idx').on(t.tenantId, t.branchId, t.name),
+    index('roles_branch_idx').on(t.branchId),
 ]);
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -15,7 +15,7 @@ import { OrderStatus, OrderItemStatus } from '../domain/entities/Order';
 import { ReservationStatus } from '../domain/entities/Reservation';
 import { db } from '@/config/database.config';
 import { branches } from '@/db/schema/tables';
-import { eq } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 
 export const restaurantRoutes = Router();
 
@@ -452,7 +452,7 @@ restaurantRoutes.get('/e-menu', async (req: Request, res: Response, next: NextFu
 // Create order from e-menu (public)
 restaurantRoutes.post('/e-menu/order', async (req: Request, res: Response, next: NextFunction) => {
     try {
-        let { branchId, tableNumber, items } = req.body;
+        const { branchId, tableNumber, items } = req.body;
 
         if (!items || items.length === 0) {
             res.status(400).json({
@@ -462,10 +462,19 @@ restaurantRoutes.post('/e-menu/order', async (req: Request, res: Response, next:
             return;
         }
 
-        // Fall back to the default branch if none supplied
+        // F4: require an explicit, valid, active branch. Never default to a global
+        // main branch — that would let a public caller post orders into any tenant.
         if (!branchId) {
-            const defaultBranch = await db.query.branches.findFirst({ where: eq(branches.isMain, true) });
-            branchId = defaultBranch?.id;
+            res.status(400).json({ success: false, error: { code: 'RES_006', message: 'branchId is required' } });
+            return;
+        }
+        const branch = await db.query.branches.findFirst({
+            where: and(eq(branches.id, String(branchId)), eq(branches.isActive, true)),
+            columns: { id: true },
+        });
+        if (!branch) {
+            res.status(404).json({ success: false, error: { code: 'RES_007', message: 'Invalid or inactive branch' } });
+            return;
         }
 
         const result = await eMenuService.createOrder(branchId, tableNumber, items);

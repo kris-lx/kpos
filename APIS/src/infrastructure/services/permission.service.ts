@@ -52,7 +52,7 @@ export async function getUserMask(userId: string, tenantId: string): Promise<Use
 
     for (const assignment of assignments) {
         if (assignment.role) {
-            const roleLow = assignment.role.maskLow ? BigInt(assignment.role.maskLow) : 0n;
+            const roleLow  = assignment.role.maskLow  ? BigInt(assignment.role.maskLow)  : 0n;
             const roleHigh = assignment.role.maskHigh ? BigInt(assignment.role.maskHigh) : 0n;
             combined = mergeMasks(combined, { low: roleLow, high: roleHigh });
         }

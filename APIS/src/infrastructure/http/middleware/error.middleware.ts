@@ -3,6 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { Request, Response, NextFunction } from 'express';
+import { randomUUID } from 'crypto';
 import { ZodError } from 'zod';
 import { DatabaseConnectionError, isConnectionError } from '@/shared/domain/errors';
 
@@ -69,8 +70,6 @@ export function errorHandler(
     res: Response,
     next: NextFunction
 ): void {
-    console.error('Error:', err);
-
     // Zod validation error
     if (err instanceof ZodError) {
         res.status(400).json({
@@ -114,17 +113,27 @@ export function errorHandler(
 
     // Default error
     const statusCode = err.statusCode ?? 500;
-    // Hide internal error details in production
     const isProd = process.env.NODE_ENV === 'production';
-    const message = isProd && statusCode >= 500 ? 'Internal server error' : (err.message || 'Internal server error');
 
-    res.status(statusCode).json({
-        success: false,
-        error: {
-            code: err.code ?? 'SYS_001',
-            message,
-            // Include stack in development
-            ...(process.env.NODE_ENV !== 'production' && { stack: err.stack }),
-        },
-    });
+    if (statusCode >= 500) {
+        // Generate a correlation ID so ops can find the full trace in server logs
+        const errorId = randomUUID();
+        console.error(`[${errorId}]`, err);
+        res.status(statusCode).json({
+            success: false,
+            error: {
+                code: err.code ?? 'SYS_001',
+                message: 'Internal server error',
+                errorId,   // Returned to client so they can report it; never the stack
+            },
+        });
+    } else {
+        res.status(statusCode).json({
+            success: false,
+            error: {
+                code: err.code ?? 'SYS_001',
+                message: err.message || 'Internal server error',
+            },
+        });
+    }
 }

@@ -56,8 +56,8 @@
                 return;
             }
             isSuperAdmin = user.isSuperAdmin || false;
-            // ສະເພາະ Super Admin ແລະ Admin ເທົ່ານັ້ນທີ່ຈັດການບົດບາດໄດ້
-            if (user.isSuperAdmin || user.role === 'admin') {
+            // Allow super_admin, admin, hq_admin, hq_manager, branch_admin (roleLevel ≤ 5)
+            if (auth.roleLevel <= 5) {
                 canAccess = true;
             } else {
                 toast.error("ທ່ານບໍ່ມີສິດເຂົ້າເຖິງໜ້ານີ້");

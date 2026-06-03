@@ -6,11 +6,13 @@ import type { Request, Response, NextFunction } from 'express';
 import rateLimit from 'express-rate-limit';
 import { cache } from '@/config/redis.config';
 
-const isDev = process.env.NODE_ENV !== 'production';
+// Explicit check: isDev is only true when NODE_ENV === 'development'.
+// Using !=='production' would disable rate limits if NODE_ENV is unset or typo'd.
+const isDev = process.env.NODE_ENV === 'development';
 
 export const rateLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: isDev ? 0 : 1000, // 0 = unlimited in development; 1000/15min in production
+    max: isDev ? 0 : 1000,    // 0 = unlimited in dev; 1000/15min in production
     message: {
         success: false,
         error: {
@@ -20,10 +22,7 @@ export const rateLimiter = rateLimit({
     },
     standardHeaders: true,
     legacyHeaders: false,
-    skip: (req) => {
-        // Skip rate limiting for health checks and in development
-        return req.path === '/health' || isDev;
-    },
+    skip: (req) => req.path === '/health' || isDev,
 });
 
 export const authRateLimiter = rateLimit({

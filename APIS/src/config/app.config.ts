@@ -17,7 +17,7 @@ const envSchema = z.object({
 
     // JWT
     JWT_SECRET: z.string().min(32),
-    JWT_EXPIRES_IN: z.string().default('10h'),
+    JWT_EXPIRES_IN: z.string().default('24h'),
     JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
 
     // External Services
@@ -27,7 +27,7 @@ const envSchema = z.object({
 
     // Email (Brevo)
     BREVO_API_KEY: z.string().optional(),
-    APP_URL: z.string().url().optional().default('http://localhost:5173'),
+    APP_URL: z.string().url().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -72,5 +72,5 @@ export const jwtConfig = {
 
 export const emailConfig = {
     apiKey: config.BREVO_API_KEY || '',
-    appUrl: config.APP_URL || 'http://localhost:5173',
+    appUrl: config.APP_URL || '',
 };

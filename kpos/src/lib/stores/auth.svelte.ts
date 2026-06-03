@@ -6,6 +6,7 @@ import { authClientApi } from '$api/auth-client';
 import { api } from '$api';
 import { browser } from '$app/environment';
 import { LOCAL_STORAGE_KEYS } from '$lib/config';
+import { tenantSettings } from '$lib/stores/settings.svelte';
 
 const ACCESS_TOKEN_KEY = LOCAL_STORAGE_KEYS.ACCESS_TOKEN;
 const REFRESH_TOKEN_KEY = LOCAL_STORAGE_KEYS.REFRESH_TOKEN;
@@ -146,7 +147,7 @@ function createAuthStore() {
                 const tokenExpiry = (payload.exp || 0) * 1000;
                 const tokenValid = tokenExpiry > Date.now() + 30_000;
                 if (tokenValid) {
-                    setTimeout(() => Promise.all([refreshProfile(), loadRules()]), 300);
+                    setTimeout(() => Promise.all([refreshProfile(), loadRules(), tenantSettings.load()]), 300);
                 }
                 // If expired, do nothing — ky's afterResponse hook will redirect on the
                 // next authenticated request the user actually triggers.
@@ -203,8 +204,8 @@ function createAuthStore() {
                     localStorage.setItem(USER_KEY, JSON.stringify(response.data.user));
                 }
                 
-                // Load accessible stores, rules and fresh permissions after login
-                await Promise.all([loadStoreContext(), loadRules(), refreshProfile()]);
+                // Load accessible stores, rules, permissions, and tenant config after login
+                await Promise.all([loadStoreContext(), loadRules(), refreshProfile(), tenantSettings.load()]);
 
                 return true;
             }

@@ -44,3 +44,6 @@ export function isConnectionError(error: unknown): boolean {
     }
     return false;
 }
+
+/** @alias isConnectionError — kept for backward compat with existing tests */
+export const isPrismaConnectionError = isConnectionError;
