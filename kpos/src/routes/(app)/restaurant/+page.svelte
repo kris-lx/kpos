@@ -46,9 +46,9 @@
 
     // Floors configuration
     const floors = [
-        { id: 1, name: 'floor1', label: 'ຊັ້ນ 1' },
-        { id: 2, name: 'floor2Vip', label: 'ຊັ້ນ 2 (VIP)' },
-        { id: 3, name: 'outdoor', label: 'ນອກອາຄານ' },
+        { id: 1, name: 'floor1', labelKey: 'restaurant.floor1' },
+        { id: 2, name: 'floor2Vip', labelKey: 'restaurant.floor2Vip' },
+        { id: 3, name: 'outdoor', labelKey: 'restaurant.outdoor' },
     ];
 
     // Load data from API
@@ -432,7 +432,7 @@
                             >
                                 <div class="flex items-center gap-2">
                                     <MapPin class="w-4 h-4" />
-                                    {floor.label}
+                                    {t(floor.labelKey)}
                                 </div>
                             </button>
                         {/each}
@@ -474,6 +474,7 @@
                         <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
                             {#each filteredTables as table (table.id)}
                                 {@const config = getTableStatusConfig(table.status)}
+                                {@const TableIcon = config.icon}
                                 <button
                                     onclick={() => selectTable(table.id)}
                                     class={cn(
@@ -490,7 +491,7 @@
                                     <div class="text-center space-y-2">
                                         <!-- Table Icon -->
                                         <div class={cn("w-12 h-12 mx-auto rounded-xl flex items-center justify-center", config.bg)}>
-                                            <svelte:component this={config.icon} class={cn("w-6 h-6", config.text)} />
+                                            <TableIcon class={cn("w-6 h-6", config.text)} />
                                         </div>
                                         
                                         <!-- Table Name -->
@@ -552,11 +553,12 @@
                 {@const table = tables.find((t) => t.id === selectedTable)}
                 {#if table}
                     {@const config = getTableStatusConfig(table.status)}
+                    {@const SelectedTableIcon = config.icon}
                     <div class="mt-4 bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 p-5">
                         <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
                             <div class="flex items-center gap-4">
                                 <div class={cn("p-3 rounded-xl", config.bg)}>
-                                    <svelte:component this={config.icon} class={cn("w-6 h-6", config.text)} />
+                                    <SelectedTableIcon class={cn("w-6 h-6", config.text)} />
                                 </div>
                                 <div>
                                     <h3 class="text-lg font-bold text-gray-900 dark:text-white">

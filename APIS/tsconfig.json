@@ -39,7 +39,7 @@
         ],
         "noEmitOnError": false,
         "noImplicitAny": false,
-        "strictNullChecks": false,
+        "strictNullChecks": true,
         "strictFunctionTypes": false,
         "noImplicitReturns": false,
         "noFallthroughCasesInSwitch": false,

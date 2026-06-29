@@ -4,6 +4,7 @@
     import { api } from "$api";
     import { auth } from "$stores";
     import { toast } from "svelte-sonner";
+    import { t } from '$lib/i18n/index.svelte';
     import {
         BookOpen, FileText, ShieldCheck, Banknote, Download,
         Loader2, TrendingUp, TrendingDown, Search, ChevronLeft, ChevronRight,
@@ -39,7 +40,12 @@
     let auditLogs = $state<any[]>([]);
     let auditTotal = $state(0);
     let auditPage = $state(1);
-    let auditLimit = 50;
+    const pageSizeOptions = [5, 10, 20, 50, 70, 100];
+    let pageSize = $state(10);
+    let plPage = $state(1);
+    let taxPage = $state(1);
+    let cashPage = $state(1);
+    let auditLimit = $state(10);
     let auditSearch = $state('');
     let auditAction = $state('');
     let auditActions = $state<string[]>([]);
@@ -68,7 +74,7 @@
             plTotals = res.totals || plTotals;
         } catch (e: any) {
             const msg = await e?.response?.json?.().catch(() => null);
-            toast.error(msg?.error?.message || 'ບໍ່ສາມາດໂຫລດ P&L ໄດ້');
+            toast.error(msg?.error?.message || t('common.loadError'));
         } finally { isLoading = false; }
     }
 
@@ -83,7 +89,7 @@
             taxTotals = res.totals || taxTotals;
         } catch (e: any) {
             const msg = await e?.response?.json?.().catch(() => null);
-            toast.error(msg?.error?.message || 'ໂຫລດສະຫຼຸບພາສີບໍ່ໄດ້');
+            toast.error(msg?.error?.message || t('common.loadError'));
         } finally { isLoading = false; }
     }
 
@@ -100,7 +106,7 @@
             auditActions = res.filterOptions?.actions || auditActions;
         } catch (e: any) {
             const msg = await e?.response?.json?.().catch(() => null);
-            toast.error(msg?.error?.message || 'ໂຫລດ Audit Trail ບໍ່ໄດ້');
+            toast.error(msg?.error?.message || t('common.loadError'));
         } finally { isLoading = false; }
     }
 
@@ -147,7 +153,7 @@
         const csv = bom + [headers, ...rows].map(r => r.join(',')).join('\n');
         const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
         const a = document.createElement('a'); a.href = url; a.download = `pl_${dateFrom}_${dateTo}.csv`; a.click();
-        URL.revokeObjectURL(url);
+        setTimeout(() => URL.revokeObjectURL(url), 0);
     }
 
     // ─── Export Audit CSV ─────────────────────────────────────────────────────
@@ -161,7 +167,7 @@
         const csv = bom + [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
         const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
         const a = document.createElement('a'); a.href = url; a.download = `audit_trail_${dateFrom}_${dateTo}.csv`; a.click();
-        URL.revokeObjectURL(url);
+        setTimeout(() => URL.revokeObjectURL(url), 0);
     }
 
     function formatPct(n: number) { return n.toFixed(1) + '%'; }
@@ -169,6 +175,22 @@
     function formatDateTime(d: any) { return d ? new Date(d).toLocaleString('lo-LA') : '-'; }
 
     const auditTotalPages = $derived(Math.ceil(auditTotal / auditLimit));
+    const plTotalPages = $derived(Math.max(1, Math.ceil(plRows.length / pageSize)));
+    const taxTotalPages = $derived(Math.max(1, Math.ceil(taxRows.length / pageSize)));
+    const cashTotalPages = $derived(Math.max(1, Math.ceil(cashRows.length / pageSize)));
+    const paginatedPlRows = $derived(plRows.slice((plPage - 1) * pageSize, plPage * pageSize));
+    const paginatedTaxRows = $derived(taxRows.slice((taxPage - 1) * pageSize, taxPage * pageSize));
+    const paginatedCashRows = $derived(cashRows.slice((cashPage - 1) * pageSize, cashPage * pageSize));
+
+    function changePageSize(size: number) {
+        pageSize = size;
+        auditLimit = size;
+        plPage = 1;
+        taxPage = 1;
+        cashPage = 1;
+        auditPage = 1;
+        if (activeTab === 'audit') loadAudit();
+    }
 
     onMount(async () => {
         await loadBranches();
@@ -177,31 +199,37 @@
 </script>
 
 <!-- ─── Page Header ─────────────────────────────────────────────────────────── -->
-<div class="space-y-6">
-    <div class="flex items-center justify-between flex-wrap gap-3">
+<div class="min-h-screen bg-gray-50 dark:bg-gray-900 p-4 md:p-6">
+<div class="mx-auto w-full max-w-[1600px] space-y-6">
+    <div class="relative overflow-hidden rounded-3xl bg-slate-950 p-6 md:p-8 text-white shadow-xl">
+        <div class="absolute -right-12 -top-16 h-48 w-48 rounded-full bg-emerald-400/20 blur-3xl"></div>
+        <div class="relative flex items-center justify-between flex-wrap gap-4">
         <div>
-            <h1 class="text-2xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
-                <BookOpen class="w-6 h-6 text-violet-600" />
+            <h1 class="text-2xl md:text-3xl font-bold flex items-center gap-3">
+                <span class="grid h-11 w-11 place-items-center rounded-2xl bg-white/10 ring-1 ring-white/15">
+                    <BookOpen class="w-6 h-6 text-emerald-300" />
+                </span>
                 GL / ການເງິນ & ການກວດກາ
             </h1>
-            <p class="text-sm text-gray-500 dark:text-gray-400 mt-0.5">P&L ຕາມສາຂາ · ສະຫຼຸບພາສີ · Audit Trail · Cash Flow</p>
+            <p class="text-sm text-slate-300 mt-2 md:ml-14">P&L ຕາມສາຂາ · ສະຫຼຸບພາສີ · Audit Trail · Cash Flow</p>
+        </div>
         </div>
     </div>
 
     <!-- ─── Filters Bar ───────────────────────────────────────────────────────── -->
-    <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-100 dark:border-gray-700 p-4 flex flex-wrap gap-3 items-end">
+    <div class="bg-white dark:bg-gray-900 rounded-2xl border border-slate-200 dark:border-gray-800 p-4 md:p-5 shadow-sm grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-[1fr_1fr_1.2fr_auto_auto] gap-3 items-end">
         <div class="flex flex-col gap-1">
-            <label class="text-xs text-gray-500 dark:text-gray-400 font-medium">ຈາກວັນທີ</label>
-            <input type="date" bind:value={dateFrom} class="px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-white" />
+            <label for="a11y-app-reports-gl-page-svelte-1" class="text-xs text-gray-500 dark:text-gray-400 font-medium">ຈາກວັນທີ</label>
+            <input id="a11y-app-reports-gl-page-svelte-1" type="date" bind:value={dateFrom} class="px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-white" />
         </div>
         <div class="flex flex-col gap-1">
-            <label class="text-xs text-gray-500 dark:text-gray-400 font-medium">ຫາວັນທີ</label>
-            <input type="date" bind:value={dateTo} class="px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-white" />
+            <label for="a11y-app-reports-gl-page-svelte-2" class="text-xs text-gray-500 dark:text-gray-400 font-medium">ຫາວັນທີ</label>
+            <input id="a11y-app-reports-gl-page-svelte-2" type="date" bind:value={dateTo} class="px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-white" />
         </div>
         {#if activeTab !== 'audit'}
         <div class="flex flex-col gap-1">
-            <label class="text-xs text-gray-500 dark:text-gray-400 font-medium">ສາຂາ</label>
-            <select bind:value={selectedBranch} class="px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-white min-w-[160px]">
+            <label for="a11y-app-reports-gl-page-svelte-3" class="text-xs text-gray-500 dark:text-gray-400 font-medium">ສາຂາ</label>
+            <select id="a11y-app-reports-gl-page-svelte-3" bind:value={selectedBranch} class="px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-white min-w-[160px]">
                 <option value="">ທຸກສາຂາ</option>
                 {#each branches as b (b.id)}
                     <option value={b.id}>{b.name}</option>
@@ -211,21 +239,21 @@
         {/if}
         {#if activeTab === 'tax'}
         <div class="flex flex-col gap-1">
-            <label class="text-xs text-gray-500 dark:text-gray-400 font-medium">ຈັດກຸ່ມ</label>
-            <select bind:value={taxPeriod} class="px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-white">
+            <label for="a11y-app-reports-gl-page-svelte-4" class="text-xs text-gray-500 dark:text-gray-400 font-medium">ຈັດກຸ່ມ</label>
+            <select id="a11y-app-reports-gl-page-svelte-4" bind:value={taxPeriod} class="px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-white">
                 <option value="daily">ລາຍວັນ</option>
                 <option value="monthly">ລາຍເດືອນ</option>
             </select>
         </div>
         {/if}
-        <button onclick={applyFilters} class="flex items-center gap-2 px-4 py-2 bg-violet-600 hover:bg-violet-700 text-white rounded-xl text-sm font-medium transition-colors">
+        <button onclick={applyFilters} class="flex items-center justify-center gap-2 px-5 py-2.5 bg-slate-900 hover:bg-emerald-600 dark:bg-emerald-400 dark:hover:bg-emerald-300 dark:text-slate-950 text-white rounded-xl text-sm font-semibold transition-colors shadow-sm">
             <RefreshCw class="w-4 h-4" />
             ກອງຂໍ້ມູນ
         </button>
     </div>
 
     <!-- ─── Tabs ──────────────────────────────────────────────────────────────── -->
-    <div class="flex gap-1 bg-gray-100 dark:bg-gray-800 rounded-xl p-1 w-fit">
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-1 bg-slate-200/70 dark:bg-gray-900 rounded-2xl p-1.5 w-full lg:w-fit border border-slate-200 dark:border-gray-800">
         {#each [
             { id: 'pl', label: 'P&L ຕາມສາຂາ', icon: TrendingUp },
             { id: 'tax', label: 'ສະຫຼຸບພາສີ', icon: FileText },
@@ -234,9 +262,9 @@
         ] as tab}
             <button
                 onclick={() => { activeTab = tab.id as Tab; loadActiveTab(); }}
-                class={cn("flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all",
+                class={cn("flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-all",
                     activeTab === tab.id
-                        ? "bg-white dark:bg-gray-700 text-violet-700 dark:text-violet-300 shadow-sm"
+                        ? "bg-white dark:bg-gray-800 text-emerald-700 dark:text-emerald-300 shadow-sm"
                         : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
                 )}
             >
@@ -288,7 +316,7 @@
                         </tr>
                     </thead>
                     <tbody>
-                        {#each plRows as r (r.branchId)}
+                        {#each paginatedPlRows as r (r.branchId)}
                             <tr class="border-t border-gray-100 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors">
                                 <td class="px-4 py-3 font-medium text-gray-900 dark:text-white">{r.branchName}</td>
                                 <td class="px-4 py-3 text-green-600 dark:text-green-400 font-medium">{formatCurrency(r.revenue)}</td>
@@ -322,6 +350,7 @@
                 </table>
             </div>
         </div>
+        {@render pagination(plRows.length, plPage, plTotalPages, (page) => plPage = page)}
 
     <!-- ════════════════════════════════════════════════════════════════════════
          TAB: TAX SUMMARY
@@ -355,7 +384,7 @@
                         </tr>
                     </thead>
                     <tbody>
-                        {#each taxRows as r, i (i)}
+                        {#each paginatedTaxRows as r, i (i)}
                             <tr class="border-t border-gray-100 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/30">
                                 <td class="px-4 py-3 text-gray-600 dark:text-gray-400 whitespace-nowrap">{r.period ? new Date(r.period).toLocaleDateString('lo-LA') : '-'}</td>
                                 <td class="px-4 py-3 font-medium text-gray-900 dark:text-white">{r.branchName}</td>
@@ -384,6 +413,7 @@
                 </table>
             </div>
         </div>
+        {@render pagination(taxRows.length, taxPage, taxTotalPages, (page) => taxPage = page)}
 
     <!-- ════════════════════════════════════════════════════════════════════════
          TAB: AUDIT TRAIL
@@ -448,9 +478,12 @@
                 </table>
             </div>
             <!-- Pagination -->
-            {#if auditTotalPages > 1}
+            {#if auditTotal > 0}
             <div class="flex items-center justify-between px-6 py-4 border-t border-gray-100 dark:border-gray-700">
-                <p class="text-sm text-gray-500 dark:text-gray-400">ໜ້າ {auditPage} / {auditTotalPages}</p>
+                <select value={auditLimit} onchange={(e) => changePageSize(Number(e.currentTarget.value))} class="px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm">
+                    {#each pageSizeOptions as size}<option value={size}>{size} / ໜ້າ</option>{/each}
+                </select>
+                <p class="text-sm text-gray-500 dark:text-gray-400">ໜ້າ {auditPage} / {auditTotalPages || 1}</p>
                 <div class="flex gap-2">
                     <button onclick={() => { auditPage--; loadAudit(); }} disabled={auditPage <= 1} class="p-2 rounded-lg border border-gray-200 dark:border-gray-600 disabled:opacity-40 hover:bg-gray-50 dark:hover:bg-gray-700">
                         <ChevronLeft class="w-4 h-4" />
@@ -494,7 +527,7 @@
                         </tr>
                     </thead>
                     <tbody>
-                        {#each cashRows as r (r.branchId)}
+                        {#each paginatedCashRows as r (r.branchId)}
                             <tr class="border-t border-gray-100 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/30">
                                 <td class="px-4 py-3 font-medium text-gray-900 dark:text-white">{r.branchName}</td>
                                 <td class="px-4 py-3 text-green-600 dark:text-green-400 font-medium">{formatCurrency(r.cashIn)}</td>
@@ -518,5 +551,32 @@
                 </table>
             </div>
         </div>
+        {@render pagination(cashRows.length, cashPage, cashTotalPages, (page) => cashPage = page)}
     {/if}
 </div>
+</div>
+
+{#snippet pagination(total: number, page: number, totalPages: number, onPage: (page: number) => void)}
+    {#if total > 0}
+        <div class="flex flex-col sm:flex-row items-center justify-between gap-3 rounded-2xl border border-slate-200 dark:border-gray-800 bg-white dark:bg-gray-900 px-4 py-3">
+            <div class="flex items-center gap-2">
+                <span class="text-sm text-gray-500">ສະແດງ</span>
+                <select value={pageSize} onchange={(e) => changePageSize(Number(e.currentTarget.value))} class="px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm">
+                    {#each pageSizeOptions as size}<option value={size}>{size}</option>{/each}
+                </select>
+                <span class="text-sm text-gray-500">ຈາກ {total} ລາຍການ</span>
+            </div>
+            <div class="flex items-center gap-3">
+                <span class="text-sm text-gray-500">ໜ້າ {page} / {totalPages}</span>
+                <div class="flex gap-2">
+                    <button onclick={() => onPage(page - 1)} disabled={page <= 1} class="p-2 rounded-lg border border-gray-200 dark:border-gray-700 disabled:opacity-40 hover:bg-gray-50 dark:hover:bg-gray-800" aria-label="Previous page">
+                        <ChevronLeft class="w-4 h-4" />
+                    </button>
+                    <button onclick={() => onPage(page + 1)} disabled={page >= totalPages} class="p-2 rounded-lg border border-gray-200 dark:border-gray-700 disabled:opacity-40 hover:bg-gray-50 dark:hover:bg-gray-800" aria-label="Next page">
+                        <ChevronRight class="w-4 h-4" />
+                    </button>
+                </div>
+            </div>
+        </div>
+    {/if}
+{/snippet}

@@ -268,12 +268,12 @@
                     <!-- Profile Form -->
                     <form onsubmit={(e) => { e.preventDefault(); saveProfile(); }} class="p-6 space-y-4">
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            <label for="a11y-app-settings-profile-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                                 {t("profile.name")}
                             </label>
                             <div class="relative">
                                 <User class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                                <input
+                                <input id="a11y-app-settings-profile-page-svelte-1"
                                     type="text"
                                     bind:value={profileData.name}
                                     class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
@@ -282,12 +282,12 @@
                         </div>
 
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            <label for="a11y-app-settings-profile-page-svelte-2" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                                 {t("profile.email")}
                             </label>
                             <div class="relative">
                                 <Mail class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                                <input
+                                <input id="a11y-app-settings-profile-page-svelte-2"
                                     type="email"
                                     bind:value={profileData.email}
                                     disabled
@@ -300,12 +300,12 @@
                         </div>
 
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            <label for="a11y-app-settings-profile-page-svelte-3" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                                 {t("profile.phone")}
                             </label>
                             <div class="relative">
                                 <Phone class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                                <input
+                                <input id="a11y-app-settings-profile-page-svelte-3"
                                     type="tel"
                                     bind:value={profileData.phone}
                                     placeholder="020-xxxx-xxxx"
@@ -346,12 +346,12 @@
 
                     <form onsubmit={(e) => { e.preventDefault(); changePassword(); }} class="p-6 space-y-4">
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            <label for="a11y-app-settings-profile-page-svelte-4" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                                 {t("profile.currentPassword")}
                             </label>
                             <div class="relative">
                                 <Lock class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                                <input
+                                <input id="a11y-app-settings-profile-page-svelte-4"
                                     type={showCurrentPassword ? "text" : "password"}
                                     bind:value={passwordData.currentPassword}
                                     class="w-full pl-10 pr-12 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
@@ -371,12 +371,12 @@
                         </div>
 
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            <label for="a11y-app-settings-profile-page-svelte-5" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                                 {t("profile.newPassword")}
                             </label>
                             <div class="relative">
                                 <Lock class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                                <input
+                                <input id="a11y-app-settings-profile-page-svelte-5"
                                     type={showNewPassword ? "text" : "password"}
                                     bind:value={passwordData.newPassword}
                                     class="w-full pl-10 pr-12 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
@@ -396,12 +396,12 @@
                         </div>
 
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            <label for="a11y-app-settings-profile-page-svelte-6" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                                 {t("profile.confirmPassword")}
                             </label>
                             <div class="relative">
                                 <Lock class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                                <input
+                                <input id="a11y-app-settings-profile-page-svelte-6"
                                     type={showConfirmPassword ? "text" : "password"}
                                     bind:value={passwordData.confirmPassword}
                                     class="w-full pl-10 pr-12 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500"

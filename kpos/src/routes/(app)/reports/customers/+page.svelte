@@ -25,7 +25,11 @@
     // Pagination state for top customers
     let currentPage = $state(1);
     let itemsPerPage = $state(10);
-    let pageSizeOptions = [5, 10, 20, 50, 70, 80, 100];
+    let pageSizeOptions = [5, 10, 20, 50, 70, 100];
+    let growthPageSize = $state(5);
+    let growthPage = $state(1);
+    let growthTotalPages = $derived(Math.max(1, Math.ceil((reportData.customerGrowth || []).length / growthPageSize)));
+    let paginatedGrowth = $derived((reportData.customerGrowth || []).slice((growthPage - 1) * growthPageSize, growthPage * growthPageSize));
     let totalItems = $state(0);
     let searchQuery = $state("");
     let searchTimeout: ReturnType<typeof setTimeout>;
@@ -126,7 +130,7 @@
         a.href = url;
         a.download = `customers_report_${dateRange.from}_${dateRange.to}.csv`;
         a.click();
-        URL.revokeObjectURL(url);
+        setTimeout(() => URL.revokeObjectURL(url), 0);
         toast.success(t('reports.exportSuccess'));
     }
 
@@ -170,7 +174,7 @@ ${headerRow}${tableRows}</w:tbl></w:body></w:wordDocument>`;
         a.href = url;
         a.download = `customers_report_${dateRange.from}_${dateRange.to}.doc`;
         a.click();
-        URL.revokeObjectURL(url);
+        setTimeout(() => URL.revokeObjectURL(url), 0);
         toast.success(t('reports.exportSuccess'));
     }
 </script>
@@ -468,7 +472,7 @@ ${headerRow}${tableRows}</w:tbl></w:body></w:wordDocument>`;
             </div>
             <div class="p-4">
                 <div class="flex items-end gap-2 h-48">
-                    {#each (reportData.customerGrowth || []) as month (month.month)}
+                    {#each paginatedGrowth as month (month.month)}
                         <div class="flex-1 flex flex-col items-center gap-1">
                             <div
                                 class="w-full flex flex-col gap-1"
@@ -498,6 +502,18 @@ ${headerRow}${tableRows}</w:tbl></w:body></w:wordDocument>`;
                         </div>
                     {/each}
                 </div>
+                {#if (reportData.customerGrowth || []).length > 0}
+                    <div class="mt-4 flex items-center justify-between gap-3 border-t border-gray-200 dark:border-gray-700 pt-4">
+                        <select bind:value={growthPageSize} onchange={() => growthPage = 1} class="px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm">
+                            {#each pageSizeOptions as size}<option value={size}>{size} / ໜ້າ</option>{/each}
+                        </select>
+                        <div class="flex items-center gap-3">
+                            <span class="text-sm text-gray-500">{growthPage} / {growthTotalPages}</span>
+                            <button onclick={() => growthPage--} disabled={growthPage <= 1} class="p-2 rounded-lg border disabled:opacity-40"><ChevronLeft class="w-4 h-4" /></button>
+                            <button onclick={() => growthPage++} disabled={growthPage >= growthTotalPages} class="p-2 rounded-lg border disabled:opacity-40"><ChevronRight class="w-4 h-4" /></button>
+                        </div>
+                    </div>
+                {/if}
                 <div class="flex justify-center gap-6 mt-4">
                     <div class="flex items-center gap-2">
                         <span class="w-3 h-3 bg-success-400 dark:bg-success-500 rounded"></span>

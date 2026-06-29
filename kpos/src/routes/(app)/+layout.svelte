@@ -2,7 +2,7 @@
     import { auth } from "$stores";
     import { goto } from "$app/navigation";
     import { page } from "$app/stores";
-    import { onMount } from "svelte";
+    import { onDestroy, onMount } from "svelte";
     import { cn } from "$utils";
     import { t, setLanguage, currentLanguage } from "$lib/i18n/index.svelte";
     import { themeStore } from "$lib/stores/theme.svelte";
@@ -38,6 +38,21 @@
     let isFullscreen = $state(false);
     let searchQuery = $state("");
 
+    // Inactivity auto-logout — 15 minutes of no user interaction
+    const INACTIVITY_MS = 15 * 60 * 1000;
+    const ACTIVITY_EVENTS = ["mousemove", "mousedown", "keydown", "touchstart", "scroll", "wheel"];
+    let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
+    let notifInterval: ReturnType<typeof setInterval> | null = null;
+    let heldInterval: ReturnType<typeof setInterval> | null = null;
+
+    function resetInactivityTimer() {
+        if (inactivityTimer) clearTimeout(inactivityTimer);
+        inactivityTimer = setTimeout(() => {
+            auth.logout();
+            goto("/login");
+        }, INACTIVITY_MS);
+    }
+
     // Notifications (loaded from API)
     let notifications = $state<Array<{id: string; title: string; message: string; time: string; read: boolean; type: string}>>([]);
     let unreadCount = $state(0);
@@ -49,6 +64,20 @@
     function isNetworkError(err: unknown): boolean {
         const msg = (err instanceof Error) ? err.message : String(err);
         return msg.includes('Failed to fetch') || msg.includes('ERR_CONNECTION_REFUSED') || msg.includes('NetworkError');
+    }
+
+    function getResponseStatus(err: unknown): number | undefined {
+        return (err as { response?: { status?: number } })?.response?.status;
+    }
+
+    function isAuthError(err: unknown): boolean {
+        return getResponseStatus(err) === 401 || getResponseStatus(err) === 403;
+    }
+
+    async function ensureAuthReady(): Promise<boolean> {
+        if (auth.isAuthenticated) return true;
+        if (!auth.user) return false;
+        return auth.refresh();
     }
 
     // Shift enforcement — roles that require an open shift are loaded from /roles/levels
@@ -102,6 +131,7 @@
 
     async function loadNotifications() {
         if (layoutPollFailures >= MAX_LAYOUT_FAILURES) return;
+        if (!(await ensureAuthReady())) return;
         try {
             const res = await api.get("settings/user-notifications?limit=10").json<any>();
             if (res.success) {
@@ -117,17 +147,20 @@
             }
             layoutPollFailures = 0;
         } catch (e) {
+            if (isAuthError(e)) return;
             if (isNetworkError(e)) layoutPollFailures++;
         }
     }
 
     async function loadHeldSalesCount() {
         if (layoutPollFailures >= MAX_LAYOUT_FAILURES) return;
+        if (!(await ensureAuthReady())) return;
         try {
             const res = await api.get('sales/held?limit=1').json<any>();
             heldSalesCount = res.pagination?.total || res.data?.length || 0;
             layoutPollFailures = 0;
         } catch (e) {
+            if (isAuthError(e)) return;
             if (isNetworkError(e)) layoutPollFailures++;
         }
     }
@@ -138,11 +171,13 @@
         const isAdminUser = user.isSuperAdmin || user.role === 'admin' || user.role === 'super_admin';
         if (!isAdminUser) return;
         if (layoutPollFailures >= MAX_LAYOUT_FAILURES) return;
+        if (!(await ensureAuthReady())) return;
         try {
             const res = await api.get('admin/requests/count').json<any>();
             if (res.success) pendingRequestsCount = res.data?.pending || 0;
             layoutPollFailures = 0;
         } catch (e) {
+            if (isAuthError(e)) return;
             if (isNetworkError(e)) layoutPollFailures++;
         }
     }
@@ -150,15 +185,18 @@
     const languages = [
         { code: "th", name: "ภาษาไทย", flag: "🇹🇭" },
         { code: "en", name: "English", flag: "🇺🇸" },
-        { code: "lo", name: "ພາສາລາວ", flag: "🇱🇦" },
+        { code: "lo", name: t("language.lao"), flag: "🇱🇦" },
         { code: "zh", name: "中文", flag: "🇨🇳" },
         { code: "ja", name: "日本語", flag: "🇯🇵" },
     ];
 
-    onMount(() => {
+    onMount(async () => {
         if (!auth.isAuthenticated) {
-            goto("/login");
-            return;
+            const restored = auth.user ? await auth.refresh() : false;
+            if (!restored) {
+                goto("/login");
+                return;
+            }
         }
 
         // If user has no store access and is not admin/super admin, send to store-request
@@ -196,8 +234,8 @@
         loadPendingRequests();
         loadHeldSalesCount();
         // Auto-refresh notifications every 60 seconds, held sales every 30s
-        const notifInterval = setInterval(() => { loadNotifications(); loadPendingRequests(); }, 60 * 1000);
-        const heldInterval = setInterval(loadHeldSalesCount, 30 * 1000);
+        notifInterval = setInterval(() => { loadNotifications(); loadPendingRequests(); }, 60 * 1000);
+        heldInterval = setInterval(loadHeldSalesCount, 30 * 1000);
         // On tab focus: reset failure counter so we retry when user returns
         document.addEventListener('visibilitychange', () => {
             if (!document.hidden) { layoutPollFailures = 0; loadHeldSalesCount(); }
@@ -210,6 +248,10 @@
         document.addEventListener("fullscreenchange", () => {
             isFullscreen = !!document.fullscreenElement;
         });
+
+        // Inactivity auto-logout: reset timer on any user interaction
+        ACTIVITY_EVENTS.forEach(ev => document.addEventListener(ev, resetInactivityTimer, { passive: true }));
+        resetInactivityTimer(); // start the initial countdown
 
         // Close menus when clicking outside
         document.addEventListener("click", (e) => {
@@ -225,7 +267,14 @@
             }
         });
 
-        return () => { clearInterval(notifInterval); clearInterval(heldInterval); };
+        return;
+    });
+
+    onDestroy(() => {
+        if (notifInterval) clearInterval(notifInterval);
+        if (heldInterval) clearInterval(heldInterval);
+        if (inactivityTimer) clearTimeout(inactivityTimer);
+        ACTIVITY_EVENTS.forEach(ev => document.removeEventListener(ev, resetInactivityTimer));
     });
 
     // Re-run route guard reactively when rules load after initial mount or when page changes
@@ -391,10 +440,10 @@
                     <a
                         href="/pos/held"
                         class="hidden md:flex items-center gap-2 px-3 py-1.5 bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 rounded-lg hover:bg-orange-100 dark:hover:bg-orange-900/40 transition-colors"
-                        title="{heldSalesCount} ບິນຄ້າງ"
+                        title={t("pos.heldBillsCount", { count: heldSalesCount })}
                     >
                         <Pause class="w-3.5 h-3.5 text-orange-600 dark:text-orange-400" />
-                        <span class="text-xs font-medium text-orange-700 dark:text-orange-400">ບິນຄ້າງ</span>
+                        <span class="text-xs font-medium text-orange-700 dark:text-orange-400">{t("pos.heldBills")}</span>
                         <span class="min-w-5 h-5 px-1 bg-orange-500 text-white text-xs font-bold rounded-full flex items-center justify-center">
                             {heldSalesCount}
                         </span>
@@ -407,14 +456,14 @@
                         <a
                             href="/staff/shifts"
                             class="hidden md:flex items-center gap-2 px-3 py-1.5 bg-success-50 dark:bg-success-900/20 border border-success-200 dark:border-success-800 rounded-lg hover:bg-danger-50 hover:border-danger-200 dark:hover:bg-danger-900/20 dark:hover:border-danger-800 transition-colors group"
-                            title="ຄລິກເພື່ອຈົບການເຮັດວຽກ"
+                            title={t("shifts.clickToClockOut")}
                         >
                             <span class="relative flex h-2.5 w-2.5 group-hover:hidden">
                                 <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-success-400 opacity-75"></span>
                                 <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-success-500"></span>
                             </span>
-                            <span class="text-xs font-medium text-success-700 dark:text-success-400 group-hover:hidden">ກຳລັງເຮັດວຽກ</span>
-                            <span class="hidden group-hover:inline text-xs font-medium text-danger-600 dark:text-danger-400">ຈົບການເຮັດວຽກ</span>
+                            <span class="text-xs font-medium text-success-700 dark:text-success-400 group-hover:hidden">{t("shifts.working")}</span>
+                            <span class="hidden group-hover:inline text-xs font-medium text-danger-600 dark:text-danger-400">{t("shifts.clockOut")}</span>
                         </a>
                     {:else}
                         <button
@@ -422,7 +471,7 @@
                             class="hidden md:flex items-center gap-2 px-3 py-1.5 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg hover:bg-amber-100 dark:hover:bg-amber-900/40 transition-colors"
                         >
                             <Clock class="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-                            <span class="text-xs font-medium text-amber-700 dark:text-amber-400">ເຂົ້າກະ</span>
+                            <span class="text-xs font-medium text-amber-700 dark:text-amber-400">{t("shifts.clockIn")}</span>
                         </button>
                     {/if}
                 {/if}
@@ -510,7 +559,7 @@
                         <Bell class="w-5 h-5" />
                         {#if unreadCount > 0}
                             <span
-                                class="absolute top-1 right-1 w-4 h-4 bg-error-500 text-white text-xs rounded-full flex items-center justify-center font-medium"
+                                class="absolute top-1 right-1 w-4 h-4 bg-danger-500 text-white text-xs rounded-full flex items-center justify-center font-medium"
                             >
                                 {unreadCount}
                             </span>
@@ -519,7 +568,7 @@
                     {#if pendingRequestsCount > 0}
                         <a href="/admin/requests"
                             class="absolute -top-1 -left-1 min-w-4.5 h-4.5 px-1 bg-amber-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center shadow-sm pointer-events-auto"
-                            title="{pendingRequestsCount} ຄຳຂໍລໍຖ້າອະນຸມັດ"
+                            title={t("admin.pendingRequestsCount", { count: pendingRequestsCount })}
                         >{pendingRequestsCount}</a>
                     {/if}
 
@@ -533,14 +582,14 @@
                                 <h3
                                     class="font-semibold text-gray-900 dark:text-white"
                                 >
-                                    ແຈ້ງເຕືອນ
+                                    {t("notifications.title")}
                                 </h3>
                                 {#if unreadCount > 0}
                                     <button
                                         onclick={markAllRead}
                                         class="text-xs text-primary-600 hover:underline"
                                     >
-                                        ອ່ານທັງໝົດ
+                                        {t("notifications.markAllRead")}
                                     </button>
                                 {/if}
                             </div>
@@ -550,8 +599,8 @@
                                         class="flex items-center gap-3 px-4 py-3 bg-amber-50 dark:bg-amber-900/20 hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors border-b border-amber-100 dark:border-amber-800/50">
                                         <span class="text-lg shrink-0">📋</span>
                                         <div class="flex-1 min-w-0">
-                                            <p class="text-sm font-semibold text-amber-900 dark:text-amber-200">ຄຳຂໍລໍຖ້າອະນຸມັດ</p>
-                                            <p class="text-xs text-amber-700 dark:text-amber-400">{pendingRequestsCount} ຄຳຂໍໃໝ່ ລໍຖ້າການຕອບຮັບ</p>
+                                            <p class="text-sm font-semibold text-amber-900 dark:text-amber-200">{t("admin.pendingRequests")}</p>
+                                            <p class="text-xs text-amber-700 dark:text-amber-400">{t("admin.newRequestsAwaiting", { count: pendingRequestsCount })}</p>
                                         </div>
                                         <span class="px-2 py-0.5 bg-amber-500 text-white text-xs font-bold rounded-full">{pendingRequestsCount}</span>
                                     </a>
@@ -609,7 +658,7 @@
                                     href="/notifications"
                                     class="block w-full text-center py-2 text-sm text-primary-600 hover:bg-primary-50 dark:hover:bg-primary-900/20 rounded-lg transition-colors"
                                 >
-                                    ເບິ່ງທັງໝົດ
+                                    {t("common.viewAll")}
                                 </a>
                             </div>
                         </div>
@@ -628,7 +677,7 @@
                         <div
                             class="w-8 h-8 rounded-full bg-linear-to-br from-primary-400 to-primary-600 flex items-center justify-center text-white font-medium shadow-sm"
                         >
-                            {auth.user?.name?.charAt(0) || "U"}
+                            {auth.user?.name?.charAt(0)}
                         </div>
                         <div class="hidden sm:block text-left">
                             <p
@@ -668,24 +717,24 @@
                                 class="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
                             >
                                 <User class="w-4 h-4" />
-                                <span>ໂປຣໄຟລ໌</span>
+                                <span>{t("settings.profile")}</span>
                             </a>
                             <a
                                 href="/settings"
                                 class="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
                             >
                                 <Settings class="w-4 h-4" />
-                                <span>ຕັ້ງຄ່າ</span>
+                                <span>{t("settings.title")}</span>
                             </a>
                             <hr
                                 class="my-1 border-gray-200 dark:border-gray-700"
                             />
                             <button
                                 onclick={handleLogout}
-                                class="flex items-center gap-3 w-full px-4 py-2.5 text-sm text-error-600 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                                class="flex items-center gap-3 w-full px-4 py-2.5 text-sm text-danger-600 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
                             >
                                 <LogOut class="w-4 h-4" />
-                                <span>ອອກຈາກລະບົບ</span>
+                                <span>{t("auth.logout")}</span>
                             </button>
                         </div>
                     {/if}
@@ -699,8 +748,8 @@
                 <div class="flex items-center gap-3">
                     <Clock class="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0" />
                     <div>
-                        <p class="text-sm font-semibold text-amber-800 dark:text-amber-200">ທ່ານຍັງບໍ່ໄດ້ເປີດກະວຽກ</p>
-                        <p class="text-xs text-amber-600 dark:text-amber-400">ກະລຸນາເປີດກະວຽກກ່ອນເລີ່ມວຽກ</p>
+                        <p class="text-sm font-semibold text-amber-800 dark:text-amber-200">{t("shifts.notClockedIn")}</p>
+                        <p class="text-xs text-amber-600 dark:text-amber-400">{t("shifts.clockInBeforeWork")}</p>
                     </div>
                 </div>
                 <div class="flex items-center gap-2 shrink-0">
@@ -708,13 +757,13 @@
                         onclick={clockIn}
                         class="px-4 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded-lg transition-colors"
                     >
-                        ເປີດກະວຽກດຽວນີ້
+                        {t("shifts.clockInNow")}
                     </button>
                     <a
                         href="/staff/shifts"
                         class="px-4 py-1.5 bg-white dark:bg-gray-800 border border-amber-300 dark:border-amber-600 text-amber-700 dark:text-amber-300 text-sm font-medium rounded-lg hover:bg-amber-50 dark:hover:bg-amber-900/50 transition-colors"
                     >
-                        ໄປໜ້າກະວຽກ
+                        {t("shifts.goToShifts")}
                     </a>
                 </div>
             </div>

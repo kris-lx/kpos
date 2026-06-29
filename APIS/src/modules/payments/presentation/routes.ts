@@ -406,6 +406,9 @@ paymentRoutes.post('/settlements', authenticate, authorize('payments:settle'), a
         const { date } = req.body;
         const userId = req.authUser?.userId || req.user?.userId;
         const branchId = req.authUser?.activeBranchId || req.user?.branchId;
+        if (!branchId || !userId) {
+            return res.status(400).json({ success: false, error: { code: 'AUTH_001', message: 'User or branch not resolved' } });
+        }
         const settlementDate = new Date(date);
         
         // Get totals for the date

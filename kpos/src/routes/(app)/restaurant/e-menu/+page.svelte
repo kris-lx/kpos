@@ -44,7 +44,7 @@
 
     let restaurantInfo = $state({
         name: "KPOS Restaurant",
-        description: "ອາຫານແຊບທຸກເມນູ",
+        description: t("restaurant.menuDefaultDescription"),
         logo: "",
         tableNumber: null as string | null,
         isOpen: true,
@@ -87,7 +87,7 @@
             }
         } catch (err) {
             console.error("Failed to load menu:", err);
-            error = "ບໍ່ສາມາດໂຫຼດຂໍ້ມູນເມນູໄດ້";
+            error = t("restaurant.menuLoadFailed");
             categories = [];
             menuItems = [];
         } finally {
@@ -336,12 +336,12 @@
                                         </h3>
                                         <div class="flex gap-1 shrink-0">
                                             {#if item.isSpicy}
-                                                <span class="p-1 bg-danger-100 dark:bg-danger-900/50 rounded-lg" title="ເຜັດ">
+                                                <span class="p-1 bg-danger-100 dark:bg-danger-900/50 rounded-lg" title={t("restaurant.spicy")}>
                                                     <Flame class="w-3.5 h-3.5 text-danger-500" />
                                                 </span>
                                             {/if}
                                             {#if item.isVegetarian}
-                                                <span class="p-1 bg-success-100 dark:bg-success-900/50 rounded-lg" title="ເຈ">
+                                                <span class="p-1 bg-success-100 dark:bg-success-900/50 rounded-lg" title={t("restaurant.vegetarian")}>
                                                     <Leaf class="w-3.5 h-3.5 text-success-500" />
                                                 </span>
                                             {/if}
@@ -357,7 +357,7 @@
                                     </p>
                                     {#if !item.isAvailable}
                                         <span class="px-2 py-1 bg-danger-100 dark:bg-danger-900/50 text-danger-600 dark:text-danger-400 text-xs rounded-lg">
-                                            ໝົດແລ້ວ
+                                            {t("restaurant.soldOut")}
                                         </span>
                                     {:else}
                                         <div class="w-8 h-8 bg-primary-100 dark:bg-primary-900/50 rounded-full flex items-center justify-center">
@@ -467,14 +467,14 @@
                 </div>
 
                 <div class="mt-6">
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    <label for="a11y-app-restaurant-e-menu-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                         {t("restaurant.specialInstructions")}
                     </label>
-                    <textarea
+                    <textarea id="a11y-app-restaurant-e-menu-page-svelte-1"
                         bind:value={specialRequest}
                         rows="2"
                         class="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-transparent resize-none"
-                        placeholder="ເຊັ່ນ: ບໍ່ເອົາຜັກຊີ, ເຜັດໜ້ອຍ..."
+                        placeholder={t("restaurant.specialInstructionsExample")}
                     ></textarea>
                 </div>
 

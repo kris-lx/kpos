@@ -61,10 +61,10 @@
         try {
             if (editingTax) {
                 await api.put(`settings/taxes/${editingTax.id}`, { json: formData }).json();
-                toast.success("ແກ້ໄຂສຳເລັດ");
+                toast.success(t('common.updated'));
             } else {
                 await api.post("settings/taxes", { json: formData }).json();
-                toast.success("ເພີ່ມສຳເລັດ");
+                toast.success(t('common.added'));
             }
             showModal = false;
             resetForm();
@@ -76,10 +76,10 @@
     }
 
     async function handleDelete(tax: any) {
-        if (!confirm("ຕ້ອງການລຶບ?")) return;
+        if (!confirm(t('common.deleteMessage'))) return;
         try {
             await api.delete(`settings/taxes/${tax.id}`).json();
-            toast.success("ລຶບສຳເລັດ");
+            toast.success(t('common.deleted'));
             loadData();
         } catch (e) {
             toast.error(t("common.error"));
@@ -252,18 +252,18 @@
 
             <form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }} class="p-6 space-y-4">
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຊື່ພາສີ *</label>
-                    <input type="text" bind:value={formData.name} required placeholder="ເຊັ່ນ: VAT 10%" class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
+                    <label for="a11y-app-settings-tax-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຊື່ພາສີ *</label>
+                    <input id="a11y-app-settings-tax-page-svelte-1" type="text" bind:value={formData.name} required placeholder="ເຊັ່ນ: VAT 10%" class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ອັດຕາ (%) *</label>
-                    <input type="number" bind:value={formData.rate} min="0" max="100" step="0.01" required class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
+                    <label for="a11y-app-settings-tax-page-svelte-2" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ອັດຕາ (%) *</label>
+                    <input id="a11y-app-settings-tax-page-svelte-2" type="number" bind:value={formData.rate} min="0" max="100" step="0.01" required class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ລາຍລະອຽດ</label>
-                    <textarea bind:value={formData.description} rows="2" class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white resize-none"></textarea>
+                    <label for="a11y-app-settings-tax-page-svelte-3" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ລາຍລະອຽດ</label>
+                    <textarea id="a11y-app-settings-tax-page-svelte-3" bind:value={formData.description} rows="2" class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white resize-none"></textarea>
                 </div>
 
                 <div class="flex items-center gap-4">

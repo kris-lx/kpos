@@ -94,8 +94,8 @@
             }
             const [poRes, vendorRes, prodRes] = await Promise.all([
                 api.get(`inventory/purchase-orders?${params}`).json<any>(),
-                api.get(`inventory/vendors?limit=1000${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>(),
-                api.get(`products?limit=1000${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>(),
+                api.get(`inventory/vendors?all=true${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>(),
+                api.get(`products?all=true${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>(),
             ]);
             purchaseOrders = poRes.data || [];
             totalItems = poRes.meta?.total || 0;
@@ -139,7 +139,7 @@
             if (editingOrder) {
                 const { items, ...updateData } = data;
                 await api.put(`inventory/purchase-orders/${editingOrder.id}`, { json: updateData }).json();
-                toast.success("ອັບເດດສຳເລັດ");
+                toast.success(t('common.updated'));
             } else {
                 await api.post("inventory/purchase-orders", { json: data }).json();
                 toast.success("ສ້າງຄຳສັ່ງຊື້ສຳເລັດ");
@@ -205,7 +205,7 @@
     async function exportToCsv() {
         try {
             const activeBranchId = auth.activeBranchId;
-            const res = await api.get(`inventory/purchase-orders?limit=10000${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>();
+            const res = await api.get(`inventory/purchase-orders?all=true${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>();
             const rows: any[] = res.data || [];
             let csv = '﻿';
             csv += 'ວັນທີ,ເລກ PO,ຜູ້ສະໜອງ,ຈຳນວນລາຍການ,ມູນຄ່າລວມ,ສະຖານະ\n';
@@ -216,16 +216,16 @@
                 csv += `"${date}","${order.poNumber || order.orderNo || ''}","${vendorName}","${order.items?.length || 0}","${order.total || 0}","${statusLabel}"\n`;
             }
             downloadFile(csv, `purchase-orders-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
-            toast.success('ສົ່ງອອກ CSV ສຳເລັດ');
+            toast.success(t('common.exportSuccess'));
         } catch {
-            toast.error('ສົ່ງອອກລົ້ມເຫລວ');
+            toast.error(t('common.exportFailed'));
         }
     }
 
     async function exportToPdf() {
         try {
             const activeBranchId = auth.activeBranchId;
-            const res = await api.get(`inventory/purchase-orders?limit=10000${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>();
+            const res = await api.get(`inventory/purchase-orders?all=true${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>();
             const rows: any[] = res.data || [];
             let totalValue = rows.reduce((s, r) => s + (r.total || r.totalAmount || 0), 0);
 
@@ -259,9 +259,9 @@
 
             const win = window.open('', '_blank');
             if (win) { win.document.write(html); win.document.close(); win.print(); }
-            toast.success('ສົ່ງອອກ PDF ສຳເລັດ');
+            toast.success(t('common.exportSuccess'));
         } catch {
-            toast.error('ສົ່ງອອກລົ້ມເຫລວ');
+            toast.error(t('common.exportFailed'));
         }
     }
 
@@ -451,7 +451,7 @@
                     onchange={() => { currentPage = 1; loadData(); }}
                     class="px-2 py-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm"
                 >
-                    {#each [10, 20, 50, 100] as size (size)}
+                    {#each [5, 10, 20, 50, 70, 100] as size (size)}
                         <option value={size}>{size}</option>
                     {/each}
                 </select>
@@ -484,8 +484,8 @@
             <form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }} class="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຜູ້ສະໜອງ *</label>
-                        <select bind:value={formData.vendorId} required class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white">
+                        <label for="a11y-app-inventory-purchase-orders-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຜູ້ສະໜອງ *</label>
+                        <select id="a11y-app-inventory-purchase-orders-page-svelte-1" bind:value={formData.vendorId} required class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white">
                             <option value="">ເລືອກຜູ້ສະໜອງ</option>
                             {#each vendors as vendor (vendor.id)}
                                 <option value={vendor.id}>{vendor.name}</option>
@@ -493,20 +493,20 @@
                         </select>
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ວັນທີຄາດຮັບ</label>
-                        <input type="date" bind:value={formData.expectedDate} class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
+                        <label for="a11y-app-inventory-purchase-orders-page-svelte-2" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ວັນທີຄາດຮັບ</label>
+                        <input id="a11y-app-inventory-purchase-orders-page-svelte-2" type="date" bind:value={formData.expectedDate} class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
                     </div>
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ໝາຍເຫດ</label>
-                    <textarea bind:value={formData.notes} rows="2" class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white resize-none"></textarea>
+                    <label for="a11y-app-inventory-purchase-orders-page-svelte-3" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ໝາຍເຫດ</label>
+                    <textarea id="a11y-app-inventory-purchase-orders-page-svelte-3" bind:value={formData.notes} rows="2" class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white resize-none"></textarea>
                 </div>
 
                 <!-- Items -->
                 <div>
                     <div class="flex items-center justify-between mb-2">
-                        <label class="text-sm font-medium text-gray-700 dark:text-gray-300">ລາຍການສິນຄ້າ</label>
+                        <label for="a11y-app-inventory-purchase-orders-page-svelte-4" class="text-sm font-medium text-gray-700 dark:text-gray-300">ລາຍການສິນຄ້າ</label>
                         <button type="button" onclick={addItem} class="flex items-center gap-1 text-sm text-indigo-600 hover:text-indigo-700">
                             <Plus class="w-4 h-4" /> ເພີ່ມ
                         </button>
@@ -514,7 +514,7 @@
                     <div class="space-y-2">
                         {#each formData.items as item, i}
                             <div class="flex gap-2 items-center">
-                                <select bind:value={item.productId} class="flex-1 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white text-sm">
+                                <select id="a11y-app-inventory-purchase-orders-page-svelte-4" bind:value={item.productId} class="flex-1 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white text-sm">
                                     <option value="">ເລືອກສິນຄ້າ</option>
                                     {#each products as product (product.id)}
                                         <option value={product.id}>{product.name}</option>

@@ -21,9 +21,9 @@
                 api.put('settings/payments/qrCurrencyCode', { json: { value: qrCurrencyCode } }).json(),
             ]);
             tenantSettings.patch({ qrMerchantCode, qrCurrencyCode });
-            toast.success('ບັນທຶກ QR Settings ສຳເລັດ');
+            toast.success(t('common.saved'));
         } catch (e) {
-            toast.error('ບັນທຶກ QR Settings ບໍ່ສຳເລັດ');
+            toast.error(t('common.saveFailed'));
         } finally {
             savingQr = false;
         }
@@ -249,6 +249,7 @@
                                 >
                             {/if}
                             <button
+                                aria-label={method.isActive ? "Disable payment method" : "Enable payment method"}
                                 onclick={() => toggleActive(method)}
                                 class="w-10 h-6 rounded-full transition-colors {method.isActive
                                     ? 'bg-success-500'
@@ -302,10 +303,10 @@
         </h2>
         <div class="bg-gray-50 dark:bg-gray-700/50 rounded-xl p-5 space-y-4 max-w-lg">
             <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                <label for="a11y-app-settings-payments-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                     Merchant Account / Payment Code
                 </label>
-                <input
+                <input id="a11y-app-settings-payments-page-svelte-1"
                     type="text"
                     bind:value={qrMerchantCode}
                     placeholder="e.g. LA.BCEL.0102012345678"
@@ -314,10 +315,10 @@
                 <p class="text-xs text-gray-400 mt-1">ລະຫັດ merchant ສຳລັບສ້າງ EMVco QR Code ໃນໃບບິນ</p>
             </div>
             <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                <label for="a11y-app-settings-payments-page-svelte-2" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                     Currency ISO Code (ISO 4217 numeric)
                 </label>
-                <input
+                <input id="a11y-app-settings-payments-page-svelte-2"
                     type="text"
                     bind:value={qrCurrencyCode}
                     placeholder="418"
@@ -357,30 +358,27 @@
             </div>
             <div class="space-y-4">
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
-                        >ຊື່</label
-                    >
-                    <input
+                    <label for="a11y-app-settings-payments-page-svelte-1001" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                        >ຊື່</label>
+                    <input id="a11y-app-settings-payments-page-svelte-1001"
                         type="text"
                         bind:value={formData.name}
                         class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-primary-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
                     />
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
-                        >ລະຫັດ</label
-                    >
-                    <input
+                    <label for="a11y-app-settings-payments-page-svelte-1002" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                        >ລະຫັດ</label>
+                    <input id="a11y-app-settings-payments-page-svelte-1002"
                         type="text"
                         bind:value={formData.code}
                         class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-primary-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
                     />
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
-                        >ປະເພດ</label
-                    >
-                    <select
+                    <label for="a11y-app-settings-payments-page-svelte-1003" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                        >ປະເພດ</label>
+                    <select id="a11y-app-settings-payments-page-svelte-1003"
                         bind:value={formData.type}
                         class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-primary-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
                     >

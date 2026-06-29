@@ -30,7 +30,7 @@
             }
         } catch (err) {
             console.error("Failed to load shifts:", err);
-            error = "ບໍ່ສາມາດໂຫຼດຂໍ້ມູນກະການເຮັດວຽກໄດ້";
+            error = t('common.loadError');
             toast.error("ບໍ່ສາມາດໂຫຼດຂໍ້ມູນກະການເຮັດວຽກໄດ້");
             shifts = [];
         } finally {
@@ -234,7 +234,7 @@
 {#if showModal && selectedShift}
     <div
         class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
-        onclick={() => (showModal = false)}
+        onclick={(e) => e.target === e.currentTarget && (showModal = false)}
         onkeydown={(e) => e.key === "Escape" && (showModal = false)}
         role="dialog"
         aria-modal="true"
@@ -242,7 +242,6 @@
     >
         <div
             class="bg-white dark:bg-gray-800 rounded-lg p-6 w-full max-w-lg"
-            onclick={(e) => e.stopPropagation()}
             role="document"
         >
             <div class="flex justify-between items-start mb-4">

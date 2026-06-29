@@ -251,7 +251,7 @@
                                 {:else if el.type === 'signature'}
                                     <div class="text-center pt-4 pb-1">
                                         <div class="border-b border-gray-400 w-32 mx-auto mb-1"></div>
-                                        <span class="text-xs text-gray-500 print-text">ລາຍເຊັນ</span>
+                                        <span class="text-xs text-gray-500 print-text">{t("documents.signature")}</span>
                                     </div>
                                 {:else}
                                     <!-- text, date, receiptNo, cashier, customer, subtotal, discount, tax, total, payment, change, footer, received, rounding, website, tableNo -->
@@ -273,7 +273,7 @@
                                 <p class="text-xs opacity-80 mt-0.5">{receiptSettings.branchAddress}</p>
                             {/if}
                             {#if receiptSettings.branchPhone}
-                                <p class="text-xs opacity-80">ໂທ: {receiptSettings.branchPhone}</p>
+                                <p class="text-xs opacity-80">{t("common.phone")}: {receiptSettings.branchPhone}</p>
                             {/if}
                         </div>
 

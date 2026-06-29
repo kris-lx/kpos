@@ -60,7 +60,7 @@
         taxId: "",
         orderId: "",
         subtotal: 0,
-        taxRate: defaultTaxRate,
+        taxRate: 10,
     });
 
     const statusOptions = [
@@ -70,7 +70,7 @@
         { value: "cancelled", label: "ຍົກເລີກ" },
     ];
 
-    const pageSizeOptions = [10, 20, 50, 100];
+    const pageSizeOptions = [5, 10, 20, 50, 70, 100];
 
     // Toast functions
     function showToast(message: string, type: "success" | "error" | "info" = "info") {
@@ -129,14 +129,14 @@
             } else {
                 taxInvoices = [];
                 totalItems = 0;
-                error = "ບໍ່ສາມາດໂຫລດຂໍ້ມູນໄດ້";
+                error = t('common.loadError');
                 showToast("ບໍ່ສາມາດໂຫລດຂໍ້ມູນໄດ້", "error");
             }
         } catch (err) {
             console.error("Failed to load tax invoices:", err);
             taxInvoices = [];
             totalItems = 0;
-            error = "ບໍ່ສາມາດໂຫລດຂໍ້ມູນໄດ້";
+            error = t('common.loadError');
             showToast("ບໍ່ສາມາດໂຫລດຂໍ້ມູນໄດ້", "error");
         } finally {
             loading = false;
@@ -606,10 +606,11 @@
     <div class="bg-white dark:bg-gray-800 rounded-lg border dark:border-gray-700 p-4 mb-6">
         <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
             <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ຄົ້ນຫາ</label>
+                <label for="tax-invoice-search" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ຄົ້ນຫາ</label>
                 <div class="relative">
                     <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
                     <input
+                        id="tax-invoice-search"
                         type="text"
                         bind:value={searchQuery}
                         oninput={handleSearch}
@@ -619,10 +620,11 @@
                 </div>
             </div>
             <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ຈາກວັນທີ</label>
+                <label for="tax-invoice-date-from" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ຈາກວັນທີ</label>
                 <div class="relative">
                     <Calendar class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
                     <input
+                        id="tax-invoice-date-from"
                         type="date"
                         bind:value={dateFilter.from}
                         onchange={loadTaxInvoices}
@@ -631,10 +633,11 @@
                 </div>
             </div>
             <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ຫາວັນທີ</label>
+                <label for="tax-invoice-date-to" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ຫາວັນທີ</label>
                 <div class="relative">
                     <Calendar class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
                     <input
+                        id="tax-invoice-date-to"
                         type="date"
                         bind:value={dateFilter.to}
                         onchange={loadTaxInvoices}
@@ -643,10 +646,11 @@
                 </div>
             </div>
             <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ສະຖານະ</label>
+                <label for="tax-invoice-status" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ສະຖານະ</label>
                 <div class="relative">
                     <Filter class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
                     <select
+                        id="tax-invoice-status"
                         bind:value={statusFilter}
                         onchange={() => { currentPage = 1; loadTaxInvoices(); }}
                         class="w-full pl-10 pr-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white appearance-none"
@@ -874,8 +878,10 @@
     <div
         class="fixed inset-0 bg-black/50 dark:bg-black/70 flex items-center justify-center z-50 p-4"
         onclick={(e) => e.target === e.currentTarget && (showModal = false)}
+        onkeydown={(e) => e.key === "Escape" && (showModal = false)}
         role="dialog"
         aria-modal="true"
+        tabindex="-1"
     >
         <div class="bg-white dark:bg-gray-800 rounded-lg w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-xl">
             <!-- View Mode -->
@@ -997,10 +1003,11 @@
                     class="p-6 space-y-4"
                 >
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        <label for="tax-invoice-customer-name" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                             ຊື່ລູກຄ້າ <span class="text-danger-500">*</span>
                         </label>
                         <input
+                            id="tax-invoice-customer-name"
                             type="text"
                             bind:value={formData.customerName}
                             required
@@ -1010,10 +1017,11 @@
                     </div>
 
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        <label for="tax-invoice-tax-id" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                             ເລກປະຈຳຕົວຜູ້ເສຍພາສີ <span class="text-danger-500">*</span>
                         </label>
                         <input
+                            id="tax-invoice-tax-id"
                             type="text"
                             bind:value={formData.taxId}
                             required
@@ -1023,10 +1031,11 @@
                     </div>
 
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        <label for="tax-invoice-order-id" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                             ເລກທີ່ອ້າງອິງ (Order ID)
                         </label>
                         <input
+                            id="tax-invoice-order-id"
                             type="text"
                             bind:value={formData.orderId}
                             class="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500"
@@ -1036,10 +1045,11 @@
 
                     <div class="grid grid-cols-2 gap-4">
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            <label for="tax-invoice-subtotal" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                                 ມູນຄ່າກ່ອນພາສີ <span class="text-danger-500">*</span>
                             </label>
                             <input
+                                id="tax-invoice-subtotal"
                                 type="number"
                                 bind:value={formData.subtotal}
                                 required
@@ -1049,10 +1059,11 @@
                             />
                         </div>
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            <label for="tax-invoice-tax-rate" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                                 ອັດຕາພາສີ (%)
                             </label>
                             <input
+                                id="tax-invoice-tax-rate"
                                 type="number"
                                 bind:value={formData.taxRate}
                                 min="0"
@@ -1177,8 +1188,8 @@
             </div>
             <div class="p-6 space-y-4">
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ເຫດຜົນ</label>
-                    <textarea bind:value={taxRejectReason} rows="3" placeholder="ລະບຸເຫດຜົນ..." class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white resize-none"></textarea>
+                    <label for="tax-invoice-reject-reason" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ເຫດຜົນ</label>
+                    <textarea id="tax-invoice-reject-reason" bind:value={taxRejectReason} rows="3" placeholder="ລະບຸເຫດຜົນ..." class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white resize-none"></textarea>
                 </div>
                 <div class="flex justify-end gap-3">
                     <button onclick={() => (showTaxRejectModal = false)} class="px-5 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 font-medium">ຍົກເລີກ</button>

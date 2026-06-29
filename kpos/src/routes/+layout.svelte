@@ -1,5 +1,6 @@
 <script lang="ts">
   import '../app.css';
+  import { onMount } from 'svelte';
   import { QueryClient, QueryClientProvider } from '@tanstack/svelte-query';
   import { Toaster } from 'svelte-sonner';
 
@@ -15,6 +16,12 @@
   });
 
   let { children } = $props();
+
+  onMount(() => {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+  });
 </script>
 
 <QueryClientProvider client={queryClient}>

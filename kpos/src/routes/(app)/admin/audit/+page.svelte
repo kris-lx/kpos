@@ -1,10 +1,11 @@
-﻿<script lang="ts">
+<script lang="ts">
     import { createQuery, useQueryClient } from "@tanstack/svelte-query";
     import { get } from "svelte/store";
     import { api } from "$lib/api";
     import { goto } from "$app/navigation";
     import { onMount } from "svelte";
     import { toast } from "svelte-sonner";
+    import { t } from '$lib/i18n/index.svelte';
     import { cn, formatDateTime } from "$lib/utils";
     import {
         History,
@@ -58,7 +59,7 @@
             if (user.isSuperAdmin || auditRoles.includes(user.role)) {
                 canAccess = true;
             } else {
-                toast.error("ທ່ານບໍ່ມີສິດເຂົ້າເຖິງໜ້ານີ້");
+                toast.error(t('common.accessDenied'));
                 goto("/admin");
             }
         } catch {
@@ -230,9 +231,9 @@
             a.download = `audit-logs-${new Date().toISOString().split('T')[0]}.csv`;
             a.click();
             window.URL.revokeObjectURL(url);
-            toast.success("ສົ່ງອອກສຳເລັດ");
+            toast.success(t('common.exportSuccess'));
         } catch {
-            toast.error("ເກີດຂໍ້ຜິດພາດໃນການສົ່ງອອກ");
+            toast.error(t('common.genericError'));
         }
     }
 
@@ -390,8 +391,8 @@
                 {#if showFilters}
                     <div class="p-4 bg-gray-50 dark:bg-gray-800/50 border-b border-gray-100 dark:border-gray-700 grid grid-cols-1 md:grid-cols-3 gap-4">
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ຜູ້ໃຊ້</label>
-                            <select
+                            <label for="a11y-app-admin-audit-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ຜູ້ໃຊ້</label>
+                            <select id="a11y-app-admin-audit-page-svelte-1"
                                 bind:value={userFilter}
                                 class="w-full px-4 py-2.5 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                             >
@@ -402,16 +403,16 @@
                             </select>
                         </div>
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ວັນທີເລີ່ມ</label>
-                            <input
+                            <label for="a11y-app-admin-audit-page-svelte-2" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ວັນທີເລີ່ມ</label>
+                            <input id="a11y-app-admin-audit-page-svelte-2"
                                 type="date"
                                 bind:value={dateFrom}
                                 class="w-full px-4 py-2.5 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                             />
                         </div>
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ວັນທີສິ້ນສຸດ</label>
-                            <input
+                            <label for="a11y-app-admin-audit-page-svelte-3" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ວັນທີສິ້ນສຸດ</label>
+                            <input id="a11y-app-admin-audit-page-svelte-3"
                                 type="date"
                                 bind:value={dateTo}
                                 class="w-full px-4 py-2.5 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
@@ -462,7 +463,7 @@
                                         <td class="px-4 py-3">
                                             <div class="flex items-center gap-2">
                                                 <div class="w-8 h-8 bg-gradient-to-br from-gray-400 to-gray-500 rounded-full flex items-center justify-center text-white text-xs font-medium">
-                                                    {log.user?.name?.charAt(0) || '?'}
+                                                    {log.user?.name?.charAt(0)}
                                                 </div>
                                                 <div>
                                                     <p class="text-sm font-medium text-gray-900 dark:text-white">{log.user?.name || 'System'}</p>
@@ -542,7 +543,7 @@
     <!-- Detail Modal -->
     {#if showDetailModal && selectedLog}
         <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showDetailModal = false}></div>
+            <button type="button" aria-label="Close modal" class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showDetailModal = false}></button>
             <div class="relative bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
                 <div class="bg-gradient-to-r from-indigo-600 to-violet-600 p-6 text-white">
                     <button onclick={() => showDetailModal = false} class="absolute top-4 right-4 w-8 h-8 bg-white/20 hover:bg-white/30 rounded-lg flex items-center justify-center transition-colors">

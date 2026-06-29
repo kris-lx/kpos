@@ -212,6 +212,7 @@ const LEGACY_PERM_MAP: Record<string, PermBit> = {
     'reports:financial':  P.REPORT_FINANCIAL,
     'reports:staff':      P.REPORT_STAFF,
     'reports:customers':  P.REPORT_CUSTOMER,
+    'reports:export':     P.REPORT_EXPORT,
     'dashboard:view':     P.REPORT_DASHBOARD,
     'dashboard:read':     P.REPORT_DASHBOARD,
     // ── Staff ────────────────────────────────────────────────────────────────

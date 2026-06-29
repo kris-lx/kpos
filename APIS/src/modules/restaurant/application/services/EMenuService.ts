@@ -52,6 +52,20 @@ export interface EMenuOrderItem {
 
 export class EMenuService {
     private orderService: OrderService;
+    private readonly menuKeywords = [
+        'food',
+        'menu',
+        'restaurant',
+        'dish',
+        'drink',
+        'beverage',
+        'cafe',
+        'coffee',
+        'ອາຫານ',
+        'ເຄື່ອງດື່ມ',
+        'ເມນູ',
+        'ຮ້ານອາຫານ',
+    ];
 
     constructor() {
         this.orderService = new OrderService();
@@ -76,6 +90,11 @@ export class EMenuService {
             with: { category: { columns: { name: true } }, inventory: { columns: { quantity: true } } },
             orderBy: asc(products.sortOrder),
         });
+        const menuProducts = productList.filter(product => this.isRestaurantMenuProduct(product));
+        const menuCategoryIds = new Set(menuProducts.map(product => product.categoryId).filter(Boolean));
+        const menuCategories = categoryList.filter(category =>
+            menuCategoryIds.has(category.id) || this.matchesMenuKeyword(category.name)
+        );
 
         const restaurantInfo = restaurantSettings?.value as Record<string, unknown> || {};
 
@@ -91,13 +110,13 @@ export class EMenuService {
                 openTime: (restaurantInfo.openTime as string) || '09:00',
                 closeTime: (restaurantInfo.closeTime as string) || '22:00',
             },
-            categories: categoryList.map(c => ({
+            categories: menuCategories.map(c => ({
                 id: c.id,
                 name: c.name,
                 icon: c.image || '🍽️',
                 sortOrder: c.sortOrder,
             })),
-            items: productList.map((p: any) => ({
+            items: menuProducts.map((p: any) => ({
                 id: p.id,
                 name: p.name,
                 description: p.description || '',
@@ -136,8 +155,9 @@ export class EMenuService {
                     // cross-branch/cross-tenant product injection.
                     const product = await db.query.products.findFirst({
                         where: and(eq(products.id, item.itemId), eq(products.branchId, branchId), eq(products.isActive, true)),
+                        with: { category: { columns: { name: true } } },
                     });
-                    if (!product) {
+                    if (!product || !this.isRestaurantMenuProduct(product)) {
                         throw new Error(`Item ${item.itemId} is not available for this branch`);
                     }
                     return {
@@ -177,6 +197,20 @@ export class EMenuService {
         const closeMinutes = closeHour * 60 + closeMin;
 
         return currentTime >= openMinutes && currentTime <= closeMinutes;
+    }
+
+    private isRestaurantMenuProduct(product: any): boolean {
+        const tags = Array.isArray(product.tags)
+            ? product.tags.map((tag: unknown) => String(tag).toLowerCase())
+            : [];
+        const categoryName = String(product.category?.name || '').toLowerCase();
+
+        return tags.some(tag => this.matchesMenuKeyword(tag)) || this.matchesMenuKeyword(categoryName);
+    }
+
+    private matchesMenuKeyword(value: string): boolean {
+        const normalized = value.toLowerCase();
+        return this.menuKeywords.some(keyword => normalized.includes(keyword));
     }
 }
 

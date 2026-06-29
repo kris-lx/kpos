@@ -20,11 +20,11 @@
 
         try {
             await api.post("auth/forgot-password", { json: { email } }).json();
-            successMessage = "ຖ້າອີເມວນີ້ມີໃນລະບົບ, ພວກເຮົາໄດ້ສົ່ງລິ້ງປ່ຽນລະຫັດຜ່ານໄປໃຫ້ແລ້ວ. ກະລຸນາກວດເບິ່ງກ່ອງຈົດໝາຍຂອງທ່ານ.";
-            toast.success("ສົ່ງອີເມວສຳເລັດ");
+            successMessage = t("auth.forgotPasswordSuccessMessage");
+            toast.success(t("auth.emailSentSuccess"));
             email = "";
         } catch (err: any) {
-            error = "ເກີດຂໍ້ຜິດພາດໃນການສົ່ງອີເມວ ກະລຸນາລອງໃໝ່ອີກຄັ້ງ";
+            error = t("auth.emailSendError");
             console.error(err);
         } finally {
             isLoading = false;
@@ -33,7 +33,7 @@
 </script>
 
 <svelte:head>
-    <title>ລືມລະຫັດຜ່ານ - {t("app.name")}</title>
+    <title>{t("auth.forgotPassword")} - {t("app.name")}</title>
 </svelte:head>
 
 <div class="min-h-screen flex items-center justify-center bg-linear-to-br from-primary-500 to-primary-700 dark:from-gray-900 dark:to-gray-800 p-4">
@@ -102,10 +102,10 @@
                     <Mail class="w-6 h-6" />
                 </div>
                 <h2 class="text-xl font-semibold text-gray-900 dark:text-white mb-2">
-                    ລືມລະຫັດຜ່ານ?
+                    {t("auth.forgotPasswordQuestion")}
                 </h2>
                 <p class="text-sm text-gray-500 dark:text-gray-400">
-                    ກະລຸນາປ້ອນອີເມວຂອງທ່ານທີ່ລົງທະບຽນໄວ້ເພື່ອຮັບລິ້ງປ່ຽນລະຫັດຜ່ານໃໝ່
+                    {t("auth.forgotPasswordSubtitle")}
                 </p>
             </div>
 
@@ -125,7 +125,7 @@
                 <!-- Email -->
                 <div>
                     <label for="email" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                        ອີເມວ
+                        {t("auth.email")}
                     </label>
                     <input
                         type="email"
@@ -159,9 +159,9 @@
                     >
                         {#if isLoading}
                             <div class="animate-spin rounded-full h-5 w-5 border-2 border-white border-t-transparent"></div>
-                            <span>ກຳລັງສົ່ງ...</span>
+                            <span>{t("auth.sending")}</span>
                         {:else}
-                            <span>ສົ່ງລິ້ງປ່ຽນລະຫັດຜ່ານ</span>
+                            <span>{t("auth.sendResetLink")}</span>
                         {/if}
                     </button>
                 {:else}
@@ -173,7 +173,7 @@
                             "flex items-center justify-center gap-2 text-center",
                         )}
                     >
-                        ກັບໄປໜ້າເຂົ້າສູ່ລະບົບ
+                        {t("auth.backToLogin")}
                     </a>
                 {/if}
             </form>

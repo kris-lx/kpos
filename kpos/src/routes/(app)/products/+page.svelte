@@ -86,8 +86,8 @@
         barcode: "",
         categoryId: "",
         vendorId: "",
-        price: "",
-        cost: "",
+        price: 0,
+        cost: 0,
         unit: "ຊິ້ນ",
         isActive: true,
         image: "",
@@ -468,7 +468,7 @@
             csv += `"${p.name || ''}","${p.sku || ''}","${p.barcode || ''}","${getCategoryName(p.categoryId)}","${p.price || 0}","${p.cost || 0}","${p.stock ?? 0}","${statusLabel}"\n`;
         }
         downloadFile(csv, `products-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
-        toast.success('ສົ່ງອອກ CSV ສຳເລັດ');
+        toast.success(t('common.exportSuccess'));
     }
 
     // Reload when active store switches
@@ -684,6 +684,12 @@
                 <div 
                     class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden hover:shadow-md transition-all cursor-pointer group"
                     onclick={() => openDetail(product)}
+                    onkeydown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            openDetail(product);
+                        }
+                    }}
                     role="button"
                     tabindex="0"
                 >
@@ -946,10 +952,10 @@
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                    <label for="a11y-app-products-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                         ຊື່ສິນຄ້າ *
                     </label>
-                    <input
+                    <input id="a11y-app-products-page-svelte-1"
                         type="text"
                         bind:value={formData.name}
                         required
@@ -959,12 +965,12 @@
 
                 <div class="grid grid-cols-2 gap-4">
                     <div class="relative">
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                        <label for="a11y-app-products-page-svelte-2" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             SKU
                         </label>
                         <div class="flex gap-2">
                             <div class="relative flex-1">
-                                <input
+                                <input id="a11y-app-products-page-svelte-2"
                                     type="text"
                                     bind:value={formData.sku}
                                     oninput={(e) => { skuSearch = e.currentTarget.value; showSkuDropdown = true; }}
@@ -1004,12 +1010,12 @@
                         </div>
                     </div>
                     <div class="relative">
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                        <label for="a11y-app-products-page-svelte-3" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             ບາໂຄ້ດ
                         </label>
                         <div class="flex gap-2">
                             <div class="relative flex-1">
-                                <input
+                                <input id="a11y-app-products-page-svelte-3"
                                     type="text"
                                     bind:value={formData.barcode}
                                     oninput={(e) => { barcodeSearch = e.currentTarget.value; showBarcodeDropdown = true; }}
@@ -1052,10 +1058,10 @@
 
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                        <label for="a11y-app-products-page-svelte-4" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             ລາຄາຂາຍ *
                         </label>
-                        <MoneyInput
+                        <MoneyInput id="a11y-app-products-page-svelte-4"
                             bind:value={formData.price}
                             required
                             min={0}
@@ -1063,10 +1069,10 @@
                         />
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                        <label for="a11y-app-products-page-svelte-5" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             ລາຄາທຶນ
                         </label>
-                        <MoneyInput
+                        <MoneyInput id="a11y-app-products-page-svelte-5"
                             bind:value={formData.cost}
                             min={0}
                             class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
@@ -1075,10 +1081,10 @@
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                    <label for="a11y-app-products-page-svelte-6" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                         ໝວດໝູ່
                     </label>
-                    <select
+                    <select id="a11y-app-products-page-svelte-6"
                         bind:value={formData.categoryId}
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                     >
@@ -1090,10 +1096,10 @@
                 </div>
                 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                    <label for="a11y-app-products-page-svelte-7" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                         ເຈົ້າຂອງສິນຄ້າ (Vendor)
                     </label>
-                    <select
+                    <select id="a11y-app-products-page-svelte-7"
                         bind:value={formData.vendorId}
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                     >
@@ -1105,10 +1111,10 @@
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                    <label for="a11y-app-products-page-svelte-8" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                         ລາຍລະອຽດ
                     </label>
-                    <textarea
+                    <textarea id="a11y-app-products-page-svelte-8"
                         bind:value={formData.description}
                         rows="2"
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
@@ -1117,10 +1123,10 @@
 
                 <div class="grid grid-cols-3 gap-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                        <label for="a11y-app-products-page-svelte-9" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             ສະຕ໋ອກ
                         </label>
-                        <input
+                        <input id="a11y-app-products-page-svelte-9"
                             type="number"
                             bind:value={formData.stock}
                             min="0"
@@ -1128,10 +1134,10 @@
                         />
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                        <label for="a11y-app-products-page-svelte-10" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             ສະຕ໋ອກຕ່ຳສຸດ
                         </label>
-                        <input
+                        <input id="a11y-app-products-page-svelte-10"
                             type="number"
                             bind:value={formData.minStock}
                             min="0"
@@ -1139,10 +1145,10 @@
                         />
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                        <label for="a11y-app-products-page-svelte-11" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             ຫົວໜ່ວຍ
                         </label>
-                        <input
+                        <input id="a11y-app-products-page-svelte-11"
                             type="text"
                             bind:value={formData.unit}
                             class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"

@@ -29,7 +29,7 @@
     let pageSize = $state(10);
     let totalItems = $state(0);
     let totalPages = $state(0);
-    let pageSizeOptions = [10, 25, 50];
+    let pageSizeOptions = [5, 10, 20, 50, 70, 100];
 
     let formData = $state({
         productId: "",
@@ -40,13 +40,13 @@
         date: new Date().toISOString().split("T")[0],
     });
 
-    let reasons = $state<{value: string; label: string; labelLao?: string}[]>([
-        { value: "damaged", label: "Damaged", labelLao: "ເສຍຫາຍ" },
-        { value: "expired", label: "Expired", labelLao: "ໝົດອາຍຸ" },
-        { value: "lost", label: "Lost/Missing", labelLao: "ສູນຫາຍ" },
-        { value: "returned", label: "Returned to Vendor", labelLao: "ສົ່ງຄືນຜູ້ສະໜອງ" },
-        { value: "transfer", label: "Transfer", labelLao: "ໂອນຍ້າຍ" },
-        { value: "other", label: "Other", labelLao: "ອື່ນໆ" },
+    let reasons = $state<{value: string; label: string; labelLao?: string; labelKey?: string}[]>([
+        { value: "damaged", label: "Damaged", labelKey: "inventory.reason.damaged" },
+        { value: "expired", label: "Expired", labelKey: "inventory.reason.expired" },
+        { value: "lost", label: "Lost/Missing", labelKey: "inventory.reason.lost" },
+        { value: "returned", label: "Returned to Vendor", labelKey: "inventory.reason.returned" },
+        { value: "transfer", label: "Transfer", labelKey: "inventory.reason.transfer" },
+        { value: "other", label: "Other", labelKey: "common.other" },
     ]);
 
     async function loadEnums() {
@@ -70,8 +70,8 @@
 
             const [stockRes, prodRes, invRes] = await Promise.all([
                 api.get(`inventory/stock-out?${searchParams}`).json<any>(),
-                api.get(`products?limit=1000${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>(),
-                api.get(`inventory?limit=1000${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>(),
+                api.get("products?all=true").json<any>(),
+                api.get("inventory?all=true").json<any>(),
             ]);
             stockOuts = stockRes.data || [];
             totalItems = stockRes.meta?.total || stockRes.total || stockOuts.length;
@@ -85,7 +85,7 @@
             }));
         } catch (e) {
             console.error("Failed to load data:", e);
-            loadError = t("common.loadError") || "Failed to load data. Please try again.";
+            loadError = t("common.loadError");
             toast.error(loadError);
             stockOuts = [];
             products = [];
@@ -101,7 +101,7 @@
         try {
             if (editingId) {
                 await api.put(`inventory/stock-out/${editingId}`, { json: formData }).json();
-                toast.success(t("common.updated") || "ອັບເດດສຳເລັດ");
+                toast.success(t("common.updated"));
             } else {
                 await api.post("inventory/stock-out", { json: formData }).json();
                 toast.success(t("inventory.stockOutCreated"));
@@ -210,20 +210,21 @@
     async function exportToCsv() {
         try {
             const activeBranchId = auth.activeBranchId;
-            const res = await api.get(`inventory/stock-out?limit=10000${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>();
+            const res = await api.get(`inventory/stock-out?all=true${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>();
             const rows: any[] = res.data || [];
             let csv = '﻿';
-            csv += 'ວັນທີ,ຊື່ສິນຄ້າ,ຈຳນວນ,ເຫດຜົນ,ເລກອ້າງອີງ,ໝາຍເຫດ\n';
+            csv += `${t("inventory.csvHeaderDate")},${t("inventory.csvHeaderProductName")},${t("inventory.csvHeaderQuantity")},${t("inventory.reason")},${t("inventory.csvHeaderReference")},${t("common.notes")}\n`;
             for (const item of rows) {
                 const productName = products.find((p: any) => p.id === item.productId)?.name || item.productId;
-                const reasonLabel = reasons.find((r: any) => r.value === item.reason)?.labelLao || item.reason || '';
+                const reason = reasons.find((r: any) => r.value === item.reason);
+                const reasonLabel = reason?.labelKey ? t(reason.labelKey) : (reason?.label || item.reason || '');
                 const date = item.createdAt ? new Date(item.createdAt).toLocaleDateString('lo-LA') : '';
                 csv += `"${date}","${productName}","${Math.abs(item.quantity || 0)}","${reasonLabel}","${item.reference || ''}","${item.notes || ''}"\n`;
             }
             downloadFile(csv, `stockout-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
-            toast.success('ສົ່ງອອກ CSV ສຳເລັດ');
+            toast.success(t("reports.exportSuccess"));
         } catch {
-            toast.error('ສົ່ງອອກລົ້ມເຫລວ');
+            toast.error(t("reports.exportFailed"));
         }
     }
 
@@ -248,7 +249,7 @@
                 class="flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 text-sm font-medium"
             >
                 <Download class="h-4 w-4" />
-                ສົ່ງອອກ
+                {t("common.export")}
             </button>
             {#if canCreateStockOut}
             <button
@@ -281,7 +282,7 @@
                 onclick={() => loadData()}
                 class="px-4 py-2 bg-danger-600 text-white rounded-lg hover:bg-danger-700"
             >
-                {t("common.retry") || "Retry"}
+                {t("common.retry")}
             </button>
         </div>
     {:else}
@@ -324,7 +325,7 @@
                             </td>
                             <td class="px-6 py-4 text-sm text-gray-500 dark:text-gray-400">
                                 <span class="rounded-full bg-gray-100 dark:bg-gray-600 px-2 py-1 text-xs text-gray-700 dark:text-gray-300">
-                                    {t(`inventory.reason${item.reason?.charAt(0).toUpperCase() + item.reason?.slice(1)}`) || item.reason}
+                                    {item.reasonLabel || t(`inventory.reason${item.reason?.charAt(0).toUpperCase() + item.reason?.slice(1)}`)}
                                 </span>
                             </td>
                             <td class="px-6 py-4 text-sm text-gray-500 dark:text-gray-400">{item.reference || "-"}</td>
@@ -380,7 +381,7 @@
                         onclick={() => handlePageChange(currentPage - 1)}
                         disabled={currentPage === 1 || loading}
                         class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                        title={t("common.previous") || "Previous"}
+                        title={t("common.previous")}
                     >
                         <ChevronLeft class="w-5 h-5 text-gray-600 dark:text-gray-400" />
                     </button>
@@ -407,7 +408,7 @@
                         onclick={() => handlePageChange(currentPage + 1)}
                         disabled={currentPage === totalPages || totalPages === 0 || loading}
                         class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                        title={t("common.next") || "Next"}
+                        title={t("common.next")}
                     >
                         <ChevronRight class="w-5 h-5 text-gray-600 dark:text-gray-400" />
                     </button>
@@ -421,9 +422,13 @@
 {#if showModal}
     <div
         class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-        onclick={() => showModal = false}
+        onclick={(e) => e.target === e.currentTarget && (showModal = false)}
+        onkeydown={(e) => e.key === "Escape" && (showModal = false)}
+        role="dialog"
+        aria-modal="true"
+        tabindex="-1"
     >
-        <div class="w-full max-w-lg rounded-2xl bg-white dark:bg-gray-800 p-6 shadow-xl" onclick={(e) => e.stopPropagation()}>
+        <div class="w-full max-w-lg rounded-2xl bg-white dark:bg-gray-800 p-6 shadow-xl">
             <div class="flex items-center justify-between mb-4">
                 <h2 class="text-xl font-bold text-gray-900 dark:text-white">
                     {editingId ? t("common.edit") : t("inventory.addStockOut")}
@@ -440,8 +445,8 @@
                 class="space-y-4"
             >
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t("products.product")}</label>
-                    <select
+                    <label for="a11y-app-inventory-stockout-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t("products.product")}</label>
+                    <select id="a11y-app-inventory-stockout-page-svelte-1"
                         bind:value={formData.productId}
                         required
                         class="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 p-2.5 text-gray-900 dark:text-white"
@@ -454,8 +459,8 @@
                 </div>
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t("inventory.quantity")}</label>
-                        <input
+                        <label for="a11y-app-inventory-stockout-page-svelte-2" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t("inventory.quantity")}</label>
+                        <input id="a11y-app-inventory-stockout-page-svelte-2"
                             type="number"
                             bind:value={formData.quantity}
                             min="1"
@@ -464,30 +469,30 @@
                         />
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t("inventory.reason")}</label>
-                        <select
+                        <label for="a11y-app-inventory-stockout-page-svelte-3" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t("inventory.reason")}</label>
+                        <select id="a11y-app-inventory-stockout-page-svelte-3"
                             bind:value={formData.reason}
                             required
                             class="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 p-2.5 text-gray-900 dark:text-white"
                         >
                             {#each reasons as r (r.value)}
-                                <option value={r.value}>{i18n.locale === 'lo' ? (r.labelLao || r.label) : r.label}</option>
+                                <option value={r.value}>{r.labelKey ? t(r.labelKey) : (i18n.locale === 'lo' ? (r.labelLao || r.label) : r.label)}</option>
                             {/each}
                         </select>
                     </div>
                 </div>
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t("inventory.reference")}</label>
-                        <input
+                        <label for="a11y-app-inventory-stockout-page-svelte-4" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t("inventory.reference")}</label>
+                        <input id="a11y-app-inventory-stockout-page-svelte-4"
                             type="text"
                             bind:value={formData.reference}
                             class="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 p-2.5 text-gray-900 dark:text-white"
                         />
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t("common.date")}</label>
-                        <input
+                        <label for="a11y-app-inventory-stockout-page-svelte-5" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t("common.date")}</label>
+                        <input id="a11y-app-inventory-stockout-page-svelte-5"
                             type="date"
                             bind:value={formData.date}
                             required
@@ -496,8 +501,8 @@
                     </div>
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t("common.notes")}</label>
-                    <textarea
+                    <label for="a11y-app-inventory-stockout-page-svelte-6" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t("common.notes")}</label>
+                    <textarea id="a11y-app-inventory-stockout-page-svelte-6"
                         bind:value={formData.notes}
                         rows="2"
                         class="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 p-2.5 text-gray-900 dark:text-white"

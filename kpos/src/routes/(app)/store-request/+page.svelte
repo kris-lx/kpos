@@ -126,7 +126,7 @@
             }
         } catch (error) {
             console.error("Upload error:", error);
-            toast.error("ເກີດຂໍ້ຜິດພາດໃນການອັບໂຫຼດເອກະສານ");
+            toast.error(t('common.genericError'));
         } finally {
             isUploading = false;
             input.value = '';

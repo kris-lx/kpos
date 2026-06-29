@@ -29,9 +29,13 @@
     const canDelete = $derived(auth.hasPermission('roles:delete'));
 
     const ROLE_LEVEL_MAP: Record<string, number> = {
-        system_admin: 1, admin: 2, hq_admin: 3, hq_manager: 4,
-        branch_admin: 5, store_owner: 5, branch_manager: 6, store_manager: 6,
-        cashier: 7, staff: 7, inventory_staff: 7, kitchen_staff: 7, waiter: 7,
+        platform_super_admin: 1, platform_support: 1, platform_auditor: 1,
+        super_admin: 1, admin: 1,
+        merchant_owner: 2, hq_admin: 2, store_owner: 2, tenant_admin: 2,
+        merchant_manager: 3, accountant: 3, hq_manager: 3,
+        supervisor: 4, branch_admin: 4, branch_manager: 4, store_manager: 4, store_admin: 4, manager: 4,
+        senior_cashier: 5, cashier: 5, staff: 5,
+        inventory_staff: 6, kitchen_staff: 6, waiter: 6,
     };
 
     function getRoleLevel(roleName: string): number | null {
@@ -56,79 +60,23 @@
         permissions: [] as string[],
     });
 
-    // Permission categories
-    const permissionCategories = [
-        {
-            name: "dashboard",
-            label: "Dashboard",
-            permissions: ["dashboard:view"],
-        },
-        {
-            name: "products",
-            label: "Products",
-            permissions: ["products:view", "products:create", "products:update", "products:delete"],
-        },
-        {
-            name: "categories",
-            label: "Categories",
-            permissions: ["categories:view", "categories:create", "categories:update", "categories:delete"],
-        },
-        {
-            name: "inventory",
-            label: "Inventory",
-            permissions: ["inventory:view", "inventory:create", "inventory:update", "inventory:delete"],
-        },
-        {
-            name: "sales",
-            label: "Sales",
-            permissions: ["sales:view", "sales:create", "sales:void", "sales:refund"],
-        },
-        {
-            name: "customers",
-            label: "Customers",
-            permissions: ["customers:view", "customers:create", "customers:update", "customers:delete"],
-        },
-        {
-            name: "staff",
-            label: "Staff",
-            permissions: ["staff:view", "staff:create", "staff:update", "staff:delete"],
-        },
-        {
-            name: "reports",
-            label: "Reports",
-            permissions: ["reports:view", "reports:export"],
-        },
-        {
-            name: "settings",
-            label: "Settings",
-            permissions: ["settings:view", "settings:update"],
-        },
-        {
-            name: "branches",
-            label: "Branches",
-            permissions: ["branches:view", "branches:create", "branches:update", "branches:delete"],
-        },
-        {
-            name: "roles",
-            label: "Roles",
-            permissions: ["roles:view", "roles:create", "roles:update", "roles:delete"],
-        },
-        {
-            name: "promotions",
-            label: "Promotions",
-            permissions: ["promotions:view", "promotions:create", "promotions:update", "promotions:delete"],
-        },
-        {
-            name: "payments",
-            label: "Payments",
-            permissions: ["payments:view", "payments:manage"],
-        },
-        {
-            name: "restaurant",
-            label: "Restaurant",
-            permissions: ["restaurant:view", "restaurant:manage"],
-        },
-    ];
+    // Permission categories — labels use t() via getter so they react to locale changes
+    const permissionCategories = $derived([
+        { name: "dashboard",  label: t("nav.dashboard"),  permissions: ["dashboard:view"] },
+        { name: "products",   label: t("nav.products"),   permissions: ["products:view", "products:create", "products:update", "products:delete"] },
+        { name: "categories", label: t("nav.categories"), permissions: ["categories:view", "categories:create", "categories:update", "categories:delete"] },
+        { name: "inventory",  label: t("nav.inventory"),  permissions: ["inventory:view", "inventory:create", "inventory:update", "inventory:delete"] },
+        { name: "sales",      label: t("nav.sales"),      permissions: ["sales:view", "sales:create", "sales:void", "sales:refund"] },
+        { name: "customers",  label: t("nav.customers"),  permissions: ["customers:view", "customers:create", "customers:update", "customers:delete"] },
+        { name: "staff",      label: t("nav.staff"),      permissions: ["staff:view", "staff:create", "staff:update", "staff:delete"] },
+        { name: "reports",    label: t("nav.reports"),    permissions: ["reports:view", "reports:export"] },
+        { name: "settings",   label: t("nav.settings"),   permissions: ["settings:view", "settings:update"] },
+        { name: "branches",   label: t("nav.branches"),   permissions: ["branches:view", "branches:create", "branches:update", "branches:delete"] },
+        { name: "roles",      label: t("staff.roles"),    permissions: ["roles:view", "roles:create", "roles:update", "roles:delete"] },
+        { name: "promotions", label: t("nav.promotions"), permissions: ["promotions:view", "promotions:create", "promotions:update", "promotions:delete"] },
+        { name: "payments",   label: t("nav.payments"),   permissions: ["payments:view", "payments:manage"] },
+        { name: "restaurant", label: t("nav.restaurant"), permissions: ["restaurant:view", "restaurant:manage"] },
+    ]);
 
     onMount(() => {
         loadRoles();
@@ -352,7 +300,7 @@
                                     {/if}
                                     {#if getRoleLevel(role.name) !== null}
                                         <span class="px-2 py-0.5 text-xs font-medium bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400 rounded-full">
-                                            ລະດັບ {getRoleLevel(role.name)}
+                                            {t("common.level")} {getRoleLevel(role.name)}
                                         </span>
                                     {/if}
                                 </div>
@@ -362,7 +310,7 @@
                                 <div class="flex items-center gap-4 mt-1 text-xs text-gray-500 dark:text-gray-400">
                                     <span class="flex items-center gap-1">
                                         <Users class="w-3.5 h-3.5" />
-                                        {role.usersCount || 0} users
+                                        {role._count?.users || 0} users
                                     </span>
                                     <span class="flex items-center gap-1">
                                         <Lock class="w-3.5 h-3.5" />
@@ -431,10 +379,12 @@
 {#if showModal}
     <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
         <!-- Backdrop -->
-        <div 
+        <button
+            type="button"
+            aria-label="Close modal"
             class="absolute inset-0 bg-black/50 backdrop-blur-sm"
             onclick={closeModal}
-        ></div>
+        ></button>
         
         <!-- Modal -->
         <div class="relative bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden">
@@ -456,10 +406,10 @@
                 <!-- Name -->
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        <label for="a11y-app-staff-roles-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                             {t("roles.name")} <span class="text-danger-500">*</span>
                         </label>
-                        <input
+                        <input id="a11y-app-staff-roles-page-svelte-1"
                             type="text"
                             bind:value={formData.name}
                             placeholder="e.g., manager"
@@ -469,10 +419,10 @@
                         />
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        <label for="a11y-app-staff-roles-page-svelte-2" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                             {t("roles.displayName")} <span class="text-danger-500">*</span>
                         </label>
-                        <input
+                        <input id="a11y-app-staff-roles-page-svelte-2"
                             type="text"
                             bind:value={formData.displayName}
                             placeholder="e.g., Manager"
@@ -484,10 +434,10 @@
 
                 <!-- Description -->
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    <label for="a11y-app-staff-roles-page-svelte-3" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                         {t("roles.description")}
                     </label>
-                    <textarea
+                    <textarea id="a11y-app-staff-roles-page-svelte-3"
                         bind:value={formData.description}
                         rows="2"
                         placeholder={t("roles.descriptionPlaceholder")}
@@ -497,9 +447,9 @@
 
                 <!-- Permissions -->
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
+                    <p class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
                         {t("roles.permissions")}
-                    </label>
+                    </p>
                     <div class="space-y-3 max-h-[300px] overflow-y-auto">
                         {#each permissionCategories as category (category.name)}
                             {@const allSelected = category.permissions.every(p => formData.permissions.includes(p))}

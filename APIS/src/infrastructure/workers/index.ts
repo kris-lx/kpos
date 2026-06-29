@@ -3,6 +3,7 @@
 // Process async jobs: stock movements, activity logs, cache invalidation
 // ═══════════════════════════════════════════════════════════════════════════
 
+import { createHmac } from 'crypto';
 import { consume, subscribeCacheInvalidation, QUEUES, isRabbitMQConnected } from '@/config/rabbitmq.config';
 import { cache } from '@/config/redis.config';
 import { db } from '@/config/database.config';
@@ -92,8 +93,24 @@ async function processActivityLog(data: {
     metadata?: Record<string, unknown>;
     ip?: string;
     userAgent?: string;
+    checksum?: string;
+    ts?: string;
 }): Promise<void> {
     const entityId = data.entityId || data.resourceId;
+    // Re-compute checksum if not already provided by the publisher
+    const checksum = data.checksum || (() => {
+        const secret = process.env.JWT_SECRET || 'fallback-audit-key';
+        return createHmac('sha256', secret)
+            .update(JSON.stringify({
+                userId: data.userId,
+                action: data.action,
+                resource: data.resource || data.entity || '',
+                details: data.details || data.description || '',
+                metadata: data.metadata || {},
+                ts: data.ts || new Date().toISOString(),
+            }))
+            .digest('hex');
+    })();
     await db.insert(activityLogs).values({
         userId: data.userId,
         action: data.action,
@@ -103,6 +120,7 @@ async function processActivityLog(data: {
         metadata: data.metadata as any,
         ip: data.ip,
         userAgent: data.userAgent,
+        checksum,
     });
 }
 
@@ -216,9 +234,14 @@ export function startWorkers(): void {
     console.log('✅ Queue workers started: stock-movement, activity-log, notification, asset-cleanup, cache-invalidation');
 }
 
-export function startScheduledJobs(): void {
+export async function startScheduledJobs(): Promise<void> {
     // Session cleanup: run immediately then every 6 hours
     cleanupExpiredSessions();
     setInterval(cleanupExpiredSessions, 6 * 60 * 60 * 1000);
-    console.log('✅ Scheduled jobs started: session-cleanup (every 6h)');
+
+    // Backup scheduler: reads schedule from DB and starts cron
+    const { startBackupScheduler } = await import('./backup.worker');
+    await startBackupScheduler();
+
+    console.log('✅ Scheduled jobs started: session-cleanup (every 6h), backup-scheduler');
 }

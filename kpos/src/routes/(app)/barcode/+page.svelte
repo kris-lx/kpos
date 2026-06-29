@@ -1004,8 +1004,8 @@
                                 {#if selectedLabelSize.type === "custom"}
                                     <div class="grid grid-cols-2 gap-2 mt-2">
                                         <div>
-                                            <label class="block text-xs text-gray-500 mb-1">ກວ້າງ (mm)</label>
-                                            <input
+                                            <label for="a11y-app-barcode-page-svelte-1" class="block text-xs text-gray-500 mb-1">ກວ້າງ (mm)</label>
+                                            <input id="a11y-app-barcode-page-svelte-1"
                                                 type="number"
                                                 bind:value={customLabelWidth}
                                                 min="10"
@@ -1014,8 +1014,8 @@
                                             />
                                         </div>
                                         <div>
-                                            <label class="block text-xs text-gray-500 mb-1">ສູງ (mm)</label>
-                                            <input
+                                            <label for="a11y-app-barcode-page-svelte-2" class="block text-xs text-gray-500 mb-1">ສູງ (mm)</label>
+                                            <input id="a11y-app-barcode-page-svelte-2"
                                                 type="number"
                                                 bind:value={customLabelHeight}
                                                 min="10"

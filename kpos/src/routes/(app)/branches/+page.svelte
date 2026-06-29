@@ -5,6 +5,7 @@
     import { auth } from "$stores";
     import { cn, formatPhone } from "$utils";
     import { toast } from "svelte-sonner";
+    import { t } from '$lib/i18n/index.svelte';
     import {
         Plus,
         Search,
@@ -56,7 +57,7 @@
         const input = event.target as HTMLInputElement;
         const file = input.files?.[0];
         if (!file) return;
-        if (file.size > 2 * 1024 * 1024) { toast.error('ຮູບຕ້ອງນ້ອຍກວ່າ 2MB'); return; }
+        if (file.size > 2 * 1024 * 1024) { toast.error(t('common.fileTooBig').replace('{name}','').replace('{max}','2MB')); return; }
         isUploadingLogo = true;
         try {
             const base64 = await new Promise<string>((resolve, reject) => {
@@ -71,9 +72,9 @@
             } catch {
                 formData.logo = base64;
             }
-            toast.success('ອັບໂຫຼດໂລໂກ້ສຳເລັດ');
+            toast.success(t('common.uploadSuccess'));
         } catch {
-            toast.error('ອັບໂຫຼດໂລໂກ້ລົ້ມເຫຼວ');
+            toast.error(t('common.uploadFailed'));
         } finally {
             isUploadingLogo = false;
         }
@@ -344,8 +345,8 @@
 
 <!-- Create/Edit Modal -->
 {#if showModal}
-<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onclick={closeModal}>
-    <div class="bg-white dark:bg-gray-900 rounded-2xl w-full max-w-lg mx-4 p-6" onclick={(e) => e.stopPropagation()}>
+<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onclick={(e) => e.target === e.currentTarget && closeModal()} onkeydown={(e) => e.key === "Escape" && closeModal()} role="dialog" aria-modal="true" tabindex="-1">
+    <div class="bg-white dark:bg-gray-900 rounded-2xl w-full max-w-lg mx-4 p-6">
         <div class="flex items-center justify-between mb-6">
             <h2 class="text-xl font-bold text-gray-900 dark:text-white">
                 {editingBranch ? "ແກ້ໄຂສາຂາ" : "ເພີ່ມສາຂາໃໝ່"}
@@ -387,44 +388,44 @@
             <!-- Basic Info -->
             <div class="grid grid-cols-2 gap-4">
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ຊື່ສາຂາ *</label>
-                    <input type="text" bind:value={formData.name}
+                    <label for="a11y-app-branches-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ຊື່ສາຂາ *</label>
+                    <input id="a11y-app-branches-page-svelte-1" type="text" bind:value={formData.name}
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800 focus:ring-2 focus:ring-primary-500"
                         placeholder="ສາຂາໃຫຍ່" required />
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ລະຫັດສາຂາ *</label>
-                    <input type="text" bind:value={formData.code}
+                    <label for="a11y-app-branches-page-svelte-2" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ລະຫັດສາຂາ *</label>
+                    <input id="a11y-app-branches-page-svelte-2" type="text" bind:value={formData.code}
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800 focus:ring-2 focus:ring-primary-500"
                         placeholder="HQ" required />
                 </div>
             </div>
 
             <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ທີ່ຢູ່</label>
-                <input type="text" bind:value={formData.address}
+                <label for="a11y-app-branches-page-svelte-3" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ທີ່ຢູ່</label>
+                <input id="a11y-app-branches-page-svelte-3" type="text" bind:value={formData.address}
                     class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800 focus:ring-2 focus:ring-primary-500"
                     placeholder="ນະຄອນຫຼວງວຽງຈັນ" />
             </div>
 
             <div class="grid grid-cols-2 gap-4">
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ເບີໂທ</label>
-                    <input type="text" bind:value={formData.phone}
+                    <label for="a11y-app-branches-page-svelte-4" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ເບີໂທ</label>
+                    <input id="a11y-app-branches-page-svelte-4" type="text" bind:value={formData.phone}
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800 focus:ring-2 focus:ring-primary-500"
                         placeholder="+856 20 1234 5678" />
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ອີເມວ</label>
-                    <input type="email" bind:value={formData.email}
+                    <label for="a11y-app-branches-page-svelte-5" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ອີເມວ</label>
+                    <input id="a11y-app-branches-page-svelte-5" type="email" bind:value={formData.email}
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800 focus:ring-2 focus:ring-primary-500"
                         placeholder="branch@kpos.la" />
                 </div>
             </div>
 
             <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ເລກທີພາສີ (Tax ID)</label>
-                <input type="text" bind:value={formData.taxId}
+                <label for="a11y-app-branches-page-svelte-6" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ເລກທີພາສີ (Tax ID)</label>
+                <input id="a11y-app-branches-page-svelte-6" type="text" bind:value={formData.taxId}
                     class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800 focus:ring-2 focus:ring-primary-500"
                     placeholder="0101234567890" />
             </div>
@@ -449,38 +450,38 @@
                     <div class="px-4 pb-4 space-y-3 border-t border-gray-100 dark:border-gray-700 pt-3">
                         <div class="grid grid-cols-2 gap-3">
                             <div>
-                                <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">ຊື່ເຈົ້າຂອງ</label>
-                                <input type="text" bind:value={formData.ownerName}
+                                <label for="a11y-app-branches-page-svelte-7" class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">ຊື່ເຈົ້າຂອງ</label>
+                                <input id="a11y-app-branches-page-svelte-7" type="text" bind:value={formData.ownerName}
                                     class="w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 dark:bg-gray-800 text-sm focus:ring-2 focus:ring-primary-500"
                                     placeholder="ທ. ສົມໄຊ" />
                             </div>
                             <div>
-                                <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">ເບີໂທເຈົ້າຂອງ</label>
-                                <input type="text" bind:value={formData.ownerPhone}
+                                <label for="a11y-app-branches-page-svelte-8" class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">ເບີໂທເຈົ້າຂອງ</label>
+                                <input id="a11y-app-branches-page-svelte-8" type="text" bind:value={formData.ownerPhone}
                                     class="w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 dark:bg-gray-800 text-sm focus:ring-2 focus:ring-primary-500"
                                     placeholder="020 1234 5678" />
                             </div>
                         </div>
                         <div>
-                            <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">ອີເມວເຈົ້າຂອງ</label>
-                            <input type="email" bind:value={formData.ownerEmail}
+                            <label for="a11y-app-branches-page-svelte-9" class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">ອີເມວເຈົ້າຂອງ</label>
+                            <input id="a11y-app-branches-page-svelte-9" type="email" bind:value={formData.ownerEmail}
                                 class="w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 dark:bg-gray-800 text-sm focus:ring-2 focus:ring-primary-500"
                                 placeholder="owner@kpos.la" />
                         </div>
                         <div class="grid grid-cols-2 gap-3">
                             <div>
-                                <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                                <label for="a11y-app-branches-page-svelte-10" class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
                                     <Hash class="w-3 h-3 inline" /> ເລກທະບຽນ
                                 </label>
-                                <input type="text" bind:value={formData.registrationNo}
+                                <input id="a11y-app-branches-page-svelte-10" type="text" bind:value={formData.registrationNo}
                                     class="w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 dark:bg-gray-800 text-sm focus:ring-2 focus:ring-primary-500"
                                     placeholder="REG-001" />
                             </div>
                             <div>
-                                <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                                <label for="a11y-app-branches-page-svelte-11" class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
                                     <Globe class="w-3 h-3 inline" /> ເວັບໄຊ
                                 </label>
-                                <input type="url" bind:value={formData.website}
+                                <input id="a11y-app-branches-page-svelte-11" type="url" bind:value={formData.website}
                                     class="w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 dark:bg-gray-800 text-sm focus:ring-2 focus:ring-primary-500"
                                     placeholder="www.kpos.la" />
                             </div>
@@ -521,8 +522,8 @@
 
 <!-- Delete Confirmation Modal -->
 {#if showDeleteModal && deletingBranch}
-<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onclick={closeDeleteModal}>
-    <div class="bg-white dark:bg-gray-900 rounded-2xl w-full max-w-md mx-4 p-6" onclick={(e) => e.stopPropagation()}>
+<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onclick={(e) => e.target === e.currentTarget && closeDeleteModal()} onkeydown={(e) => e.key === "Escape" && closeDeleteModal()} role="dialog" aria-modal="true" tabindex="-1">
+    <div class="bg-white dark:bg-gray-900 rounded-2xl w-full max-w-md mx-4 p-6">
         <div class="text-center">
             <div class="w-16 h-16 mx-auto mb-4 rounded-full bg-danger-100 dark:bg-danger-900/30 flex items-center justify-center">
                 <Trash2 class="w-8 h-8 text-danger-500" />

@@ -2,6 +2,7 @@
     import { cn } from "$lib/utils";
 
     interface Props {
+        id?: string;
         value: number;
         placeholder?: string;
         min?: number;
@@ -9,10 +10,12 @@
         disabled?: boolean;
         required?: boolean;
         class?: string;
+        "aria-label"?: string;
         onchange?: (value: number) => void;
     }
 
     let {
+        id,
         value = $bindable(0),
         placeholder = "0",
         min = 0,
@@ -20,6 +23,7 @@
         disabled = false,
         required = false,
         class: className = "",
+        "aria-label": ariaLabel,
         onchange
     }: Props = $props();
 
@@ -96,8 +100,10 @@
 
 <input
     bind:this={inputRef}
+    {id}
     type="text"
     inputmode="numeric"
+    aria-label={ariaLabel}
     {placeholder}
     {disabled}
     {required}

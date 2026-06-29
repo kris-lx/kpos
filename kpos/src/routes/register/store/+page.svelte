@@ -11,6 +11,7 @@
         ShieldCheck, CheckCircle2, X
     } from "lucide-svelte";
     import { toast } from "svelte-sonner";
+    import { t } from '$lib/i18n/index.svelte';
     import { cn, enforcePhoneInput, isValidLaoPhone } from "$utils";
 
     // Steps: 1=Account, 2=Business, 3=KYC, 4=Review

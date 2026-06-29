@@ -94,7 +94,7 @@
     async function handleSubmit() {
         try {
             await api.post("payments/settlements", { json: formData }).json();
-            toast.success("ສ້າງການຊຳລະສຳເລັດ");
+            toast.success(t('common.created'));
             showModal = false;
             resetForm();
             loadData();
@@ -127,7 +127,7 @@
         a.href = url; a.download = `settlements-${new Date().toISOString().split('T')[0]}.csv`;
         document.body.appendChild(a); a.click(); document.body.removeChild(a);
         URL.revokeObjectURL(url);
-        toast.success('ສົ່ງອອກ CSV ສຳເລັດ');
+        toast.success(t('common.exportSuccess'));
         showExportMenu = false;
     }
 
@@ -141,7 +141,7 @@
         const url = URL.createObjectURL(blob);
         const w = window.open(url, '_blank');
         if (w) w.onload = () => w.print();
-        toast.success('ສົ່ງອອກ PDF ສຳເລັດ');
+        toast.success(t('common.exportSuccess'));
         showExportMenu = false;
     }
 
@@ -362,18 +362,18 @@
             <form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }} class="p-6 space-y-4">
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ວັນທີ</label>
-                        <input type="date" bind:value={formData.date} class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
+                        <label for="a11y-app-payments-settlements-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ວັນທີ</label>
+                        <input id="a11y-app-payments-settlements-page-svelte-1" type="date" bind:value={formData.date} class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຍອດເງິນ *</label>
-                        <MoneyInput bind:value={formData.amount} min={0} required class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
+                        <label for="a11y-app-payments-settlements-page-svelte-2" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຍອດເງິນ *</label>
+                        <MoneyInput id="a11y-app-payments-settlements-page-svelte-2" bind:value={formData.amount} min={0} required class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
                     </div>
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ວິທີຊຳລະ</label>
-                    <select bind:value={formData.paymentMethod} class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white">
+                    <label for="a11y-app-payments-settlements-page-svelte-3" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ວິທີຊຳລະ</label>
+                    <select id="a11y-app-payments-settlements-page-svelte-3" bind:value={formData.paymentMethod} class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white">
                         {#if paymentMethodOptions.length > 0}
                             {#each paymentMethodOptions as pm (pm.value)}
                                 <option value={pm.value}>{pm.labelLao || pm.label}</option>
@@ -387,18 +387,18 @@
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ບັນຊີທະນາຄານ</label>
-                    <input type="text" bind:value={formData.bankAccount} class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
+                    <label for="a11y-app-payments-settlements-page-svelte-4" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ບັນຊີທະນາຄານ</label>
+                    <input id="a11y-app-payments-settlements-page-svelte-4" type="text" bind:value={formData.bankAccount} class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ເລກອ້າງອີງ</label>
-                    <input type="text" bind:value={formData.reference} class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
+                    <label for="a11y-app-payments-settlements-page-svelte-5" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ເລກອ້າງອີງ</label>
+                    <input id="a11y-app-payments-settlements-page-svelte-5" type="text" bind:value={formData.reference} class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ໝາຍເຫດ</label>
-                    <textarea bind:value={formData.notes} rows="2" class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white resize-none"></textarea>
+                    <label for="a11y-app-payments-settlements-page-svelte-6" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ໝາຍເຫດ</label>
+                    <textarea id="a11y-app-payments-settlements-page-svelte-6" bind:value={formData.notes} rows="2" class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white resize-none"></textarea>
                 </div>
 
                 <div class="flex justify-end gap-3 pt-4">

@@ -26,6 +26,7 @@
         ChevronDown,
         BookOpen,
         ShieldCheck,
+        Building2,
     } from "lucide-svelte";
 
     // State
@@ -43,7 +44,7 @@
     let customersPage = $state(1);
 
     // Data
-    let summary = $state<any>({});
+    let periodSummary = $state<any>({});  // from salesRes.summary — reflects selected date range
     let salesData = $state<any[]>([]);
     let topProducts = $state<any[]>([]);
     let topCustomers = $state<any[]>([]);
@@ -63,7 +64,22 @@
         year: t("reports.thisYear"),
     });
 
+    // R-10: compute date range once per load, share value across all calls
+    function getDateRange(): { start: Date; end: Date; startStr: string; endStr: string } {
+        const end = new Date();
+        end.setHours(23, 59, 59, 999);
+        const start = new Date(end);
+        switch (dateRange) {
+            case "today":  start.setHours(0, 0, 0, 0); break;
+            case "week":   start.setDate(start.getDate() - 7); start.setHours(0, 0, 0, 0); break;
+            case "year":   start.setFullYear(start.getFullYear() - 1); start.setHours(0, 0, 0, 0); break;
+            default:       start.setMonth(start.getMonth() - 1); start.setHours(0, 0, 0, 0);
+        }
+        return { start, end, startStr: start.toISOString().split("T")[0], endStr: end.toISOString().split("T")[0] };
+    }
+
     $effect(() => {
+        dateRange;
         auth.activeStoreId;
         loadData();
     });
@@ -72,72 +88,28 @@
         loading = true;
         error = null;
         try {
-            const params = getDateParams();
-            const now = new Date().toISOString().split("T")[0];
-            const pastDate = new Date();
-            switch (dateRange) {
-                case "today": pastDate.setHours(0,0,0,0); break;
-                case "week": pastDate.setDate(pastDate.getDate() - 7); break;
-                case "year": pastDate.setFullYear(pastDate.getFullYear() - 1); break;
-                default: pastDate.setMonth(pastDate.getMonth() - 1);
-            }
-            const fromDate = pastDate.toISOString().split("T")[0];
+            const { startStr, endStr } = getDateRange();
+            const params = `startDate=${startStr}&endDate=${endStr}`;
 
-            const [summaryRes, salesRes, productsRes, customersRes] =
-                await Promise.all([
-                    api.get(`reports/summary`).json<any>().catch(() => ({ data: {} })),
-                    api.get(`reports/sales?${params}`).json<any>().catch(() => ({ data: [] })),
-                    api.get(`reports/top-products?${params}&limit=10`).json<any>().catch(() => ({ data: [] })),
-                    api.get(`reports/customers?limit=10&from=${fromDate}&to=${now}`).json<any>().catch(() => ({ data: { topCustomers: [], summary: {} } })),
-                ]);
+            const [salesRes, productsRes, customersRes] = await Promise.all([
+                api.get(`reports/sales?${params}`).json<any>().catch(() => ({ data: [], summary: {} })),
+                api.get(`reports/top-products?${params}&limit=10`).json<any>().catch(() => ({ data: [] })),
+                api.get(`reports/customers?limit=10&from=${startStr}&to=${endStr}`).json<any>().catch(() => ({ data: { topCustomers: [], summary: {} } })),
+            ]);
 
-            summary = summaryRes.data || {};
+            // R-08/R-11: use period sales summary (reflects selected date range)
+            periodSummary = salesRes.summary || {};
             salesData = salesRes.data || [];
             topProducts = productsRes.data || [];
-            // customers endpoint returns { data: { topCustomers, summary, ... } }
             const custData = customersRes.data || {};
             topCustomers = custData.topCustomers || [];
         } catch (e) {
             console.error("Failed to load reports:", e);
-            error = "ບໍ່ສາມາດໂຫຼດຂໍ້ມູນໄດ້";
+            error = t('common.loadError');
         } finally {
             loading = false;
         }
     }
-
-    function getDateParams(): string {
-        const now = new Date();
-        let start: Date;
-
-        switch (dateRange) {
-            case "today":
-                start = new Date(now.setHours(0, 0, 0, 0));
-                break;
-            case "week":
-                start = new Date(now);
-                start.setDate(start.getDate() - 7);
-                break;
-            case "month":
-                start = new Date(now);
-                start.setMonth(start.getMonth() - 1);
-                break;
-            case "year":
-                start = new Date(now);
-                start.setFullYear(start.getFullYear() - 1);
-                break;
-            default:
-                start = new Date(now);
-                start.setMonth(start.getMonth() - 1);
-        }
-
-        return `startDate=${start.toISOString().split("T")[0]}&endDate=${new Date().toISOString().split("T")[0]}`;
-    }
-
-    $effect(() => {
-        dateRange;
-        auth.activeStoreId; // re-run when store switches
-        loadData();
-    });
 
     // Export functions
     async function exportToExcel() {
@@ -205,9 +177,11 @@
 </body>
 </html>`;
             
-            const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-            const url = URL.createObjectURL(blob);
-            const printWindow = window.open(url, '_blank');
+            const printWindow = window.open('', '_blank');
+            if (printWindow) {
+                printWindow.document.write(html);
+                printWindow.document.close();
+            }
             if (printWindow) {
                 printWindow.onload = () => {
                     printWindow.print();
@@ -313,7 +287,7 @@
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+        setTimeout(() => URL.revokeObjectURL(url), 0);
     }
 
     function handlePrint() {
@@ -486,21 +460,18 @@ ${lines.map(l => l === divider ? '<div class="divider"></div>' : `<div${l === 'K
             </button>
         </div>
     {:else}
-        <!-- Summary Cards -->
+        <!-- Summary Cards — R-08/R-11: real period data, R-07: no hardcoded % -->
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
             <div class="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
                 <div class="flex items-center justify-between mb-4">
                     <div class="w-12 h-12 rounded-xl bg-primary-100 dark:bg-primary-900/30 flex items-center justify-center">
                         <DollarSign class="w-6 h-6 text-primary-600" />
                     </div>
-                    <div class="flex items-center gap-1 text-success-500 text-sm">
-                        <TrendingUp class="w-4 h-4" />
-                        <span>+12.5%</span>
-                    </div>
+                    <span class="text-xs text-gray-400 dark:text-gray-500">{dateRangeLabels[dateRange]}</span>
                 </div>
                 <p class="text-sm text-gray-500 dark:text-gray-400 mb-1">{t("reports.totalSales")}</p>
                 <p class="text-2xl font-bold text-gray-900 dark:text-white">
-                    {formatCurrency(summary.todaySales || 0)}
+                    {formatCurrency(periodSummary.totalSales || 0)}
                 </p>
             </div>
 
@@ -509,38 +480,35 @@ ${lines.map(l => l === divider ? '<div class="divider"></div>' : `<div${l === 'K
                     <div class="w-12 h-12 rounded-xl bg-success-100 dark:bg-success-900/30 flex items-center justify-center">
                         <ShoppingCart class="w-6 h-6 text-success-600" />
                     </div>
-                    <div class="flex items-center gap-1 text-success-500 text-sm">
-                        <TrendingUp class="w-4 h-4" />
-                        <span>+8.2%</span>
-                    </div>
+                    <span class="text-xs text-gray-400 dark:text-gray-500">{dateRangeLabels[dateRange]}</span>
                 </div>
                 <p class="text-sm text-gray-500 dark:text-gray-400 mb-1">{t("reports.totalOrders")}</p>
                 <p class="text-2xl font-bold text-gray-900 dark:text-white">
-                    {summary.todayOrders || 0}
+                    {new Intl.NumberFormat("lo-LA").format(periodSummary.totalOrders || 0)}
                 </p>
             </div>
 
             <div class="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
                 <div class="flex items-center justify-between mb-4">
                     <div class="w-12 h-12 rounded-xl bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center">
-                        <Package class="w-6 h-6 text-blue-600" />
+                        <BarChart3 class="w-6 h-6 text-blue-600" />
                     </div>
                 </div>
-                <p class="text-sm text-gray-500 dark:text-gray-400 mb-1">{t("reports.totalProducts")}</p>
+                <p class="text-sm text-gray-500 dark:text-gray-400 mb-1">{t("reports.avgOrderValue")}</p>
                 <p class="text-2xl font-bold text-gray-900 dark:text-white">
-                    {summary.totalProducts || 0}
+                    {formatCurrency(periodSummary.totalOrders > 0 ? Math.round((periodSummary.totalSales || 0) / periodSummary.totalOrders) : 0)}
                 </p>
             </div>
 
             <div class="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
                 <div class="flex items-center justify-between mb-4">
                     <div class="w-12 h-12 rounded-xl bg-purple-100 dark:bg-purple-900/30 flex items-center justify-center">
-                        <Users class="w-6 h-6 text-purple-600" />
+                        <TrendingDown class="w-6 h-6 text-purple-600" />
                     </div>
                 </div>
-                <p class="text-sm text-gray-500 dark:text-gray-400 mb-1">{t("reports.totalCustomers")}</p>
+                <p class="text-sm text-gray-500 dark:text-gray-400 mb-1">{t("reports.totalDiscount")}</p>
                 <p class="text-2xl font-bold text-gray-900 dark:text-white">
-                    {summary.totalCustomers || 0}
+                    {formatCurrency(periodSummary.totalDiscount || 0)}
                 </p>
             </div>
         </div>
@@ -610,7 +578,7 @@ ${lines.map(l => l === divider ? '<div class="divider"></div>' : `<div${l === 'K
                         </div>
                         {#if salesData.length > 0}
                             <div class="flex items-center justify-between mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
-                                <span class="text-sm text-gray-500">{t("common.page") || "ໜ້າ"} {salesPage}/{salesTotalPages}</span>
+                                <span class="text-sm text-gray-500">{t("common.page")} {salesPage}/{salesTotalPages}</span>
                                 <div class="flex gap-2">
                                     <button onclick={() => salesPage = Math.max(1, salesPage - 1)} disabled={salesPage <= 1} class="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 disabled:opacity-40 hover:bg-gray-100 dark:hover:bg-gray-700">‹</button>
                                     <button onclick={() => salesPage = Math.min(salesTotalPages, salesPage + 1)} disabled={salesPage >= salesTotalPages} class="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 disabled:opacity-40 hover:bg-gray-100 dark:hover:bg-gray-700">›</button>
@@ -647,7 +615,7 @@ ${lines.map(l => l === divider ? '<div class="divider"></div>' : `<div${l === 'K
                         </div>
                         {#if topProducts.length > 0}
                             <div class="flex items-center justify-between mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
-                                <span class="text-sm text-gray-500">{t("common.page") || "ໜ້າ"} {productsPage}/{productsTotalPages}</span>
+                                <span class="text-sm text-gray-500">{t("common.page")} {productsPage}/{productsTotalPages}</span>
                                 <div class="flex gap-2">
                                     <button onclick={() => productsPage = Math.max(1, productsPage - 1)} disabled={productsPage <= 1} class="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 disabled:opacity-40 hover:bg-gray-100 dark:hover:bg-gray-700">‹</button>
                                     <button onclick={() => productsPage = Math.min(productsTotalPages, productsPage + 1)} disabled={productsPage >= productsTotalPages} class="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 disabled:opacity-40 hover:bg-gray-100 dark:hover:bg-gray-700">›</button>
@@ -684,7 +652,7 @@ ${lines.map(l => l === divider ? '<div class="divider"></div>' : `<div${l === 'K
                         </div>
                         {#if topCustomers.length > 0}
                             <div class="flex items-center justify-between mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
-                                <span class="text-sm text-gray-500">{t("common.page") || "ໜ້າ"} {customersPage}/{customersTotalPages}</span>
+                                <span class="text-sm text-gray-500">{t("common.page")} {customersPage}/{customersTotalPages}</span>
                                 <div class="flex gap-2">
                                     <button onclick={() => customersPage = Math.max(1, customersPage - 1)} disabled={customersPage <= 1} class="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 disabled:opacity-40 hover:bg-gray-100 dark:hover:bg-gray-700">‹</button>
                                     <button onclick={() => customersPage = Math.min(customersTotalPages, customersPage + 1)} disabled={customersPage >= customersTotalPages} class="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 disabled:opacity-40 hover:bg-gray-100 dark:hover:bg-gray-700">›</button>
@@ -696,33 +664,56 @@ ${lines.map(l => l === divider ? '<div class="divider"></div>' : `<div${l === 'K
             </div>
         </div>
 
-        <!-- Quick Links -->
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mt-6">
-            <a href="/reports/products" class="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700 hover:border-primary-500 transition-colors">
-                <Package class="w-8 h-8 text-blue-500 mb-3" />
-                <p class="font-medium text-gray-900 dark:text-white">{t("reports.inventory")}</p>
-                <p class="text-sm text-gray-500">{t("reports.inventoryDesc")}</p>
-            </a>
-            <a href="/reports/inventory" class="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700 hover:border-primary-500 transition-colors">
-                <Wallet class="w-8 h-8 text-teal-500 mb-3" />
-                <p class="font-medium text-gray-900 dark:text-white">{t("reports.warehouse")}</p>
-                <p class="text-sm text-gray-500">{t("reports.warehouseDesc")}</p>
-            </a>
-            <a href="/reports/financial" class="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700 hover:border-primary-500 transition-colors">
-                <DollarSign class="w-8 h-8 text-success-500 mb-3" />
-                <p class="font-medium text-gray-900 dark:text-white">{t("reports.financial")}</p>
-                <p class="text-sm text-gray-500">{t("reports.financialDesc")}</p>
-            </a>
-            <a href="/reports/gl" class="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700 hover:border-violet-500 transition-colors">
-                <BookOpen class="w-8 h-8 text-violet-500 mb-3" />
-                <p class="font-medium text-gray-900 dark:text-white">GL / ການເງິນ & ການກວດກາ</p>
-                <p class="text-sm text-gray-500">P&L · ພາສີ · Audit Trail · Cash Flow</p>
-            </a>
-            <a href="/reports/staff" class="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700 hover:border-primary-500 transition-colors">
-                <Users class="w-8 h-8 text-purple-500 mb-3" />
-                <p class="font-medium text-gray-900 dark:text-white">{t("reports.staff")}</p>
-                <p class="text-sm text-gray-500">{t("reports.staffDesc")}</p>
-            </a>
+        <!-- Quick Links — R-09: fixed icons, R-12: POSPOS-style categories -->
+        <div class="mt-6">
+            <h3 class="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-3">{t("reports.subReports")}</h3>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <a href="/reports/products" class="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700 hover:border-blue-400 hover:shadow-sm transition-all group">
+                    <BarChart3 class="w-7 h-7 text-blue-500 mb-2 group-hover:scale-110 transition-transform" />
+                    <p class="font-medium text-gray-900 dark:text-white text-sm">{t("reports.products")}</p>
+                    <p class="text-xs text-gray-400 mt-0.5">ຍອດຂາຍ · ສ່ວນແບ່ງ</p>
+                </a>
+                <a href="/reports/inventory" class="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700 hover:border-teal-400 hover:shadow-sm transition-all group">
+                    <Package class="w-7 h-7 text-teal-500 mb-2 group-hover:scale-110 transition-transform" />
+                    <p class="font-medium text-gray-900 dark:text-white text-sm">{t("reports.inventory")}</p>
+                    <p class="text-xs text-gray-400 mt-0.5">ສາງ · ສ່ຽງໝົດ</p>
+                </a>
+                <a href="/reports/staff" class="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700 hover:border-purple-400 hover:shadow-sm transition-all group">
+                    <Users class="w-7 h-7 text-purple-500 mb-2 group-hover:scale-110 transition-transform" />
+                    <p class="font-medium text-gray-900 dark:text-white text-sm">{t("reports.staff")}</p>
+                    <p class="text-xs text-gray-400 mt-0.5">ຜົນງານ · ຍົກເລີກ</p>
+                </a>
+                <a href="/reports/customers" class="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700 hover:border-pink-400 hover:shadow-sm transition-all group">
+                    <Users class="w-7 h-7 text-pink-500 mb-2 group-hover:scale-110 transition-transform" />
+                    <p class="font-medium text-gray-900 dark:text-white text-sm">{t("reports.customers")}</p>
+                    <p class="text-xs text-gray-400 mt-0.5">VIP · ໃໝ່ · ຄ້ຳ</p>
+                </a>
+                <a href="/reports/financial" class="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700 hover:border-success-400 hover:shadow-sm transition-all group">
+                    <DollarSign class="w-7 h-7 text-success-500 mb-2 group-hover:scale-110 transition-transform" />
+                    <p class="font-medium text-gray-900 dark:text-white text-sm">{t("reports.financial")}</p>
+                    <p class="text-xs text-gray-400 mt-0.5">ລາຍຮັບ · ຕົ້ນທຶນ</p>
+                </a>
+                <a href="/reports/promotions" class="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700 hover:border-orange-400 hover:shadow-sm transition-all group">
+                    <Wallet class="w-7 h-7 text-orange-500 mb-2 group-hover:scale-110 transition-transform" />
+                    <p class="font-medium text-gray-900 dark:text-white text-sm">{t("reports.promotions")}</p>
+                    <p class="text-xs text-gray-400 mt-0.5">ຄູປ໋ອງ · ຍົດໃຊ້</p>
+                </a>
+                <a href="/reports/period-compare" class="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700 hover:border-indigo-400 hover:shadow-sm transition-all group">
+                    <Calendar class="w-7 h-7 text-indigo-500 mb-2 group-hover:scale-110 transition-transform" />
+                    <p class="font-medium text-gray-900 dark:text-white text-sm">{t("reports.periodCompare")}</p>
+                    <p class="text-xs text-gray-400 mt-0.5">ໄຕມາດ · ເດືອນ</p>
+                </a>
+                <a href="/reports/branch-compare" class="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700 hover:border-teal-400 hover:shadow-sm transition-all group">
+                    <Building2 class="w-7 h-7 text-teal-500 mb-2 group-hover:scale-110 transition-transform" />
+                    <p class="font-medium text-gray-900 dark:text-white text-sm">ປຽບທຽບສາຂາ</p>
+                    <p class="text-xs text-gray-400 mt-0.5">ຍອດຂາຍ · ສາຂາ</p>
+                </a>
+                <a href="/reports/gl" class="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700 hover:border-violet-400 hover:shadow-sm transition-all group">
+                    <BookOpen class="w-7 h-7 text-violet-500 mb-2 group-hover:scale-110 transition-transform" />
+                    <p class="font-medium text-gray-900 dark:text-white text-sm">GL / ການກວດກາ</p>
+                    <p class="text-xs text-gray-400 mt-0.5">P&L · Audit Trail</p>
+                </a>
+            </div>
         </div>
     {/if}
 </div>
@@ -730,6 +721,8 @@ ${lines.map(l => l === divider ? '<div class="divider"></div>' : `<div${l === 'K
 <!-- Click outside to close export menu -->
 {#if showExportMenu}
     <button
+        type="button"
+        aria-label="Close export menu"
         class="fixed inset-0 z-40"
         onclick={() => showExportMenu = false}
     ></button>

@@ -100,17 +100,17 @@
         try {
             if (editingVendor) {
                 await api.put(`inventory/vendors/${editingVendor.id}`, { json: formData }).json();
-                toast.success("ແກ້ໄຂສຳເລັດ");
+                toast.success(t('common.updated'));
             } else {
                 await api.post("inventory/vendors", { json: formData }).json();
-                toast.success("ເພີ່ມສຳເລັດ");
+                toast.success(t('common.added'));
             }
             showModal = false;
             resetForm();
             loadData();
         } catch (e: any) {
             console.error("Failed to save:", e);
-            const msg = e?.response?.data?.error?.message || e?.message || "ບໍ່ສາມາດບັນທຶກໄດ້";
+            const msg = e?.response?.data?.error?.message || e?.message || t('common.saveFailed');
             toast.error(msg);
         } finally {
             isSaving = false;
@@ -127,10 +127,10 @@
     }
 
     async function handleDelete(vendor: any) {
-        if (!confirm("ຕ້ອງການລຶບ?")) return;
+        if (!confirm(t('common.deleteMessage'))) return;
         try {
             await api.delete(`inventory/vendors/${vendor.id}`).json();
-            toast.success("ລຶບສຳເລັດ");
+            toast.success(t('common.deleted'));
             loadData();
         } catch (e: any) {
             console.error("Failed to delete:", e);
@@ -191,7 +191,7 @@
             csv += `"${v.name || ''}","${v.code || ''}","${v.contactName || ''}","${v.phone || ''}","${v.email || ''}","${v.address || ''}","${v.paymentTerms || 0} ວັນ","${status}"\n`;
         }
         downloadFile(csv, `vendors-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
-        toast.success('ສົ່ງອອກ CSV ສຳເລັດ');
+        toast.success(t('common.exportSuccess'));
     }
 
     $effect(() => {
@@ -355,7 +355,7 @@
                     onchange={() => { currentPage = 1; loadData(); }}
                     class="px-2 py-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm"
                 >
-                    {#each [5, 10, 20, 50, 100] as size (size)}
+                    {#each [5, 10, 20, 50, 70, 100] as size (size)}
                         <option value={size}>{size}</option>
                     {/each}
                 </select>
@@ -388,50 +388,50 @@
             <form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }} class="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຊື່ບໍລິສັດ *</label>
-                        <input type="text" bind:value={formData.name} required class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
+                        <label for="a11y-app-inventory-vendors-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຊື່ບໍລິສັດ *</label>
+                        <input id="a11y-app-inventory-vendors-page-svelte-1" type="text" bind:value={formData.name} required class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ລະຫັດ</label>
-                        <input type="text" bind:value={formData.code} placeholder="VND-001" class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
+                        <label for="a11y-app-inventory-vendors-page-svelte-2" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ລະຫັດ</label>
+                        <input id="a11y-app-inventory-vendors-page-svelte-2" type="text" bind:value={formData.code} placeholder="VND-001" class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
                     </div>
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຊື່ຜູ້ຕິດຕໍ່</label>
-                    <input type="text" bind:value={formData.contactName} class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
+                    <label for="a11y-app-inventory-vendors-page-svelte-3" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຊື່ຜູ້ຕິດຕໍ່</label>
+                    <input id="a11y-app-inventory-vendors-page-svelte-3" type="text" bind:value={formData.contactName} class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
                 </div>
 
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ເບີໂທ</label>
-                        <input type="text" bind:value={formData.phone} class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
+                        <label for="a11y-app-inventory-vendors-page-svelte-4" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ເບີໂທ</label>
+                        <input id="a11y-app-inventory-vendors-page-svelte-4" type="text" bind:value={formData.phone} class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ອີເມວ</label>
-                        <input type="email" bind:value={formData.email} class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
+                        <label for="a11y-app-inventory-vendors-page-svelte-5" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ອີເມວ</label>
+                        <input id="a11y-app-inventory-vendors-page-svelte-5" type="email" bind:value={formData.email} class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
                     </div>
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ທີ່ຢູ່</label>
-                    <textarea bind:value={formData.address} rows="2" class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white resize-none"></textarea>
+                    <label for="a11y-app-inventory-vendors-page-svelte-6" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ທີ່ຢູ່</label>
+                    <textarea id="a11y-app-inventory-vendors-page-svelte-6" bind:value={formData.address} rows="2" class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white resize-none"></textarea>
                 </div>
 
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ເລກປະຈຳຕົວພາສີ</label>
-                        <input type="text" bind:value={formData.taxId} placeholder="TAX-XXXXXXXXX" class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
+                        <label for="a11y-app-inventory-vendors-page-svelte-7" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ເລກປະຈຳຕົວພາສີ</label>
+                        <input id="a11y-app-inventory-vendors-page-svelte-7" type="text" bind:value={formData.taxId} placeholder="TAX-XXXXXXXXX" class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ເງື່ອນໄຂກຳນົດຊຳລະ (ມື້)</label>
-                        <input type="number" bind:value={formData.paymentTerms} min="0" class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
+                        <label for="a11y-app-inventory-vendors-page-svelte-8" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ເງື່ອນໄຂກຳນົດຊຳລະ (ມື້)</label>
+                        <input id="a11y-app-inventory-vendors-page-svelte-8" type="number" bind:value={formData.paymentTerms} min="0" class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
                     </div>
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ໝາຍເຫດ</label>
-                    <textarea bind:value={formData.notes} rows="2" class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white resize-none"></textarea>
+                    <label for="a11y-app-inventory-vendors-page-svelte-9" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ໝາຍເຫດ</label>
+                    <textarea id="a11y-app-inventory-vendors-page-svelte-9" bind:value={formData.notes} rows="2" class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white resize-none"></textarea>
                 </div>
 
                 <div class="flex items-center gap-6">

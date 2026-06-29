@@ -6,6 +6,8 @@ import ky, { type BeforeRequestHook, type AfterResponseHook } from 'ky';
 import { PUBLIC_API_URL } from '$env/static/public';
 import { browser } from '$app/environment';
 import { LOCAL_STORAGE_KEYS } from '$lib/config';
+import { authClientApi } from './auth-client';
+import { getToken, setToken } from './token';
 
 // PUBLIC_API_URL must be set in .env — no hardcoded fallback
 if (!PUBLIC_API_URL) {
@@ -42,7 +44,7 @@ function cleanParams(params?: Record<string, unknown>): Record<string, string> |
 
 const beforeRequest: BeforeRequestHook = (request) => {
     if (browser) {
-        const token = localStorage.getItem(ACCESS_TOKEN_KEY);
+        const token = getToken();
         if (token) {
             request.headers.set('Authorization', `Bearer ${token}`);
         }
@@ -59,8 +61,43 @@ const beforeRequest: BeforeRequestHook = (request) => {
     }
 };
 
-const afterResponse: AfterResponseHook = async (_request, _options, response) => {
-    if (response.status === 401 && browser) {
+let refreshPromise: Promise<string | null> | null = null;
+
+async function refreshAccessToken(): Promise<string | null> {
+    if (!refreshPromise) {
+        refreshPromise = authClientApi.refresh()
+            .then((response) => {
+                const token = response.success ? response.data?.accessToken ?? null : null;
+                setToken(token);
+                return token;
+            })
+            .catch(() => null)
+            .finally(() => {
+                refreshPromise = null;
+            });
+    }
+    return refreshPromise;
+}
+
+const afterResponse: AfterResponseHook = async (request, _options, response) => {
+    if (response.status === 401 && browser && request.headers.get('X-KPOS-Retry') !== '1') {
+        const requestToken = request.headers.get('Authorization')?.replace(/^Bearer\s+/i, '');
+        let token = getToken();
+
+        // A scheduled refresh may already have replaced the token while this
+        // request was in flight. Reuse it before rotating the refresh cookie.
+        if (!token || token === requestToken) {
+            token = await refreshAccessToken();
+        }
+
+        if (token) {
+            const retryRequest = new Request(request);
+            retryRequest.headers.set('Authorization', `Bearer ${token}`);
+            retryRequest.headers.set('X-KPOS-Retry', '1');
+            return fetch(retryRequest);
+        }
+
+        setToken(null);
         localStorage.removeItem(ACCESS_TOKEN_KEY);
         localStorage.removeItem(REFRESH_TOKEN_KEY);
         localStorage.removeItem(USER_KEY);
@@ -75,6 +112,7 @@ const afterResponse: AfterResponseHook = async (_request, _options, response) =>
 export const api = ky.create({
     prefixUrl: API_URL,
     timeout: 30000,
+    credentials: 'include',
     retry: {
         limit: 1,
         statusCodes: [429], // retry once on rate-limit
@@ -109,7 +147,6 @@ export const authApi = {
     login: (email: string, password: string) =>
         api.post('auth/login', { json: { email, password } }).json<ApiResponse<{
             accessToken: string;
-            refreshToken: string;
             user: {
                 id: string;
                 email: string;
@@ -125,11 +162,9 @@ export const authApi = {
     register: (data: { email: string; password: string; name: string; branchId: string }) =>
         api.post('auth/register', { json: data }).json<ApiResponse<{ id: string }>>(),
 
-    refresh: (refreshToken: string) =>
-        api.post('auth/refresh', { json: { refreshToken } }).json<ApiResponse<{
-            accessToken: string;
-            refreshToken: string;
-        }>>(),
+    // refreshToken is sent via HttpOnly cookie automatically (no body param)
+    refresh: () =>
+        api.post('auth/refresh').json<ApiResponse<{ accessToken: string }>>(),
 
     logout: () => api.post('auth/logout').json<ApiResponse<{ message: string }>>(),
 

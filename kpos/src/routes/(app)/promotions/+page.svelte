@@ -93,13 +93,24 @@
             if (res.data?.promotion_type) promotionTypes = res.data.promotion_type;
             if (res.data?.coupon_type) couponTypes = res.data.coupon_type;
             if (res.data?.discount_type) discountTypes = res.data.discount_type;
-        } catch { /* keep empty, will fall back to hardcoded in template */ }
+        } catch (err) {
+            console.error("Failed to load promotion enum data:", err);
+            promotionTypes = [];
+            couponTypes = [];
+            discountTypes = [];
+        }
     }
 
     let activeTypes = $derived(
         activeTab === 'promotions' ? promotionTypes :
         activeTab === 'coupons' ? couponTypes : discountTypes
     );
+
+    function getTypeLabel(type: string) {
+        const options = [...promotionTypes, ...couponTypes, ...discountTypes];
+        const option = options.find((entry) => entry.value === type);
+        return option?.labelLao || option?.label || type;
+    }
 
     // Stats
     let stats = $derived({
@@ -162,13 +173,13 @@
     function getTypeConfig(type: string) {
         switch (type) {
             case "PERCENTAGE":
-                return { icon: Percent, label: "ສ່ວນຫຼຸດ %", color: "text-purple-500" };
+                return { icon: Percent, label: getTypeLabel(type), color: "text-purple-500" };
             case "FIXED":
-                return { icon: Tag, label: "ສ່ວນຫຼຸດເງິນ", color: "text-success-500" };
+                return { icon: Tag, label: getTypeLabel(type), color: "text-success-500" };
             case "BUY_X_GET_Y":
-                return { icon: Gift, label: "ຊື້ X ແຖມ Y", color: "text-orange-500" };
+                return { icon: Gift, label: getTypeLabel(type), color: "text-orange-500" };
             case "BUNDLE":
-                return { icon: Target, label: "ຊຸດໂປຣ", color: "text-blue-500" };
+                return { icon: Target, label: getTypeLabel(type), color: "text-blue-500" };
             default:
                 return { icon: Tag, label: type, color: "text-gray-500" };
         }
@@ -330,7 +341,7 @@
 
     function copyCode(code: string) {
         navigator.clipboard.writeText(code);
-        toast.success("ຄັດລອກລະຫັດແລ້ວ");
+        toast.success(t("common.copied"));
     }
 
 
@@ -377,7 +388,7 @@
                         {t("nav.promotions")}
                     </h1>
                     <p class="text-sm text-gray-500 dark:text-gray-400">
-                        ຈັດການໂປຣໂມຊັ່ນ, ຄູປອງ ແລະ ສ່ວນຫຼຸດ
+                        {t("promotions.subtitle")}
                     </p>
                 </div>
             </div>
@@ -549,7 +560,7 @@
                         <div class="grid grid-cols-2 gap-4">
                             <div>
                                 <label for="pt-value" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                    {t("promotions.pointValue")} (₭/ແຕ້ມ)
+                                    {t("promotions.pointValue")} ({t("promotions.kipPerPoint")})
                                 </label>
                                 <input id="pt-value" type="number" bind:value={loyaltySettings.pointValue} min="1" class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm" />
                             </div>
@@ -595,7 +606,7 @@
                         <div class="p-2 bg-blue-100 dark:bg-blue-900/50 rounded-lg">
                             <TrendingUp class="w-5 h-5 text-blue-600 dark:text-blue-400" />
                         </div>
-                        <h3 class="font-semibold text-gray-900 dark:text-white">ຕົວຢ່າງການຄຳນວນ</h3>
+                        <h3 class="font-semibold text-gray-900 dark:text-white">{t("promotions.calculationPreview")}</h3>
                     </div>
                     <div class="space-y-3">
                         {#each [10000, 50000, 100000, 500000] as amount}
@@ -603,8 +614,8 @@
                             {@const value = pts * loyaltySettings.pointValue}
                             <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
                                 <div>
-                                    <p class="text-sm font-medium text-gray-900 dark:text-white">ຊື້ {amount.toLocaleString()} ₭</p>
-                                    <p class="text-xs text-gray-500 dark:text-gray-400">ໄດ້ {pts} ແຕ້ມ</p>
+                                    <p class="text-sm font-medium text-gray-900 dark:text-white">{t("promotions.buyAmount", { amount: amount.toLocaleString() })}</p>
+                                    <p class="text-xs text-gray-500 dark:text-gray-400">{t("promotions.earnPoints", { points: pts })}</p>
                                 </div>
                                 <div class="text-right">
                                     <p class="text-sm font-bold text-yellow-600 dark:text-yellow-400">{pts} pts</p>
@@ -615,7 +626,11 @@
                     </div>
                     <div class="mt-4 p-3 bg-yellow-50 dark:bg-yellow-900/20 rounded-xl border border-yellow-200 dark:border-yellow-800">
                         <p class="text-xs text-yellow-700 dark:text-yellow-400">
-                            <strong>ສູດ:</strong> ທຸກ {loyaltySettings.amountPerPoint.toLocaleString()} ₭ = {loyaltySettings.pointsPerAmount} ແຕ້ມ | 1 ແຕ້ມ = {loyaltySettings.pointValue.toLocaleString()} ₭
+                            <strong>{t("promotions.formula")}:</strong> {t("promotions.formulaDescription", {
+                                amount: loyaltySettings.amountPerPoint.toLocaleString(),
+                                points: loyaltySettings.pointsPerAmount,
+                                pointValue: loyaltySettings.pointValue.toLocaleString()
+                            })}
                         </p>
                     </div>
                 </div>
@@ -635,7 +650,7 @@
         <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-16 text-center shadow-sm">
             <Sparkles class="w-16 h-16 mx-auto text-gray-300 dark:text-gray-600" />
             <h3 class="text-lg font-semibold text-gray-900 dark:text-white mt-4">{t("promotions.noPromotions")}</h3>
-            <p class="text-gray-500 dark:text-gray-400 mt-2">ບໍ່ມີຂໍ້ມູນ</p>
+            <p class="text-gray-500 dark:text-gray-400 mt-2">{t("common.noData")}</p>
         </div>
     {:else}
         <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
@@ -696,7 +711,7 @@
                             
                             {#if item.minPurchase > 0}
                                 <div class="text-xs bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded">
-                                    ຂັ້ນຕ່ຳ: {formatCurrency(item.minPurchase)}
+                                    {t("promotions.minimum")}: {formatCurrency(item.minPurchase)}
                                 </div>
                             {/if}
                         </div>
@@ -715,7 +730,7 @@
                         {#if item.usageCount !== undefined || item.usageLimit}
                             <div class="mt-3 pt-3 border-t border-gray-100 dark:border-gray-700">
                                 <div class="flex items-center justify-between text-xs">
-                                    <span class="text-gray-500 dark:text-gray-400">ໃຊ້ແລ້ວ</span>
+                                    <span class="text-gray-500 dark:text-gray-400">{t("promotions.used")}</span>
                                     <span class="font-medium text-gray-900 dark:text-white">
                                         {item.usageCount || 0} {item.usageLimit ? `/ ${item.usageLimit}` : ""}
                                     </span>
@@ -745,10 +760,10 @@
                         >
                             {#if item.isActive}
                                 <Pause class="w-4 h-4" />
-                                ຢຸດຊົ່ວຄາວ
+                                {t("promotions.pause")}
                             {:else}
                                 <Play class="w-4 h-4" />
-                                ເປີດໃຊ້
+                                {t("common.activate")}
                             {/if}
                         </button>
                         <div class="flex gap-1">
@@ -804,10 +819,10 @@
             >
                 {#if activeTab === "coupons"}
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                            ລະຫັດຄູປອງ *
+                        <label for="a11y-app-promotions-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                            {t("promotions.couponCode")} *
                         </label>
-                        <input
+                        <input id="a11y-app-promotions-page-svelte-1"
                             type="text"
                             bind:value={formData.code}
                             required
@@ -818,10 +833,10 @@
                 {/if}
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                    <label for="a11y-app-promotions-page-svelte-2" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                         {t("common.name")} *
                     </label>
-                    <input
+                    <input id="a11y-app-promotions-page-svelte-2"
                         type="text"
                         bind:value={formData.name}
                         required
@@ -830,10 +845,10 @@
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                    <label for="a11y-app-promotions-page-svelte-3" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                         {t("common.description")}
                     </label>
-                    <textarea
+                    <textarea id="a11y-app-promotions-page-svelte-3"
                         bind:value={formData.description}
                         rows="2"
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500 focus:border-transparent resize-none"
@@ -842,10 +857,10 @@
 
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                            ປະເພດສ່ວນຫຼຸດ
+                        <label for="a11y-app-promotions-page-svelte-4" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                            {t("promotions.type")}
                         </label>
-                        <select
+                        <select id="a11y-app-promotions-page-svelte-4"
                             bind:value={formData.type}
                             class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500 focus:border-transparent"
                         >
@@ -854,20 +869,15 @@
                                     <option value={pt.value}>{pt.labelLao || pt.label}</option>
                                 {/each}
                             {:else}
-                                <option value="PERCENTAGE">ເປີເຊັນ (%)</option>
-                                <option value="FIXED">ຈຳນວນເງິນ</option>
-                                {#if activeTab === "promotions"}
-                                    <option value="BUY_X_GET_Y">ຊື້ X ແຖມ Y</option>
-                                    <option value="BUNDLE">ຊຸດໂປຣໂມຊັ່ນ</option>
-                                {/if}
+                                <option value="" disabled>{t("common.noData")}</option>
                             {/if}
                         </select>
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                            ມູນຄ່າ *
+                        <label for="a11y-app-promotions-page-svelte-5" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                            {t("common.value")} *
                         </label>
-                        <input
+                        <input id="a11y-app-promotions-page-svelte-5"
                             type="number"
                             bind:value={formData.value}
                             required
@@ -879,10 +889,10 @@
 
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                            ຊື້ຂັ້ນຕ່ຳ
+                        <label for="a11y-app-promotions-page-svelte-6" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                            {t("promotions.minimumPurchase")}
                         </label>
-                        <input
+                        <input id="a11y-app-promotions-page-svelte-6"
                             type="number"
                             bind:value={formData.minPurchase}
                             min="0"
@@ -890,10 +900,10 @@
                         />
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                            ສ່ວນຫຼຸດສູງສຸດ
+                        <label for="a11y-app-promotions-page-svelte-7" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                            {t("promotions.maxDiscount")}
                         </label>
-                        <input
+                        <input id="a11y-app-promotions-page-svelte-7"
                             type="number"
                             bind:value={formData.maxDiscount}
                             min="0"
@@ -904,10 +914,10 @@
 
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                            ວັນເລີ່ມຕົ້ນ *
+                        <label for="a11y-app-promotions-page-svelte-8" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                            {t("common.startDate")} *
                         </label>
-                        <input
+                        <input id="a11y-app-promotions-page-svelte-8"
                             type="date"
                             bind:value={formData.startDate}
                             required
@@ -915,10 +925,10 @@
                         />
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                            ວັນສິ້ນສຸດ
+                        <label for="a11y-app-promotions-page-svelte-9" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                            {t("common.endDate")}
                         </label>
-                        <input
+                        <input id="a11y-app-promotions-page-svelte-9"
                             type="date"
                             bind:value={formData.endDate}
                             class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500 focus:border-transparent"
@@ -928,14 +938,14 @@
 
                 {#if activeTab === "coupons"}
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                            ຈຳນວນໃຊ້ໄດ້
+                        <label for="a11y-app-promotions-page-svelte-10" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                            {t("promotions.usageLimit")}
                         </label>
-                        <input
+                        <input id="a11y-app-promotions-page-svelte-10"
                             type="number"
                             bind:value={formData.usageLimit}
                             min="0"
-                            placeholder="0 = ບໍ່ຈຳກັດ"
+                            placeholder={t("promotions.unlimitedPlaceholder")}
                             class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500 focus:border-transparent"
                         />
                     </div>
@@ -946,7 +956,7 @@
                         <input type="checkbox" bind:checked={formData.isActive} class="sr-only peer" />
                         <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-pink-300 dark:peer-focus:ring-pink-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-pink-600"></div>
                     </label>
-                    <span class="text-sm font-medium text-gray-700 dark:text-gray-300">ເປີດໃຊ້ງານ</span>
+                    <span class="text-sm font-medium text-gray-700 dark:text-gray-300">{t("common.active")}</span>
                 </div>
 
                 <div class="flex justify-end gap-3 pt-4">

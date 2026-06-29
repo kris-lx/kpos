@@ -1,10 +1,11 @@
-﻿<script lang="ts">
+<script lang="ts">
     import { createQuery, useQueryClient } from "@tanstack/svelte-query";
     import { get } from "svelte/store";
     import { api } from "$lib/api";
     import { goto } from "$app/navigation";
     import { onMount, onDestroy } from "svelte";
     import { toast } from "svelte-sonner";
+    import { t } from '$lib/i18n/index.svelte';
     import { cn } from "$lib/utils";
     import { auth } from "$lib/stores/auth.svelte";
     import {
@@ -72,7 +73,7 @@
                 else if (user.role === 'store_owner') userRole = 'store_owner';
                 else userRole = 'manager';
             } else {
-                toast.error("ທ່ານບໍ່ມີສິດເຂົ້າເຖິງໜ້ານີ້");
+                toast.error(t('common.accessDenied'));
                 goto("/dashboard");
             }
         } catch {
@@ -87,7 +88,7 @@
             const response = await api.get("admin/dashboard").json<any>();
             return response.data;
         },
-        enabled: canAccess
+        enabled: () => canAccess
     });
 
     const pendingRequestsQuery = createQuery({
@@ -96,7 +97,7 @@
             const response = await api.get("admin/requests?status=pending&limit=5").json<any>();
             return response.data || [];
         },
-        enabled: canAccess
+        enabled: () => canAccess
     });
 
     const recentActivityQuery = createQuery({
@@ -105,7 +106,7 @@
             const response = await api.get("admin/activity?limit=10").json<any>();
             return response.data || [];
         },
-        enabled: canAccess
+        enabled: () => canAccess
     });
 
     const systemHealthQuery = createQuery({
@@ -119,7 +120,7 @@
                 memory: { used: 60, total: 100 }
             };
         },
-        enabled: canAccess
+        enabled: () => canAccess
     });
 
     const chartDataQuery = createQuery({
@@ -128,7 +129,7 @@
             const response = await api.get("admin/dashboard/chart-data").json<any>();
             return response.data || { usersByRole: [], storesByBranch: [], transactionsTrend: [] };
         },
-        enabled: canAccess
+        enabled: () => canAccess
     });
 
     // Canvas refs for charts
@@ -236,11 +237,11 @@
             return api.post(`admin/requests/${id}/approve`, { json: { note } }).json();
         },
         onSuccess: () => {
-            toast.success("ອະນຸມັດສຳເລັດ");
+            toast.success(t('common.approveSuccess'));
             queryClient.invalidateQueries({ queryKey: ["admin-requests"] });
             queryClient.invalidateQueries({ queryKey: ["admin-dashboard"] });
         },
-        onError: () => toast.error("ເກີດຂໍ້ຜິດພາດ")
+        onError: () => toast.error(t('common.genericError'))
     });
 
     const rejectMutation = createMutation({
@@ -248,11 +249,11 @@
             return api.post(`admin/requests/${id}/reject`, { json: { note } }).json();
         },
         onSuccess: () => {
-            toast.success("ປະຕິເສດສຳເລັດ");
+            toast.success(t('common.rejectSuccess'));
             queryClient.invalidateQueries({ queryKey: ["admin-requests"] });
             queryClient.invalidateQueries({ queryKey: ["admin-dashboard"] });
         },
-        onError: () => toast.error("ເກີດຂໍ້ຜິດພາດ")
+        onError: () => toast.error(t('common.genericError'))
     });
 
     let showReviewModal = $state(false);
@@ -273,7 +274,7 @@
             $approveMutation.mutate({ id: selectedRequest.id, note: reviewNote });
         } else {
             if (!reviewNote.trim()) {
-                toast.error("ກະລຸນາລະບຸເຫດຜົນ");
+                toast.error(t('common.pleaseSpecifyReason'));
                 return;
             }
             $rejectMutation.mutate({ id: selectedRequest.id, note: reviewNote });
@@ -336,10 +337,10 @@
 
     function getRoleLabel(role: string) {
         const labels: Record<string, string> = {
-            super_admin: "Super Admin",
-            admin: "Admin",
-            store_owner: "Store Owner",
-            manager: "Manager"
+            super_admin: t("admin.roleTypes.superAdmin"),
+            admin: t("admin.roleTypes.admin"),
+            store_owner: t("admin.roleTypes.storeOwner"),
+            manager: t("admin.roleTypes.manager"),
         };
         return labels[role] || role;
     }
@@ -403,7 +404,7 @@
 </script>
 
 <svelte:head>
-    <title>Super Admin Dashboard - KPOS</title>
+    <title>{t("nav.superAdmin")} Dashboard - KPOS</title>
 </svelte:head>
 
 {#if !canAccess}
@@ -554,12 +555,13 @@
                     </div>
                     <div class="p-4 space-y-2">
                         {#each quickLinks as link (link.href)}
+                            {@const LinkIcon = link.icon}
                             <a 
                                 href={link.href} 
                                 class="group flex items-center gap-4 p-4 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-all duration-200"
                             >
                                 <div class={cn("w-11 h-11 rounded-xl flex items-center justify-center bg-gradient-to-br shadow-lg", link.color)}>
-                                    <svelte:component this={link.icon} class="w-5 h-5 text-white" />
+                                    <LinkIcon class="w-5 h-5 text-white" />
                                 </div>
                                 <div class="flex-1">
                                     <p class="font-medium text-gray-900 dark:text-white group-hover:text-violet-600 dark:group-hover:text-violet-400 transition-colors">{link.label}</p>
@@ -812,9 +814,9 @@
                 <div class="p-5 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
                     <h3 class="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
                         <Database class="w-5 h-5 text-emerald-500" />
-                        ສຳຮອງຂໍ້ມູນ (Database Backup)
+                        {t("settings.dbBackup")}
                     </h3>
-                    <span class="px-2 py-1 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 text-xs font-medium rounded-full">Super Admin</span>
+                    <span class="px-2 py-1 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 text-xs font-medium rounded-full">{t("admin.roleTypes.superAdmin")}</span>
                 </div>
                 <div class="p-5">
                     <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-5">
@@ -939,7 +941,7 @@
                                 <Crown class="w-6 h-6 text-white" />
                             </div>
                             <p class="text-2xl font-bold text-gray-900 dark:text-white">{$dashboardQuery.data?.users?.superAdmins || 1}</p>
-                            <p class="text-sm text-gray-500 dark:text-gray-400">Super Admin</p>
+                            <p class="text-sm text-gray-500 dark:text-gray-400">{t("admin.roleTypes.superAdmin")}</p>
                         </div>
                         <div class="text-center p-4 bg-gradient-to-br from-emerald-50 to-success-50 dark:from-emerald-900/20 dark:to-success-900/20 rounded-xl border border-emerald-100 dark:border-emerald-800/50">
                             <div class="w-12 h-12 bg-emerald-500 rounded-xl flex items-center justify-center mx-auto mb-3 shadow-lg shadow-emerald-500/30">
@@ -957,7 +959,7 @@
     <!-- Review Modal -->
     {#if showReviewModal && selectedRequest}
         <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showReviewModal = false}></div>
+            <button type="button" aria-label="Close modal" class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showReviewModal = false}></button>
             <div class="relative bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
                 <div class={cn("p-6 text-white", reviewAction === "approve" ? "bg-gradient-to-r from-emerald-500 to-success-500" : "bg-gradient-to-r from-danger-500 to-rose-500")}>
                     <div class="flex items-center gap-3">
@@ -980,10 +982,10 @@
                         <p class="font-medium text-gray-900 dark:text-white">{selectedRequest.requester?.name}</p>
                     </div>
                     <div class="space-y-2">
-                        <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                        <label for="a11y-app-admin-page-svelte-1" class="text-sm font-medium text-gray-700 dark:text-gray-300">
                             {reviewAction === "approve" ? "ໝາຍເຫດ (ທາງເລືອກ)" : "ເຫດຜົນປະຕິເສດ *"}
                         </label>
-                        <textarea
+                        <textarea id="a11y-app-admin-page-svelte-1"
                             bind:value={reviewNote}
                             placeholder={reviewAction === "approve" ? "ໝາຍເຫດເພີ່ມເຕີມ..." : "ກະລຸນາລະບຸເຫດຜົນ..."}
                             rows="3"

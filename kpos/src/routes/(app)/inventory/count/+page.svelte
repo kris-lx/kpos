@@ -124,7 +124,7 @@
             }
             const [countRes, prodRes] = await Promise.all([
                 api.get(`inventory/stock-counts?${params}`).json<any>(),
-                api.get(`products?limit=1000${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>(),
+                api.get(`products?all=true${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>(),
             ]);
             stockCounts = countRes.data || [];
             totalItems = countRes.meta?.total || 0;
@@ -211,7 +211,7 @@
     async function exportToCsv() {
         try {
             const activeBranchId = auth.activeBranchId;
-            const res = await api.get(`inventory/stock-counts?limit=10000${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>();
+            const res = await api.get(`inventory/stock-counts?all=true${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>();
             const rows: any[] = res.data || [];
             let csv = '﻿';
             csv += 'ວັນທີ,ເລກນັບ,ຈຳນວນລາຍການ,ມີຄວາມຕ່າງ,ສະຖານະ\n';
@@ -221,9 +221,9 @@
                 csv += `"${date}","${item.countNo || ''}","${item.items?.length || 0}","${item.hasDiscrepancy ? 'ມີ' : 'ບໍ່ມີ'}","${statusLabel}"\n`;
             }
             downloadFile(csv, `stock-counts-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
-            toast.success('ສົ່ງອອກ CSV ສຳເລັດ');
+            toast.success(t('common.exportSuccess'));
         } catch {
-            toast.error('ສົ່ງອອກລົ້ມເຫລວ');
+            toast.error(t('common.exportFailed'));
         }
     }
 
@@ -410,7 +410,7 @@
                     onchange={() => { currentPage = 1; loadData(); }}
                     class="px-2 py-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm"
                 >
-                    {#each [10, 20, 50, 100] as size (size)}
+                    {#each [5, 10, 20, 50, 70, 100] as size (size)}
                         <option value={size}>{size}</option>
                     {/each}
                 </select>
@@ -442,19 +442,19 @@
 
             <form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }} class="p-6 space-y-4 overflow-y-auto flex-1">
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ວັນທີ</label>
-                    <input type="date" bind:value={formData.date} class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
+                    <label for="a11y-app-inventory-count-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ວັນທີ</label>
+                    <input id="a11y-app-inventory-count-page-svelte-1" type="date" bind:value={formData.date} class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
                 </div>
 
                 <div>
                     <div class="flex justify-between items-center mb-2">
-                        <label class="text-sm font-medium text-gray-700 dark:text-gray-300">ລາຍການສິນຄ້າ</label>
+                        <label for="a11y-app-inventory-count-page-svelte-2" class="text-sm font-medium text-gray-700 dark:text-gray-300">ລາຍການສິນຄ້າ</label>
                         <button type="button" onclick={addItem} class="text-violet-600 hover:text-violet-700 text-sm font-medium">+ ເພີ່ມ</button>
                     </div>
                     <div class="space-y-2 max-h-60 overflow-y-auto">
                         {#each formData.items as item, i}
                             <div class="flex gap-2 items-center p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
-                                <select bind:value={item.productId} class="flex-1 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm">
+                                <select id="a11y-app-inventory-count-page-svelte-2" bind:value={item.productId} class="flex-1 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm">
                                     <option value="">ເລືອກສິນຄ້າ</option>
                                     {#each products as product (product.id)}
                                         <option value={product.id}>{product.name}</option>
@@ -471,8 +471,8 @@
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ໝາຍເຫດ</label>
-                    <textarea bind:value={formData.notes} rows="2" class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white resize-none"></textarea>
+                    <label for="a11y-app-inventory-count-page-svelte-3" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ໝາຍເຫດ</label>
+                    <textarea id="a11y-app-inventory-count-page-svelte-3" bind:value={formData.notes} rows="2" class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white resize-none"></textarea>
                 </div>
 
                 <div class="flex justify-end gap-3 pt-4">
@@ -496,8 +496,8 @@
             </div>
             <div class="p-6 space-y-4">
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ເຫດຜົນ</label>
-                    <textarea bind:value={rejectReason} rows="3" placeholder="ລະບຸເຫດຜົນການປະຕິເສດ..." class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white resize-none"></textarea>
+                    <label for="a11y-app-inventory-count-page-svelte-4" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ເຫດຜົນ</label>
+                    <textarea id="a11y-app-inventory-count-page-svelte-4" bind:value={rejectReason} rows="3" placeholder="ລະບຸເຫດຜົນການປະຕິເສດ..." class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white resize-none"></textarea>
                 </div>
                 <div class="flex justify-end gap-3">
                     <button onclick={() => (showRejectModal = false)} class="px-5 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 font-medium">ຍົກເລີກ</button>

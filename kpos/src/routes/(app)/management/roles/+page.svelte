@@ -26,21 +26,11 @@
     let pageSize = $state(10);
     const pageSizeOptions = [10, 25, 50, 100];
 
-    // Fallback permission groups (shown while API loads or if API returns nothing)
-    const fallbackPermissions = [
-        { category: "ການຂາຍ", permissions: [{ key: "pos:access", label: "ເຂົ້າໃຊ້ໜ້າຂາຍ" }, { key: "pos:void", label: "ຍົກເລີກລາຍການ" }, { key: "pos:discount", label: "ໃຫ້ສ່ວນຫຼຸດ" }, { key: "pos:refund", label: "ຄືນເງິນ" }, { key: "pos:credit", label: "ຂາຍເຊື່ອ" }] },
-        { category: "ສິນຄ້າ", permissions: [{ key: "products:read", label: "ເບິ່ງສິນຄ້າ" }, { key: "products:create", label: "ເພີ່ມສິນຄ້າ" }, { key: "products:update", label: "ແກ້ໄຂສິນຄ້າ" }, { key: "products:delete", label: "ລົບສິນຄ້າ" }] },
-        { category: "ສາງ", permissions: [{ key: "inventory:read", label: "ເບິ່ງສາງ" }, { key: "inventory:stockin", label: "ນຳເຂົ້າສາງ" }, { key: "inventory:stockout", label: "ນຳອອກສາງ" }, { key: "inventory:adjust", label: "ປັບປ່ຽນຍອດ" }, { key: "inventory:transfer", label: "ໂອນຍ້າຍ" }] },
-        { category: "ລາຍງານ", permissions: [{ key: "reports:sales", label: "ລາຍງານຂາຍ" }, { key: "reports:inventory", label: "ລາຍງານສາງ" }, { key: "reports:financial", label: "ລາຍງານການເງິນ" }, { key: "reports:staff", label: "ລາຍງານພະນັກງານ" }] },
-        { category: "ພະນັກງານ", permissions: [{ key: "staff:read", label: "ເບິ່ງພະນັກງານ" }, { key: "staff:create", label: "ເພີ່ມພະນັກງານ" }, { key: "staff:update", label: "ແກ້ໄຂພະນັກງານ" }, { key: "staff:delete", label: "ລົບພະນັກງານ" }] },
-        { category: "ຕັ້ງຄ່າ", permissions: [{ key: "settings:read", label: "ເບິ່ງການຕັ້ງຄ່າ" }, { key: "settings:update", label: "ແກ້ໄຂການຕັ້ງຄ່າ" }] },
-    ];
-
     let apiRules = $state<any[]>([]);
 
-    // Build permission groups from API rules; fall back to hardcoded if API returns nothing
+    // Build permission groups from API rules only.
     let allPermissions = $derived.by(() => {
-        if (apiRules.length === 0) return fallbackPermissions;
+        if (apiRules.length === 0) return [];
         const grouped: Record<string, { key: string; label: string }[]> = {};
         for (const rule of apiRules) {
             const cat = rule.displayName || rule.module || rule.name;
@@ -63,8 +53,9 @@
             if (res.success && Array.isArray(res.data) && res.data.length > 0) {
                 apiRules = res.data;
             }
-        } catch {
-            // keep fallback permission list
+        } catch (err) {
+            console.error("Failed to load permission rules:", err);
+            apiRules = [];
         }
     }
 
@@ -78,7 +69,7 @@
             }
         } catch (err) {
             console.error("Failed to load roles:", err);
-            error = "ບໍ່ສາມາດໂຫຼດຂໍ້ມູນບົດບາດໄດ້";
+            error = t('common.loadError');
             toast.error("ບໍ່ສາມາດໂຫຼດຂໍ້ມູນບົດບາດໄດ້");
             roles = [];
         } finally {
@@ -129,11 +120,11 @@
                 await api.post("roles", { json: formData }).json();
             }
             showModal = false;
-            toast.success("ບັນທຶກສຳເລັດ");
+            toast.success(t('common.saved'));
             loadRoles();
         } catch (error) {
             console.error("Failed to save role:", error);
-            toast.error("ເກີດຂໍ້ຜິດພາດ");
+            toast.error(t('common.genericError'));
         }
     }
 
@@ -149,7 +140,7 @@
             loadRoles();
         } catch (error) {
             console.error("Failed to delete role:", error);
-            toast.error("ເກີດຂໍ້ຜິດພາດ");
+            toast.error(t('common.genericError'));
         }
     }
 
@@ -335,7 +326,7 @@
 {#if showModal}
     <div
         class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
-        onclick={() => (showModal = false)}
+        onclick={(e) => e.target === e.currentTarget && (showModal = false)}
         onkeydown={(e) => e.key === "Escape" && (showModal = false)}
         role="dialog"
         aria-modal="true"
@@ -343,7 +334,6 @@
     >
         <div
             class="bg-white dark:bg-gray-800 rounded-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto"
-            onclick={(e) => e.stopPropagation()}
             role="document"
         >
             <div class="flex items-center justify-between mb-4">
@@ -392,8 +382,8 @@
                     />
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-3"
-                        >ສິດ</label>
+                    <p class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-3"
+                        >ສິດ</p>
                     <div class="space-y-4">
                         {#each allPermissions as category (category.category)}
                             <div class="border border-gray-200 dark:border-gray-700 rounded-lg p-3">

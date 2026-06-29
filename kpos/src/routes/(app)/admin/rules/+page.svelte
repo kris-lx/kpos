@@ -4,6 +4,7 @@
     import { api } from "$lib/api";
     import { auth } from "$lib/stores/auth.svelte";
     import { toast } from "svelte-sonner";
+    import { t } from '$lib/i18n/index.svelte';
     import { cn } from "$lib/utils";
     import {
         ShieldCheck,
@@ -239,7 +240,7 @@
                 toast.error('ບັນທຶກບໍ່ສຳເລັດ');
             }
         } catch (error) {
-            toast.error('ເກີດຂໍ້ຜິດພາດ');
+            toast.error(t('common.genericError'));
         } finally {
             isSaving = false;
         }
@@ -680,6 +681,7 @@
                                     {#each perms as perm (perm.ruleId)}
                                         {@const menuDef = RULE_MENU_MAP[perm.ruleName]}
                                         {#if menuDef}
+                                            {@const MenuIcon = menuDef.icon}
                                             <!-- Parent menu item -->
                                             <div class={cn(
                                                 "flex items-center gap-2 px-3 py-2 rounded-lg text-sm",
@@ -688,7 +690,7 @@
                                                     : "text-gray-300 dark:text-gray-600"
                                             )}>
                                                 {#if perm.canRead}
-                                                    <svelte:component this={menuDef.icon} class="w-4 h-4 text-gray-500 dark:text-gray-400 shrink-0" />
+                                                    <MenuIcon class="w-4 h-4 text-gray-500 dark:text-gray-400 shrink-0" />
                                                 {:else}
                                                     <Lock class="w-4 h-4 text-gray-300 dark:text-gray-600 shrink-0" />
                                                 {/if}
@@ -736,9 +738,10 @@
                                         {@const menuDef = RULE_MENU_MAP[perm.ruleName]}
                                         {@const ruleDef = rules.find(r => r.id === perm.ruleId)}
                                         {#if menuDef}
+                                            {@const MenuIcon = menuDef.icon}
                                             <div class="px-4 py-2.5">
                                                 <div class="flex items-center gap-2 mb-1.5">
-                                                    <svelte:component this={menuDef.icon} class="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                                                    <MenuIcon class="w-3.5 h-3.5 text-gray-400 shrink-0" />
                                                     <span class="text-xs font-semibold text-gray-700 dark:text-gray-300">{menuDef.label}</span>
                                                 </div>
                                                 <div class="flex items-center gap-1.5 ml-5">
@@ -931,8 +934,8 @@
                 </p>
             </div>
             <div class="p-6">
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ເລືອກ Role ຕົ້ນທາງ</label>
-                <select
+                <label for="a11y-app-admin-rules-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ເລືອກ Role ຕົ້ນທາງ</label>
+                <select id="a11y-app-admin-rules-page-svelte-1"
                     bind:value={copySourceRoleId}
                     class="w-full px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-violet-500/50"
                 >

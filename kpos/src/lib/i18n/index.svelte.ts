@@ -57,7 +57,9 @@ if (browser) {
 // Helper function to translate with current locale
 function translateKey(key: string, params?: Record<string, string | number>): string {
     const dict = translations[currentLocale];
-    let text = dict[key] || translations[DEFAULT_LOCALE][key] || key;
+    // Fallback: current locale → English → Lao (default) → raw key
+    // Ensures non-Lao users see English rather than Lao for untranslated strings.
+    let text = dict[key] || translations['en'][key] || translations[DEFAULT_LOCALE][key] || key;
 
     // Replace parameters like {name} with actual values
     if (params) {

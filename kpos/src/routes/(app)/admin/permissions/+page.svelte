@@ -1,10 +1,11 @@
-﻿<script lang="ts">
+<script lang="ts">
     import { createQuery, createMutation, useQueryClient } from "@tanstack/svelte-query";
     import { get } from "svelte/store";
     import { api } from "$lib/api";
     import { goto } from "$app/navigation";
     import { onMount } from "svelte";
     import { toast } from "svelte-sonner";
+    import { t } from '$lib/i18n/index.svelte';
     import { cn } from "$lib/utils";
     import {
         Shield,
@@ -44,7 +45,7 @@
             if (user.isSuperAdmin || permRoles.includes(user.role)) {
                 canAccess = true;
             } else {
-                toast.error("ທ່ານບໍ່ມີສິດເຂົ້າເຖິງໜ້ານີ້");
+                toast.error(t('common.accessDenied'));
                 goto("/admin");
             }
         } catch {
@@ -68,7 +69,7 @@
             toast.success("ບັນທຶກສິດສຳເລັດ");
             get(permissionsQuery).refetch();
         },
-        onError: () => toast.error("ເກີດຂໍ້ຜິດພາດ")
+        onError: () => toast.error(t('common.genericError'))
     });
 
     let groups = $state<any[]>([]);
@@ -134,7 +135,7 @@
 
     function addGroup() {
         if (!newGroup.key.trim() || !newGroup.label.trim()) {
-            toast.error("ກະລຸນາປ້ອນຂໍ້ມູນໃຫ້ຄົບ");
+            toast.error(t('common.pleaseEnterRequired'));
             return;
         }
         if (groups.find(g => g.key === newGroup.key)) {
@@ -160,7 +161,7 @@
 
     function addPermission() {
         if (!newPermission.key.trim() || !newPermission.label.trim()) {
-            toast.error("ກະລຸນາປ້ອນຂໍ້ມູນໃຫ້ຄົບ");
+            toast.error(t('common.pleaseEnterRequired'));
             return;
         }
         const fullKey = `${selectedGroupKey}.${newPermission.key}`;
@@ -331,7 +332,7 @@
     <!-- Add Group Modal -->
     {#if showAddGroupModal}
         <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showAddGroupModal = false}></div>
+            <button type="button" aria-label="Close modal" class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showAddGroupModal = false}></button>
             <div class="relative bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
                 <div class="bg-gradient-to-r from-violet-600 to-purple-600 p-6 text-white">
                     <button onclick={() => showAddGroupModal = false} class="absolute top-4 right-4 w-8 h-8 bg-white/20 hover:bg-white/30 rounded-lg flex items-center justify-center transition-colors">
@@ -347,15 +348,15 @@
                 </div>
                 <form onsubmit={(e) => { e.preventDefault(); addGroup(); }} class="p-6 space-y-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ລະຫັດ (key) *</label>
-                        <input type="text" bind:value={newGroup.key} placeholder="ເຊັ່ນ: customers" class="w-full px-4 py-3 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl focus:ring-2 focus:ring-violet-500 focus:border-transparent text-gray-900 dark:text-white" />
+                        <label for="a11y-app-admin-permissions-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ລະຫັດ (key) *</label>
+                        <input id="a11y-app-admin-permissions-page-svelte-1" type="text" bind:value={newGroup.key} placeholder="ເຊັ່ນ: customers" class="w-full px-4 py-3 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl focus:ring-2 focus:ring-violet-500 focus:border-transparent text-gray-900 dark:text-white" />
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ຊື່ສະແດງ *</label>
-                        <input type="text" bind:value={newGroup.label} placeholder="ເຊັ່ນ: ລູກຄ້າ" class="w-full px-4 py-3 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl focus:ring-2 focus:ring-violet-500 focus:border-transparent text-gray-900 dark:text-white" />
+                        <label for="a11y-app-admin-permissions-page-svelte-2" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ຊື່ສະແດງ *</label>
+                        <input id="a11y-app-admin-permissions-page-svelte-2" type="text" bind:value={newGroup.label} placeholder="ເຊັ່ນ: ລູກຄ້າ" class="w-full px-4 py-3 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl focus:ring-2 focus:ring-violet-500 focus:border-transparent text-gray-900 dark:text-white" />
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ໄອຄອນ</label>
+                        <p class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ໄອຄອນ</p>
                         <div class="grid grid-cols-5 gap-2">
                             {#each iconOptions as option (option.value)}
                                 {@const Icon = option.icon}
@@ -366,10 +367,10 @@
                         </div>
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ສີ</label>
+                        <p class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ສີ</p>
                         <div class="grid grid-cols-4 gap-2">
                             {#each colorOptions as option (option.value)}
-                                <button type="button" onclick={() => newGroup.color = option.value} class={cn("w-full h-10 rounded-xl bg-gradient-to-br border-2 transition-all", option.value, newGroup.color === option.value ? "border-gray-900 dark:border-white ring-2 ring-offset-2 ring-violet-500" : "border-transparent")}>
+                                <button type="button" aria-label={`Select ${option.label || option.value} color`} onclick={() => newGroup.color = option.value} class={cn("w-full h-10 rounded-xl bg-gradient-to-br border-2 transition-all", option.value, newGroup.color === option.value ? "border-gray-900 dark:border-white ring-2 ring-offset-2 ring-violet-500" : "border-transparent")}>
                                 </button>
                             {/each}
                         </div>
@@ -386,7 +387,7 @@
     <!-- Add Permission Modal -->
     {#if showAddPermissionModal}
         <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showAddPermissionModal = false}></div>
+            <button type="button" aria-label="Close modal" class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showAddPermissionModal = false}></button>
             <div class="relative bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
                 <div class="bg-gradient-to-r from-emerald-600 to-teal-600 p-6 text-white">
                     <button onclick={() => showAddPermissionModal = false} class="absolute top-4 right-4 w-8 h-8 bg-white/20 hover:bg-white/30 rounded-lg flex items-center justify-center transition-colors">
@@ -402,15 +403,15 @@
                 </div>
                 <form onsubmit={(e) => { e.preventDefault(); addPermission(); }} class="p-6 space-y-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ລະຫັດ (key) *</label>
+                        <label for="a11y-app-admin-permissions-page-svelte-3" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ລະຫັດ (key) *</label>
                         <div class="flex">
                             <span class="px-4 py-3 bg-gray-100 dark:bg-gray-600 border border-r-0 border-gray-200 dark:border-gray-600 rounded-l-xl text-gray-500 dark:text-gray-400 text-sm">{selectedGroupKey}.</span>
-                            <input type="text" bind:value={newPermission.key} placeholder="view" class="flex-1 px-4 py-3 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-r-xl focus:ring-2 focus:ring-emerald-500 focus:border-transparent text-gray-900 dark:text-white" />
+                            <input id="a11y-app-admin-permissions-page-svelte-3" type="text" bind:value={newPermission.key} placeholder="view" class="flex-1 px-4 py-3 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-r-xl focus:ring-2 focus:ring-emerald-500 focus:border-transparent text-gray-900 dark:text-white" />
                         </div>
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ຊື່ສະແດງ *</label>
-                        <input type="text" bind:value={newPermission.label} placeholder="ເບິ່ງ" class="w-full px-4 py-3 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-transparent text-gray-900 dark:text-white" />
+                        <label for="a11y-app-admin-permissions-page-svelte-4" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ຊື່ສະແດງ *</label>
+                        <input id="a11y-app-admin-permissions-page-svelte-4" type="text" bind:value={newPermission.label} placeholder="ເບິ່ງ" class="w-full px-4 py-3 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-transparent text-gray-900 dark:text-white" />
                     </div>
                     <div class="flex gap-3 pt-4">
                         <button type="button" onclick={() => showAddPermissionModal = false} class="flex-1 px-4 py-3 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 font-medium rounded-xl hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">ຍົກເລີກ</button>

@@ -3,6 +3,7 @@
     import { get } from 'svelte/store';
     import { api } from '$lib/api';
     import { toast } from 'svelte-sonner';
+    import { t } from '$lib/i18n/index.svelte';
     import { Plus, Pencil, Trash2, ToggleLeft, ToggleRight, RefreshCw, ChevronDown, ChevronRight, Tag, Loader2, X, Check, Shield } from 'lucide-svelte';
 
     const queryClient = useQueryClient();
@@ -33,29 +34,29 @@
     const addMutation = createMutation({
         mutationFn: (body: any) => api.post('admin/enums', { json: body }).json<any>(),
         onSuccess: () => {
-            toast.success('ເພີ່ມສຳເລັດ');
+            toast.success(t('common.added'));
             get(enumsQuery).refetch();
             showAddModal = false;
             addForm = { type: '', value: '', label: '', labelLao: '', order: 0 };
         },
-        onError: (e: any) => toast.error(e?.message ?? 'ເກີດຂໍ້ຜິດພາດ'),
+        onError: (e: any) => toast.error(e?.message ?? t('common.genericError')),
     });
 
     const updateMutation = createMutation({
         mutationFn: ({ id, body }: { id: string; body: any }) =>
             api.put(`admin/enums/${id}`, { json: body }).json<any>(),
         onSuccess: () => {
-            toast.success('ບັນທຶກສຳເລັດ');
+            toast.success(t('common.saved'));
             get(enumsQuery).refetch();
             showEditModal = false;
         },
-        onError: (e: any) => toast.error(e?.message ?? 'ເກີດຂໍ້ຜິດພາດ'),
+        onError: (e: any) => toast.error(e?.message ?? t('common.genericError')),
     });
 
     const deleteMutation = createMutation({
         mutationFn: (id: string) => api.delete(`admin/enums/${id}`).json<any>(),
         onSuccess: () => {
-            toast.success('ລຶບສຳເລັດ');
+            toast.success(t('common.deleted'));
             get(enumsQuery).refetch();
         },
         onError: (e: any) => toast.error(e?.message ?? 'ລຶບບໍ່ໄດ້: ' + (e?.message ?? '')),

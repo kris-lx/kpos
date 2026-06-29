@@ -1,14 +1,18 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // KPOS - Notification Routes
-// GET  /notifications         — List notifications (paginated)
-// GET  /notifications/unread  — Get unread count
-// PUT  /notifications/:id/read — Mark single as read
-// PUT  /notifications/read-all — Mark all as read
+// GET  /notifications              — List notifications (paginated)
+// GET  /notifications/unread       — Get unread count
+// GET  /notifications/push/key     — Get VAPID public key
+// POST /notifications/push/subscribe   — Save push subscription
+// POST /notifications/push/unsubscribe — Remove push subscription
+// PUT  /notifications/:id/read     — Mark single as read
+// PUT  /notifications/read-all     — Mark all as read
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
 import { authenticate } from '@/infrastructure/http/middleware/auth.middleware';
 import { notificationService } from './notification.service';
+import { webPushService } from './webpush.service';
 import { validateParamId } from '@/infrastructure/http/middleware/security.middleware';
 
 export const notificationRoutes = Router();
@@ -65,6 +69,40 @@ notificationRoutes.put('/read-all', authenticate, async (req, res, next) => {
     try {
         await notificationService.markAllAsRead(req.authUser!.userId);
         res.json({ success: true, message: 'All notifications marked as read' });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Get VAPID public key (needed by browser to subscribe)
+notificationRoutes.get('/push/key', authenticate, (_req, res) => {
+    res.json({ success: true, data: { publicKey: webPushService.getPublicKey() } });
+});
+
+// Save a push subscription (browser calls this after PushManager.subscribe)
+notificationRoutes.post('/push/subscribe', authenticate, async (req, res, next) => {
+    try {
+        const { endpoint, keys } = req.body;
+        if (!endpoint || !keys?.p256dh || !keys?.auth) {
+            return res.status(400).json({ success: false, error: { message: 'Invalid subscription object' } });
+        }
+        const userId = req.authUser!.userId;
+        const tenantId = req.authUser?.tenantId ?? null;
+        const userAgent = req.headers['user-agent'];
+        await webPushService.subscribe(userId, tenantId, { endpoint, keys }, userAgent);
+        res.json({ success: true, message: 'Subscribed to push notifications' });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Remove a push subscription
+notificationRoutes.post('/push/unsubscribe', authenticate, async (req, res, next) => {
+    try {
+        const { endpoint } = req.body;
+        if (!endpoint) return res.status(400).json({ success: false, error: { message: 'endpoint required' } });
+        await webPushService.unsubscribe(req.authUser!.userId, endpoint);
+        res.json({ success: true, message: 'Unsubscribed from push notifications' });
     } catch (error) {
         next(error);
     }

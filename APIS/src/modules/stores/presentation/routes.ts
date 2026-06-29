@@ -3,12 +3,45 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, branchFilter, requireStoreAccess, applyScopeFilter, invalidateUserStoreCache, type ScopeFilter, buildScopeCondition } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, branchFilter, requireStoreAccess, applyScopeFilter, invalidateUserStoreCache, getRoleLevel, type ScopeFilter, buildScopeCondition } from '@/infrastructure/http/middleware/auth.middleware';
 import { db } from '@/config/database.config';
 import { stores, branches, users, userStores, storeRequests } from '@/db/schema/tables';
 import { eq, and, or, ilike, inArray, desc, asc, count } from 'drizzle-orm';
 
 export const storeRoutes = Router();
+
+type StoreScopeRecord = {
+    id: string;
+    tenantId?: string | null;
+    branchId?: string | null;
+};
+
+type UserScopeRecord = {
+    id: string;
+    tenantId?: string | null;
+    role?: string | null;
+    isSuperAdmin?: boolean | null;
+};
+
+function canAccessStoreRecord(req: any, store: StoreScopeRecord): boolean {
+    const authUser = req.authUser;
+    if (!authUser) return false;
+    if (authUser.isSuperAdmin) return true;
+    if (store.tenantId && store.tenantId !== authUser.tenantId) return false;
+    if ((authUser.roleLevel ?? 7) <= 2) return true;
+    if (store.id && authUser.accessibleStoreIds?.includes(store.id)) return true;
+    if (store.branchId && authUser.accessibleBranchIds?.includes(store.branchId)) return true;
+    return false;
+}
+
+function canManageTargetUser(req: any, target: UserScopeRecord): boolean {
+    const authUser = req.authUser;
+    if (!authUser) return false;
+    if (authUser.isSuperAdmin) return true;
+    if (target.tenantId !== authUser.tenantId) return false;
+    if (target.isSuperAdmin) return false;
+    return getRoleLevel(target.role || 'staff', false) > (authUser.roleLevel ?? 7);
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // GET ALL STORES (filtered by accessible branches)
@@ -558,31 +591,50 @@ storeRoutes.post('/:id/users', authenticate, authorize('staff:update'), async (r
         const { id: storeId } = req.params;
         const { userId, canRead = true, canWrite = true, canDelete = false, canManage = false, isDefault = false } = req.body;
 
-        const store = await db.query.stores.findFirst({ where: eq(stores.id, storeId) });
+        const tenantId = req.authUser?.tenantId;
+        const storeConds: any[] = [eq(stores.id, storeId)];
+        if (tenantId && !req.authUser?.isSuperAdmin) storeConds.push(eq(stores.tenantId, tenantId));
+        const store = await db.query.stores.findFirst({ where: and(...storeConds) });
         if (!store) {
-            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Store not found' } });
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Store not found or no access' } });
+        }
+        if (!canAccessStoreRecord(req, store)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this store' } });
         }
 
-        const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
+        const userConds: any[] = [eq(users.id, userId)];
+        if (tenantId && !req.authUser?.isSuperAdmin) userConds.push(eq(users.tenantId, tenantId));
+        const user = await db.query.users.findFirst({ where: and(...userConds) });
         if (!user) {
-            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'User not found' } });
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'User not found or no access' } });
+        }
+        if (user.tenantId !== store.tenantId) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot assign a user to another tenant store' } });
+        }
+        if (!canManageTargetUser(req, user)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot manage this user' } });
         }
 
+        const existingConds: any[] = [eq(userStores.userId, userId), eq(userStores.storeId, storeId)];
+        if (store.tenantId) existingConds.push(eq(userStores.tenantId, store.tenantId));
         const existing = await db.query.userStores.findFirst({
-            where: and(eq(userStores.userId, userId), eq(userStores.storeId, storeId)),
+            where: and(...existingConds),
         });
 
         if (existing) {
-            const [updated] = await db.update(userStores).set({ canRead, canWrite, canDelete, canManage, isDefault }).where(eq(userStores.id, existing.id)).returning();
+            const [updated] = await db.update(userStores).set({ tenantId: store.tenantId, canRead, canWrite, canDelete, canManage, isDefault }).where(eq(userStores.id, existing.id)).returning();
             await invalidateUserStoreCache(userId);
             return res.json({ success: true, data: updated });
         }
 
         if (isDefault) {
-            await db.update(userStores).set({ isDefault: false }).where(and(eq(userStores.userId, userId), eq(userStores.isDefault, true)));
+            const defaultConds: any[] = [eq(userStores.userId, userId), eq(userStores.isDefault, true)];
+            if (store.tenantId) defaultConds.push(eq(userStores.tenantId, store.tenantId));
+            await db.update(userStores).set({ isDefault: false }).where(and(...defaultConds));
         }
 
         const [assignment] = await db.insert(userStores).values({
+            tenantId: store.tenantId,
             userId, storeId, branchId: store.branchId,
             canRead, canWrite, canDelete, canManage, isDefault,
             assignedBy: req.user?.userId,
@@ -602,15 +654,22 @@ storeRoutes.delete('/:id/users/:userId', authenticate, authorize('staff:update')
     try {
         const { id: storeId, userId } = req.params;
 
+        const tenantId = req.authUser?.tenantId;
+        const assignmentConds: any[] = [eq(userStores.userId, userId), eq(userStores.storeId, storeId)];
+        if (tenantId && !req.authUser?.isSuperAdmin) assignmentConds.push(eq(userStores.tenantId, tenantId));
         const assignment = await db.query.userStores.findFirst({
-            where: and(eq(userStores.userId, userId), eq(userStores.storeId, storeId)),
+            where: and(...assignmentConds),
+            with: { store: true, user: true },
         });
 
         if (!assignment) {
             return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'User store assignment not found' } });
         }
+        if (!canAccessStoreRecord(req, assignment.store as any) || !canManageTargetUser(req, assignment.user as any)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this assignment' } });
+        }
 
-        await db.delete(userStores).where(eq(userStores.id, assignment.id));
+        await db.delete(userStores).where(and(...assignmentConds));
         await invalidateUserStoreCache(userId);
 
         res.json({ success: true, data: { message: 'User removed from store' } });
@@ -625,23 +684,24 @@ storeRoutes.delete('/:id/users/:userId', authenticate, authorize('staff:update')
 storeRoutes.get('/:id/users', authenticate, branchFilter(), async (req, res, next) => {
     try {
         const { id: storeId } = req.params;
-        const filter = req.branchFilter;
 
-        const store = await db.query.stores.findFirst({ where: eq(stores.id, storeId) });
+        const tenantId = req.authUser?.tenantId;
+        const storeConds: any[] = [eq(stores.id, storeId)];
+        if (tenantId && !req.authUser?.isSuperAdmin) storeConds.push(eq(stores.tenantId, tenantId));
+        const store = await db.query.stores.findFirst({ where: and(...storeConds) });
         if (!store) {
-            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Store not found' } });
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Store not found or no access' } });
         }
 
-        if (filter) {
-            const hasAccess = filter.scopeByStore ? filter.storeIds.includes(store.id) : filter.branchIds.includes(store.branchId);
-            if (!hasAccess) {
-                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this store' } });
-            }
+        if (!canAccessStoreRecord(req, store)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this store' } });
         }
 
+        const usConds: any[] = [eq(userStores.storeId, storeId)];
+        if (store.tenantId) usConds.push(eq(userStores.tenantId, store.tenantId));
         const storeUsers = await db.query.userStores.findMany({
-            where: eq(userStores.storeId, storeId),
-            with: { user: true },
+            where: and(...usConds),
+            with: { user: { columns: { password: false, twoFASecret: false } }, branch: true },
         });
 
         res.json({ success: true, data: storeUsers });
@@ -657,8 +717,18 @@ storeRoutes.get('/users/:userId/stores', authenticate, authorize('staff:read'), 
     try {
         const { userId } = req.params;
 
+        const tenantId = req.authUser?.tenantId;
+        const userConds: any[] = [eq(users.id, userId)];
+        if (tenantId && !req.authUser?.isSuperAdmin) userConds.push(eq(users.tenantId, tenantId));
+        const targetUser = await db.query.users.findFirst({ where: and(...userConds) });
+        if (!targetUser || !canManageTargetUser(req, targetUser)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'User not found or no access' } });
+        }
+
+        const assignmentConds: any[] = [eq(userStores.userId, userId)];
+        if (targetUser.tenantId) assignmentConds.push(eq(userStores.tenantId, targetUser.tenantId));
         const assignments = await db.query.userStores.findMany({
-            where: eq(userStores.userId, userId),
+            where: and(...assignmentConds),
             with: { store: true, branch: true },
         });
 
@@ -683,23 +753,37 @@ storeRoutes.post('/users/:userId/bulk-assign', authenticate, authorize('staff:up
             });
         }
 
-        const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
-        if (!user) {
-            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'User not found' } });
+        const tenantId = req.authUser?.tenantId;
+        const userConds: any[] = [eq(users.id, userId)];
+        if (tenantId && !req.authUser?.isSuperAdmin) userConds.push(eq(users.tenantId, tenantId));
+        const user = await db.query.users.findFirst({ where: and(...userConds) });
+        if (!user || !canManageTargetUser(req, user)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'User not found or no access' } });
         }
 
+        const storeConds: any[] = [inArray(stores.id, storeIds), eq(stores.isActive, true)];
+        if (tenantId && !req.authUser?.isSuperAdmin) storeConds.push(eq(stores.tenantId, tenantId));
         const storeList = await db.query.stores.findMany({
-            where: and(inArray(stores.id, storeIds), eq(stores.isActive, true)),
+            where: and(...storeConds),
         });
+        if (storeList.length !== storeIds.length || storeList.some(store => !canAccessStoreRecord(req, store) || store.tenantId !== user.tenantId)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'One or more stores are outside your tenant or scope' } });
+        }
 
-        const results = [];
+        const results: any[] = [];
         for (const store of storeList) {
+            const assignmentTenantId = store.tenantId || user.tenantId || tenantId;
+            if (!assignmentTenantId) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Tenant context required for store assignment' } });
+            }
+
             const existing = await db.query.userStores.findFirst({
-                where: and(eq(userStores.userId, userId), eq(userStores.storeId, store.id)),
+                where: and(eq(userStores.userId, userId), eq(userStores.storeId, store.id), eq(userStores.tenantId, assignmentTenantId)),
             });
 
             if (existing) {
                 const [updated] = await db.update(userStores).set({
+                    tenantId: assignmentTenantId,
                     canRead: permissions.canRead ?? true,
                     canWrite: permissions.canWrite ?? true,
                     canDelete: permissions.canDelete ?? false,
@@ -708,6 +792,7 @@ storeRoutes.post('/users/:userId/bulk-assign', authenticate, authorize('staff:up
                 results.push(updated);
             } else {
                 const [created] = await db.insert(userStores).values({
+                    tenantId: assignmentTenantId,
                     userId, storeId: store.id, branchId: store.branchId,
                     canRead: permissions.canRead ?? true,
                     canWrite: permissions.canWrite ?? true,
@@ -738,17 +823,38 @@ storeRoutes.delete('/users/:userId/stores', authenticate, authorize('staff:updat
         const { userId } = req.params;
         const { storeIds } = req.body;
 
-        const delConditions: any[] = [eq(userStores.userId, userId)];
-        if (Array.isArray(storeIds) && storeIds.length > 0) {
-            delConditions.push(inArray(userStores.storeId, storeIds));
+        const tenantId = req.authUser?.tenantId;
+        const userConds: any[] = [eq(users.id, userId)];
+        if (tenantId && !req.authUser?.isSuperAdmin) userConds.push(eq(users.tenantId, tenantId));
+        const targetUser = await db.query.users.findFirst({ where: and(...userConds) });
+        if (!targetUser || !canManageTargetUser(req, targetUser)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'User not found or no access' } });
         }
 
-        const result = await db.delete(userStores).where(and(...delConditions));
+        const delConditions: any[] = [eq(userStores.userId, userId)];
+        if (targetUser.tenantId) delConditions.push(eq(userStores.tenantId, targetUser.tenantId));
+        if (Array.isArray(storeIds) && storeIds.length > 0) {
+            const scopedStores = await db.query.stores.findMany({
+                where: and(inArray(stores.id, storeIds), targetUser.tenantId ? eq(stores.tenantId, targetUser.tenantId) : eq(stores.isActive, true)),
+            });
+            if (scopedStores.length !== storeIds.length || scopedStores.some(store => !canAccessStoreRecord(req, store))) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'One or more stores are outside your scope' } });
+            }
+            delConditions.push(inArray(userStores.storeId, storeIds));
+        } else if (!req.authUser?.isSuperAdmin && (req.authUser?.roleLevel ?? 7) > 2) {
+            const accessibleStoreIds = req.authUser?.accessibleStoreIds || [];
+            if (accessibleStoreIds.length === 0) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No store scope available' } });
+            }
+            delConditions.push(inArray(userStores.storeId, accessibleStoreIds));
+        }
+
+        await db.delete(userStores).where(and(...delConditions));
         await invalidateUserStoreCache(userId);
 
         res.json({
             success: true,
-            data: { deleted: result.rowCount ?? 0 }
+            data: { deleted: Array.isArray(storeIds) && storeIds.length > 0 ? storeIds.length : null }
         });
     } catch (error) {
         next(error);

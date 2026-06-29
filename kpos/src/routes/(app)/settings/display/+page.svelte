@@ -110,7 +110,6 @@
     ];
 
     onMount(async () => {
-        // Try loading from backend first
         try {
             const res = await api.get('settings/category/display').json<any>();
             const rows: any[] = Array.isArray(res.data) ? res.data : [];
@@ -118,20 +117,9 @@
             if (res.success && row?.value) {
                 const parsed = typeof row.value === 'string' ? JSON.parse(row.value) : row.value;
                 config = { ...config, ...parsed };
-            } else {
-                throw new Error('No backend config');
             }
-        } catch {
-            // Fallback to localStorage
-            const savedConfig = localStorage.getItem("kpos_display_config");
-            if (savedConfig) {
-                try {
-                    const parsed = JSON.parse(savedConfig);
-                    config = { ...config, ...parsed };
-                } catch (e) {
-                    console.error("Failed to parse display config:", e);
-                }
-            }
+        } catch (error) {
+            console.error("Failed to load display config:", error);
         }
 
         // Check if customer display window is already open
@@ -139,12 +127,7 @@
             isCustomerDisplayOpen = true;
         }
 
-        return () => {
-            // Cleanup
-            if (customerDisplayWindow && !customerDisplayWindow.closed) {
-                // Don't close automatically, just update state
-            }
-        };
+        return;
     });
 
     function openCustomerDisplay() {
@@ -201,10 +184,6 @@
     async function saveConfig() {
         isSaving = true;
         try {
-            // Save to localStorage as fallback
-            localStorage.setItem("kpos_display_config", JSON.stringify(config));
-
-            // Save to backend via generic settings /:category/:key endpoint
             await api.put('settings/display/display_config', {
                 json: { value: JSON.stringify(config) }
             }).json();

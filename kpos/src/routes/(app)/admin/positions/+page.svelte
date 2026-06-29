@@ -4,6 +4,7 @@
     import { api } from "$lib/api";
     import { auth } from "$lib/stores/auth.svelte";
     import { toast } from "svelte-sonner";
+    import { t } from '$lib/i18n/index.svelte';
     import { cn } from "$lib/utils";
     import {
         Plus, Trash2, X, Loader2, Briefcase, Search, Edit, Users, Save,
@@ -45,7 +46,7 @@
             const elevated = ['super_admin', 'admin', 'hq_admin', 'hq_manager', 'store_owner', 'branch_admin'];
             positions = (res.data || []).filter((r: any) => !r.isSystem && !elevated.includes(r.name));
         } catch {
-            toast.error("ບໍ່ສາມາດໂຫຼດຂໍ້ມູນຕຳແໜ່ງໄດ້");
+            toast.error(t('common.loadError'));
         } finally {
             isLoading = false;
         }
@@ -74,7 +75,7 @@
 
     async function handleSave() {
         if (!formData.displayName.trim()) {
-            toast.error("ກະລຸນາປ້ອນຊື່ຕຳແໜ່ງ");
+            toast.error(t('common.pleaseEnterName'));
             return;
         }
         if (!formData.name.trim()) {
@@ -96,7 +97,7 @@
                 res = await api.post("roles", { json: payload }).json<any>();
             }
             if (res.success) {
-                toast.success(editingPosition ? "ແກ້ໄຂຕຳແໜ່ງສຳເລັດ" : "ສ້າງຕຳແໜ່ງສຳເລັດ");
+                toast.success(t(editingPosition ? 'common.updated' : 'common.created'));
                 showModal = false;
                 await loadPositions();
             } else {
@@ -124,7 +125,7 @@
                 toast.error(res.error?.message || "ເກີດຂໍ້ຜິດພາດ");
             }
         } catch {
-            toast.error("ເກີດຂໍ້ຜິດພາດ");
+            toast.error(t('common.genericError'));
         } finally {
             isSaving = false;
         }
@@ -245,10 +246,10 @@
         </div>
         <div class="p-6 space-y-4">
             <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                <label for="a11y-app-admin-positions-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                     ຊື່ຕຳແໜ່ງ (ສະແດງ) <span class="text-danger-500">*</span>
                 </label>
-                <input
+                <input id="a11y-app-admin-positions-page-svelte-1"
                     type="text"
                     bind:value={formData.displayName}
                     oninput={() => { if (!editingPosition) formData.name = slugify(formData.displayName); }}
@@ -257,10 +258,10 @@
                 />
             </div>
             <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                <label for="a11y-app-admin-positions-page-svelte-2" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                     ລະຫັດ (ພາສາອັງກິດ, ບໍ່ມີຊ່ອງ)
                 </label>
-                <input
+                <input id="a11y-app-admin-positions-page-svelte-2"
                     type="text"
                     bind:value={formData.name}
                     placeholder="ເຊັ່ນ: sales_staff, head_cashier"
@@ -269,10 +270,10 @@
                 <p class="text-xs text-gray-400 mt-1">ໃຊ້ສຳລັບລະບົບ, ສ້າງໂດຍອັດຕະໂນມັດຈາກຊື່ຕຳແໜ່ງ</p>
             </div>
             <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                <label for="a11y-app-admin-positions-page-svelte-3" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                     ຄຳອະທິບາຍ
                 </label>
-                <textarea
+                <textarea id="a11y-app-admin-positions-page-svelte-3"
                     bind:value={formData.description}
                     rows={3}
                     placeholder="ອະທິບາຍໜ້າທີ່ຂອງຕຳແໜ່ງນີ້..."

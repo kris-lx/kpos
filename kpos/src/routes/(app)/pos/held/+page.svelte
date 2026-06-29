@@ -2,6 +2,7 @@
     import { onMount } from "svelte";
     import { i18n } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
+    import { auth } from "$stores";
     import { formatCurrency, formatDateTime } from "$lib/utils";
     import { goto } from "$app/navigation";
     import { toast } from "svelte-sonner";
@@ -34,20 +35,33 @@
         loadHeldOrders();
     });
 
+    async function ensureAuthReady(): Promise<boolean> {
+        if (auth.isAuthenticated) return true;
+        if (!auth.user) return false;
+        return auth.refresh();
+    }
+
+    function isAuthError(err: unknown): boolean {
+        const status = (err as { response?: { status?: number } })?.response?.status;
+        return status === 401 || status === 403;
+    }
+
     async function loadHeldOrders() {
         loading = true;
         error = null;
         try {
+            if (!(await ensureAuthReady())) return;
             const response = await api.get("sales/held").json<any>();
             if (response.success) {
                 heldOrders = response.data || [];
             } else {
-                error = response.error?.message || "ບໍ່ສາມາດໂຫລດຂໍ້ມູນໄດ້";
+                error = response.error?.message || t('common.loadError');
                 heldOrders = [];
             }
         } catch (err) {
+            if (isAuthError(err)) return;
             console.error("Failed to load held orders:", err);
-            error = "ບໍ່ສາມາດເຊື່ອມຕໍ່ກັບເຊີເວີໄດ້";
+            error = t('common.connectError');
             heldOrders = [];
         } finally {
             loading = false;
@@ -66,7 +80,7 @@
             await api.delete(`sales/held/${order.id}`).json();
             
             // Navigate to POS with order data in URL state
-            toast.success("ດຳເນີນອໍເດີຕໍ່ສຳເລັດ");
+            toast.success(t('pos.billRecalled'));
             // Store order data temporarily for POS page to pick up
             sessionStorage.setItem('kpos_resume_order', JSON.stringify(order));
             goto("/pos");

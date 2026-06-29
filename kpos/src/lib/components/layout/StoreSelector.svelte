@@ -3,6 +3,7 @@
      ═══════════════════════════════════════════════════════════════════════════ -->
 <script lang="ts">
     import { auth, type StoreAccess } from '$stores/auth.svelte';
+    import { t } from '$lib/i18n/index.svelte';
     import { cn } from '$utils';
     import {
         Store,
@@ -51,10 +52,10 @@
     }
 
     function getAccessBadge(store: StoreAccess) {
-        if (store.canManage) return { icon: ShieldCheck, label: 'ຈັດການ', color: 'text-success-500' };
-        if (store.canWrite) return { icon: Shield, label: 'ແກ້ໄຂ', color: 'text-blue-500' };
-        if (store.canRead) return { icon: Shield, label: 'ອ່ານ', color: 'text-gray-500' };
-        return { icon: ShieldX, label: 'ບໍ່ມີ', color: 'text-danger-500' };
+        if (store.canManage) return { icon: ShieldCheck, label: t('access.manage'), color: 'text-success-500' };
+        if (store.canWrite) return { icon: Shield, label: t('access.write'), color: 'text-blue-500' };
+        if (store.canRead) return { icon: Shield, label: t('access.read'), color: 'text-gray-500' };
+        return { icon: ShieldX, label: t('access.none'), color: 'text-danger-500' };
     }
 
     // Close on click outside
@@ -86,7 +87,7 @@
                 <span class="text-sm font-medium">{auth.activeStore.storeName}</span>
                 <span class="text-xs text-base-content/60">{auth.activeStore.branchName}</span>
             {:else}
-                <span class="text-sm">ເລືອກຮ້ານ</span>
+                <span class="text-sm">{t('stores.selectStore')}</span>
             {/if}
         </div>
         <ChevronDown class={cn('h-4 w-4 transition-transform', isOpen && 'rotate-180')} />
@@ -105,7 +106,7 @@
             <div class="p-3 border-b border-base-200">
                 <input
                     type="text"
-                    placeholder="ຄົ້ນຫາຮ້ານ..."
+                    placeholder={t('stores.searchPlaceholder')}
                     class="input input-sm input-bordered w-full"
                     bind:value={searchQuery}
                     onclick={(e) => e.stopPropagation()}
@@ -117,7 +118,7 @@
                 {#if auth.accessibleStores.length === 0}
                     <div class="text-center py-8 text-base-content/60">
                         <Store class="h-8 w-8 mx-auto mb-2 opacity-50" />
-                        <p class="text-sm">ບໍ່ມີຮ້ານທີ່ເຂົ້າເຖິງໄດ້</p>
+                        <p class="text-sm">{t('stores.noAccessibleStores')}</p>
                     </div>
                 {:else}
                     {#each Object.entries(groupedStores) as [branchId, group]}
@@ -144,7 +145,7 @@
                                         <div class="flex items-center gap-2">
                                             <span class="font-medium truncate">{store.storeName}</span>
                                             {#if store.isDefault}
-                                                <span class="badge badge-xs badge-primary">ຄ່າເລີ່ມຕົ້ນ</span>
+                                                <span class="badge badge-xs badge-primary">{t('common.default')}</span>
                                             {/if}
                                         </div>
                                         <div class="flex items-center gap-1 text-xs text-base-content/60 mt-0.5">
@@ -171,7 +172,7 @@
                 <div class="flex items-center gap-2">
                     <MapPin class="h-3 w-3" />
                     <span>
-                        {auth.accessibleStores.length} ຮ້ານ ໃນ {auth.accessibleBranchIds.length} ສາຂາ
+                        {t('stores.summary', { stores: auth.accessibleStores.length, branches: auth.accessibleBranchIds.length })}
                     </span>
                 </div>
             </div>

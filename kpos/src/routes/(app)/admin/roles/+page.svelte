@@ -1,10 +1,11 @@
-﻿<script lang="ts">
+<script lang="ts">
     import { createQuery, createMutation, useQueryClient } from "@tanstack/svelte-query";
     import { get } from "svelte/store";
     import { api } from "$lib/api";
     import { goto } from "$app/navigation";
     import { onMount } from "svelte";
     import { toast } from "svelte-sonner";
+    import { t } from '$lib/i18n/index.svelte';
     import { cn } from "$lib/utils";
     import {
         Key,
@@ -60,7 +61,7 @@
             if (auth.roleLevel <= 5) {
                 canAccess = true;
             } else {
-                toast.error("ທ່ານບໍ່ມີສິດເຂົ້າເຖິງໜ້ານີ້");
+                toast.error(t('common.accessDenied'));
                 goto("/admin");
             }
         } catch {
@@ -111,10 +112,10 @@
             return api.post("admin/roles/seed").json();
         },
         onSuccess: () => {
-            toast.success("ສ້າງບົດບາດເລີ່ມຕ້ນສຳເລັດ");
+            toast.success(t('common.created'));
             queryClient.invalidateQueries({ queryKey: ["admin-roles"] });
         },
-        onError: () => toast.error("ເກີດຂໍ້ຜິດພາດ")
+        onError: () => toast.error(t('common.genericError'))
     });
 
     const createMutationFn = createMutation({
@@ -122,12 +123,12 @@
             return api.post("admin/roles", { json: data }).json();
         },
         onSuccess: () => {
-            toast.success("ສ້າງບົດບາດສຳເລັດ");
+            toast.success(t('common.created'));
             get(rolesQuery).refetch();
             showFormModal = false;
             resetForm();
         },
-        onError: () => toast.error("ເກີດຂໍ້ຜິດພາດ")
+        onError: () => toast.error(t('common.genericError'))
     });
 
     const updateMutationFn = createMutation({
@@ -135,12 +136,12 @@
             return api.patch(`admin/roles/${id}`, { json: data }).json();
         },
         onSuccess: () => {
-            toast.success("ອັບເດດບົດບາດສຳເລັດ");
+            toast.success(t('common.updated'));
             get(rolesQuery).refetch();
             showFormModal = false;
             resetForm();
         },
-        onError: () => toast.error("ເກີດຂໍ້ຜິດພາດ")
+        onError: () => toast.error(t('common.genericError'))
     });
 
     const deleteMutationFn = createMutation({
@@ -148,12 +149,12 @@
             return api.delete(`admin/roles/${id}`).json();
         },
         onSuccess: () => {
-            toast.success("ລຶບບົດບາດສຳເລັດ");
+            toast.success(t('common.deleted'));
             get(rolesQuery).refetch();
             showDeleteModal = false;
             selectedRole = null;
         },
-        onError: () => toast.error("ເກີດຂໍ້ຜິດພາດ")
+        onError: () => toast.error(t('common.genericError'))
     });
 
     let formData = $state({
@@ -205,7 +206,7 @@
 
     function handleSubmit() {
         if (!formData.name.trim() || !formData.displayName.trim()) {
-            toast.error("ກະລຸນາປ້ອນຂໍ້ມູນໃຫ້ຄົບ");
+            toast.error(t('common.pleaseEnterRequired'));
             return;
         }
 
@@ -566,7 +567,7 @@
     <!-- Create/Edit Modal -->
     {#if showFormModal}
         <div class="fixed inset-0 z-50 flex items-start justify-center p-4 overflow-y-auto">
-            <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showFormModal = false}></div>
+            <button type="button" aria-label="Close modal" class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showFormModal = false}></button>
             <div class="relative bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-2xl my-8 overflow-hidden">
                 <div class="bg-gradient-to-r from-pink-600 to-rose-600 p-6 text-white">
                     <button onclick={() => showFormModal = false} class="absolute top-4 right-4 w-8 h-8 bg-white/20 hover:bg-white/30 rounded-lg flex items-center justify-center transition-colors">
@@ -585,8 +586,8 @@
                     <!-- Basic Info -->
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ລະຫັດ (name) *</label>
-                            <input 
+                            <label for="a11y-app-admin-roles-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ລະຫັດ (name) *</label>
+                            <input id="a11y-app-admin-roles-page-svelte-1"
                                 type="text" 
                                 bind:value={formData.name} 
                                 placeholder="ເຊັ່ນ: manager"
@@ -595,8 +596,8 @@
                             />
                         </div>
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ຊື່ສະແດງ *</label>
-                            <input 
+                            <label for="a11y-app-admin-roles-page-svelte-2" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ຊື່ສະແດງ *</label>
+                            <input id="a11y-app-admin-roles-page-svelte-2"
                                 type="text" 
                                 bind:value={formData.displayName} 
                                 placeholder="ເຊັ່ນ: ຜູ້ຈັດການ"
@@ -605,8 +606,8 @@
                         </div>
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ຄຳອະທິບາຍ</label>
-                        <textarea 
+                        <label for="a11y-app-admin-roles-page-svelte-3" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ຄຳອະທິບາຍ</label>
+                        <textarea id="a11y-app-admin-roles-page-svelte-3"
                             bind:value={formData.description} 
                             placeholder="ອະທິບາຍບົດບາດນີ້..."
                             rows="2"
@@ -617,7 +618,7 @@
                     <!-- Role Templates -->
                     {#if !isEditing && $roleTemplatesQuery.data?.length > 0}
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ໃຊ້ແມ່ແບບບົດບາດ</label>
+                            <p class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ໃຊ້ແມ່ແບບບົດບາດ</p>
                             <div class="flex flex-wrap gap-2">
                                 {#each $roleTemplatesQuery.data as template (template.id)}
                                     <button
@@ -678,7 +679,7 @@
     <!-- Delete Modal -->
     {#if showDeleteModal && selectedRole}
         <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showDeleteModal = false}></div>
+            <button type="button" aria-label="Close modal" class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showDeleteModal = false}></button>
             <div class="relative bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
                 <div class="bg-gradient-to-r from-danger-500 to-rose-500 p-6 text-white">
                     <div class="flex items-center gap-3">

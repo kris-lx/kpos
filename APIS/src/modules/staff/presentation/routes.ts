@@ -3,13 +3,33 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, branchFilter, getRoleLevel, ROLE_LEVELS, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, branchFilter, getRoleLevel, ROLE_LEVELS, ensureScopeAccess, invalidateUserStoreCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { db } from '@/config/database.config';
 import { users, userStores, roles, branches } from '@/db/schema/tables';
 import { eq, and, or, ilike, inArray, notInArray, isNull, desc, asc, count } from 'drizzle-orm';
 import argon2 from 'argon2';
+import { invalidateUserPermissions } from '@/infrastructure/services/permission.service';
 
 export const staffRoutes = Router();
+
+function canManageStaffRecord(req: any, target: { id: string; tenantId?: string | null; role?: string | null; isSuperAdmin?: boolean | null }): boolean {
+    const authUser = req.authUser;
+    if (!authUser) return false;
+    if (authUser.isSuperAdmin) return true;
+    if (target.tenantId !== authUser.tenantId) return false;
+    if (target.isSuperAdmin) return false;
+    return getRoleLevel(target.role || 'staff', false) > (authUser.roleLevel ?? 7);
+}
+
+function canViewStaffRecord(req: any, target: { id: string; tenantId?: string | null; role?: string | null; isSuperAdmin?: boolean | null }): boolean {
+    if (req.authUser?.userId === target.id) return true;
+    return canManageStaffRecord(req, target);
+}
+
+async function invalidateStaffAuthCaches(userId: string, tenantId?: string | null): Promise<void> {
+    await invalidateUserStoreCache(userId);
+    if (tenantId) await invalidateUserPermissions(userId, tenantId);
+}
 
 // Get all staff
 staffRoutes.get('/', authenticate, authorize('staff:read'), branchFilter(), async (req, res, next) => {
@@ -100,7 +120,7 @@ staffRoutes.get('/', authenticate, authorize('staff:read'), branchFilter(), asyn
 staffRoutes.get('/roles/list', authenticate, async (req, res, next) => {
     try {
         const user = req.authUser || req.user!;
-        const isSuperAdmin = user.isSuperAdmin;
+        const isSuperAdmin = req.authUser?.isSuperAdmin ?? false;
         const isAdmin = isSuperAdmin || ['admin', 'hq_admin', 'hq_manager'].includes(user.role);
         const isStoreOwner = user.role === 'store_owner';
 
@@ -306,6 +326,16 @@ staffRoutes.put('/:id', authenticate, authorize('staff:update'), async (req, res
     try {
         const { password, id, _id, createdAt, updatedAt, ...updateData } = req.body;
 
+        const tenantId = req.authUser?.tenantId;
+        const targetConds: any[] = [eq(users.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            targetConds.push(eq(users.tenantId, tenantId));
+        }
+        const target = await db.query.users.findFirst({ where: and(...targetConds) });
+        if (!target || !canManageStaffRecord(req, target)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Staff not found or no access' } });
+        }
+
         if (password) {
             updateData.password = await argon2.hash(password);
         }
@@ -315,22 +345,46 @@ staffRoutes.put('/:id', authenticate, authorize('staff:update'), async (req, res
         if (updateData.branchId === '' || updateData.branchId === null) delete updateData.branchId;
         if (updateData.storeId === '' || updateData.storeId === null) delete updateData.storeId;
 
+        if (updateData.roleId !== undefined) {
+            if (updateData.roleId) {
+                const roleConds: any[] = [eq(roles.id, updateData.roleId)];
+                if (target.tenantId && !req.authUser?.isSuperAdmin) roleConds.push(or(eq(roles.tenantId, target.tenantId), isNull(roles.tenantId)));
+                const roleRow = await db.query.roles.findFirst({ where: and(...roleConds), columns: { id: true, name: true } });
+                if (!roleRow) {
+                    return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Role not found or no access' } });
+                }
+                if (!req.authUser?.isSuperAdmin && getRoleLevel(roleRow.name, false) <= (req.authUser?.roleLevel ?? 7)) {
+                    return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot assign equal or higher role' } });
+                }
+                updateData.role = roleRow.name;
+            }
+        } else if (updateData.role) {
+            if (!req.authUser?.isSuperAdmin && getRoleLevel(updateData.role, false) <= (req.authUser?.roleLevel ?? 7)) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot assign equal or higher role' } });
+            }
+        }
+
+        if (updateData.branchId) {
+            const branchConds: any[] = [eq(branches.id, updateData.branchId)];
+            if (target.tenantId && !req.authUser?.isSuperAdmin) branchConds.push(eq(branches.tenantId, target.tenantId));
+            const branch = await db.query.branches.findFirst({ where: and(...branchConds), columns: { id: true, tenantId: true } });
+            if (!branch || !ensureScopeAccess({ tenantId: branch.tenantId, branchId: branch.id }, req)) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Branch not found or outside your scope' } });
+            }
+        }
+
         updateData.updatedAt = new Date();
 
-        // Tenant-scoped update
-        const tenantId = req.authUser?.tenantId;
-        const updConds: any[] = [eq(users.id, req.params.id)];
-        if (tenantId && !req.authUser?.isSuperAdmin) {
-            updConds.push(eq(users.tenantId, tenantId));
-        }
         // Never allow changing tenantId
         delete updateData.tenantId;
+        delete updateData.isSuperAdmin;
 
         const [staff] = await db.update(users)
             .set(updateData)
-            .where(and(...updConds))
+            .where(and(...targetConds))
             .returning();
 
+        await invalidateStaffAuthCaches(req.params.id, target.tenantId);
         res.json({ success: true, data: staff });
     } catch (error) {
         next(error);
@@ -360,14 +414,20 @@ staffRoutes.delete('/:id', authenticate, authorize('staff:delete'), async (req, 
 // Get staff member permissions (uses staff:read instead of users:read)
 staffRoutes.get('/:id/permissions', authenticate, authorize('staff:read'), async (req, res, next) => {
     try {
+        const tenantId = req.authUser?.tenantId;
+        const userConds: any[] = [eq(users.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) userConds.push(eq(users.tenantId, tenantId));
         const user = await db.query.users.findFirst({
-            where: eq(users.id, req.params.id),
+            where: and(...userConds),
             with: { roleRelation: true },
         });
 
         if (!user) {
             res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Staff not found' } });
             return;
+        }
+        if (!canViewStaffRecord(req, user)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot view this staff permissions' } });
         }
 
         const allPermissions = [
@@ -445,16 +505,17 @@ staffRoutes.put('/:id/permissions', authenticate, authorize('staff:update'), asy
 
         const validPermissions = permissions.filter((p: unknown) => typeof p === 'string');
 
-        // Tenant scope: target user must belong to caller's tenant
-        if (!req.authUser!.isSuperAdmin) {
-            const targetUser = await db.query.users.findFirst({
-                where: eq(users.id, req.params.id),
-                columns: { tenantId: true },
-            });
-            if (!targetUser || targetUser.tenantId !== req.authUser!.tenantId) {
-                res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot modify user outside your tenant' } });
-                return;
-            }
+        // Tenant + role scope: target user must belong to caller's tenant and be lower privilege
+        const tenantId = req.authUser?.tenantId;
+        const targetConds: any[] = [eq(users.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) targetConds.push(eq(users.tenantId, tenantId));
+        const targetUser = await db.query.users.findFirst({
+            where: and(...targetConds),
+            columns: { id: true, tenantId: true, role: true, isSuperAdmin: true },
+        });
+        if (!targetUser || !canManageStaffRecord(req, targetUser)) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot modify this user permissions' } });
+            return;
         }
 
         // Scope constraint: non-superadmin callers can only grant permissions they themselves hold
@@ -462,8 +523,10 @@ staffRoutes.put('/:id/permissions', authenticate, authorize('staff:update'), asy
         if (!req.authUser!.isSuperAdmin) {
             let callerRolePerms: string[] = [];
             if (req.authUser!.role) {
+                const roleConds: any[] = [eq(roles.name, req.authUser!.role)];
+                if (req.authUser!.tenantId) roleConds.push(or(eq(roles.tenantId, req.authUser!.tenantId), isNull(roles.tenantId)));
                 const callerRole = await db.query.roles.findFirst({
-                    where: eq(roles.name, req.authUser!.role),
+                    where: and(...roleConds),
                     columns: { permissions: true },
                 });
                 callerRolePerms = (callerRole?.permissions as string[]) ?? [];
@@ -477,9 +540,10 @@ staffRoutes.put('/:id/permissions', authenticate, authorize('staff:update'), asy
 
         const [user] = await db.update(users)
             .set({ permissions: scopedPermissions, updatedAt: new Date() })
-            .where(eq(users.id, req.params.id))
+            .where(and(...targetConds))
             .returning();
 
+        await invalidateStaffAuthCaches(req.params.id, targetUser.tenantId);
         res.json({ success: true, data: user, message: 'Staff permissions updated successfully' });
     } catch (error) {
         next(error);

@@ -418,7 +418,7 @@
         <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-16 text-center shadow-sm">
             <CalendarDays class="w-16 h-16 mx-auto text-gray-300 dark:text-gray-600" />
             <h3 class="text-lg font-semibold text-gray-900 dark:text-white mt-4">{t("restaurant.noReservations")}</h3>
-            <p class="text-gray-500 dark:text-gray-400 mt-2">ບໍ່ມີການຈອງໃນວັນທີ່ເລືອກ</p>
+            <p class="text-gray-500 dark:text-gray-400 mt-2">{t("restaurant.noReservationsSelectedDate")}</p>
         </div>
     {:else}
         <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
@@ -610,10 +610,10 @@
                 class="p-6 space-y-4"
             >
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                    <label for="a11y-app-restaurant-reservations-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                         {t("restaurant.customerName")} *
                     </label>
-                    <input
+                    <input id="a11y-app-restaurant-reservations-page-svelte-1"
                         type="text"
                         bind:value={formData.customerName}
                         required
@@ -623,12 +623,12 @@
 
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                        <label for="a11y-app-restaurant-reservations-page-svelte-2" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             {t("common.phone")}
                         </label>
                         <div class="relative">
                             <Phone class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                            <input
+                            <input id="a11y-app-restaurant-reservations-page-svelte-2"
                                 type="tel"
                                 bind:value={formData.customerPhone}
                                 class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent"
@@ -636,12 +636,12 @@
                         </div>
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                        <label for="a11y-app-restaurant-reservations-page-svelte-3" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             {t("common.email")}
                         </label>
                         <div class="relative">
                             <Mail class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                            <input
+                            <input id="a11y-app-restaurant-reservations-page-svelte-3"
                                 type="email"
                                 bind:value={formData.customerEmail}
                                 class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent"
@@ -652,12 +652,12 @@
 
                 <div class="grid grid-cols-3 gap-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                        <label for="a11y-app-restaurant-reservations-page-svelte-4" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             {t("common.date")} *
                         </label>
                         <div class="relative">
                             <Calendar class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                            <input
+                            <input id="a11y-app-restaurant-reservations-page-svelte-4"
                                 type="date"
                                 bind:value={formData.date}
                                 required
@@ -666,12 +666,12 @@
                         </div>
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                        <label for="a11y-app-restaurant-reservations-page-svelte-5" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             {t("restaurant.time")} *
                         </label>
                         <div class="relative">
                             <Clock class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                            <input
+                            <input id="a11y-app-restaurant-reservations-page-svelte-5"
                                 type="time"
                                 bind:value={formData.time}
                                 required
@@ -680,12 +680,12 @@
                         </div>
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                        <label for="a11y-app-restaurant-reservations-page-svelte-6" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             {t("restaurant.partySize")}
                         </label>
                         <div class="relative">
                             <Users class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                            <input
+                            <input id="a11y-app-restaurant-reservations-page-svelte-6"
                                 type="number"
                                 bind:value={formData.partySize}
                                 min="1"
@@ -697,10 +697,10 @@
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                    <label for="a11y-app-restaurant-reservations-page-svelte-7" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                         {t("restaurant.table")}
                     </label>
-                    <select
+                    <select id="a11y-app-restaurant-reservations-page-svelte-7"
                         bind:value={formData.tableId}
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent"
                     >
@@ -714,14 +714,14 @@
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                    <label for="a11y-app-restaurant-reservations-page-svelte-8" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                         {t("common.notes")}
                     </label>
-                    <textarea
+                    <textarea id="a11y-app-restaurant-reservations-page-svelte-8"
                         bind:value={formData.notes}
                         rows="2"
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent resize-none"
-                        placeholder="ອາຫານແພ້, ງານພິເສດ, ຄວາມຕ້ອງການພິເສດ..."
+                        placeholder={t("restaurant.specialRequirementsPlaceholder")}
                     ></textarea>
                 </div>
 

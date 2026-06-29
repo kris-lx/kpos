@@ -3,10 +3,10 @@
 // Graceful fallback: works without RabbitMQ (sync processing)
 // ═══════════════════════════════════════════════════════════════════════════
 
-import amqplib, { type Connection, type Channel } from 'amqplib';
+import amqplib, { type ChannelModel, type Channel } from 'amqplib';
 import { config } from './app.config';
 
-let connection: Connection | null = null;
+let connection: ChannelModel | null = null;
 let channel: Channel | null = null;
 let connected = false;
 let errorLogged = false;

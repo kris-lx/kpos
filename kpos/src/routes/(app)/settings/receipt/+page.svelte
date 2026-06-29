@@ -1,6 +1,7 @@
 <script lang="ts">
     import { goto } from "$app/navigation";
     import { onMount } from "svelte";
+    import { t } from "$lib/i18n/index.svelte";
     import { Receipt, Printer, Building2, ArrowRight, Info } from "lucide-svelte";
 
     onMount(() => {
@@ -10,7 +11,7 @@
 </script>
 
 <svelte:head>
-    <title>ຕັ້ງຄ່າໃບບິນ - KPOS</title>
+    <title>{t("settings.receiptSettings")} - KPOS</title>
 </svelte:head>
 
 <div class="min-h-screen bg-gray-50 dark:bg-gray-900 p-6 flex items-center justify-center">
@@ -20,15 +21,15 @@
             <div class="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-br from-primary-500 to-primary-600 text-white shadow-lg mb-3">
                 <Receipt class="w-7 h-7" />
             </div>
-            <h1 class="text-2xl font-bold text-gray-900 dark:text-white">ຕັ້ງຄ່າໃບບິນ</h1>
-            <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">ເລືອກການຕັ້ງຄ່າທີ່ຕ້ອງການ</p>
+            <h1 class="text-2xl font-bold text-gray-900 dark:text-white">{t("settings.receiptSettings")}</h1>
+            <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">{t("settings.selectSettingsHint")}</p>
         </div>
 
         <!-- Info note -->
         <div class="flex items-start gap-3 p-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-xl">
             <Info class="w-5 h-5 text-blue-500 shrink-0 mt-0.5" />
             <p class="text-sm text-blue-700 dark:text-blue-300">
-                ການຕັ້ງຄ່າໃບບິນຖືກລວມໄວ້ 2 ສ່ວນ: ຮູບແບບໃບບິນ (Documents) ແລະ ຂໍ້ມູນສາຂາ (Branches)
+                {t("settings.receiptSettingsInfo")}
             </p>
         </div>
 
@@ -41,9 +42,9 @@
                 <Printer class="w-6 h-6 text-primary-600 dark:text-primary-400" />
             </div>
             <div class="flex-1 min-w-0">
-                <p class="font-semibold text-gray-900 dark:text-white">ອອກແບບໃບບິນ</p>
+                <p class="font-semibold text-gray-900 dark:text-white">{t("settings.receiptDesigner")}</p>
                 <p class="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
-                    ຈັດຮູບແບບໃບບິນ, ເລືອກອົງປະກອບ, ຂະໜາດເຈ້ຍ, ໂຕິໝາຍ
+                    {t("settings.receiptDesignerDesc")}
                 </p>
             </div>
             <ArrowRight class="w-5 h-5 text-gray-400 group-hover:text-primary-500 transition-colors shrink-0" />
@@ -58,9 +59,9 @@
                 <Building2 class="w-6 h-6 text-emerald-600 dark:text-emerald-400" />
             </div>
             <div class="flex-1 min-w-0">
-                <p class="font-semibold text-gray-900 dark:text-white">ຂໍ້ມູນສາຂາ / ໂລໂກ້</p>
+                <p class="font-semibold text-gray-900 dark:text-white">{t("settings.branchIdentityLogo")}</p>
                 <p class="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
-                    ຊື່ສາຂາ, ທີ່ຢູ່, ເບີໂທ, ເລກພາສີ, ໂລໂກ້ — ຂໍ້ມູນທີ່ປາກົດໃນໃບບິນ
+                    {t("settings.branchIdentityLogoDesc")}
                 </p>
             </div>
             <ArrowRight class="w-5 h-5 text-gray-400 group-hover:text-emerald-500 transition-colors shrink-0" />

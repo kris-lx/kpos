@@ -5,6 +5,7 @@
     import { api } from "$api";
     import { auth } from "$stores";
     import { formatDate } from "$lib/utils";
+    import { toast } from "svelte-sonner";
     import {
         PackageX,
         Search,
@@ -119,9 +120,9 @@
                 csv += `"${item.product?.name || item.name || ''}","${item.product?.sku || item.sku || ''}","${item.branch?.name || ''}","${item.quantity ?? 0}","${item.minStock || item.product?.minStock || 0}","${item.category?.name || ''}"\n`;
             }
             downloadFile(csv, `out-of-stock-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
-            toast.success('ສົ່ງອອກ CSV ສຳເລັດ');
+            toast.success(t('common.exportSuccess'));
         } catch {
-            toast.error('ສົ່ງອອກລົ້ມເຫລວ');
+            toast.error(t('common.exportFailed'));
         }
     }
 

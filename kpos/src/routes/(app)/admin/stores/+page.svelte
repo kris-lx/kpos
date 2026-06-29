@@ -5,6 +5,7 @@
     import { cn, formatCurrency } from "$lib/utils";
     import { auth } from "$lib/stores/auth.svelte";
     import { toast } from "svelte-sonner";
+    import { t } from '$lib/i18n/index.svelte';
     import {
         Building2, Store, Package, Boxes, Users, BarChart3,
         ChevronRight, ChevronDown, RefreshCw, Loader2, Search,
@@ -22,7 +23,7 @@
         const user = auth.user;
         if (!user) { goto("/login"); return; }
         if (!user.isSuperAdmin && !['admin', 'hq_admin', 'store_owner'].includes(user.role)) {
-            toast.error("ທ່ານບໍ່ມີສິດເຂົ້າເຖິງໜ້ານີ້");
+            toast.error(t('common.accessDenied'));
             goto("/dashboard");
             return;
         }
@@ -50,7 +51,7 @@
                 }
             }
         } catch {
-            toast.error("ໂຫຼດຂໍ້ມູນລົ້ມເຫຼວ");
+            toast.error(t('common.loadFailed'));
         } finally {
             isLoading = false;
         }
@@ -124,6 +125,7 @@
             { label: "ຜູ້ໃຊ້", value: totals.users, icon: Users, color: "purple" },
             { label: "ມູນຄ່າສະຕ໋ອກ", value: formatCurrency(totals.stockVal), icon: DollarSign, color: "orange" },
         ] as card (card.label)}
+            {@const CardIcon = card.icon}
             <div class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-4">
                 <div class="flex items-center gap-3">
                     <div class={cn(
@@ -133,7 +135,7 @@
                         card.color === "purple" && "bg-purple-100 dark:bg-purple-900/30",
                         card.color === "orange" && "bg-orange-100 dark:bg-orange-900/30",
                     )}>
-                        <svelte:component this={card.icon} class={cn(
+                        <CardIcon class={cn(
                             "w-5 h-5",
                             card.color === "blue" && "text-blue-600 dark:text-blue-400",
                             card.color === "green" && "text-success-600 dark:text-success-400",
@@ -272,9 +274,10 @@
                                                 { label: "ຜູ້ໃຊ້", value: branch.stats.userCount, icon: Users, suffix: "ຄົນ" },
                                                 { label: "ຮ້ານ/POS", value: branch.stats.storeCount, icon: Store, suffix: "ຮ້ານ" },
                                             ] as stat (stat.label)}
+                                                {@const StatIcon = stat.icon}
                                                 <div class="flex items-center gap-3 bg-white dark:bg-gray-800 rounded-xl p-3 border border-gray-200 dark:border-gray-700">
                                                     <div class="w-9 h-9 rounded-lg bg-primary-50 dark:bg-primary-900/20 flex items-center justify-center shrink-0">
-                                                        <svelte:component this={stat.icon} class="w-4 h-4 text-primary-600 dark:text-primary-400" />
+                                                        <StatIcon class="w-4 h-4 text-primary-600 dark:text-primary-400" />
                                                     </div>
                                                     <div>
                                                         <p class="text-xs text-gray-500 dark:text-gray-400">{stat.label}</p>

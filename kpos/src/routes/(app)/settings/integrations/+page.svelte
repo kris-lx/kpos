@@ -583,6 +583,7 @@
                         <p class="text-xs text-gray-500 dark:text-gray-400">ໃຊ້ API Key ນີ້ສຳລັບການເຊື່ອມຕໍ່</p>
                     </div>
                     <button
+                        aria-label={keyForm.isActive ? "Disable API key" : "Enable API key"}
                         onclick={() => (keyForm.isActive = !keyForm.isActive)}
                         class="relative w-11 h-6 rounded-full transition-colors {keyForm.isActive ? 'bg-primary-600' : 'bg-gray-300 dark:bg-gray-600'}"
                     >
@@ -619,22 +620,20 @@
             <div class="space-y-4">
                 {#if selectedIntegration.id === "bcel"}
                     <div>
-                        <label
+                        <label for="a11y-app-settings-integrations-page-svelte-1001"
                             class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
-                            >Merchant ID</label
-                        >
-                        <input
+                            >Merchant ID</label>
+                        <input id="a11y-app-settings-integrations-page-svelte-1001"
                             type="text"
                             class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg"
                             placeholder="BCEL Merchant ID"
                         />
                     </div>
                     <div>
-                        <label
+                        <label for="a11y-app-settings-integrations-page-svelte-1002"
                             class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
-                            >API Key</label
-                        >
-                        <input
+                            >API Key</label>
+                        <input id="a11y-app-settings-integrations-page-svelte-1002"
                             type="password"
                             class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg"
                             placeholder="API Key"
@@ -642,11 +641,10 @@
                     </div>
                 {:else if selectedIntegration.id === "line"}
                     <div>
-                        <label
+                        <label for="a11y-app-settings-integrations-page-svelte-1003"
                             class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
-                            >Channel Access Token</label
-                        >
-                        <textarea
+                            >Channel Access Token</label>
+                        <textarea id="a11y-app-settings-integrations-page-svelte-1003"
                             class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg"
                             rows="3"
                             placeholder="LINE Channel Access Token"
@@ -654,11 +652,10 @@
                     </div>
                 {:else if selectedIntegration.id === "google_sheets"}
                     <div>
-                        <label
+                        <label for="a11y-app-settings-integrations-page-svelte-1004"
                             class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
-                            >Spreadsheet ID</label
-                        >
-                        <input
+                            >Spreadsheet ID</label>
+                        <input id="a11y-app-settings-integrations-page-svelte-1004"
                             type="text"
                             class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg"
                             placeholder="Google Sheets ID"

@@ -5,7 +5,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import * as XLSX from 'xlsx';
-import { authenticate, authorize, branchFilter, applyScopeFilter, ensureScopeAccess, buildScopeCondition, buildBranchIdScope, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, branchFilter, applyScopeFilter, ensureScopeAccess, buildScopeCondition, buildBranchIdScope, invalidateQueryCache, isAdmin, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { db, dbRead } from '@/config/database.config';
 import { products, categories, priceLevels, productPriceLevels, skuVariants, inventory, productStores } from '@/db/schema/tables';
 import { eq, and, or, ne, ilike, inArray, isNotNull, isNull, desc, asc, count, sql } from 'drizzle-orm';
@@ -21,6 +21,10 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 // Get all price levels
 productRoutes.get('/price-levels', authenticate, branchFilter(), async (req, res, next) => {
     try {
+        const { search, page = 1, limit = 20 } = req.query;
+        const safePage = Math.max(1, Number(page) || 1);
+        const safeLimit = Math.min(100, Math.max(5, Number(limit) || 20));
+        const skip = (safePage - 1) * safeLimit;
         const filter = req.branchFilter;
         const conditions: any[] = [];
 
@@ -28,18 +32,27 @@ productRoutes.get('/price-levels', authenticate, branchFilter(), async (req, res
         if (filter?.tenantId) {
             conditions.push(eq(priceLevels.tenantId, filter.tenantId));
         }
+        if (search) {
+            conditions.push(ilike(priceLevels.name, `%${String(search)}%`));
+        }
+        const where = conditions.length > 0 ? and(...conditions) : undefined;
 
-        const priceLevelRows = await db.query.priceLevels.findMany({
-            where: conditions.length > 0 ? and(...conditions) : undefined,
-            with: { products: { with: { product: { columns: { id: true, name: true, sku: true, price: true } } } } },
-            orderBy: [desc(priceLevels.isDefault), asc(priceLevels.createdAt)],
-        });
+        const [priceLevelRows, [{ value: total }]] = await Promise.all([
+            db.query.priceLevels.findMany({
+                where,
+                with: { products: { with: { product: { columns: { id: true, name: true, sku: true, price: true } } } } },
+                orderBy: [desc(priceLevels.isDefault), asc(priceLevels.createdAt)],
+                offset: skip,
+                limit: safeLimit,
+            }),
+            db.select({ value: count() }).from(priceLevels).where(where),
+        ]);
 
-        res.json({ success: true, data: priceLevelRows });
+        res.json({ success: true, data: priceLevelRows, meta: { page: safePage, limit: safeLimit, total: Number(total) || 0, totalPages: Math.ceil((Number(total) || 0) / safeLimit) } });
     } catch (error: any) {
         // If table doesn't exist yet (schema not pushed), return empty
         if (error?.message?.includes('relation') && error?.message?.includes('does not exist')) {
-            return res.json({ success: true, data: [] });
+            return res.json({ success: true, data: [], meta: { page: 1, limit: 20, total: 0, totalPages: 0 } });
         }
         next(error);
     }
@@ -604,7 +617,8 @@ productRoutes.get('/lookup/:code', authenticate, async (req, res, next) => {
 // Get all products (with branch/store filtering)
 productRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
     try {
-        const { page = 1, limit = 20, search, categoryId, branchId, storeId } = req.query;
+        const { page = 1, limit = 20, search, categoryId, branchId, storeId, all } = req.query;
+        const returnAll = all === 'true';
         const skip = (Number(page) - 1) * Number(limit);
         const filter = req.branchFilter;
 
@@ -657,8 +671,7 @@ productRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
         const [productRows, [{ value: total }]] = await Promise.all([
             db.query.products.findMany({
                 where: prodWhere,
-                offset: skip,
-                limit: Number(limit),
+                ...(returnAll ? {} : { offset: skip, limit: Number(limit) }),
                 with: { category: true, branch: { columns: { id: true, name: true, code: true } }, inventory: true },
                 orderBy: desc(products.createdAt),
             }),
@@ -675,9 +688,9 @@ productRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
             data: productsWithStock,
             meta: {
                 page: Number(page),
-                limit: Number(limit),
+                limit: returnAll ? total : Number(limit),
                 total,
-                totalPages: Math.ceil(total / Number(limit)),
+                totalPages: returnAll ? 1 : Math.ceil(total / Number(limit)),
             },
         });
     } catch (error) {

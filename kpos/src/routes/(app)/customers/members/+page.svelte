@@ -32,6 +32,8 @@
         MapPin,
         Coins,
         TrendingUp,
+        History,
+        ShoppingBag,
     } from "lucide-svelte";
 
     // State
@@ -42,6 +44,9 @@
     let showViewModal = $state(false);
     let editingMember = $state<any>(null);
     let viewingMember = $state<any>(null);
+    let viewTab = $state<'info' | 'history'>('info');
+    let memberSales = $state<any[]>([]);
+    let salesLoading = $state(false);
     let currentPage = $state(1);
     let itemsPerPage = $state(8); // 2 rows x 4 columns
     const itemsPerPageOptions = [8, 16, 32, 50];
@@ -52,6 +57,7 @@
 
     // Form (matches Prisma Customer schema)
     let formData = $state({
+        memberCode: "",
         name: "",
         phone: "",
         email: "",
@@ -93,7 +99,7 @@
                     bg: "bg-gradient-to-r from-slate-700 to-slate-500",
                     text: "text-white",
                     badge: "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300",
-                    label: "Platinum",
+                    label: t("customer.platinum"),
                 };
             case "gold":
                 return {
@@ -101,7 +107,7 @@
                     bg: "bg-gradient-to-r from-amber-500 to-yellow-400",
                     text: "text-white",
                     badge: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-400",
-                    label: "Gold",
+                    label: t("customer.gold"),
                 };
             case "silver":
                 return {
@@ -109,7 +115,7 @@
                     bg: "bg-gradient-to-r from-gray-400 to-gray-300",
                     text: "text-gray-800",
                     badge: "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300",
-                    label: "Silver",
+                    label: t("customer.silver"),
                 };
             default:
                 return {
@@ -117,7 +123,7 @@
                     bg: "bg-gradient-to-r from-orange-600 to-orange-400",
                     text: "text-white",
                     badge: "bg-orange-100 text-orange-700 dark:bg-orange-900/50 dark:text-orange-400",
-                    label: "Bronze",
+                    label: t("customer.bronze"),
                 };
         }
     }
@@ -151,10 +157,10 @@
             const data = { ...formData };
             if (editingMember) {
                 await api.put(`customers/${editingMember.id}`, { json: data }).json();
-                toast.success("ອັບເດດສະມາຊິກສຳເລັດ");
+                toast.success(t('common.updated'));
             } else {
                 await api.post("customers", { json: data }).json();
-                toast.success("ເພີ່ມສະມາຊິກສຳເລັດ");
+                toast.success(t('common.added'));
             }
             showModal = false;
             resetForm();
@@ -169,7 +175,7 @@
         if (!confirm(t("common.confirmDelete"))) return;
         try {
             await api.delete(`customers/${member.id}`).json();
-            toast.success("ລຶບສະມາຊິກສຳເລັດ");
+            toast.success(t('common.deleted'));
             loadData();
         } catch (e) {
             console.error("Failed to delete:", e);
@@ -180,6 +186,7 @@
     function openEdit(member: any) {
         editingMember = member;
         formData = {
+            memberCode: member.memberCode || "",
             name: member.name || "",
             phone: member.phone || "",
             email: member.email || "",
@@ -192,14 +199,29 @@
         showModal = true;
     }
 
+    async function loadMemberSales(memberId: string) {
+        salesLoading = true;
+        try {
+            const res = await api.get(`customers/${memberId}/sales?limit=20`).json<any>();
+            memberSales = res.data || [];
+        } catch {
+            memberSales = [];
+        } finally {
+            salesLoading = false;
+        }
+    }
+
     function openView(member: any) {
         viewingMember = member;
+        viewTab = 'info';
+        memberSales = [];
         showViewModal = true;
     }
 
     function resetForm() {
         editingMember = null;
         formData = {
+            memberCode: "",
             name: "",
             phone: "",
             email: "",
@@ -386,11 +408,11 @@
 
             <div class="flex gap-2">
                 {#each [
-                    { id: null, label: "ທັງໝົດ" },
-                    { id: "platinum", label: "Platinum" },
-                    { id: "gold", label: "Gold" },
-                    { id: "silver", label: "Silver" },
-                    { id: "bronze", label: "Bronze" },
+                    { id: null, label: t("common.all") },
+                    { id: "platinum", label: t("customer.platinum") },
+                    { id: "gold", label: t("customer.gold") },
+                    { id: "silver", label: t("customer.silver") },
+                    { id: "bronze", label: t("customer.bronze") },
                 ] as filter}
                     <button
                         onclick={() => { tierFilter = filter.id; currentPage = 1; }}
@@ -567,8 +589,20 @@
                 class="p-6 space-y-4 max-h-[70vh] overflow-y-auto"
             >
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຊື່ *</label>
-                    <input
+                    <label for="a11y-app-customers-members-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                        ລະຫັດສະມາຊິກ <span class="text-xs font-normal text-gray-400">(ເບີໂທ, ອີເມວ, ຫຼື ID ກຳນົດເອງ)</span>
+                    </label>
+                    <input id="a11y-app-customers-members-page-svelte-1"
+                        type="text"
+                        bind:value={formData.memberCode}
+                        placeholder="ຕ.ຍ. 0201234567 ຫຼື member@email.com"
+                        class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-emerald-500 focus:border-transparent font-mono"
+                    />
+                </div>
+
+                <div>
+                    <label for="a11y-app-customers-members-page-svelte-2" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຊື່ *</label>
+                    <input id="a11y-app-customers-members-page-svelte-2"
                         type="text"
                         bind:value={formData.name}
                         required
@@ -578,16 +612,16 @@
 
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ເບີໂທ</label>
-                        <input
+                        <label for="a11y-app-customers-members-page-svelte-3" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ເບີໂທ</label>
+                        <input id="a11y-app-customers-members-page-svelte-3"
                             type="tel"
                             bind:value={formData.phone}
                             class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
                         />
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ອີເມວ</label>
-                        <input
+                        <label for="a11y-app-customers-members-page-svelte-4" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ອີເມວ</label>
+                        <input id="a11y-app-customers-members-page-svelte-4"
                             type="email"
                             bind:value={formData.email}
                             class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
@@ -596,8 +630,8 @@
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ວັນເດືອນປີເກີດ</label>
-                    <input
+                    <label for="a11y-app-customers-members-page-svelte-5" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ວັນເດືອນປີເກີດ</label>
+                    <input id="a11y-app-customers-members-page-svelte-5"
                         type="date"
                         bind:value={formData.birthDate}
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
@@ -605,8 +639,8 @@
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ທີ່ຢູ່</label>
-                    <textarea
+                    <label for="a11y-app-customers-members-page-svelte-6" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ທີ່ຢູ່</label>
+                    <textarea id="a11y-app-customers-members-page-svelte-6"
                         bind:value={formData.address}
                         rows="2"
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-emerald-500 focus:border-transparent resize-none"
@@ -615,8 +649,8 @@
 
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຄະແນນ</label>
-                        <input
+                        <label for="a11y-app-customers-members-page-svelte-7" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຄະແນນ</label>
+                        <input id="a11y-app-customers-members-page-svelte-7"
                             type="number"
                             bind:value={formData.points}
                             min="0"
@@ -624,8 +658,8 @@
                         />
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຍອດໃຊ້ຈ່າຍ</label>
-                        <input
+                        <label for="a11y-app-customers-members-page-svelte-8" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຍອດໃຊ້ຈ່າຍ</label>
+                        <input id="a11y-app-customers-members-page-svelte-8"
                             type="number"
                             bind:value={formData.totalSpent}
                             min="0"
@@ -684,49 +718,98 @@
                 <p class={cn("text-sm opacity-80", tierConfig.text)}>#{viewingMember.memberCode || "-"}</p>
             </div>
 
+            <!-- Stats -->
+            <div class="grid grid-cols-2 gap-3 px-6 pt-4">
+                <div class="p-3 bg-purple-50 dark:bg-purple-900/30 rounded-xl text-center">
+                    <Coins class="w-6 h-6 mx-auto text-purple-500 mb-1" />
+                    <p class="text-xl font-bold text-purple-600 dark:text-purple-400">{(viewingMember.points || 0).toLocaleString()}</p>
+                    <p class="text-xs text-purple-600/70 dark:text-purple-400/70">ຄະແນນ</p>
+                </div>
+                <div class="p-3 bg-emerald-50 dark:bg-emerald-900/30 rounded-xl text-center">
+                    <TrendingUp class="w-6 h-6 mx-auto text-emerald-500 mb-1" />
+                    <p class="text-xl font-bold text-emerald-600 dark:text-emerald-400">{formatCurrency(viewingMember.totalSpent || 0)}</p>
+                    <p class="text-xs text-emerald-600/70 dark:text-emerald-400/70">ໃຊ້ຈ່າຍລວມ</p>
+                </div>
+            </div>
+
+            <!-- Tabs -->
+            <div class="flex border-b border-gray-200 dark:border-gray-700 mt-4 px-6">
+                <button
+                    onclick={() => viewTab = 'info'}
+                    class={cn("pb-2 px-4 text-sm font-medium border-b-2 transition-colors", viewTab === 'info' ? "border-emerald-500 text-emerald-600" : "border-transparent text-gray-500 hover:text-gray-700")}
+                >
+                    ຂໍ້ມູນ
+                </button>
+                <button
+                    onclick={() => { viewTab = 'history'; if (memberSales.length === 0) loadMemberSales(viewingMember.id); }}
+                    class={cn("pb-2 px-4 text-sm font-medium border-b-2 transition-colors flex items-center gap-1.5", viewTab === 'history' ? "border-emerald-500 text-emerald-600" : "border-transparent text-gray-500 hover:text-gray-700")}
+                >
+                    <History class="w-3.5 h-3.5" />
+                    {t('pos.memberPurchaseHistory')}
+                </button>
+            </div>
+
             <!-- Content -->
-            <div class="p-6 space-y-4">
-                <div class="grid grid-cols-2 gap-3">
-                    <div class="p-3 bg-purple-50 dark:bg-purple-900/30 rounded-xl text-center">
-                        <Coins class="w-6 h-6 mx-auto text-purple-500 mb-1" />
-                        <p class="text-xl font-bold text-purple-600 dark:text-purple-400">{(viewingMember.points || 0).toLocaleString()}</p>
-                        <p class="text-xs text-purple-600/70 dark:text-purple-400/70">ຄະແນນ</p>
+            <div class="p-6">
+                {#if viewTab === 'info'}
+                    <div class="space-y-3">
+                        {#if viewingMember.phone}
+                            <div class="flex items-center gap-3 text-gray-700 dark:text-gray-300">
+                                <Phone class="w-5 h-5 text-gray-400" />
+                                <span>{viewingMember.phone}</span>
+                            </div>
+                        {/if}
+                        {#if viewingMember.email}
+                            <div class="flex items-center gap-3 text-gray-700 dark:text-gray-300">
+                                <Mail class="w-5 h-5 text-gray-400" />
+                                <span>{viewingMember.email}</span>
+                            </div>
+                        {/if}
+                        {#if viewingMember.birthDate}
+                            <div class="flex items-center gap-3 text-gray-700 dark:text-gray-300">
+                                <Gift class="w-5 h-5 text-gray-400" />
+                                <span>{formatDate(viewingMember.birthDate)}</span>
+                            </div>
+                        {/if}
+                        {#if viewingMember.address}
+                            <div class="flex items-center gap-3 text-gray-700 dark:text-gray-300">
+                                <MapPin class="w-5 h-5 text-gray-400" />
+                                <span>{viewingMember.address}</span>
+                            </div>
+                        {/if}
                     </div>
-                    <div class="p-3 bg-emerald-50 dark:bg-emerald-900/30 rounded-xl text-center">
-                        <TrendingUp class="w-6 h-6 mx-auto text-emerald-500 mb-1" />
-                        <p class="text-xl font-bold text-emerald-600 dark:text-emerald-400">{formatCurrency(viewingMember.totalSpent || 0)}</p>
-                        <p class="text-xs text-emerald-600/70 dark:text-emerald-400/70">ໃຊ້ຈ່າຍລວມ</p>
+                {:else}
+                    <!-- Purchase History -->
+                    <div class="space-y-2 max-h-52 overflow-y-auto">
+                        {#if salesLoading}
+                            <div class="flex items-center justify-center py-8">
+                                <Loader2 class="w-6 h-6 animate-spin text-emerald-500" />
+                            </div>
+                        {:else if memberSales.length === 0}
+                            <div class="text-center py-8 text-gray-400">
+                                <ShoppingBag class="w-10 h-10 mx-auto mb-2 opacity-40" />
+                                <p class="text-sm">{t('pos.noSalesHistory')}</p>
+                            </div>
+                        {:else}
+                            {#each memberSales as sale (sale.id)}
+                                <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 rounded-xl">
+                                    <div>
+                                        <p class="text-sm font-medium text-gray-900 dark:text-white">{sale.transactionNo}</p>
+                                        <p class="text-xs text-gray-500">{formatDate(sale.createdAt)} · {(sale.items || []).length} {t('pos.items')}</p>
+                                    </div>
+                                    <div class="text-right">
+                                        <p class="text-sm font-bold text-emerald-600">{formatCurrency(sale.total)}</p>
+                                        <p class={cn("text-xs", sale.status === 'COMPLETED' ? 'text-success-500' : sale.status === 'VOID' ? 'text-danger-500' : 'text-gray-400')}>
+                                            {sale.status}
+                                        </p>
+                                    </div>
+                                </div>
+                            {/each}
+                        {/if}
                     </div>
-                </div>
+                {/if}
 
-                <div class="space-y-3">
-                    {#if viewingMember.phone}
-                        <div class="flex items-center gap-3 text-gray-700 dark:text-gray-300">
-                            <Phone class="w-5 h-5 text-gray-400" />
-                            <span>{viewingMember.phone}</span>
-                        </div>
-                    {/if}
-                    {#if viewingMember.email}
-                        <div class="flex items-center gap-3 text-gray-700 dark:text-gray-300">
-                            <Mail class="w-5 h-5 text-gray-400" />
-                            <span>{viewingMember.email}</span>
-                        </div>
-                    {/if}
-                    {#if viewingMember.birthDate}
-                        <div class="flex items-center gap-3 text-gray-700 dark:text-gray-300">
-                            <Gift class="w-5 h-5 text-gray-400" />
-                            <span>{formatDate(viewingMember.birthDate)}</span>
-                        </div>
-                    {/if}
-                    {#if viewingMember.address}
-                        <div class="flex items-center gap-3 text-gray-700 dark:text-gray-300">
-                            <MapPin class="w-5 h-5 text-gray-400" />
-                            <span>{viewingMember.address}</span>
-                        </div>
-                    {/if}
-                </div>
-
-                <div class="flex gap-3 pt-4">
+                <div class="flex gap-3 pt-4 mt-2 border-t border-gray-100 dark:border-gray-700">
                     <button
                         onclick={() => { showViewModal = false; openEdit(viewingMember); }}
                         class="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 font-medium hover:bg-gray-50 dark:hover:bg-gray-700 transition-all"

@@ -6,6 +6,7 @@ import type { Product, Customer } from '$api';
 import { api } from '$api';
 import { browser } from '$app/environment';
 import { LOCAL_STORAGE_KEYS } from '$lib/config';
+import { t } from '$lib/i18n/index.svelte';
 
 export interface CartItem {
     product: Product;
@@ -83,7 +84,7 @@ function createCartStore() {
         if (availableStock !== Infinity && newQty > availableStock) {
             return {
                 success: false,
-                message: `ສິນຄ້າ "${product.name}" ມີສະຕ໋ອກພຽງ ${availableStock} ໜ່ວຍ`,
+                message: t('cart.insufficientStock', { name: product.name, stock: availableStock }),
                 availableStock
             };
         }
@@ -111,7 +112,7 @@ function createCartStore() {
             if (availableStock !== Infinity && quantity > availableStock) {
                 return {
                     success: false,
-                    message: `ສິນຄ້າ "${product.name}" ມີສະຕ໋ອກພຽງ ${availableStock} ໜ່ວຍ`,
+                    message: t('cart.insufficientStock', { name: product.name, stock: availableStock }),
                     availableStock
                 };
             }

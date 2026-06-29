@@ -21,8 +21,10 @@ inventoryRoutes.get('/', authenticate, branchFilter(), async (req, res, next) =>
             outOfStock,
             search,
             page = 1, 
-            limit = 10 
+            limit = 10,
+            all
         } = req.query;
+        const returnAll = all === 'true';
         
         const skip = (Number(page) - 1) * Number(limit);
         const filter = req.branchFilter;
@@ -61,8 +63,7 @@ inventoryRoutes.get('/', authenticate, branchFilter(), async (req, res, next) =>
         const [productRows, [{ value: total }]] = await Promise.all([
             db.query.products.findMany({
                 where: prodWhere,
-                offset: skip,
-                limit: Number(limit),
+                ...(returnAll ? {} : { offset: skip, limit: Number(limit) }),
                 with: { category: { columns: { id: true, name: true } }, inventory: true },
                 orderBy: asc(products.name),
             }),
@@ -87,7 +88,7 @@ inventoryRoutes.get('/', authenticate, branchFilter(), async (req, res, next) =>
                 sku: product.sku,
                 barcode: product.barcode,
                 price: product.price,
-                salePrice: product.salePrice,
+                salePrice: product.price,
                 cost: product.cost,
                 unit: product.unit,
                 stock: totalStock,
@@ -105,18 +106,18 @@ inventoryRoutes.get('/', authenticate, branchFilter(), async (req, res, next) =>
         }
 
         const totalFiltered = productsWithStock.length;
-        const totalPages = Math.ceil(total / Number(limit));
+        const totalPages = returnAll ? 1 : Math.ceil(total / Number(limit));
 
         res.json({ 
             success: true, 
             data: productsWithStock,
             total: lowStock === 'true' || outOfStock === 'true' ? totalFiltered : total,
             page: Number(page),
-            limit: Number(limit),
+            limit: returnAll ? (lowStock === 'true' || outOfStock === 'true' ? totalFiltered : total) : Number(limit),
             totalPages,
             pagination: {
                 page: Number(page),
-                limit: Number(limit),
+                limit: returnAll ? total : Number(limit),
                 total: lowStock === 'true' || outOfStock === 'true' ? totalFiltered : total,
                 pages: totalPages,
             }
@@ -480,7 +481,8 @@ inventoryRoutes.get('/alerts', authenticate, branchFilter(), async (req, res, ne
 // Get all vendors (tenant-scoped)
 inventoryRoutes.get('/vendors', authenticate, async (req, res, next) => {
     try {
-        const { search, isActive, page = 1, limit = 1000 } = req.query;
+        const { search, isActive, page = 1, limit = 20, all } = req.query;
+        const returnAll = all === 'true';
         const skip = (Number(page) - 1) * Number(limit);
         const vGetTenantId = req.authUser?.tenantId;
         const vGetConds: any[] = [];
@@ -489,10 +491,12 @@ inventoryRoutes.get('/vendors', authenticate, async (req, res, next) => {
         if (isActive !== undefined) vGetConds.push(eq(vendors.isActive, isActive === 'true'));
         const vGetWhere = vGetConds.length > 0 ? and(...vGetConds) : undefined;
         const [rows, [{ value: total }]] = await Promise.all([
-            dbRead.select().from(vendors).where(vGetWhere).orderBy(asc(vendors.name)).offset(skip).limit(Number(limit)),
+            returnAll
+                ? dbRead.select().from(vendors).where(vGetWhere).orderBy(asc(vendors.name))
+                : dbRead.select().from(vendors).where(vGetWhere).orderBy(asc(vendors.name)).offset(skip).limit(Number(limit)),
             dbRead.select({ value: count() }).from(vendors).where(vGetWhere),
         ]);
-        res.json({ success: true, data: rows, meta: { page: Number(page), limit: Number(limit), total, totalPages: Math.ceil(total / Number(limit)) } });
+        res.json({ success: true, data: rows, meta: { page: Number(page), limit: returnAll ? total : Number(limit), total, totalPages: returnAll ? 1 : Math.ceil(total / Number(limit)) } });
     } catch (error) {
         next(error);
     }
@@ -624,7 +628,8 @@ inventoryRoutes.delete('/vendors/:id', authenticate, authorize('inventory:delete
 // Get all purchase orders
 inventoryRoutes.get('/purchase-orders', authenticate, branchFilter(), async (req, res, next) => {
     try {
-        const { branchId, vendorId, status, page = 1, limit = 50 } = req.query;
+        const { branchId, vendorId, status, page = 1, limit = 50, all } = req.query;
+        const returnAll = all === 'true';
         const skip = (Number(page) - 1) * Number(limit);
         const filter = req.branchFilter;
         
@@ -640,14 +645,19 @@ inventoryRoutes.get('/purchase-orders', authenticate, branchFilter(), async (req
         const poWhere = poConds.length > 0 ? and(...poConds) : undefined;
 
         const [orders, [{ value: total }]] = await Promise.all([
-            db.query.purchaseOrders.findMany({ where: poWhere, offset: skip, limit: Number(limit), with: { vendor: true, items: true }, orderBy: desc(purchaseOrders.createdAt) }),
+            db.query.purchaseOrders.findMany({
+                where: poWhere,
+                ...(returnAll ? {} : { offset: skip, limit: Number(limit) }),
+                with: { vendor: true, items: true },
+                orderBy: desc(purchaseOrders.createdAt),
+            }),
             db.select({ value: count() }).from(purchaseOrders).where(poWhere),
         ]);
 
         res.json({
             success: true,
             data: orders,
-            meta: { page: Number(page), limit: Number(limit), total, totalPages: Math.ceil(total / Number(limit)) },
+            meta: { page: Number(page), limit: returnAll ? total : Number(limit), total, totalPages: returnAll ? 1 : Math.ceil(total / Number(limit)) },
         });
     } catch (error) {
         next(error);
@@ -1047,7 +1057,8 @@ inventoryRoutes.patch('/stock-transfers/:id/reject', authenticate, authorize('in
 // Expiry tracking with pagination
 inventoryRoutes.get('/expiring', authenticate, branchFilter(), async (req, res, next) => {
     try {
-        const { branchId, days = 90, page = 1, limit = 20, search, daysFilter } = req.query;
+        const { branchId, days = 90, page = 1, limit = 20, search, daysFilter, all } = req.query;
+        const returnAll = all === 'true';
         const skip = (Number(page) - 1) * Number(limit);
         const futureDate = new Date();
         futureDate.setDate(futureDate.getDate() + Number(days));
@@ -1112,16 +1123,16 @@ inventoryRoutes.get('/expiring', authenticate, branchFilter(), async (req, res, 
         }
 
         const total = data.length;
-        const paginatedData = data.slice(skip, skip + Number(limit));
+        const paginatedData = returnAll ? data : data.slice(skip, skip + Number(limit));
 
         res.json({ 
             success: true, 
             data: paginatedData,
             meta: {
                 page: Number(page),
-                limit: Number(limit),
+                limit: returnAll ? total : Number(limit),
                 total,
-                totalPages: Math.ceil(total / Number(limit)),
+                totalPages: returnAll ? 1 : Math.ceil(total / Number(limit)),
             },
         });
     } catch (error) {
@@ -1132,7 +1143,8 @@ inventoryRoutes.get('/expiring', authenticate, branchFilter(), async (req, res, 
 // Get stock in records
 inventoryRoutes.get('/stock-in', authenticate, branchFilter(), async (req, res, next) => {
     try {
-        const { search, page = 1, limit = 10, branchId: qBranchId } = req.query;
+        const { search, page = 1, limit = 10, branchId: qBranchId, all } = req.query;
+        const returnAll = all === 'true';
         const skip = (Number(page) - 1) * Number(limit);
         const filter = req.branchFilter;
 
@@ -1153,7 +1165,11 @@ inventoryRoutes.get('/stock-in', authenticate, branchFilter(), async (req, res, 
         const siWhere = and(...siConds);
 
         const [movements, [{ value: total }]] = await Promise.all([
-            db.query.stockMovements.findMany({ where: siWhere, offset: skip, limit: Number(limit), orderBy: desc(stockMovements.createdAt) }),
+            db.query.stockMovements.findMany({
+                where: siWhere,
+                ...(returnAll ? {} : { offset: skip, limit: Number(limit) }),
+                orderBy: desc(stockMovements.createdAt),
+            }),
             db.select({ value: count() }).from(stockMovements).where(siWhere),
         ]);
 
@@ -1164,7 +1180,7 @@ inventoryRoutes.get('/stock-in', authenticate, branchFilter(), async (req, res, 
         res.json({
             success: true,
             data: movements.map(m => ({ ...m, product: productMap.get(m.productId) || null })),
-            meta: { page: Number(page), limit: Number(limit), total, totalPages: Math.ceil(total / Number(limit)) },
+            meta: { page: Number(page), limit: returnAll ? total : Number(limit), total, totalPages: returnAll ? 1 : Math.ceil(total / Number(limit)) },
         });
     } catch (error) {
         next(error);
@@ -1174,7 +1190,8 @@ inventoryRoutes.get('/stock-in', authenticate, branchFilter(), async (req, res, 
 // Get stock out records
 inventoryRoutes.get('/stock-out', authenticate, branchFilter(), async (req, res, next) => {
     try {
-        const { search, page = 1, limit = 10, branchId: qBranchId } = req.query;
+        const { search, page = 1, limit = 10, branchId: qBranchId, all } = req.query;
+        const returnAll = all === 'true';
         const skip = (Number(page) - 1) * Number(limit);
         const filter = req.branchFilter;
 
@@ -1194,7 +1211,11 @@ inventoryRoutes.get('/stock-out', authenticate, branchFilter(), async (req, res,
         const soWhere = and(...soConds);
 
         const [movements, [{ value: total }]] = await Promise.all([
-            db.query.stockMovements.findMany({ where: soWhere, offset: skip, limit: Number(limit), orderBy: desc(stockMovements.createdAt) }),
+            db.query.stockMovements.findMany({
+                where: soWhere,
+                ...(returnAll ? {} : { offset: skip, limit: Number(limit) }),
+                orderBy: desc(stockMovements.createdAt),
+            }),
             db.select({ value: count() }).from(stockMovements).where(soWhere),
         ]);
 
@@ -1205,7 +1226,7 @@ inventoryRoutes.get('/stock-out', authenticate, branchFilter(), async (req, res,
         res.json({
             success: true,
             data: movements.map(m => ({ ...m, quantity: Math.abs(m.quantity), product: productMap.get(m.productId) || null })),
-            meta: { page: Number(page), limit: Number(limit), total, totalPages: Math.ceil(total / Number(limit)) },
+            meta: { page: Number(page), limit: returnAll ? total : Number(limit), total, totalPages: returnAll ? 1 : Math.ceil(total / Number(limit)) },
         });
     } catch (error) {
         next(error);
@@ -1406,7 +1427,8 @@ inventoryRoutes.delete('/stock-out/:id', authenticate, authorize('inventory:dele
 // Get adjustments
 inventoryRoutes.get('/adjustments', authenticate, branchFilter(), async (req, res, next) => {
     try {
-        const { search, page = 1, limit = 50, branchId: qBranchId } = req.query;
+        const { search, page = 1, limit = 50, branchId: qBranchId, all, type, adjustmentType } = req.query;
+        const returnAll = all === 'true';
         const skip = (Number(page) - 1) * Number(limit);
         const scopeFilter = req.branchFilter;
 
@@ -1423,10 +1445,17 @@ inventoryRoutes.get('/adjustments', authenticate, branchFilter(), async (req, re
             const s = String(search);
             adjConds.push(or(ilike(stockMovements.reference, `%${s}%`), ilike(stockMovements.reason, `%${s}%`)));
         }
+        const requestedType = String(type || adjustmentType || '').toLowerCase();
+        if (requestedType === 'increase') adjConds.push(gt(stockMovements.quantity, 0));
+        if (requestedType === 'decrease') adjConds.push(lt(stockMovements.quantity, 0));
         const adjWhere = and(...adjConds);
 
         const [movements, [{ value: total }]] = await Promise.all([
-            db.query.stockMovements.findMany({ where: adjWhere, offset: skip, limit: Number(limit), orderBy: desc(stockMovements.createdAt) }),
+            db.query.stockMovements.findMany({
+                where: adjWhere,
+                ...(returnAll ? {} : { offset: skip, limit: Number(limit) }),
+                orderBy: desc(stockMovements.createdAt),
+            }),
             db.select({ value: count() }).from(stockMovements).where(adjWhere),
         ]);
 
@@ -1442,7 +1471,7 @@ inventoryRoutes.get('/adjustments', authenticate, branchFilter(), async (req, re
                 adjustmentType: m.quantity > 0 ? 'increase' : 'decrease',
                 quantity: Math.abs(m.quantity),
             })),
-            meta: { page: Number(page), limit: Number(limit), total, totalPages: Math.ceil(total / Number(limit)) },
+            meta: { page: Number(page), limit: returnAll ? total : Number(limit), total, totalPages: returnAll ? 1 : Math.ceil(total / Number(limit)) },
         });
     } catch (error) {
         next(error);
@@ -1452,7 +1481,8 @@ inventoryRoutes.get('/adjustments', authenticate, branchFilter(), async (req, re
 // Get transfers
 inventoryRoutes.get('/transfers', authenticate, branchFilter(), async (req, res, next) => {
     try {
-        const { search, status, page = 1, limit = 50, branchId: qBranchId } = req.query;
+        const { search, status, page = 1, limit = 50, branchId: qBranchId, all } = req.query;
+        const returnAll = all === 'true';
         const skip = (Number(page) - 1) * Number(limit);
         const scopeFilter = req.branchFilter;
 
@@ -1469,14 +1499,19 @@ inventoryRoutes.get('/transfers', authenticate, branchFilter(), async (req, res,
         const trWhere = trConds.length > 0 ? and(...trConds) : undefined;
 
         const [transfers, [{ value: total }]] = await Promise.all([
-            db.query.stockTransfers.findMany({ where: trWhere, offset: skip, limit: Number(limit), with: { items: true }, orderBy: desc(stockTransfers.createdAt) }),
+            db.query.stockTransfers.findMany({
+                where: trWhere,
+                ...(returnAll ? {} : { offset: skip, limit: Number(limit) }),
+                with: { items: true },
+                orderBy: desc(stockTransfers.createdAt),
+            }),
             db.select({ value: count() }).from(stockTransfers).where(trWhere),
         ]);
 
         res.json({
             success: true,
             data: transfers,
-            meta: { page: Number(page), limit: Number(limit), total, totalPages: Math.ceil(total / Number(limit)) },
+            meta: { page: Number(page), limit: returnAll ? total : Number(limit), total, totalPages: returnAll ? 1 : Math.ceil(total / Number(limit)) },
         });
     } catch (error) {
         next(error);
@@ -1585,7 +1620,8 @@ inventoryRoutes.patch('/transfers/:id/reject', authenticate, authorize('inventor
 // Get stock counts
 inventoryRoutes.get('/stock-counts', authenticate, branchFilter(), async (req, res, next) => {
     try {
-        const { status, page = 1, limit = 50 } = req.query;
+        const { status, page = 1, limit = 50, all } = req.query;
+        const returnAll = all === 'true';
         const skip = (Number(page) - 1) * Number(limit);
         const filter = req.branchFilter;
 
@@ -1598,14 +1634,19 @@ inventoryRoutes.get('/stock-counts', authenticate, branchFilter(), async (req, r
         const scWhere = scConds.length > 0 ? and(...scConds) : undefined;
 
         const [counts, [{ value: total }]] = await Promise.all([
-            db.query.stockCounts.findMany({ where: scWhere, offset: skip, limit: Number(limit), with: { items: true }, orderBy: desc(stockCounts.createdAt) }),
+            db.query.stockCounts.findMany({
+                where: scWhere,
+                ...(returnAll ? {} : { offset: skip, limit: Number(limit) }),
+                with: { items: true },
+                orderBy: desc(stockCounts.createdAt),
+            }),
             db.select({ value: count() }).from(stockCounts).where(scWhere),
         ]);
 
         res.json({
             success: true,
             data: counts,
-            meta: { page: Number(page), limit: Number(limit), total, totalPages: Math.ceil(total / Number(limit)) },
+            meta: { page: Number(page), limit: returnAll ? total : Number(limit), total, totalPages: returnAll ? 1 : Math.ceil(total / Number(limit)) },
         });
     } catch (error) {
         next(error);
@@ -1650,6 +1691,9 @@ inventoryRoutes.patch('/stock-counts/:id/approve', authenticate, authorize('inve
     try {
         const userId = req.authUser?.userId || req.user?.userId;
         const roleLevel = req.authUser?.roleLevel ?? 7;
+        if (!userId) {
+            return res.status(400).json({ success: false, error: { code: 'AUTH_001', message: 'User not resolved' } });
+        }
         if (!req.authUser?.isSuperAdmin && roleLevel > 4) {
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Only HQ admins or above can approve stock counts' } });
         }

@@ -84,10 +84,10 @@
 
     function getElapsedDisplay(createdAt: string): string {
         const mins = getElapsedMinutes(createdAt);
-        if (mins < 1) return "ຫາກໍ່ສັ່ງ";
+        if (mins < 1) return t("restaurant.justOrdered");
         if (mins < 60) return `${mins} ${t("restaurant.minutes")}`;
         const hours = Math.floor(mins / 60);
-        return `${hours} ຊົ່ວໂມງ`;
+        return `${hours} ${t("restaurant.hours")}`;
     }
 
     function getTimeColor(createdAt: string) {
@@ -274,7 +274,7 @@
             <div class="text-center">
                 <CheckCircle class="w-20 h-20 mx-auto text-success-500" />
                 <h3 class="text-xl font-bold text-white mt-4">{t("restaurant.noPendingOrders")}</h3>
-                <p class="text-gray-400 mt-2">ບໍ່ມີອໍເດີລໍຖ້າໃນຄົວ</p>
+                <p class="text-gray-400 mt-2">{t("restaurant.noKitchenPendingOrders")}</p>
             </div>
         </div>
     {:else}

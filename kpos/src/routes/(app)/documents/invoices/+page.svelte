@@ -141,12 +141,12 @@
         const labels: Record<string, string> = {
             paid: t("documents.paid"),
             pending: t("documents.pending"),
-            pending_approval: "ລໍການອະນຸມັດ",
-            approved: "ອະນຸມັດແລ້ວ",
+            pending_approval: t("documents.pendingApproval"),
+            approved: t("documents.approved"),
             overdue: t("documents.overdue"),
             sent: t("documents.sent"),
             cancelled: t("documents.cancelled"),
-            rejected: "ຖືກປະຕິເສດ",
+            rejected: t("documents.rejected"),
         };
         return labels[status] || status;
     }
@@ -157,7 +157,7 @@
     async function approveInvoice(id: string) {
         try {
             await api.patch(`documents/invoices/${id}/approve`).json();
-            toast.success("ອະນຸມັດໃບເກັບເງິນສຳເລັດ");
+            toast.success(t("documents.invoiceApproved"));
             loadData();
         } catch (e: any) {
             toast.error(e?.message || t("common.error"));
@@ -178,7 +178,7 @@
         if (!invRejectTargetId) return;
         try {
             await api.patch(`documents/invoices/${invRejectTargetId}/reject`, { json: { reason: invRejectReason } }).json();
-            toast.success("ປະຕິເສດໃບເກັບເງິນສຳເລັດ");
+            toast.success(t("documents.invoiceRejected"));
             showInvRejectModal = false;
             invRejectTargetId = null;
             loadData();
@@ -571,14 +571,14 @@
                                             <button
                                                 onclick={() => approveInvoice(invoice.id)}
                                                 class="p-2 text-success-600 hover:bg-success-50 dark:hover:bg-success-900/30 rounded-lg"
-                                                title="ອະນຸມັດ"
+                                                title={t("common.approve")}
                                             >
                                                 <ThumbsUp class="w-4 h-4" />
                                             </button>
                                             <button
                                                 onclick={() => openInvRejectModal(invoice.id)}
                                                 class="p-2 text-danger-600 hover:bg-danger-50 dark:hover:bg-danger-900/30 rounded-lg"
-                                                title="ປະຕິເສດ"
+                                                title={t("common.reject")}
                                             >
                                                 <ThumbsDown class="w-4 h-4" />
                                             </button>
@@ -683,10 +683,10 @@
                     </h3>
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div class="md:col-span-2">
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            <label for="a11y-app-documents-invoices-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                                 {t("documents.customerName")} <span class="text-danger-500">*</span>
                             </label>
-                            <input
+                            <input id="a11y-app-documents-invoices-page-svelte-1"
                                 type="text"
                                 bind:value={formData.customerName}
                                 placeholder={t("documents.customerNamePlaceholder")}
@@ -695,10 +695,10 @@
                             />
                         </div>
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            <label for="a11y-app-documents-invoices-page-svelte-2" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                                 {t("documents.customerEmail")}
                             </label>
-                            <input
+                            <input id="a11y-app-documents-invoices-page-svelte-2"
                                 type="email"
                                 bind:value={formData.customerEmail}
                                 placeholder="email@example.com"
@@ -706,10 +706,10 @@
                             />
                         </div>
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            <label for="a11y-app-documents-invoices-page-svelte-3" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                                 {t("documents.customerPhone")}
                             </label>
-                            <input
+                            <input id="a11y-app-documents-invoices-page-svelte-3"
                                 type="tel"
                                 bind:value={formData.customerPhone}
                                 oninput={(e) => { formData.customerPhone = enforcePhoneInput(e.currentTarget.value); }}
@@ -719,10 +719,10 @@
                             />
                         </div>
                         <div class="md:col-span-2">
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            <label for="a11y-app-documents-invoices-page-svelte-4" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                                 {t("documents.customerAddress")}
                             </label>
-                            <input
+                            <input id="a11y-app-documents-invoices-page-svelte-4"
                                 type="text"
                                 bind:value={formData.customerAddress}
                                 placeholder={t("documents.customerAddressPlaceholder")}
@@ -734,10 +734,10 @@
 
                 <!-- Due Date -->
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    <label for="a11y-app-documents-invoices-page-svelte-5" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                         {t("documents.dueDate")}
                     </label>
-                    <input
+                    <input id="a11y-app-documents-invoices-page-svelte-5"
                         type="date"
                         bind:value={formData.dueDate}
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500"
@@ -747,7 +747,7 @@
                 <!-- Items -->
                 <div>
                     <div class="flex items-center justify-between mb-2">
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                        <label for="a11y-app-documents-invoices-page-svelte-1001" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
                             {t("documents.items")}
                         </label>
                         <button
@@ -769,7 +769,7 @@
                         </div>
                         {#each formData.items as item, index}
                             <div class="grid grid-cols-12 gap-2 items-center">
-                                <input
+                                <input id="a11y-app-documents-invoices-page-svelte-1001"
                                     type="text"
                                     bind:value={item.description}
                                     placeholder={t("documents.itemDescription")}
@@ -825,10 +825,10 @@
 
                 <!-- Notes -->
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    <label for="a11y-app-documents-invoices-page-svelte-6" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                         {t("documents.notes")}
                     </label>
-                    <textarea
+                    <textarea id="a11y-app-documents-invoices-page-svelte-6"
                         bind:value={formData.notes}
                         rows="2"
                         placeholder={t("documents.notesPlaceholder")}
@@ -1003,19 +1003,19 @@
     <div class="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
         <div class="w-full max-w-md bg-white dark:bg-gray-800 rounded-2xl shadow-2xl overflow-hidden">
             <div class="px-6 py-4 bg-gradient-to-r from-danger-500 to-red-600 flex items-center justify-between">
-                <h2 class="text-lg font-bold text-white">ປະຕິເສດໃບເກັບເງິນ</h2>
+                <h2 class="text-lg font-bold text-white">{t("documents.rejectInvoice")}</h2>
                 <button onclick={() => (showInvRejectModal = false)} class="p-1.5 hover:bg-white/20 rounded-lg">
                     <X class="w-5 h-5 text-white" />
                 </button>
             </div>
             <div class="p-6 space-y-4">
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ເຫດຜົນ</label>
-                    <textarea bind:value={invRejectReason} rows="3" placeholder="ລະບຸເຫດຜົນ..." class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white resize-none"></textarea>
+                    <label for="a11y-app-documents-invoices-page-svelte-7" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("inventory.reason")}</label>
+                    <textarea id="a11y-app-documents-invoices-page-svelte-7" bind:value={invRejectReason} rows="3" placeholder={t("documents.rejectReasonPlaceholder")} class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white resize-none"></textarea>
                 </div>
                 <div class="flex justify-end gap-3">
-                    <button onclick={() => (showInvRejectModal = false)} class="px-5 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 font-medium">ຍົກເລີກ</button>
-                    <button onclick={confirmInvReject} class="px-5 py-2.5 bg-gradient-to-r from-danger-500 to-red-600 text-white rounded-xl font-medium">ຢືນຢັນປະຕິເສດ</button>
+                    <button onclick={() => (showInvRejectModal = false)} class="px-5 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 font-medium">{t("common.cancel")}</button>
+                    <button onclick={confirmInvReject} class="px-5 py-2.5 bg-gradient-to-r from-danger-500 to-red-600 text-white rounded-xl font-medium">{t("documents.confirmReject")}</button>
                 </div>
             </div>
         </div>

@@ -42,12 +42,12 @@
 
     // Filter options
     const statusFilters = [
-        { id: "active", label: "ອໍເດີທີ່ກຳລັງດຳເນີນ", icon: Flame, color: "orange" },
-        { id: "pending", label: "ລໍຖ້າ", icon: Timer, color: "gray" },
-        { id: "preparing", label: "ກຳລັງກະກຽມ", icon: ChefHat, color: "blue" },
-        { id: "ready", label: "ພ້ອມເສີບ", icon: Bell, color: "green" },
-        { id: "served", label: "ເສີບແລ້ວ", icon: CheckCircle, color: "emerald" },
-        { id: "all", label: "ທັງໝົດ", icon: ShoppingBag, color: "purple" },
+        { id: "active", labelKey: "restaurant.activeOrders", icon: Flame, color: "orange" },
+        { id: "pending", labelKey: "restaurant.pending", icon: Timer, color: "gray" },
+        { id: "preparing", labelKey: "restaurant.preparing", icon: ChefHat, color: "blue" },
+        { id: "ready", labelKey: "restaurant.readyToServe", icon: Bell, color: "green" },
+        { id: "served", labelKey: "restaurant.served", icon: CheckCircle, color: "emerald" },
+        { id: "all", labelKey: "common.all", icon: ShoppingBag, color: "purple" },
     ];
 
     async function loadData() {
@@ -295,7 +295,7 @@
                 <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
                 <input
                     type="text"
-                    placeholder="{t("common.search")} (ເລກອໍເດີ, ໂຕະ)..."
+                    placeholder={t("restaurant.ordersSearchPlaceholder")}
                     bind:value={searchQuery}
                     class="w-full pl-10 pr-4 py-2.5 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl text-gray-900 dark:text-white placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                 />
@@ -304,6 +304,7 @@
             <!-- Status Filter Tabs -->
             <div class="flex flex-wrap gap-2">
                 {#each statusFilters as filter (filter.id)}
+                    {@const FilterIcon = filter.icon}
                     <button
                         onclick={() => { filterStatus = filter.id; loadData(); }}
                         class={cn(
@@ -313,8 +314,8 @@
                                 : "bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
                         )}
                     >
-                        <svelte:component this={filter.icon} class="w-4 h-4" />
-                        {filter.label}
+                        <FilterIcon class="w-4 h-4" />
+                        {t(filter.labelKey)}
                     </button>
                 {/each}
             </div>

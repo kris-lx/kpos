@@ -22,7 +22,7 @@ export class AppServer {
     private app: Application;
     private httpServer: HttpServer;
     private io: SocketServer;
-    private corsOrigins: string | string[];
+    private corsOrigins: string | string[] | boolean;
 
     constructor() {
         this.app = express();
@@ -32,9 +32,13 @@ export class AppServer {
         if (appConfig.isProduction && !process.env.CORS_ORIGIN) {
             throw new Error('CORS_ORIGIN env var must be set in production');
         }
+        // Development: reflect the request Origin (required for credentials: true + cookies).
+        // Wildcard '*' with credentials is rejected by browsers.
         this.corsOrigins = appConfig.isProduction
-            ? (process.env.CORS_ORIGIN!.split(',').map(o => o.trim()))
-            : '*';
+            ? process.env.CORS_ORIGIN!.split(',').map(o => o.trim())
+            : process.env.CORS_ORIGIN
+                ? process.env.CORS_ORIGIN.split(',').map(o => o.trim())
+                : true;
 
         this.io = new SocketServer(this.httpServer, {
             cors: {

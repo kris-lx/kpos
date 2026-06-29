@@ -74,17 +74,17 @@
                 programSettings = response.data?.settings || programSettings;
                 totalItems = response.data?.pagination?.total || tiers.length;
             } else {
-                error = "ບໍ່ສາມາດໂຫຼດຂໍ້ມູນໂປຣແກຣມສະມາຊິກໄດ້";
+                error = t('common.loadError');
                 tiers = [];
                 totalItems = 0;
-                toast.error("ບໍ່ສາມາດໂຫຼດຂໍ້ມູນໄດ້");
+                toast.error(t('common.loadError'));
             }
         } catch (err) {
             console.error("Failed to load loyalty program:", err);
-            error = "ເກີດຂໍ້ຜິດພາດໃນການໂຫຼດຂໍ້ມູນ";
+            error = t('common.loadError');
             tiers = [];
             totalItems = 0;
-            toast.error("ບໍ່ສາມາດໂຫຼດຂໍ້ມູນໄດ້");
+            toast.error(t('common.loadError'));
         } finally {
             loading = false;
         }
@@ -227,6 +227,7 @@
             <div class="flex items-center gap-3 px-4 py-2.5 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700">
                 <span class="text-sm font-medium text-gray-700 dark:text-gray-300">ສະຖານະ</span>
                 <button
+                    aria-label={programSettings.isActive ? "Disable loyalty program" : "Enable loyalty program"}
                     onclick={() => (programSettings.isActive = !programSettings.isActive)}
                     class="relative w-14 h-7 rounded-full transition-colors {programSettings.isActive ? 'bg-gradient-to-r from-success-400 to-emerald-500' : 'bg-gray-300 dark:bg-gray-600'}"
                 >
@@ -293,8 +294,8 @@
             </div>
             <div class="p-6 space-y-4">
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຊື່ໂປຣແກຣມ</label>
-                    <input
+                    <label for="a11y-app-customers-loyalty-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຊື່ໂປຣແກຣມ</label>
+                    <input id="a11y-app-customers-loyalty-page-svelte-1"
                         type="text"
                         bind:value={programSettings.programName}
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent"
@@ -302,9 +303,9 @@
                 </div>
                 <div class="grid grid-cols-2 gap-3">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ອັດຕາໄດ້ຮັບ</label>
+                        <label for="a11y-app-customers-loyalty-page-svelte-2" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ອັດຕາໄດ້ຮັບ</label>
                         <div class="relative">
-                            <input
+                            <input id="a11y-app-customers-loyalty-page-svelte-2"
                                 type="number"
                                 bind:value={programSettings.earnRate}
                                 min="0"
@@ -315,9 +316,9 @@
                         </div>
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ອັດຕາແລກ</label>
+                        <label for="a11y-app-customers-loyalty-page-svelte-3" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ອັດຕາແລກ</label>
                         <div class="relative">
-                            <input
+                            <input id="a11y-app-customers-loyalty-page-svelte-3"
                                 type="number"
                                 bind:value={programSettings.redeemRate}
                                 min="0"
@@ -328,9 +329,9 @@
                     </div>
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຄະແນນໝົດອາຍຸ</label>
+                    <label for="a11y-app-customers-loyalty-page-svelte-4" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຄະແນນໝົດອາຍຸ</label>
                     <div class="relative">
-                        <input
+                        <input id="a11y-app-customers-loyalty-page-svelte-4"
                             type="number"
                             bind:value={programSettings.pointsExpiry}
                             min="0"
@@ -576,15 +577,15 @@
             <div class="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
                 <div class="flex gap-4">
                     <div class="flex-1">
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຊື່ລະດັບ</label>
-                        <input
+                        <label for="a11y-app-customers-loyalty-page-svelte-5" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຊື່ລະດັບ</label>
+                        <input id="a11y-app-customers-loyalty-page-svelte-5"
                             type="text"
                             bind:value={formData.name}
                             class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-amber-500 focus:border-transparent"
                         />
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ໄອຄອນ</label>
+                        <p class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ໄອຄອນ</p>
                         <div class="flex gap-1">
                             {#each tierIcons as icon (icon)}
                                 <button
@@ -600,11 +601,12 @@
                 </div>
                 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ສີ</label>
+                    <p class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ສີ</p>
                     <div class="flex gap-2">
                         {#each tierColors as color (color)}
                             <button
                                 type="button"
+                                aria-label={`Select ${color} color`}
                                 onclick={() => (formData.color = color)}
                                 class="w-9 h-9 rounded-full border-2 border-gray-200 dark:border-gray-700 transition-all {formData.color === color ? 'ring-2 ring-offset-2 ring-amber-500 dark:ring-offset-gray-800 scale-110' : ''}"
                                 style="background-color: {color}"
@@ -615,8 +617,8 @@
                 
                 <div class="grid grid-cols-3 gap-3">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຄະແນນຂັ້ນຕ່ຳ</label>
-                        <input
+                        <label for="a11y-app-customers-loyalty-page-svelte-6" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຄະແນນຂັ້ນຕ່ຳ</label>
+                        <input id="a11y-app-customers-loyalty-page-svelte-6"
                             type="number"
                             bind:value={formData.minPoints}
                             min="0"
@@ -624,8 +626,8 @@
                         />
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ສ່ວນຫຼຸດ %</label>
-                        <input
+                        <label for="a11y-app-customers-loyalty-page-svelte-7" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ສ່ວນຫຼຸດ %</label>
+                        <input id="a11y-app-customers-loyalty-page-svelte-7"
                             type="number"
                             bind:value={formData.discountPercent}
                             min="0"
@@ -634,8 +636,8 @@
                         />
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຄູນຄະແນນ</label>
-                        <input
+                        <label for="a11y-app-customers-loyalty-page-svelte-8" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຄູນຄະແນນ</label>
+                        <input id="a11y-app-customers-loyalty-page-svelte-8"
                             type="number"
                             bind:value={formData.pointsMultiplier}
                             min="1"
@@ -647,9 +649,9 @@
                 </div>
                 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ສິດທິພິເສດ</label>
+                    <label for="a11y-app-customers-loyalty-page-svelte-9" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ສິດທິພິເສດ</label>
                     <div class="flex gap-2 mb-2">
-                        <input
+                        <input id="a11y-app-customers-loyalty-page-svelte-9"
                             type="text"
                             bind:value={newBenefit}
                             onkeypress={(e) => e.key === "Enter" && addBenefit()}

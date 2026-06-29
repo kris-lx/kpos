@@ -2,6 +2,7 @@
     import { createQuery, createMutation, useQueryClient } from "@tanstack/svelte-query";
     import { api } from "$lib/api";
     import { toast } from "svelte-sonner";
+    import { t } from '$lib/i18n/index.svelte';
     import { auth } from "$lib/stores/auth.svelte";
     import { formatPhone, formatDate } from "$utils";
     import { goto } from "$app/navigation";
@@ -80,11 +81,11 @@
             return api.put(`admin/stores/${storeId}/update`, { json: data }).json();
         },
         onSuccess: () => {
-            toast.success("ອັບເດດຮ້ານສຳເລັດ");
+            toast.success(t('common.updated'));
             queryClient.invalidateQueries({ queryKey: ["my-store"] });
             isEditing = false;
         },
-        onError: () => toast.error("ເກີດຂໍ້ຜິດພາດ")
+        onError: () => toast.error(t('common.genericError'))
     });
 
     // Toggle store status
@@ -93,10 +94,10 @@
             return api.patch(`admin/stores/${storeId}/status`, { json: { isActive } }).json();
         },
         onSuccess: () => {
-            toast.success("ອັບເດດສະຖານະສຳເລັດ");
+            toast.success(t('common.updated'));
             queryClient.invalidateQueries({ queryKey: ["my-store"] });
         },
-        onError: () => toast.error("ເກີດຂໍ້ຜິດພາດ")
+        onError: () => toast.error(t('common.genericError'))
     });
 
     let isEditing = $state(false);
@@ -148,7 +149,7 @@
                 toast.success("ອັບເດດສາຂາສຳເລັດ");
             } else {
                 await api.post("branches", { json: { ...branchForm, storeId } }).json();
-                toast.success("ສ້າງສາຂາສຳເລັດ");
+                toast.success(t('common.created'));
             }
             showBranchModal = false;
             queryClient.invalidateQueries({ queryKey: ["my-store-branches"] });
@@ -557,8 +558,8 @@
                             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 <div class="space-y-4">
                                     <div>
-                                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ຊື່ຮ້ານ</label>
-                                        <input
+                                        <label for="a11y-app-my-store-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ຊື່ຮ້ານ</label>
+                                        <input id="a11y-app-my-store-page-svelte-1"
                                             type="text"
                                             value={$storeQuery.data.name}
                                             disabled
@@ -566,8 +567,8 @@
                                         />
                                     </div>
                                     <div>
-                                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ລະຫັດຮ້ານ</label>
-                                        <input
+                                        <label for="a11y-app-my-store-page-svelte-2" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ລະຫັດຮ້ານ</label>
+                                        <input id="a11y-app-my-store-page-svelte-2"
                                             type="text"
                                             value={$storeQuery.data.code}
                                             disabled
@@ -577,8 +578,8 @@
                                 </div>
                                 <div class="space-y-4">
                                     <div>
-                                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ເບີໂທ</label>
-                                        <input
+                                        <label for="a11y-app-my-store-page-svelte-3" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ເບີໂທ</label>
+                                        <input id="a11y-app-my-store-page-svelte-3"
                                             type="text"
                                             value={$storeQuery.data.phone || ""}
                                             disabled
@@ -586,8 +587,8 @@
                                         />
                                     </div>
                                     <div>
-                                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ອີເມວ</label>
-                                        <input
+                                        <label for="a11y-app-my-store-page-svelte-4" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ອີເມວ</label>
+                                        <input id="a11y-app-my-store-page-svelte-4"
                                             type="text"
                                             value={$storeQuery.data.email || ""}
                                             disabled
@@ -624,21 +625,21 @@
             <div class="p-6 space-y-4">
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ຊື່ສາຂາ *</label>
-                        <input type="text" bind:value={branchForm.name} class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500" required />
+                        <label for="a11y-app-my-store-page-svelte-5" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ຊື່ສາຂາ *</label>
+                        <input id="a11y-app-my-store-page-svelte-5" type="text" bind:value={branchForm.name} class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500" required />
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ລະຫັດ *</label>
-                        <input type="text" bind:value={branchForm.code} class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500" required />
+                        <label for="a11y-app-my-store-page-svelte-6" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ລະຫັດ *</label>
+                        <input id="a11y-app-my-store-page-svelte-6" type="text" bind:value={branchForm.code} class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500" required />
                     </div>
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ທີ່ຢູ່</label>
-                    <input type="text" bind:value={branchForm.address} class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500" />
+                    <label for="a11y-app-my-store-page-svelte-7" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ທີ່ຢູ່</label>
+                    <input id="a11y-app-my-store-page-svelte-7" type="text" bind:value={branchForm.address} class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500" />
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ເບີໂທ</label>
-                    <input type="tel" bind:value={branchForm.phone} class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500" />
+                    <label for="a11y-app-my-store-page-svelte-8" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ເບີໂທ</label>
+                    <input id="a11y-app-my-store-page-svelte-8" type="tel" bind:value={branchForm.phone} class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500" />
                 </div>
             </div>
             <div class="p-6 border-t border-gray-200 dark:border-gray-700 flex justify-end gap-3">
@@ -663,8 +664,8 @@
             <div class="p-6 space-y-4">
                 <p class="text-sm text-gray-600 dark:text-gray-400">ພະນັກງານ: <span class="font-semibold text-gray-900 dark:text-white">{selectedUser.name}</span></p>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ບົດບາດ</label>
-                    <select bind:value={selectedRoleId} class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500">
+                    <label for="a11y-app-my-store-page-svelte-9" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ບົດບາດ</label>
+                    <select id="a11y-app-my-store-page-svelte-9" bind:value={selectedRoleId} class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500">
                         <option value="">-- ເລືອກບົດບາດ --</option>
                         {#each availableRoles as role (role.id)}
                             <option value={role.id}>{role.displayName || role.name}</option>
@@ -694,26 +695,26 @@
             <div class="p-6 space-y-4">
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ຊື່ *</label>
-                        <input type="text" bind:value={staffForm.name} class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500" />
+                        <label for="a11y-app-my-store-page-svelte-10" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ຊື່ *</label>
+                        <input id="a11y-app-my-store-page-svelte-10" type="text" bind:value={staffForm.name} class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500" />
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ເບີໂທ</label>
-                        <input type="tel" bind:value={staffForm.phone} class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500" />
+                        <label for="a11y-app-my-store-page-svelte-11" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ເບີໂທ</label>
+                        <input id="a11y-app-my-store-page-svelte-11" type="tel" bind:value={staffForm.phone} class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500" />
                     </div>
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ອີເມວ *</label>
-                    <input type="email" bind:value={staffForm.email} class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500" />
+                    <label for="a11y-app-my-store-page-svelte-12" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ອີເມວ *</label>
+                    <input id="a11y-app-my-store-page-svelte-12" type="email" bind:value={staffForm.email} class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500" />
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ລະຫັດຜ່ານ *</label>
-                    <input type="password" bind:value={staffForm.password} class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500" />
+                    <label for="a11y-app-my-store-page-svelte-13" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ລະຫັດຜ່ານ *</label>
+                    <input id="a11y-app-my-store-page-svelte-13" type="password" bind:value={staffForm.password} class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500" />
                 </div>
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ບົດບາດ</label>
-                        <select bind:value={staffForm.roleId} class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500">
+                        <label for="a11y-app-my-store-page-svelte-14" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ບົດບາດ</label>
+                        <select id="a11y-app-my-store-page-svelte-14" bind:value={staffForm.roleId} class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500">
                             <option value="">-- ເລືອກ --</option>
                             {#each availableRoles as role (role.id)}
                                 <option value={role.id}>{role.displayName || role.name}</option>
@@ -721,8 +722,8 @@
                         </select>
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ສາຂາ</label>
-                        <select bind:value={staffForm.branchId} class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500">
+                        <label for="a11y-app-my-store-page-svelte-15" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ສາຂາ</label>
+                        <select id="a11y-app-my-store-page-svelte-15" bind:value={staffForm.branchId} class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500">
                             <option value="">-- ເລືອກ --</option>
                             {#each ($branchesQuery.data || []) as branch (branch.id)}
                                 <option value={branch.id}>{branch.name}</option>
@@ -752,16 +753,16 @@
 
             <div class="p-6 space-y-4">
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ຊື່ຮ້ານ</label>
-                    <input
+                    <label for="a11y-app-my-store-page-svelte-16" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ຊື່ຮ້ານ</label>
+                    <input id="a11y-app-my-store-page-svelte-16"
                         type="text"
                         bind:value={editForm.name}
                         class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500"
                     />
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ທີ່ຢູ່</label>
-                    <textarea
+                    <label for="a11y-app-my-store-page-svelte-17" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ທີ່ຢູ່</label>
+                    <textarea id="a11y-app-my-store-page-svelte-17"
                         bind:value={editForm.address}
                         rows="2"
                         class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500"
@@ -769,16 +770,16 @@
                 </div>
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ເບີໂທ</label>
-                        <input
+                        <label for="a11y-app-my-store-page-svelte-18" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ເບີໂທ</label>
+                        <input id="a11y-app-my-store-page-svelte-18"
                             type="tel"
                             bind:value={editForm.phone}
                             class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500"
                         />
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ອີເມວ</label>
-                        <input
+                        <label for="a11y-app-my-store-page-svelte-19" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ອີເມວ</label>
+                        <input id="a11y-app-my-store-page-svelte-19"
                             type="email"
                             bind:value={editForm.email}
                             class="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500"

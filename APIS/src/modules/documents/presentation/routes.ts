@@ -7,7 +7,7 @@ import { authenticate, authorize, branchFilter, applyScopeFilter, ensureScopeAcc
 import { DEFAULT_SETTINGS } from '@/shared/constants';
 import { db } from '@/config/database.config';
 import { documents, settings } from '@/db/schema/tables';
-import { eq, and, or, ilike, isNull, gte, lte, desc, count, sql } from 'drizzle-orm';
+import { eq, and, or, ilike, isNull, gte, lte, desc, asc, count, sql } from 'drizzle-orm';
 
 export const documentRoutes = Router();
 
@@ -681,8 +681,18 @@ documentRoutes.get('/tax-invoices/:id/print', authenticate, async (req, res, nex
 
         await db.update(documents).set({ printCount: sql`${documents.printCount} + 1` }).where(and(...prtConds));
 
+        const storeSettingConds: any[] = [eq(settings.category, 'store'), eq(settings.key, 'info')];
+        if (req.authUser?.tenantId && !req.authUser.isSuperAdmin) {
+            storeSettingConds.push(or(isNull(settings.tenantId), eq(settings.tenantId, req.authUser.tenantId)));
+        }
+        if (invoice.branchId) {
+            storeSettingConds.push(or(isNull(settings.branchId), eq(settings.branchId, invoice.branchId)));
+        } else {
+            storeSettingConds.push(isNull(settings.branchId));
+        }
         const storeSetting = await db.query.settings.findFirst({
-            where: and(eq(settings.category, 'store'), eq(settings.key, 'info')),
+            where: and(...storeSettingConds),
+            orderBy: desc(settings.branchId),
         });
 
         const storeInfo = (storeSetting?.value || {}) as Record<string, unknown>;
@@ -721,10 +731,22 @@ documentRoutes.get('/tax-invoices/:id/print', authenticate, async (req, res, nex
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get invoice settings
-documentRoutes.get('/settings', authenticate, async (req, res, next) => {
+documentRoutes.get('/settings', authenticate, authorize('documents:view', 'documents:read', 'settings:read'), async (req, res, next) => {
     try {
+        const tenantId = req.authUser?.tenantId;
+        const activeBranchId = req.authUser?.activeBranchId || req.user?.branchId;
+        const invoiceConds: any[] = [eq(settings.category, 'invoice')];
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            invoiceConds.push(or(isNull(settings.tenantId), eq(settings.tenantId, tenantId)));
+        }
+        if (activeBranchId) {
+            invoiceConds.push(or(isNull(settings.branchId), eq(settings.branchId, activeBranchId)));
+        } else {
+            invoiceConds.push(isNull(settings.branchId));
+        }
         const settingsRows = await db.query.settings.findMany({
-            where: eq(settings.category, 'invoice'),
+            where: and(...invoiceConds),
+            orderBy: asc(settings.branchId),
         });
 
         const settingsObj = settingsRows.reduce((acc, s) => {
@@ -733,8 +755,18 @@ documentRoutes.get('/settings', authenticate, async (req, res, next) => {
         }, {} as Record<string, unknown>);
 
         // Load tax rate from pos settings if available
+        const posConds: any[] = [eq(settings.category, 'pos'), eq(settings.key, 'defaultTaxRate')];
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            posConds.push(or(isNull(settings.tenantId), eq(settings.tenantId, tenantId)));
+        }
+        if (activeBranchId) {
+            posConds.push(or(isNull(settings.branchId), eq(settings.branchId, activeBranchId)));
+        } else {
+            posConds.push(isNull(settings.branchId));
+        }
         const posSettings = await db.query.settings.findFirst({
-            where: (s, { eq: eq2, and: and2 }) => and2(eq2(s.category, 'pos'), eq2(s.key, 'defaultTaxRate')),
+            where: and(...posConds),
+            orderBy: desc(settings.branchId),
         });
         const taxRate = posSettings ? Number(posSettings.value) : DEFAULT_SETTINGS.defaultTaxRate;
 
@@ -767,15 +799,24 @@ documentRoutes.get('/settings', authenticate, async (req, res, next) => {
 documentRoutes.put('/settings', authenticate, authorize('settings:update'), async (req, res, next) => {
     try {
         const settingsBody = req.body;
+        const tenantId = req.authUser?.tenantId || req.user?.tenantId || null;
+        const branchId = req.authUser?.activeBranchId || req.user?.branchId || null;
 
         for (const [key, value] of Object.entries(settingsBody)) {
+            const settingConds: any[] = [eq(settings.category, 'invoice'), eq(settings.key, key)];
+            settingConds.push(branchId ? eq(settings.branchId, branchId) : isNull(settings.branchId));
+            if (tenantId && !req.authUser?.isSuperAdmin) {
+                settingConds.push(eq(settings.tenantId, tenantId));
+            } else {
+                settingConds.push(isNull(settings.tenantId));
+            }
             const existing = await db.query.settings.findFirst({
-                where: and(eq(settings.category, 'invoice'), eq(settings.key, key), isNull(settings.branchId)),
+                where: and(...settingConds),
             });
             if (existing) {
                 await db.update(settings).set({ value: value as any, updatedAt: new Date() }).where(eq(settings.id, existing.id));
             } else {
-                await db.insert(settings).values({ category: 'invoice', key, value: value as any });
+                await db.insert(settings).values({ category: 'invoice', key, value: value as any, tenantId, branchId });
             }
         }
 

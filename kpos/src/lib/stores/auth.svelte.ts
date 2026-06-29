@@ -4,6 +4,7 @@
 
 import { authClientApi } from '$api/auth-client';
 import { api } from '$api';
+import { setToken } from '$api/token';
 import { browser } from '$app/environment';
 import { LOCAL_STORAGE_KEYS } from '$lib/config';
 import { tenantSettings } from '$lib/stores/settings.svelte';
@@ -16,25 +17,40 @@ const ACCESSIBLE_STORES_KEY = LOCAL_STORAGE_KEYS.ACCESSIBLE_STORES;
 const RULES_KEY = LOCAL_STORAGE_KEYS.RULES;
 
 /**
- * 7-level role hierarchy matching the backend ROLE_LEVELS map.
- * Lower = broader access.
+ * 6-level role hierarchy — mirrors backend ROLE_LEVELS in auth.middleware.ts exactly.
+ * Lower number = broader access. Legacy aliases kept for backward compat.
  */
 export const ROLE_LEVELS: Record<string, number> = {
-    system_admin: 1,
-    admin: 2,
-    tenant_admin: 2,
-    hq_admin: 3,
-    hq_manager: 4,
-    branch_admin: 5,
-    store_owner: 5,
-    branch_manager: 6,
-    manager: 6,
-    store_manager: 6,
-    cashier: 7,
-    staff: 7,
-    kitchen_staff: 7,
-    waiter: 7,
-    inventory_staff: 7,
+    // Level 1 — Platform
+    platform_super_admin: 1,
+    platform_support:     1,
+    platform_auditor:     1,
+    super_admin:          1,
+    admin:                1,
+    // Level 2 — Merchant Owner (legacy aliases)
+    merchant_owner:  2,
+    hq_admin:        2,
+    store_owner:     2,
+    tenant_admin:    2,
+    // Level 3 — Tenant Management
+    merchant_manager: 3,
+    accountant:       3,
+    hq_manager:       3,
+    // Level 4 — Branch Supervisor (legacy aliases)
+    supervisor:      4,
+    branch_admin:    4,
+    branch_manager:  4,
+    store_manager:   4,
+    store_admin:     4,
+    manager:         4,
+    // Level 5 — Cashier
+    senior_cashier: 5,
+    cashier:        5,
+    staff:          5,
+    // Level 6 — Specialist
+    inventory_staff: 6,
+    kitchen_staff:   6,
+    waiter:          6,
 };
 
 interface User {
@@ -84,7 +100,6 @@ export interface UserRule {
 // Create reactive auth state
 function createAuthStore() {
     let accessToken = $state<string | null>(null);
-    let refreshToken = $state<string | null>(null);
     let user = $state<User | null>(null);
     let isLoading = $state(true);
     let accessibleStores = $state<StoreAccess[]>([]);
@@ -94,9 +109,6 @@ function createAuthStore() {
 
     // Initialize from localStorage
     if (browser) {
-        accessToken = localStorage.getItem(ACCESS_TOKEN_KEY);
-        refreshToken = localStorage.getItem(REFRESH_TOKEN_KEY);
-        
         let parsedUser: User | null = null;
         const storedUser = localStorage.getItem(USER_KEY);
         if (storedUser) {
@@ -107,7 +119,7 @@ function createAuthStore() {
             }
         }
         user = parsedUser;
-        
+
         // Load store context
         let parsedStores: StoreAccess[] = [];
         const storedStores = localStorage.getItem(ACCESSIBLE_STORES_KEY);
@@ -130,30 +142,20 @@ function createAuthStore() {
                 userRules = [];
             }
         }
-        
+
         // Set active branch from active store or user's default
         const initStore = parsedStores.find(s => s.storeId === activeStoreId);
         activeBranchId = initStore?.branchId || parsedUser?.branchId || null;
-        
+
         isLoading = false;
 
-        // On page reload, refresh permissions + rules only if token is still valid.
-        // Skipping when expired prevents the afterResponse hook from triggering a 401
-        // redirect cascade that wipes localStorage mid-flight (erasing other in-flight tokens).
-        const storedToken = localStorage.getItem(ACCESS_TOKEN_KEY);
-        if (parsedUser && storedToken) {
-            try {
-                const payload = JSON.parse(atob(storedToken.split('.')[1]));
-                const tokenExpiry = (payload.exp || 0) * 1000;
-                const tokenValid = tokenExpiry > Date.now() + 30_000;
-                if (tokenValid) {
-                    setTimeout(() => Promise.all([refreshProfile(), loadRules(), tenantSettings.load()]), 300);
-                }
-                // If expired, do nothing — ky's afterResponse hook will redirect on the
-                // next authenticated request the user actually triggers.
-            } catch {
-                // malformed JWT — ignore
-            }
+        // On page reload: silently exchange the HttpOnly refresh cookie for a new access token.
+        // The browser sends the cookie automatically — no token in localStorage needed.
+        if (parsedUser) {
+            setTimeout(async () => {
+                const ok = await refresh();
+                if (ok) await Promise.all([refreshProfile(), loadRules(), tenantSettings.load()]);
+            }, 0);
         }
     }
 
@@ -188,6 +190,22 @@ function createAuthStore() {
     // Derived: true if user is at HQ level (can see child branches)
     const isHQLevel = $derived(roleLevel <= 4);
 
+    let _refreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function scheduleRefresh(token: string): void {
+        if (_refreshTimer) clearTimeout(_refreshTimer);
+        try {
+            const payload = JSON.parse(atob(token.split('.')[1]));
+            const exp = (payload.exp || 0) * 1000;
+            const ttlMs = exp - Date.now();
+            if (ttlMs > 0) {
+                _refreshTimer = setTimeout(() => refresh(), ttlMs * 0.8);
+            }
+        } catch {
+            // ignore malformed token
+        }
+    }
+
     async function login(email: string, password: string): Promise<boolean | string> {
         try {
             isLoading = true;
@@ -195,15 +213,16 @@ function createAuthStore() {
 
             if (response.success && response.data) {
                 accessToken = response.data.accessToken;
-                refreshToken = response.data.refreshToken;
                 user = response.data.user;
 
+                setToken(response.data.accessToken);
+                scheduleRefresh(response.data.accessToken);
+
                 if (browser) {
-                    localStorage.setItem(ACCESS_TOKEN_KEY, response.data.accessToken);
-                    localStorage.setItem(REFRESH_TOKEN_KEY, response.data.refreshToken);
+                    // refreshToken is in HttpOnly cookie (set by server, never in localStorage — NEW-01)
                     localStorage.setItem(USER_KEY, JSON.stringify(response.data.user));
                 }
-                
+
                 // Load accessible stores, rules, permissions, and tenant config after login
                 await Promise.all([loadStoreContext(), loadRules(), refreshProfile(), tenantSettings.load()]);
 
@@ -318,27 +337,33 @@ function createAuthStore() {
         return accessibleBranchIds.includes(branchId) || user.branchId === branchId;
     }
 
+    // Deduplicates concurrent refresh calls so only one request fires at a time.
+    // This prevents race conditions on page load where the layout onMount and the
+    // auth store's own setTimeout(0) both trigger a refresh simultaneously —
+    // the second call would fail if the backend uses rotating refresh tokens.
+    let _refreshPromise: Promise<boolean> | null = null;
+
     async function refresh(): Promise<boolean> {
-        if (!refreshToken) return false;
+        if (_refreshPromise) return _refreshPromise;
+        _refreshPromise = (async () => {
+            try {
+                // Browser sends HttpOnly refresh cookie automatically (NEW-01)
+                const response = await authClientApi.refresh();
 
-        try {
-            const response = await authClientApi.refresh(refreshToken);
-
-            if (response.success && response.data) {
-                accessToken = response.data.accessToken;
-                refreshToken = response.data.refreshToken;
-
-                if (browser) {
-                    localStorage.setItem(ACCESS_TOKEN_KEY, response.data.accessToken);
-                    localStorage.setItem(REFRESH_TOKEN_KEY, response.data.refreshToken);
+                if (response.success && response.data) {
+                    accessToken = response.data.accessToken;
+                    setToken(response.data.accessToken);
+                    scheduleRefresh(response.data.accessToken);
+                    return true;
                 }
-
-                return true;
+                return false;
+            } catch {
+                return false;
+            } finally {
+                _refreshPromise = null;
             }
-            return false;
-        } catch {
-            return false;
-        }
+        })();
+        return _refreshPromise;
     }
 
     // Refresh user profile + permissions from server (use when permissions may be stale)
@@ -426,12 +451,14 @@ function createAuthStore() {
     function logout(): void {
         const currentToken = accessToken;
         accessToken = null;
-        refreshToken = null;
         user = null;
         accessibleStores = [];
         activeStoreId = null;
         activeBranchId = null;
         userRules = [];
+
+        setToken(null);
+        if (_refreshTimer) { clearTimeout(_refreshTimer); _refreshTimer = null; }
 
         if (browser) {
             localStorage.removeItem(ACCESS_TOKEN_KEY);
@@ -448,29 +475,26 @@ function createAuthStore() {
         }
     }
 
+    // Derived Set for O(1) permission lookups — recomputed only when user.permissions changes
+    const permissionSet = $derived(new Set(user?.permissions ?? []));
+
     function hasPermission(permission: string): boolean {
         if (!user) return false;
-        // Super Admin has all permissions
         if (user.isSuperAdmin) return true;
-        // Check if user has wildcard permission
-        if (user.permissions?.includes('*')) return true;
-        // Check specific permission
-        if (user.permissions?.includes(permission)) return true;
-        // Check :view/:read equivalence
-        if (permission.endsWith(':view') && user.permissions?.includes(permission.replace(':view', ':read'))) return true;
-        if (permission.endsWith(':read') && user.permissions?.includes(permission.replace(':read', ':view'))) return true;
-        // Check module-level permission (e.g., 'products:view' matches 'products:*')
+        const perms = permissionSet;
+        if (perms.has('*')) return true;
+        if (perms.has(permission)) return true;
+        // :view/:read equivalence
+        if (permission.endsWith(':view') && perms.has(permission.replace(':view', ':read'))) return true;
+        if (permission.endsWith(':read') && perms.has(permission.replace(':read', ':view'))) return true;
+        // Module wildcard: 'products:view' matches 'products:*'
         const [module] = permission.split(':');
-        if (user.permissions?.includes(`${module}:*`)) return true;
-        
-        // Check menu-based permissions (new system)
-        const menuKey = permission.split(':')[0];
-        if (user.permissions?.includes(menuKey)) return true;
-        
-        // Check if parent menu is granted (e.g., 'sales' grants 'sales.pos')
-        const parentKey = menuKey.split('.')[0];
-        if (parentKey !== menuKey && user.permissions?.includes(parentKey)) return true;
-        
+        if (perms.has(`${module}:*`)) return true;
+        // Plain module key
+        if (perms.has(module)) return true;
+        // Parent module key (e.g. 'sales' grants 'sales.pos')
+        const parentKey = module.split('.')[0];
+        if (parentKey !== module && perms.has(parentKey)) return true;
         return false;
     }
 
@@ -513,7 +537,6 @@ function createAuthStore() {
 
     return {
         get accessToken() { return accessToken; },
-        get refreshToken() { return refreshToken; },
         get user() { return user; },
         get isAuthenticated() { return isAuthenticated; },
         get isLoading() { return isLoading; },
@@ -527,6 +550,7 @@ function createAuthStore() {
         get storesByBranch() { return storesByBranch; },
 
         // Role hierarchy
+        get isSuperAdmin() { return user?.isSuperAdmin === true; },
         get roleLevel() { return roleLevel; },
         get canSeeAllBranches() { return canSeeAllBranches; },
         get isHQLevel() { return isHQLevel; },

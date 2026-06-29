@@ -709,7 +709,7 @@
                         id="staffPassword"
                         type="password"
                         bind:value={formData.password}
-                        placeholder={selectedStaff ? "ປ່ອຍວ່າງຖ້າບໍ່ຕ້ອງການປ່ຽນ" : ""}
+                        placeholder={selectedStaff ? t("staff.passwordUnchangedPlaceholder") : ""}
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                         required={!selectedStaff}
                     />
@@ -728,7 +728,7 @@
                 {#if stores.length > 1}
                 <div>
                     <label for="staffStore" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                        ຮ້ານ (Store)
+                        {t("staff.store")}
                     </label>
                     <select
                         id="staffStore"
@@ -739,7 +739,7 @@
                         }}
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                     >
-                        <option value="">-- ທຸກຮ້ານ --</option>
+                        <option value="">-- {t("stores.allStores")} --</option>
                         {#each stores as store (store.id)}
                             <option value={store.id}>{store.name}</option>
                         {/each}
@@ -756,7 +756,7 @@
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                         required
                     >
-                        <option value="">-- ເລືອກສາຂາ --</option>
+                        <option value="">-- {t("branches.selectBranch")} --</option>
                         {#each filteredBranches as branch (branch.id)}
                             <option value={branch.id}>{branch.name}</option>
                         {/each}
@@ -775,7 +775,7 @@
                         }}
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                     >
-                        <option value="">-- ເລືອກບົດບາດ --</option>
+                        <option value="">-- {t("roles.selectRole")} --</option>
                         {#each roles as role (role.id)}
                             <option value={role.id}>{role.displayName || role.name}</option>
                         {/each}

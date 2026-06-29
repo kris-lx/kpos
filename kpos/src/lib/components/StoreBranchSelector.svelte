@@ -1,5 +1,6 @@
 <script lang="ts">
     import { auth } from "$lib/stores/auth.svelte";
+    import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$lib/utils";
     import { Building2, Store, ChevronDown, Check } from "lucide-svelte";
 
@@ -54,7 +55,7 @@
         >
             <Store class={cn("text-primary-500", compact ? "w-4 h-4" : "w-5 h-5")} />
             <span class="font-medium truncate max-w-[150px]">
-                {activeStore?.storeName || "ເລືອກຮ້ານ"}
+                {activeStore?.storeName || t("stores.selectStore")}
             </span>
             <ChevronDown class={cn("transition-transform", isOpen && "rotate-180", compact ? "w-4 h-4" : "w-5 h-5")} />
         </button>
@@ -62,7 +63,7 @@
         {#if isOpen}
             <div class="absolute top-full left-0 mt-2 w-64 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-xl z-50 overflow-hidden">
                 <div class="p-2 border-b border-gray-100 dark:border-gray-700">
-                    <p class="text-xs text-gray-500 dark:text-gray-400 px-2">ເລືອກຮ້ານ/ສາຂາ</p>
+                    <p class="text-xs text-gray-500 dark:text-gray-400 px-2">{t("stores.selectStoreBranch")}</p>
                 </div>
                 <div class="max-h-64 overflow-y-auto p-2 space-y-1">
                     {#each accessibleStores as store}
@@ -104,7 +105,7 @@
     <div class="flex items-center gap-2 px-3 py-2 rounded-xl bg-gradient-to-r from-amber-50 to-orange-50 dark:from-amber-900/20 dark:to-orange-900/20 border border-amber-200 dark:border-amber-800">
         <Store class="w-5 h-5 text-amber-600 dark:text-amber-400" />
         <span class="text-sm font-medium text-amber-700 dark:text-amber-300">
-            {isSuperAdmin ? "Super Admin" : "Admin"} - ເຫັນທຸກຮ້ານ
+            {t("stores.adminAllStores", { role: isSuperAdmin ? "Super Admin" : "Admin" })}
         </span>
     </div>
 {/if}

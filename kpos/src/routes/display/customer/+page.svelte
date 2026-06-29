@@ -1,6 +1,7 @@
 ﻿<script lang="ts">
     import { onMount, onDestroy } from "svelte";
     import { cn } from "$utils";
+    import { api } from "$api";
     import { t } from "$lib/i18n/index.svelte";
     import {
         Store,
@@ -21,8 +22,8 @@
         fontSize: "large" as "small" | "medium" | "large",
         accentColor: "#3b82f6",
         currency: "₭",
-        storeName: "KPOS Demo Store",
-        storeSlogan: "ຍິນດີຕ້ອນຮັບ",
+        storeName: "",
+        storeSlogan: "",
     });
 
     // Current transaction data (received from POS via BroadcastChannel)
@@ -52,27 +53,7 @@
         status: "idle",
     });
 
-    // Sample promotions to show when idle
-    const promotions = [
-        {
-            id: 1,
-            title: "ສ່ວນຫຼຸດ 10%",
-            description: "ສຳລັບສະມາຊິກໃໝ່",
-            image: "/images/promo1.jpg",
-        },
-        {
-            id: 2,
-            title: "ຊື້ 2 ແຖມ 1",
-            description: "ສິນຄ້າທີ່ຮ່ວມລາຍການ",
-            image: "/images/promo2.jpg",
-        },
-        {
-            id: 3,
-            title: "ຟຣີຄ່າຈັດສົ່ງ",
-            description: "ສັ່ງຂັ້ນຕ່ຳ 500,000₭",
-            image: "/images/promo3.jpg",
-        },
-    ];
+    let promotions = $state<Array<{ id: string; title: string; description?: string }>>([]);
 
     let currentTime = $state(new Date());
     let currentPromoIndex = $state(0);
@@ -80,7 +61,36 @@
     let promoInterval: ReturnType<typeof setInterval>;
     let channel: BroadcastChannel | null = null;
 
+    async function loadDisplayData() {
+        try {
+            const [settingsRes, promotionsRes] = await Promise.all([
+                api.get("settings/category/display").json<any>(),
+                api.get("promotions?limit=10").json<any>(),
+            ]);
+
+            const rows: any[] = Array.isArray(settingsRes.data) ? settingsRes.data : [];
+            const displayConfig = rows.find((row: any) => row.key === "display_config")?.value;
+            const parsedConfig = typeof displayConfig === "string" ? JSON.parse(displayConfig) : displayConfig;
+            if (parsedConfig) {
+                displaySettings = { ...displaySettings, ...parsedConfig };
+            }
+
+            promotions = (promotionsRes.data || [])
+                .filter((promo: any) => promo.isActive !== false)
+                .map((promo: any) => ({
+                    id: String(promo.id),
+                    title: promo.name,
+                    description: promo.description,
+                }));
+        } catch (error) {
+            console.error("Failed to load customer display data:", error);
+            promotions = [];
+        }
+    }
+
     onMount(() => {
+        loadDisplayData();
+
         // Update clock
         timeInterval = setInterval(() => {
             currentTime = new Date();
@@ -88,7 +98,9 @@
 
         // Rotate promotions
         promoInterval = setInterval(() => {
-            currentPromoIndex = (currentPromoIndex + 1) % promotions.length;
+            if (promotions.length > 0) {
+                currentPromoIndex = (currentPromoIndex + 1) % promotions.length;
+            }
         }, 5000);
 
         // Listen for POS updates via BroadcastChannel
@@ -243,11 +255,10 @@
                                     ? "text-gray-400"
                                     : "text-gray-500",
                             )}
-                        >
-                            ກະລຸນາຮໍຖ້າພະນັກງານສະແກນສິນຄ້າ
-                        </p>
+                        >{t("display.waitForScan")}</p>
 
                         <!-- Promotion Carousel -->
+                        {#if promotions.length > 0}
                         <div class="mt-12">
                             <div
                                 class={cn(
@@ -294,6 +305,7 @@
                                 {/each}
                             </div>
                         </div>
+                        {/if}
                     </div>
                 {/if}
             </div>
@@ -320,7 +332,7 @@
                     >
                         <h2 class="text-xl font-bold flex items-center gap-2">
                             <ShoppingCart class="w-6 h-6" />
-                            ລາຍການສິນຄ້າ
+                            {t("display.productItems")}
                         </h2>
                         <span
                             class={cn(
@@ -330,7 +342,7 @@
                                     : "bg-gray-200",
                             )}
                         >
-                            {currentTransaction.items.length} ລາຍການ
+                            {currentTransaction.items.length} {t("common.items")}
                         </span>
                     </div>
 
@@ -420,7 +432,7 @@
                                 <span
                                     class={displaySettings.theme === "dark"
                                         ? "text-gray-400"
-                                        : "text-gray-600"}>ລວມ</span
+                                        : "text-gray-600"}>{t("pos.subtotal")}</span
                                 >
                                 <span
                                     >{formatCurrency(
@@ -432,7 +444,7 @@
                                 <div
                                     class="flex justify-between text-lg text-success-500"
                                 >
-                                    <span>ສ່ວນຫຼຸດ</span>
+                                    <span>{t("pos.discount")}</span>
                                     <span
                                         >-{formatCurrency(
                                             currentTransaction.discount,
@@ -445,7 +457,7 @@
                                     <span
                                         class={displaySettings.theme === "dark"
                                             ? "text-gray-400"
-                                            : "text-gray-600"}>ພາສີ (VAT)</span
+                                            : "text-gray-600"}>{t("documents.tax")} (VAT)</span
                                     >
                                     <span
                                         >{formatCurrency(
@@ -475,7 +487,7 @@
                                         : "text-gray-600",
                                 )}
                             >
-                                ຍອດຊຳລະ
+                                {t("display.paymentAmount")}
                             </p>
                             <p
                                 class="text-5xl font-bold"
@@ -500,7 +512,7 @@
                                 class="w-12 h-12 mx-auto mb-3 text-yellow-500"
                             />
                             <p class="text-xl font-bold text-yellow-500">
-                                ກຳລັງຊຳລະເງິນ...
+                                {t("display.processingPayment")}
                             </p>
                         </div>
                     {:else if currentTransaction.status === "complete"}
@@ -516,7 +528,7 @@
                                 class="w-12 h-12 mx-auto mb-3 text-success-500"
                             />
                             <p class="text-xl font-bold text-success-500">
-                                ຊຳລະສຳເລັດ!
+                                {t("pos.paymentSuccess")}
                             </p>
                             {#if currentTransaction.change}
                                 <p
@@ -527,7 +539,7 @@
                                             : "text-gray-600",
                                     )}
                                 >
-                                    ເງິນທອນ: {formatCurrency(
+                                    {t("pos.change")}: {formatCurrency(
                                         currentTransaction.change,
                                     )}
                                 </p>
@@ -558,7 +570,7 @@
                                         : "text-gray-600",
                                 )}
                             >
-                                ສະແກນເພື່ອຊຳລະ
+                                {t("pos.scanQrToPay")}
                             </p>
                         </div>
                     {/if}

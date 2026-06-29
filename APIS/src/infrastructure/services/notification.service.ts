@@ -1,16 +1,41 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // KPOS - Notification Service
-// Sends notifications via: DB persistence + Socket.IO real-time + RabbitMQ queue
+// Sends notifications via: DB persistence + Socket.IO real-time + Web Push + RabbitMQ queue
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { db } from '@/config/database.config';
-import { notifications } from '@/db/schema/tables';
+import { notifications, settings } from '@/db/schema/tables';
 import { eq, and, desc, count } from 'drizzle-orm';
 import { publish, QUEUES, isRabbitMQConnected } from '@/config/rabbitmq.config';
 import { SocketEventEmitter } from '@/infrastructure/http/socket';
+import { webPushService } from './webpush.service';
+
+async function getLineToken(tenantId?: string | null): Promise<string | null> {
+    try {
+        const conds: any[] = [eq(settings.category, 'notifications'), eq(settings.key, 'lineToken')];
+        if (tenantId) conds.push(eq(settings.tenantId, tenantId));
+        const row = await db.query.settings.findFirst({ where: and(...conds) });
+        if (!row?.value) return null;
+        const val = typeof row.value === 'string' ? row.value : JSON.stringify(row.value);
+        return val.replace(/^"|"$/g, ''); // strip JSON quotes if stored as JSON string
+    } catch { return null; }
+}
+
+async function sendLineNotify(token: string, message: string): Promise<void> {
+    try {
+        await fetch('https://notify-api.line.me/api/notify', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `message=${encodeURIComponent(message)}`,
+        });
+    } catch (err) {
+        console.error('[LineNotify] Send error:', err instanceof Error ? err.message : err);
+    }
+}
 
 export interface CreateNotificationDTO {
     userId: string;
+    tenantId?: string | null;
     type: string;
     title: string;
     message: string;
@@ -46,6 +71,20 @@ class NotificationService {
                 data: dto.data,
                 createdAt: notification.createdAt,
             });
+
+            // 3. Web Push (background push to browser/device)
+            webPushService.sendToUser(dto.userId, {
+                title: dto.title,
+                body: dto.message,
+                tag: dto.type,
+                data: dto.data,
+            }).catch(() => {}); // fire-and-forget; errors logged inside service
+
+            // 4. LINE Notify (if tenant has a token configured)
+            const lineToken = await getLineToken(dto.tenantId);
+            if (lineToken) {
+                sendLineNotify(lineToken, `[${dto.title}] ${dto.message}`).catch(() => {});
+            }
         } catch (error) {
             console.error('[Notification] Failed to send:', error instanceof Error ? error.message : error);
         }
@@ -64,7 +103,7 @@ class NotificationService {
     }
 
     async queue(dto: CreateNotificationDTO): Promise<void> {
-        const queued = isRabbitMQConnected() && publish(QUEUES.NOTIFICATION, dto as Record<string, unknown>);
+        const queued = isRabbitMQConnected() && publish(QUEUES.NOTIFICATION, dto as unknown as Record<string, unknown>);
         if (!queued) {
             await this.send(dto);
         }

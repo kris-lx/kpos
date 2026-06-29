@@ -562,10 +562,10 @@
                 class="p-6 space-y-4 max-h-[70vh] overflow-y-auto"
             >
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                    <label for="a11y-app-promotions-discounts-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                         ຊື່ສ່ວນຫຼຸດ *
                     </label>
-                    <input
+                    <input id="a11y-app-promotions-discounts-page-svelte-1"
                         type="text"
                         bind:value={formData.name}
                         required
@@ -574,10 +574,10 @@
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                    <label for="a11y-app-promotions-discounts-page-svelte-2" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                         ລາຍລະອຽດ
                     </label>
-                    <textarea
+                    <textarea id="a11y-app-promotions-discounts-page-svelte-2"
                         bind:value={formData.description}
                         rows="2"
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-orange-500 focus:border-transparent resize-none"
@@ -586,10 +586,10 @@
 
                 <div class="grid grid-cols-3 gap-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                        <label for="a11y-app-promotions-discounts-page-svelte-3" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             ປະເພດສ່ວນຫຼຸດ
                         </label>
-                        <select
+                        <select id="a11y-app-promotions-discounts-page-svelte-3"
                             bind:value={formData.discountType}
                             class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-orange-500 focus:border-transparent"
                         >
@@ -604,10 +604,10 @@
                         </select>
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                        <label for="a11y-app-promotions-discounts-page-svelte-4" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             ມູນຄ່າ *
                         </label>
-                        <input
+                        <input id="a11y-app-promotions-discounts-page-svelte-4"
                             type="number"
                             bind:value={formData.discountValue}
                             required
@@ -616,10 +616,10 @@
                         />
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                        <label for="a11y-app-promotions-discounts-page-svelte-5" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             ຊື້ຂັ້ນຕ່ຳ (ຊິ້ນ)
                         </label>
-                        <input
+                        <input id="a11y-app-promotions-discounts-page-svelte-5"
                             type="number"
                             bind:value={formData.minQuantity}
                             min="1"
@@ -630,9 +630,9 @@
 
                 <!-- Apply To -->
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                    <p class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                         ນຳໃຊ້ກັບ
-                    </label>
+                    </p>
                     <div class="flex gap-2">
                         {#each [
                             { id: "all", label: "ທັງໝົດ", icon: ShoppingBag },
@@ -659,9 +659,9 @@
                 <!-- Products Selection -->
                 {#if formData.applyTo === "products"}
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                        <p class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             ເລືອກສິນຄ້າ
-                        </label>
+                        </p>
                         <div class="max-h-40 overflow-y-auto border border-gray-200 dark:border-gray-700 rounded-xl p-2 space-y-1">
                             {#each products as product (product.id)}
                                 <label class="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer">
@@ -681,9 +681,9 @@
                 <!-- Categories Selection -->
                 {#if formData.applyTo === "categories"}
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                        <p class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             ເລືອກໝວດໝູ່
-                        </label>
+                        </p>
                         <div class="max-h-40 overflow-y-auto border border-gray-200 dark:border-gray-700 rounded-xl p-2 space-y-1">
                             {#each categories as category (category.id)}
                                 <label class="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer">
@@ -703,20 +703,20 @@
                 <!-- Dates -->
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                        <label for="a11y-app-promotions-discounts-page-svelte-6" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             ວັນເລີ່ມຕົ້ນ
                         </label>
-                        <input
+                        <input id="a11y-app-promotions-discounts-page-svelte-6"
                             type="date"
                             bind:value={formData.startDate}
                             class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-orange-500 focus:border-transparent"
                         />
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                        <label for="a11y-app-promotions-discounts-page-svelte-7" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             ວັນສິ້ນສຸດ
                         </label>
-                        <input
+                        <input id="a11y-app-promotions-discounts-page-svelte-7"
                             type="date"
                             bind:value={formData.endDate}
                             class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-orange-500 focus:border-transparent"

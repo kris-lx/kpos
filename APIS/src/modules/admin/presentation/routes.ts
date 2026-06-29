@@ -4,15 +4,21 @@
 
 import { Router } from 'express';
 import { totalmem, freemem } from 'os';
-import { authenticate, requireSuperAdmin, requireAdmin, requireTenantAdmin, isSuperAdmin, isAdmin, invalidateRoleRulesCache, invalidateAllUserStoreCache, invalidateUserStoreCache, branchFilter, buildTenantCondition, ROLE_LEVELS } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, requireSuperAdmin, requireAdmin, requireTenantAdmin, isSuperAdmin, isAdmin, invalidateRoleRulesCache, invalidateAllUserStoreCache, invalidateUserStoreCache, branchFilter, buildTenantCondition, ROLE_LEVELS } from '@/infrastructure/http/middleware/auth.middleware';
 import { permissionsToMask } from '@/infrastructure/permissions';
 import { invalidateAllTenantPermissions } from '@/infrastructure/services/permission.service';
 import { db } from '@/config/database.config';
+import { writePlatformAuditLog } from '@/infrastructure/helpers/platform-audit.helper';
 import { publish, QUEUES, isRabbitMQConnected } from '@/config/rabbitmq.config';
 import argon2 from 'argon2';
 import { tenants, users, sessions, roles, rules, roleRules, permissionGroups, permissions, menuPermissions, stores, userStores, productStores, storeRequests, branches, activityLogs, transactions, transactionItems, transactionPayments, heldSales, orders, orderItems, reservations, tables, cashMovements, shifts, cashRegisters, stockTransferItems, stockTransfers, stockMovements, stockCounts, stockCountItems, inventory, purchaseOrderItems, purchaseOrders, vendors, billOfMaterials, productPriceLevels, skuVariants, products, categories, priceLevels, pointsHistory, customers, pointHistory, members, membershipTiers, pointSettings, promotions, coupons, paymentMethods, discounts, settlements, documents, documentTemplates, settings, notifications, systemEnums } from '@/db/schema/tables';
 import { eq, and, or, ne, ilike, inArray, notInArray, gte, lte, desc, asc, count, sum, sql, isNull, isNotNull } from 'drizzle-orm';
 import { ENUM_SEED_DATA } from '@/modules/settings/presentation/routes';
+import {
+    DEFAULT_ROLES as ACCESS_DEFAULT_ROLES,
+    DEFAULT_RULES as ACCESS_DEFAULT_RULES,
+    DEFAULT_ROLE_RULES as ACCESS_DEFAULT_ROLE_RULES,
+} from '@/shared/defaultAccessControl';
 
 export const adminRoutes = Router();
 
@@ -375,6 +381,13 @@ adminRoutes.post('/requests/:id/approve', authenticate, requireAdmin(), async (r
                 },
             }).returning();
             createdTenant = newTenant;
+            // Platform audit: new tenant provisioned
+            void writePlatformAuditLog({
+                actorId: reviewerId as string,
+                action: 'TENANT_CREATED',
+                tenantId: newTenant.id,
+                metadata: { tenantName: newTenant.name, requestId: id, storeName: request.storeName },
+            });
             const tenantId = newTenant.id;
 
             // Create default (HQ) branch under the new tenant. It is the root of the
@@ -418,7 +431,7 @@ adminRoutes.post('/requests/:id/approve', authenticate, requireAdmin(), async (r
                     tenantId,
                     name: 'store_owner', displayName: 'Store Owner',
                     description: 'ເຈົ້າຂອງຮ້ານ - ສິດຄວບຄຸມຮ້ານທັງໝົດ',
-                    permissions: DEFAULT_ROLES.find(r => r.name === 'store_owner')?.permissions || [],
+                    permissions: ACCESS_DEFAULT_ROLES.find(r => r.name === 'store_owner')?.permissions || [],
                     isSystem: true,
                 }).returning();
                 storeOwnerRole = created;
@@ -427,7 +440,7 @@ adminRoutes.post('/requests/:id/approve', authenticate, requireAdmin(), async (r
 
             // Seed roleRules for new store_owner role so CRUD operations work after first login
             if (isNewRole) {
-                const storeOwnerRuleMap = DEFAULT_ROLE_RULES['store_owner'] || {};
+                const storeOwnerRuleMap = ACCESS_DEFAULT_ROLE_RULES['store_owner'] || {};
                 const ruleNames = Object.keys(storeOwnerRuleMap);
                 if (ruleNames.length > 0) {
                     const existingRules = await db.query.rules.findMany({
@@ -526,6 +539,13 @@ adminRoutes.post('/requests/:id/reject', authenticate, requireAdmin(), async (re
         }
 
         await db.update(storeRequests).set({ status: 'rejected', reviewerId: reviewerId || null, reviewNote: note || 'ຄຳຂໍຖືກປະຕິເສດ', reviewedAt: new Date() }).where(eq(storeRequests.id, id));
+        // Platform audit: request rejected
+        void writePlatformAuditLog({
+            actorId: reviewerId as string,
+            action: 'STORE_REQUEST_REJECTED',
+            tenantId: request.tenantId ?? null,
+            metadata: { requestId: id, requestType: request.type, note: note || null },
+        });
         const updatedRequest = await db.query.storeRequests.findFirst({
             where: eq(storeRequests.id, id),
             with: {
@@ -957,7 +977,7 @@ adminRoutes.get('/stores/:id/users', authenticate, async (req, res, next) => {
 /**
  * PUT /admin/stores/:id/update - Update store (non-admin users for their own store)
  */
-adminRoutes.put('/stores/:id/update', authenticate, async (req, res, next) => {
+adminRoutes.put('/stores/:id/update', authenticate, authorize('stores:update'), async (req, res, next) => {
     try {
         const authUser = req.authUser!;
 
@@ -1115,7 +1135,7 @@ adminRoutes.get('/dashboard/chart-data', authenticate, requireTenantAdmin(), bra
         // Fill missing days with 0
         const trendMap: Record<string, { count: number; revenue: number }> = {};
         txTrend.forEach(r => { trendMap[r.day] = { count: Number(r.count), revenue: Number(r.revenue) }; });
-        const transactionsTrend = [];
+        const transactionsTrend: { date: string; count: number; revenue: number }[] = [];
         for (let i = 6; i >= 0; i--) {
             const d = new Date();
             d.setDate(d.getDate() - i);
@@ -1597,7 +1617,7 @@ adminRoutes.get('/roles', authenticate, requireTenantAdmin(), async (req, res, n
  */
 adminRoutes.get('/roles/templates', authenticate, requireTenantAdmin(), async (req, res) => {
     // Add a stable id so frontend keyed-each blocks don't crash on undefined
-    const templates = DEFAULT_ROLES.map(r => ({ ...r, id: r.name }));
+    const templates = ACCESS_DEFAULT_ROLES.map(r => ({ ...r, id: r.name }));
     res.json({ success: true, data: templates });
 });
 
@@ -1607,9 +1627,9 @@ adminRoutes.get('/roles/templates', authenticate, requireTenantAdmin(), async (r
  */
 adminRoutes.post('/roles/seed', authenticate, requireAdmin(), async (req, res, next) => {
     try {
-        const results = [];
+        const results: any[] = [];
 
-        for (const roleData of DEFAULT_ROLES) {
+        for (const roleData of ACCESS_DEFAULT_ROLES) {
             const mask = permissionsToMask(roleData.permissions);
             const existing = await db.query.roles.findFirst({ where: eq(roles.name, roleData.name) });
 
@@ -2793,445 +2813,6 @@ const DEFAULT_MENU_STRUCTURE = [
 ];
 
 /**
- * Default role templates
- */
-const DEFAULT_ROLES = [
-    {
-        name: "super_admin",
-        displayName: "Super Admin",
-        description: "ຜູ້ດູແລລະບົບສູງສຸດ - ເຂົ້າເຖິງທຸກຢ່າງ",
-        permissions: ["*"],
-        isSystem: true
-    },
-    {
-        name: "admin",
-        displayName: "Admin",
-        description: "ຜູ້ດູແລລະບົບ - ຈັດການຮ້ານ ແລະ ພະນັກງານ",
-        permissions: [
-            "dashboard:view",
-            "sales:view", "sales:create", "sales:update", "sales:delete", "sales:void", "sales:refund",
-            "pos:access", "pos:discount", "pos:void", "pos:credit",
-            "products:view", "products:create", "products:update", "products:delete",
-            "categories:view", "categories:create", "categories:update", "categories:delete",
-            "inventory:view", "inventory:create", "inventory:update", "inventory:delete", "inventory:transfer", "inventory:adjust", "inventory:stockin", "inventory:stockout",
-            "promotions:view", "promotions:create", "promotions:update", "promotions:delete",
-            "customers:view", "customers:create", "customers:update", "customers:delete",
-            "payments:view", "payments:create", "payments:void", "payments:settle", "payments:manage",
-            "documents:view", "documents:create", "documents:update", "documents:delete",
-            "reports:view", "reports:sales", "reports:inventory", "reports:financial", "reports:staff",
-            "staff:view", "staff:create", "staff:update", "staff:delete",
-            "roles:view", "roles:create", "roles:update", "roles:delete",
-            "branches:view", "branches:create", "branches:update", "branches:delete",
-            "stores:view", "stores:create", "stores:update", "stores:delete",
-            "settings:view", "settings:update",
-            "restaurant:view", "restaurant:manage", "tables:create", "tables:update", "tables:delete",
-        ],
-        isSystem: true
-    },
-    {
-        name: "branch_admin",
-        displayName: "Branch Admin",
-        description: "ຜູ້ຈັດການສາຂາ - ຈັດການສາຂາ ແລະ ຮ້ານໃນສາຂາ",
-        permissions: [
-            "dashboard:view",
-            "sales:view", "sales:create", "sales:update", "pos:access", "pos:discount", "pos:credit",
-            "products:view", "products:create", "products:update",
-            "categories:view", "categories:create", "categories:update",
-            "inventory:view", "inventory:create", "inventory:update", "inventory:transfer", "inventory:adjust", "inventory:stockin", "inventory:stockout",
-            "promotions:view", "promotions:create",
-            "customers:view", "customers:create", "customers:update",
-            "payments:view", "payments:create", "payments:manage",
-            "documents:view", "documents:create",
-            "reports:view", "reports:sales", "reports:inventory",
-            "staff:view", "staff:create", "staff:update",
-            "roles:view",
-            "stores:view", "stores:update",
-            "settings:view", "settings:update",
-            "restaurant:view", "restaurant:manage", "tables:create", "tables:update",
-        ],
-        isSystem: true
-    },
-    {
-        name: "store_owner",
-        displayName: "Store Owner",
-        description: "ເຈົ້າຂອງຮ້ານ - ສິດຄວບຄຸມຮ້ານທັງໝົດ",
-        permissions: [
-            "dashboard:view",
-            "sales:view", "sales:create", "sales:update", "sales:delete", "sales:void", "sales:refund",
-            "pos:access", "pos:discount", "pos:void", "pos:credit",
-            "products:view", "products:create", "products:update", "products:delete",
-            "categories:view", "categories:create", "categories:update", "categories:delete",
-            "inventory:view", "inventory:create", "inventory:update", "inventory:delete", "inventory:transfer", "inventory:adjust", "inventory:stockin", "inventory:stockout",
-            "promotions:view", "promotions:create", "promotions:update", "promotions:delete",
-            "customers:view", "customers:create", "customers:update", "customers:delete",
-            "payments:view", "payments:create", "payments:void", "payments:settle", "payments:manage",
-            "documents:view", "documents:create", "documents:update", "documents:delete",
-            "reports:view", "reports:sales", "reports:inventory", "reports:financial", "reports:staff",
-            "staff:view", "staff:create", "staff:update", "staff:delete",
-            "roles:view", "roles:create", "roles:update", "roles:delete",
-            "branches:view", "branches:create", "branches:update", "branches:delete",
-            "stores:view", "stores:create", "stores:update", "stores:delete",
-            "settings:view", "settings:update",
-            "restaurant:view", "restaurant:manage", "tables:create", "tables:update", "tables:delete",
-        ],
-        isSystem: true
-    },
-    {
-        name: "store_manager",
-        displayName: "Store Manager",
-        description: "ຜູ້ຈັດການຮ້ານ - ຈັດການຮ້ານດຽວ",
-        permissions: [
-            "dashboard:view",
-            "sales:view", "sales:create", "sales:update", "pos:access", "pos:discount", "pos:credit",
-            "products:view", "products:create", "products:update",
-            "categories:view", "categories:create",
-            "inventory:view", "inventory:create", "inventory:update", "inventory:stockin", "inventory:stockout",
-            "promotions:view", "promotions:create",
-            "customers:view", "customers:create", "customers:update",
-            "payments:view", "payments:create",
-            "documents:view", "documents:create",
-            "reports:view", "reports:sales",
-            "staff:view", "staff:create", "staff:update",
-            "roles:view",
-            "settings:view",
-        ],
-        isSystem: true
-    },
-    {
-        name: "cashier",
-        displayName: "Cashier",
-        description: "ພະນັກງານຂາຍ - ຂາຍສິນຄ້າ ແລະ ຮັບເງິນ",
-        permissions: [
-            "dashboard:view",
-            "sales:view", "sales:create", "pos:access",
-            "products:view",
-            "customers:view",
-            "payments:view", "payments:create",
-            "documents:view",
-        ],
-        isSystem: true
-    },
-    {
-        name: "inventory_staff",
-        displayName: "Inventory Staff",
-        description: "ພະນັກງານສາງ - ຈັດການສາງສິນຄ້າ",
-        permissions: [
-            "dashboard:view",
-            "products:view", "categories:view",
-            "inventory:view", "inventory:create", "inventory:update", "inventory:adjust", "inventory:transfer", "inventory:stockin", "inventory:stockout",
-            "reports:view", "reports:inventory",
-        ],
-        isSystem: true
-    },
-    {
-        name: "kitchen_staff",
-        displayName: "Kitchen Staff",
-        description: "ພະນັກງານຄົວ - ເບິ່ງອໍເດີ ແລະ ຈັດການຄົວ",
-        permissions: [
-            "restaurant:view", "restaurant:manage",
-        ],
-        isSystem: true
-    },
-    {
-        name: "waiter",
-        displayName: "Waiter",
-        description: "ພະນັກງານເສີບ - ຮັບອໍເດີ ແລະ ຈັດການໂຕະ",
-        permissions: [
-            "restaurant:view", "tables:create", "tables:update",
-        ],
-        isSystem: true
-    }
-];
-
-/**
- * Default Rules: Each rule groups sidebar routes + API permissions for a module
- */
-const DEFAULT_RULES = [
-    {
-        name: "dashboard",
-        displayName: "Dashboard",
-        description: "ໜ້າ Dashboard ຫຼັກ",
-        module: "dashboard",
-        icon: "LayoutDashboard",
-        routes: ["/dashboard"],
-        permissions: ["dashboard:view"],
-        order: 0,
-        isSystem: true,
-    },
-    {
-        name: "sales",
-        displayName: "ການຂາຍ (POS)",
-        description: "ໜ້າຂາຍ POS, ຂາຍສິນເຊື່ອ, ບິນພັກໄວ້",
-        module: "sales",
-        icon: "ShoppingCart",
-        routes: ["/pos", "/pos/credit", "/pos/held"],
-        permissions: ["sales:view", "sales:create", "sales:update", "sales:delete", "sales:void", "sales:refund", "pos:access", "pos:discount", "pos:void", "pos:credit"],
-        order: 1,
-        isSystem: true,
-    },
-    {
-        name: "products",
-        displayName: "ການຈັດການສິນຄ້າ",
-        description: "ສິນຄ້າ, ໝວດໝູ່, Barcode, SKU, ລະດັບລາຄາ",
-        module: "products",
-        icon: "Package",
-        routes: ["/products", "/products/sku", "/products/pricing", "/categories", "/barcode"],
-        permissions: ["products:view", "products:create", "products:update", "products:delete", "categories:view", "categories:create", "categories:update", "categories:delete"],
-        order: 2,
-        isSystem: true,
-    },
-    {
-        name: "inventory",
-        displayName: "ການຈັດການສາງ",
-        description: "ສາງ, ນຳເຂົ້າ/ອອກ, ປັບ, ໂອນ, ກວດນັບ, PO, ຜູ້ສະໜອງ",
-        module: "inventory",
-        icon: "Boxes",
-        routes: ["/inventory", "/inventory/stockin", "/inventory/stockout", "/inventory/adjust", "/inventory/transfer", "/inventory/count", "/inventory/purchase-orders", "/inventory/vendors", "/inventory/expiry", "/inventory/out-of-stock"],
-        permissions: ["inventory:view", "inventory:create", "inventory:update", "inventory:delete", "inventory:transfer", "inventory:adjust", "inventory:stockin", "inventory:stockout"],
-        order: 3,
-        isSystem: true,
-    },
-    {
-        name: "restaurant",
-        displayName: "ຮ້ານອາຫານ",
-        description: "ໂຕະ, ອໍເດີ, ຄົວ KDS, ຈອງໂຕະ, e-Menu",
-        module: "restaurant",
-        icon: "UtensilsCrossed",
-        routes: ["/restaurant/tables", "/restaurant/orders", "/restaurant/kitchen", "/restaurant/reservations", "/restaurant/e-menu"],
-        permissions: ["restaurant:view", "restaurant:manage", "tables:create", "tables:update", "tables:delete"],
-        order: 4,
-        isSystem: true,
-    },
-    {
-        name: "promotions",
-        displayName: "ໂປຣໂມຊັ່ນ",
-        description: "ໂປຣໂມຊັ່ນ, ຄູປອງ, ສ່ວນຫຼຸດ",
-        module: "promotions",
-        icon: "Gift",
-        routes: ["/promotions", "/promotions/coupons", "/promotions/discounts"],
-        permissions: ["promotions:view", "promotions:create", "promotions:update", "promotions:delete"],
-        order: 5,
-        isSystem: true,
-    },
-    {
-        name: "customers",
-        displayName: "ລູກຄ້າ (CRM)",
-        description: "ລູກຄ້າ, ສະມາຊິກ, ຄະແນນ, Loyalty",
-        module: "customers",
-        icon: "Users",
-        routes: ["/customers", "/customers/members", "/customers/points", "/customers/loyalty"],
-        permissions: ["customers:view", "customers:create", "customers:update", "customers:delete"],
-        order: 6,
-        isSystem: true,
-    },
-    {
-        name: "payments",
-        displayName: "ການຊຳລະ",
-        description: "ວິທີຊຳລະ, ລາຍການ, ປິດບັນຊີ",
-        module: "payments",
-        icon: "Wallet",
-        routes: ["/payments", "/payments/transactions", "/payments/settlements"],
-        permissions: ["payments:view", "payments:create", "payments:void", "payments:settle", "payments:manage"],
-        order: 7,
-        isSystem: true,
-    },
-    {
-        name: "documents",
-        displayName: "ເອກະສານ",
-        description: "ໃບບິນ, ອອກແບບໃບບິນ, ໃບແຈ້ງໜີ້, ໃບກຳກັບພາສີ",
-        module: "documents",
-        icon: "FileText",
-        routes: ["/documents", "/documents/design", "/documents/invoices", "/documents/tax-invoices"],
-        permissions: ["documents:view", "documents:create", "documents:update", "documents:delete"],
-        order: 8,
-        isSystem: true,
-    },
-    {
-        name: "reports",
-        displayName: "ລາຍງານ",
-        description: "ລາຍງານການຂາຍ, ສິນຄ້າ, ສາງ, ການເງິນ, ພະນັກງານ, ລູກຄ້າ",
-        module: "reports",
-        icon: "BarChart3",
-        routes: ["/reports", "/reports/products", "/reports/inventory", "/reports/financial", "/reports/staff", "/reports/customers"],
-        permissions: ["reports:view", "reports:sales", "reports:inventory", "reports:financial", "reports:staff"],
-        order: 9,
-        isSystem: true,
-    },
-    {
-        name: "branches",
-        displayName: "ຈັດການສາຂາ",
-        description: "ສາຂາ, ຂໍ້ມູນສາຂາ, ໂລໂກ້",
-        module: "branches",
-        icon: "Building2",
-        routes: ["/branches"],
-        permissions: ["branches:view", "branches:create", "branches:update", "branches:delete"],
-        order: 10,
-        isSystem: true,
-    },
-    {
-        name: "management.stores",
-        displayName: "ຈັດການຮ້ານຄ້າ",
-        description: "ຮ້ານຄ້າ, ຈຸດຂາຍ",
-        module: "management.stores",
-        icon: "Store",
-        routes: ["/management/stores", "/my-store", "/store-request"],
-        permissions: ["stores:view", "stores:create", "stores:update", "stores:delete"],
-        order: 11,
-        isSystem: true,
-    },
-    {
-        name: "management.staff",
-        displayName: "ຈັດການພະນັກງານ",
-        description: "ພະນັກງານ, ກະວຽກ",
-        module: "management.staff",
-        icon: "UserCog",
-        routes: ["/staff", "/staff/shifts", "/management/shifts"],
-        permissions: ["staff:view", "staff:create", "staff:update", "staff:delete"],
-        order: 11,
-        isSystem: true,
-    },
-    {
-        name: "management.roles",
-        displayName: "ຈັດການບົດບາດ",
-        description: "ບົດບາດ, ສິດ",
-        module: "management.roles",
-        icon: "Shield",
-        routes: ["/staff/roles"],
-        permissions: ["roles:view", "roles:create", "roles:update", "roles:delete"],
-        order: 12,
-        isSystem: true,
-    },
-    {
-        name: "management.operations",
-        displayName: "ຈັດການປະຈຳວັນ",
-        description: "ເຄື່ອງ POS, ກະວຽກ",
-        module: "management.operations",
-        icon: "Monitor",
-        routes: ["/management/cashregisters"],
-        permissions: ["stores:view", "stores:update"],
-        order: 13,
-        isSystem: true,
-    },
-    {
-        name: "settings",
-        displayName: "ຕັ້ງຄ່າ",
-        description: "ຕັ້ງຄ່າທົ່ວໄປ, ຈໍສະແດງ, ໃບບິນ, ພາສີ, ການຊຳລະ, ເຄື່ອງພິມ",
-        module: "settings",
-        icon: "Settings",
-        routes: ["/settings", "/settings/display", "/settings/receipt", "/settings/tax", "/settings/payments", "/settings/printers", "/settings/notifications", "/settings/integrations"],
-        permissions: ["settings:view", "settings:update"],
-        order: 11,
-        isSystem: true,
-    },
-    {
-        name: "admin",
-        displayName: "Super Admin",
-        description: "ແຜງຄວບຄຸມລະບົບ, ຄຳຂໍເປີດຮ້ານ, ຈັດການທຸກຢ່າງ",
-        module: "admin",
-        icon: "ShieldCheck",
-        routes: ["/admin", "/admin/requests", "/admin/branches", "/admin/users", "/admin/roles", "/admin/positions", "/admin/rules", "/admin/permissions", "/admin/audit", "/admin/enums"],
-        permissions: ["*"],
-        order: 12,
-        isSystem: true,
-    },
-];
-
-/**
- * Default Role→Rule CRUD mapping
- * { roleName: { ruleName: { read, create, update, delete } } }
- */
-const DEFAULT_ROLE_RULES: Record<string, Record<string, { r: boolean; c: boolean; u: boolean; d: boolean }>> = {
-    super_admin: {
-        dashboard: { r: true, c: true, u: true, d: true }, sales: { r: true, c: true, u: true, d: true },
-        products: { r: true, c: true, u: true, d: true }, inventory: { r: true, c: true, u: true, d: true },
-        restaurant: { r: true, c: true, u: true, d: true }, promotions: { r: true, c: true, u: true, d: true },
-        customers: { r: true, c: true, u: true, d: true }, payments: { r: true, c: true, u: true, d: true },
-        documents: { r: true, c: true, u: true, d: true }, reports: { r: true, c: true, u: true, d: true },
-        branches: { r: true, c: true, u: true, d: true },
-        'management.stores': { r: true, c: true, u: true, d: true }, 'management.staff': { r: true, c: true, u: true, d: true },
-        'management.roles': { r: true, c: true, u: true, d: true }, settings: { r: true, c: true, u: true, d: true },
-        admin: { r: true, c: true, u: true, d: true },
-    },
-    admin: {
-        dashboard: { r: true, c: true, u: true, d: true }, sales: { r: true, c: true, u: true, d: true },
-        products: { r: true, c: true, u: true, d: true }, inventory: { r: true, c: true, u: true, d: true },
-        restaurant: { r: true, c: true, u: true, d: true }, promotions: { r: true, c: true, u: true, d: true },
-        customers: { r: true, c: true, u: true, d: true }, payments: { r: true, c: true, u: true, d: true },
-        documents: { r: true, c: true, u: true, d: true }, reports: { r: true, c: true, u: true, d: true },
-        branches: { r: true, c: true, u: true, d: true },
-        'management.stores': { r: true, c: true, u: true, d: true }, 'management.staff': { r: true, c: true, u: true, d: true },
-        'management.roles': { r: true, c: true, u: true, d: true }, settings: { r: true, c: true, u: true, d: true },
-    },
-    hq_admin: {
-        dashboard: { r: true, c: true, u: true, d: true }, sales: { r: true, c: true, u: true, d: true },
-        products: { r: true, c: true, u: true, d: true }, inventory: { r: true, c: true, u: true, d: true },
-        restaurant: { r: true, c: true, u: true, d: true }, promotions: { r: true, c: true, u: true, d: true },
-        customers: { r: true, c: true, u: true, d: true }, payments: { r: true, c: true, u: true, d: true },
-        documents: { r: true, c: true, u: true, d: true }, reports: { r: true, c: true, u: true, d: true },
-        branches: { r: true, c: true, u: true, d: true },
-        'management.stores': { r: true, c: true, u: true, d: true }, 'management.staff': { r: true, c: true, u: true, d: true },
-        'management.roles': { r: true, c: false, u: false, d: false }, settings: { r: true, c: true, u: true, d: true },
-    },
-    hq_manager: {
-        dashboard: { r: true, c: false, u: false, d: false }, sales: { r: true, c: false, u: false, d: false },
-        products: { r: true, c: false, u: false, d: false }, inventory: { r: true, c: true, u: true, d: false },
-        restaurant: { r: true, c: false, u: false, d: false }, promotions: { r: true, c: false, u: false, d: false },
-        customers: { r: true, c: false, u: false, d: false }, payments: { r: true, c: false, u: false, d: false },
-        documents: { r: true, c: false, u: false, d: false }, reports: { r: true, c: false, u: false, d: false },
-        branches: { r: true, c: false, u: false, d: false },
-        'management.stores': { r: true, c: false, u: false, d: false }, 'management.staff': { r: true, c: false, u: false, d: false },
-        settings: { r: true, c: false, u: false, d: false },
-    },
-    store_owner: {
-        dashboard: { r: true, c: false, u: false, d: false }, sales: { r: true, c: true, u: true, d: true },
-        products: { r: true, c: true, u: true, d: true }, inventory: { r: true, c: true, u: true, d: false },
-        restaurant: { r: true, c: true, u: true, d: false }, promotions: { r: true, c: true, u: true, d: true },
-        customers: { r: true, c: true, u: true, d: false }, payments: { r: true, c: true, u: false, d: false },
-        documents: { r: true, c: true, u: false, d: false }, reports: { r: true, c: false, u: false, d: false },
-        branches: { r: true, c: false, u: true, d: false },
-        'management.stores': { r: true, c: true, u: true, d: true }, 'management.staff': { r: true, c: true, u: true, d: true },
-        'management.roles': { r: true, c: false, u: false, d: false }, settings: { r: true, c: false, u: true, d: false },
-    },
-    branch_admin: {
-        dashboard: { r: true, c: false, u: false, d: false }, sales: { r: true, c: true, u: true, d: false },
-        products: { r: true, c: true, u: true, d: false }, inventory: { r: true, c: true, u: true, d: false },
-        restaurant: { r: true, c: true, u: true, d: false }, promotions: { r: true, c: true, u: true, d: false },
-        customers: { r: true, c: true, u: true, d: false }, payments: { r: true, c: true, u: false, d: false },
-        documents: { r: true, c: true, u: false, d: false }, reports: { r: true, c: false, u: false, d: false },
-        branches: { r: true, c: false, u: true, d: false },
-        'management.stores': { r: true, c: false, u: true, d: false }, 'management.staff': { r: true, c: true, u: true, d: false },
-        settings: { r: true, c: false, u: true, d: false },
-    },
-    branch_manager: {
-        dashboard: { r: true, c: false, u: false, d: false }, sales: { r: true, c: true, u: true, d: false },
-        products: { r: true, c: true, u: true, d: false }, inventory: { r: true, c: true, u: true, d: false },
-        restaurant: { r: true, c: true, u: true, d: false }, promotions: { r: true, c: false, u: false, d: false },
-        customers: { r: true, c: true, u: true, d: false }, payments: { r: true, c: true, u: false, d: false },
-        documents: { r: true, c: true, u: false, d: false }, reports: { r: true, c: false, u: false, d: false },
-        'management.staff': { r: true, c: false, u: false, d: false },
-    },
-    store_manager: {
-        dashboard: { r: true, c: false, u: false, d: false }, sales: { r: true, c: true, u: true, d: false },
-        products: { r: true, c: true, u: true, d: false }, inventory: { r: true, c: true, u: true, d: false },
-        restaurant: { r: true, c: true, u: true, d: false }, promotions: { r: true, c: false, u: false, d: false },
-        customers: { r: true, c: true, u: true, d: false }, payments: { r: true, c: true, u: false, d: false },
-        documents: { r: true, c: true, u: false, d: false }, reports: { r: true, c: false, u: false, d: false },
-        'management.staff': { r: true, c: true, u: false, d: false }, settings: { r: true, c: false, u: false, d: false },
-    },
-    cashier: {
-        dashboard: { r: true, c: false, u: false, d: false }, sales: { r: true, c: true, u: false, d: false },
-        products: { r: true, c: false, u: false, d: false }, customers: { r: true, c: false, u: false, d: false },
-        payments: { r: true, c: true, u: false, d: false }, documents: { r: true, c: false, u: false, d: false },
-    },
-    inventory_staff: {
-        dashboard: { r: true, c: false, u: false, d: false }, products: { r: true, c: false, u: false, d: false },
-        inventory: { r: true, c: true, u: true, d: false }, reports: { r: true, c: false, u: false, d: false },
-    },
-    kitchen_staff: { restaurant: { r: true, c: true, u: true, d: false } },
-    waiter: { restaurant: { r: true, c: true, u: true, d: false }, sales: { r: true, c: true, u: false, d: false } },
-};
-
-/**
  * GET /admin/menu-permissions - Get menu structure for role assignment
  */
 adminRoutes.get('/menu-permissions', authenticate, requireTenantAdmin(), async (req, res, next) => {
@@ -3297,7 +2878,7 @@ adminRoutes.post('/rules/seed', authenticate, requireAdmin(), async (req, res, n
         await db.delete(rules);
 
         const ruleMap: Record<string, string> = {};
-        for (const ruleDef of DEFAULT_RULES) {
+        for (const ruleDef of ACCESS_DEFAULT_RULES) {
             const [rule] = await db.insert(rules).values({
                 name: ruleDef.name, displayName: ruleDef.displayName, description: ruleDef.description || null,
                 module: ruleDef.module, icon: ruleDef.icon || null, routes: ruleDef.routes,
@@ -3311,7 +2892,7 @@ adminRoutes.post('/rules/seed', authenticate, requireAdmin(), async (req, res, n
         for (const role of allRoles) { roleMap[role.name] = role.id; }
 
         let roleRuleCount = 0;
-        for (const [roleName, ruleEntries] of Object.entries(DEFAULT_ROLE_RULES)) {
+        for (const [roleName, ruleEntries] of Object.entries(ACCESS_DEFAULT_ROLE_RULES)) {
             const roleId = roleMap[roleName];
             if (!roleId) continue;
             for (const [ruleName, crud] of Object.entries(ruleEntries)) {
@@ -3384,7 +2965,7 @@ adminRoutes.put('/roles/:id/rules', authenticate, requireTenantAdmin(), async (r
 
         await db.delete(roleRules).where(eq(roleRules.roleId, roleId));
 
-        const created = [];
+        const created: any[] = [];
         for (const rr of rules) {
             if (!rr.ruleId) continue;
             const [entry] = await db.insert(roleRules).values({
@@ -3568,7 +3149,7 @@ adminRoutes.post('/roles/:id/copy-rules', authenticate, requireTenantAdmin(), as
 /**
  * PATCH /stores/:id/status - Toggle store status
  */
-adminRoutes.patch('/stores/:id/status', authenticate, async (req, res, next) => {
+adminRoutes.patch('/stores/:id/status', authenticate, authorize('stores:update', 'admin:manage'), async (req, res, next) => {
     try {
         const { id } = req.params;
         const { isActive } = req.body;

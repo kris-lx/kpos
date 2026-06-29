@@ -9,7 +9,7 @@ import { ApiError } from './error.middleware';
 import { db } from '@/config/database.config';
 import { cache } from '@/config/redis.config';
 import { eq, inArray, and, isNull, sql, type SQL } from 'drizzle-orm';
-import { users, userStores, roleRules as roleRulesTable, tenants, roles, branches } from '@/db/schema/tables';
+import { users, userStores, tenants, roles, branches } from '@/db/schema/tables';
 import { SYSTEM_ROLE_PERMISSIONS } from '@/shared/systemRolePermissions';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import { hasPerm, permissionsToMask, maskToStrings, stringsToMask, legacyPermTobit, type PermBit } from '@/infrastructure/permissions';
@@ -25,32 +25,46 @@ export interface JwtPayload {
 }
 
 /**
- * 7-level role hierarchy used for branch visibility scoping.
- * Lower number = broader access.
- *   1 = system_admin   → all tenants / all branches
- *   2 = tenant_admin   → all branches within tenant
- *   3 = hq_admin       → HQ branch + all child branches (full access)
- *   4 = hq_manager     → HQ branch + all child branches (reports read-only)
- *   5 = branch_admin   → own branch only (full CRUD)
- *   6 = branch_manager → own branch only (limited CRUD)
- *   7 = staff/cashier  → own store/POS only
+ * 6-level role hierarchy used for branch visibility scoping and role-assignment enforcement.
+ * Lower number = broader access. A caller can only assign roles with a HIGHER level number.
+ *   1 = platform layer   → all tenants / all branches
+ *   2 = merchant_owner   → all branches within tenant (full control)
+ *   3 = merchant_manager / accountant → cross-branch read + limited write
+ *   4 = supervisor       → own branch only (full CRUD)
+ *   5 = senior_cashier / cashier → POS only
+ *   6 = inventory_staff / kitchen_staff / waiter → specialist roles
  */
 export const ROLE_LEVELS: Record<string, number> = {
-    system_admin: 1,
-    admin: 2,
-    tenant_admin: 2,
-    hq_admin: 3,
-    hq_manager: 4,
-    branch_admin: 5,
-    store_owner: 5,
-    branch_manager: 6,
-    manager: 6,
-    store_manager: 6,
-    cashier: 7,
-    staff: 7,
-    kitchen_staff: 7,
-    waiter: 7,
-    inventory_staff: 7,
+    // Level 1 — Platform
+    platform_super_admin: 1,
+    platform_support:     1,
+    platform_auditor:     1,
+    super_admin:          1,
+    admin:                1,
+    // Level 2 — Merchant Owner (legacy aliases)
+    merchant_owner:  2,
+    hq_admin:        2,
+    store_owner:     2,
+    tenant_admin:    2,
+    // Level 3 — Tenant Management
+    merchant_manager: 3,
+    accountant:       3,
+    hq_manager:       3,
+    // Level 4 — Branch Supervisor (legacy aliases)
+    supervisor:      4,
+    branch_admin:    4,
+    branch_manager:  4,
+    store_manager:   4,
+    store_admin:     4,
+    manager:         4,
+    // Level 5 — Cashier
+    senior_cashier: 5,
+    cashier:        5,
+    staff:          5,
+    // Level 6 — Specialist
+    inventory_staff: 6,
+    kitchen_staff:   6,
+    waiter:          6,
 };
 
 export function getRoleLevel(role: string, isSuperAdmin: boolean): number {
@@ -114,6 +128,10 @@ export interface AuthenticatedUser extends JwtPayload {
     tenantId: string;
     /** Numeric role level (1=system_admin … 7=staff). Lower = broader access. */
     roleLevel: number;
+    /** Bitmask low 64 bits (decimal string) for O(1) permission checks via requirePerm() */
+    maskLow: string;
+    /** Bitmask high 64 bits (decimal string) for O(1) permission checks via requirePerm() */
+    maskHigh: string;
 }
 
 declare global {
@@ -130,7 +148,7 @@ declare global {
 // Redis-backed cache for auth data (shared across instances)
 // Keys: kpos:stores:{userId}, kpos:auth:{userId}, kpos:rules:{roleId}
 // ═══════════════════════════════════════════════════════════════════════════
-const CACHE_TTL = 300; // 5 minutes in seconds
+const CACHE_TTL = 900; // 15 minutes in seconds (invalidated explicitly on role/store changes)
 const CACHE_PREFIX = 'kpos';
 
 /** Invalidate a single user's cached store access (call after UserStore changes) */
@@ -160,15 +178,21 @@ export async function invalidateQueryCache(pattern: string): Promise<void> {
 }
 
 /**
- * Load branch_path for a single branch (DB hit, no cache).
+ * Load branch_path for a single branch (Redis-cached, DB fallback).
  * Returns undefined if branch not found.
  */
 async function loadBranchPath(branchId: string): Promise<string | undefined> {
+    const cacheKey = `${CACHE_PREFIX}:branchpath:${branchId}`;
+    const cached = await cache.get<string>(cacheKey);
+    if (cached) return cached;
+
     const row = await db.query.branches.findFirst({
         where: eq(branches.id, branchId),
         columns: { branchPath: true },
     });
-    return row?.branchPath || undefined;
+    const path = row?.branchPath || undefined;
+    if (path) await cache.set(cacheKey, path, CACHE_TTL);
+    return path;
 }
 
 /**
@@ -347,8 +371,11 @@ export async function authenticate(
                 }
             }
 
-            // BE-10 Step 3: Load user from Redis cache (falls back to DB on miss)
-            const user = await loadCachedAuthUser(userId);
+            // BE-10 Step 3: Load user + store access in parallel (both Redis-cached)
+            const [user, accessibleStores] = await Promise.all([
+                loadCachedAuthUser(userId),
+                loadUserStoreAccess(userId),
+            ]);
 
             if (!user) {
                 throw ApiError.unauthorized('User not found or inactive');
@@ -356,36 +383,31 @@ export async function authenticate(
 
             const mergedPermissions = user.permissions;
 
-            // Load user's store access (Redis-cached)
-            const accessibleStores = await loadUserStoreAccess(userId);
-            
             // Get unique branch and store IDs
             const accessibleBranchIds = [...new Set(accessibleStores.map(s => s.branchId))];
             const accessibleStoreIds = accessibleStores.map(s => s.storeId);
-            
+
             // If user has no store assignments, give access to their default branch
             if (accessibleBranchIds.length === 0 && user.branchId) {
                 accessibleBranchIds.push(user.branchId);
             }
 
-            // Load branch_path for each accessible branch (descendants of each
-            // root included so users automatically see sub-branches under their
-            // scope). Cached per user.
-            const accessibleBranchPaths = await loadAccessibleBranchPaths(userId, accessibleBranchIds);
-
             // Get active store from header or use default
             const activeStoreHeader = req.headers['x-active-store'] as string | undefined;
             const defaultStore = accessibleStores.find(s => s.isDefault);
-            const activeStoreId = activeStoreHeader && accessibleStoreIds.includes(activeStoreHeader) 
-                ? activeStoreHeader 
+            const activeStoreId = activeStoreHeader && accessibleStoreIds.includes(activeStoreHeader)
+                ? activeStoreHeader
                 : defaultStore?.storeId;
 
             // Set active branch from active store or user's default branch
             const activeStore = accessibleStores.find(s => s.storeId === activeStoreId);
             const activeBranchId = activeStore?.branchId || user.branchId || branchId;
-            const activeBranchPath = activeBranchId
-                ? await loadBranchPath(activeBranchId)
-                : undefined;
+
+            // Load branch paths in parallel (all Redis-cached after first hit)
+            const [accessibleBranchPaths, activeBranchPath] = await Promise.all([
+                loadAccessibleBranchPaths(userId, accessibleBranchIds),
+                activeBranchId ? loadBranchPath(activeBranchId) : Promise.resolve(undefined),
+            ]);
 
             // Build legacy JwtPayload for backward compat on req.user
             const legacyPayload: JwtPayload = {
@@ -411,6 +433,8 @@ export async function authenticate(
                 activeBranchPath,
                 isSuperAdmin: user.isSuperAdmin || false,
                 roleLevel: user.roleLevel,
+                maskLow: user.maskLow ?? '0',
+                maskHigh: user.maskHigh ?? '0',
             };
 
             next();
@@ -591,81 +615,6 @@ export function authorize(...permStrings: string[]) {
             if (passedString) { next(); return; }
 
             throw ApiError.forbidden('Insufficient permissions');
-        } catch (error) {
-            next(error);
-        }
-    };
-}
-
-// New middleware: Rule-based CRUD authorization
-// Usage: authorizeRule('products', 'create') - checks if user's role has the 'products' rule with canCreate=true
-export function authorizeRule(module: string, action: 'read' | 'create' | 'update' | 'delete') {
-    return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-        try {
-            if (!req.authUser) {
-                throw ApiError.unauthorized();
-            }
-
-            // Super Admin bypasses all
-            if (req.authUser.isSuperAdmin) {
-                next();
-                return;
-            }
-
-            // Also fall back to existing permission check for backward compatibility
-            const userPermissions = req.authUser.permissions;
-            if (userPermissions.includes('*')) {
-                next();
-                return;
-            }
-
-            // Load user's role rules (Redis-cached by roleId, fallback to request cache)
-            if (!(req as any)._roleRulesLoaded) {
-                // roleId is already available from cached auth user
-                const cachedUser = await loadCachedAuthUser(req.authUser.userId);
-                const roleId = cachedUser?.roleId;
-                if (roleId) {
-                    const rulesCacheKey = `${CACHE_PREFIX}:rules:${roleId}`;
-                    let roleRules = await cache.get<any[]>(rulesCacheKey);
-                    if (!roleRules) {
-                        const dbRules = await db.query.roleRules.findMany({
-                            where: eq(roleRulesTable.roleId, roleId),
-                            with: { rule: true },
-                        });
-                        roleRules = dbRules.filter(rr => rr.rule.isActive);
-                        await cache.set(rulesCacheKey, roleRules, CACHE_TTL);
-                    }
-                    (req as any)._roleRules = roleRules;
-                } else {
-                    (req as any)._roleRules = [];
-                }
-                (req as any)._roleRulesLoaded = true;
-            }
-
-            const roleRules = (req as any)._roleRules || [];
-            const matchingRule = roleRules.find((rr: any) => rr.rule.module === module || rr.rule.name === module);
-
-            if (!matchingRule) {
-                // Fall back to existing permission string check
-                const actionMap: Record<string, string> = { read: 'view', create: 'create', update: 'update', delete: 'delete' };
-                const permKey = `${module}:${actionMap[action] || action}`;
-                const hasLegacy = userPermissions.includes(permKey) ||
-                    (action === 'read' && userPermissions.includes(`${module}:read`));
-                if (hasLegacy) {
-                    next();
-                    return;
-                }
-                throw ApiError.forbidden(`No access to ${module}:${action}`);
-            }
-
-            // Check CRUD flag
-            const crudMap: Record<string, string> = { read: 'canRead', create: 'canCreate', update: 'canUpdate', delete: 'canDelete' };
-            const flag = crudMap[action];
-            if (!matchingRule[flag]) {
-                throw ApiError.forbidden(`${action} access denied for ${module}`);
-            }
-
-            next();
         } catch (error) {
             next(error);
         }

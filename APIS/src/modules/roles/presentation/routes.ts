@@ -12,151 +12,17 @@ import { eq, and, or, ilike, notInArray, isNull, desc, count, asc } from 'drizzl
 
 export const roleRoutes = Router();
 
+async function loadActivePermissionKeys(): Promise<Set<string>> {
+    const rows = await db.query.permissions.findMany({
+        where: eq(permissions.isActive, true),
+        columns: { key: true },
+    });
+    return new Set(rows.map(row => row.key));
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // LIST OF AVAILABLE PERMISSIONS
 // ═══════════════════════════════════════════════════════════════════════════
-const ALL_PERMISSIONS = [
-    // Dashboard
-    'dashboard:view',
-
-    // POS
-    'pos:access',
-    'pos:sell',
-    'pos:discount',
-    'pos:refund',
-    'pos:void',
-    'pos:credit',
-
-    // Products
-    'products:read',
-    'products:view',
-    'products:create',
-    'products:update',
-    'products:delete',
-
-    // Categories
-    'categories:read',
-    'categories:view',
-    'categories:create',
-    'categories:update',
-    'categories:delete',
-
-    // Inventory
-    'inventory:read',
-    'inventory:view',
-    'inventory:create',
-    'inventory:update',
-    'inventory:delete',
-    'inventory:adjust',
-    'inventory:transfer',
-    'inventory:stockin',
-    'inventory:stockout',
-
-    // Sales/Transactions
-    'sales:read',
-    'sales:view',
-    'sales:create',
-    'sales:update',
-    'sales:delete',
-    'sales:export',
-    'sales:void',
-    'sales:refund',
-    'sales:view-own',
-
-    // Customers
-    'customers:read',
-    'customers:view',
-    'customers:create',
-    'customers:update',
-    'customers:delete',
-
-    // Reports
-    'reports:view',
-    'reports:export',
-    'reports:sales',
-    'reports:inventory',
-    'reports:financial',
-    'reports:staff',
-
-    // Staff
-    'staff:read',
-    'staff:view',
-    'staff:create',
-    'staff:update',
-    'staff:delete',
-
-    // Users
-    'users:read',
-    'users:view',
-    'users:create',
-    'users:update',
-    'users:delete',
-
-    // Roles & Permissions
-    'roles:read',
-    'roles:view',
-    'roles:create',
-    'roles:update',
-    'roles:delete',
-
-    // Settings
-    'settings:read',
-    'settings:view',
-    'settings:update',
-
-    // Branches
-    'branches:read',
-    'branches:view',
-    'branches:create',
-    'branches:update',
-    'branches:delete',
-
-    // Stores (Multi-store management)
-    'stores:read',
-    'stores:view',
-    'stores:create',
-    'stores:update',
-    'stores:delete',
-    'stores:assign',
-    'stores:products',
-
-    // Promotions
-    'promotions:read',
-    'promotions:view',
-    'promotions:create',
-    'promotions:update',
-    'promotions:delete',
-
-    // Restaurant
-    'restaurant:access',
-    'restaurant:view',
-    'restaurant:manage',
-    'restaurant:tables',
-    'restaurant:kitchen',
-    'restaurant:reservations',
-
-    // Tables (Restaurant table CRUD)
-    'tables:create',
-    'tables:update',
-    'tables:delete',
-
-    // Payments
-    'payments:read',
-    'payments:view',
-    'payments:refund',
-    'payments:settings',
-    'payments:manage',
-    'payments:void',
-    'payments:settle',
-
-    // Documents
-    'documents:read',
-    'documents:view',
-    'documents:create',
-    'documents:update',
-    'documents:delete',
-];
-
 // ═══════════════════════════════════════════════════════════════════════════
 // GET ALL AVAILABLE PERMISSIONS — DB-driven, falls back to hardcoded list
 // ═══════════════════════════════════════════════════════════════════════════
@@ -191,15 +57,7 @@ roleRoutes.get('/permissions', authenticate, authorize('roles:read'), async (_re
             return res.json({ success: true, data: { all, grouped } });
         }
 
-        // Fallback: derive from hardcoded list grouped by module prefix
-        const grouped: Record<string, string[]> = {};
-        ALL_PERMISSIONS.forEach(perm => {
-            const [module] = perm.split(':');
-            if (!grouped[module]) grouped[module] = [];
-            grouped[module].push(perm);
-        });
-
-        res.json({ success: true, data: { all: ALL_PERMISSIONS, grouped } });
+        res.json({ success: true, data: { all: [], grouped: {} } });
     } catch (error) {
         console.error('Get permissions error:', error);
         res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Failed to get permissions' } });
@@ -412,7 +270,8 @@ roleRoutes.post('/', authenticate, authorize('roles:create'), async (req, res) =
         }
 
         // Validate permissions
-        const invalidPermissions = permissions.filter((p: string) => !ALL_PERMISSIONS.includes(p));
+        const activePermissionKeys = await loadActivePermissionKeys();
+        const invalidPermissions = permissions.filter((p: string) => !activePermissionKeys.has(p));
         if (invalidPermissions.length > 0) {
             return res.status(400).json({
                 success: false,
@@ -509,7 +368,8 @@ roleRoutes.put('/:id', authenticate, authorize('roles:update'), async (req, res)
 
         // Validate permissions if provided
         if (permissions) {
-            const invalidPermissions = permissions.filter((p: string) => !ALL_PERMISSIONS.includes(p));
+            const activePermissionKeys = await loadActivePermissionKeys();
+            const invalidPermissions = permissions.filter((p: string) => !activePermissionKeys.has(p));
             if (invalidPermissions.length > 0) {
                 return res.status(400).json({
                     success: false,

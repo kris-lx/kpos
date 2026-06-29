@@ -430,8 +430,8 @@
 
             <form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }} class="p-6 space-y-4">
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("registers.name")} *</label>
-                    <input
+                    <label for="a11y-app-management-cashregisters-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("registers.name")} *</label>
+                    <input id="a11y-app-management-cashregisters-page-svelte-1"
                         type="text"
                         bind:value={formData.name}
                         required
@@ -440,8 +440,8 @@
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("registers.branch")}</label>
-                    <select
+                    <label for="a11y-app-management-cashregisters-page-svelte-2" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("registers.branch")}</label>
+                    <select id="a11y-app-management-cashregisters-page-svelte-2"
                         bind:value={formData.branchId}
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white"
                     >
@@ -455,8 +455,8 @@
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("registers.assignedStaff")}</label>
-                    <select
+                    <label for="a11y-app-management-cashregisters-page-svelte-3" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("registers.assignedStaff")}</label>
+                    <select id="a11y-app-management-cashregisters-page-svelte-3"
                         bind:value={formData.assignedStaffId}
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white"
                     >
@@ -470,8 +470,8 @@
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("registers.openingBalance")}</label>
-                    <input
+                    <label for="a11y-app-management-cashregisters-page-svelte-4" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("registers.openingBalance")}</label>
+                    <input id="a11y-app-management-cashregisters-page-svelte-4"
                         type="number"
                         bind:value={formData.openingBalance}
                         min="0"

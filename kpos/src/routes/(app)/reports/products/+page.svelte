@@ -37,7 +37,7 @@
     let exporting = $state(false);
 
     // Page size options
-    const pageSizeOptions = [5, 10, 20, 50, 70, 80, 100];
+    const pageSizeOptions = [5, 10, 20, 50, 70, 100];
 
     // Data
     let productReports = $state<any[]>([]);
@@ -117,7 +117,7 @@
         showExportMenu = false;
         try {
             let csv = '\ufeff';
-            csv += 'ອັນດັບ,ສິນຄ້າ,SKU,ຈຳນວນຂາຍ,ລາຍຮັບ\n';
+            csv += `${t("common.rank")},${t("products.title")},SKU,${t("reports.salesCount")},${t("reports.revenue")}\n`;
             filteredProducts.forEach((p, i) => {
                 csv += `${i + 1},"${p.name || ''}","${p.sku || ''}",${p.totalSales || 0},"${formatCurrency(p.revenue || 0)}"\n`;
             });
@@ -136,13 +136,15 @@
         const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${t("reports.inventory")}</title>
 <style>body{font-family:'Noto Sans Lao','Phetsarath OT',sans-serif;padding:20px}h1{text-align:center}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ddd;padding:8px}th{background:#f5f5f5}.text-right{text-align:right}</style></head>
 <body><h1>${t("reports.inventory")}</h1><p style="text-align:center">${new Date().toLocaleDateString('lo-LA')}</p>
-<table><tr><th>ອັນດັບ</th><th>ສິນຄ້າ</th><th>SKU</th><th>ຈຳນວນຂາຍ</th><th>ລາຍຮັບ</th></tr>
+<table><tr><th>${t("common.rank")}</th><th>${t("products.title")}</th><th>SKU</th><th>${t("reports.salesCount")}</th><th>${t("reports.revenue")}</th></tr>
 ${filteredProducts.map((p, i) => `<tr><td>${i + 1}</td><td>${p.name || ''}</td><td>${p.sku || ''}</td><td class="text-right">${p.totalSales || 0}</td><td class="text-right">${formatCurrency(p.revenue || 0)}</td></tr>`).join('')}
 </table></body></html>`;
-        const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        const w = window.open(url, '_blank');
-        if (w) w.onload = () => w.print();
+        const w = window.open('', '_blank');
+        if (w) {
+            w.document.write(html);
+            w.document.close();
+            w.onload = () => w.print();
+        }
         toast.success(t("reports.exportSuccess"));
         exporting = false;
     }
@@ -152,7 +154,7 @@ ${filteredProducts.map((p, i) => `<tr><td>${i + 1}</td><td>${p.name || ''}</td><
         showExportMenu = false;
         const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office"><head><meta charset="utf-8"><style>table{width:100%;border-collapse:collapse}th,td{border:1px solid #000;padding:8px}th{background:#f0f0f0}</style></head>
 <body><h1 style="text-align:center">${t("reports.inventory")}</h1><p style="text-align:center">${new Date().toLocaleDateString('lo-LA')}</p>
-<table><tr><th>ອັນດັບ</th><th>ສິນຄ້າ</th><th>SKU</th><th>ຈຳນວນຂາຍ</th><th>ລາຍຮັບ</th></tr>
+<table><tr><th>${t("common.rank")}</th><th>${t("products.title")}</th><th>SKU</th><th>${t("reports.salesCount")}</th><th>${t("reports.revenue")}</th></tr>
 ${filteredProducts.map((p, i) => `<tr><td>${i + 1}</td><td>${p.name || ''}</td><td>${p.sku || ''}</td><td>${p.totalSales || 0}</td><td>${formatCurrency(p.revenue || 0)}</td></tr>`).join('')}
 </table></body></html>`;
         downloadFile(html, `products-report-${periodFilter}.doc`, 'application/msword');
@@ -169,12 +171,12 @@ ${filteredProducts.map((p, i) => `<tr><td>${i + 1}</td><td>${p.name || ''}</td><
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+        setTimeout(() => URL.revokeObjectURL(url), 0);
     }
 </script>
 
 <svelte:head>
-    <title>ລາຍງານສິນຄ້າ - KPOS</title>
+    <title>{t("reports.products")} - KPOS</title>
 </svelte:head>
 
 <div class="min-h-screen bg-gray-50 dark:bg-gray-900 p-4 md:p-6">
@@ -186,8 +188,8 @@ ${filteredProducts.map((p, i) => `<tr><td>${i + 1}</td><td>${p.name || ''}</td><
                     <BarChart3 class="w-6 h-6 text-white" />
                 </div>
                 <div>
-                    <h1 class="text-2xl font-bold text-gray-900 dark:text-white">ລາຍງານສິນຄ້າ</h1>
-                    <p class="text-sm text-gray-500 dark:text-gray-400">ວິເຄາະປະສິດທິພາບສິນຄ້າ</p>
+                    <h1 class="text-2xl font-bold text-gray-900 dark:text-white">{t("reports.products")}</h1>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">{t("reports.productsDesc")}</p>
                 </div>
             </div>
         </div>
@@ -243,7 +245,7 @@ ${filteredProducts.map((p, i) => `<tr><td>${i + 1}</td><td>${p.name || ''}</td><
                 </div>
                 <span class="text-2xl font-bold text-blue-600 dark:text-blue-400">{stats.totalProducts}</span>
             </div>
-            <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">ສິນຄ້າທັງໝົດ</p>
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">{t("reports.totalProducts")}</p>
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
             <div class="flex items-center justify-between">
@@ -252,7 +254,7 @@ ${filteredProducts.map((p, i) => `<tr><td>${i + 1}</td><td>${p.name || ''}</td><
                 </div>
                 <span class="text-2xl font-bold text-success-600 dark:text-success-400">{stats.totalSales}</span>
             </div>
-            <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">ຂາຍລວມ</p>
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">{t("reports.totalSold")}</p>
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
             <div class="flex items-center justify-between">
@@ -261,7 +263,7 @@ ${filteredProducts.map((p, i) => `<tr><td>${i + 1}</td><td>${p.name || ''}</td><
                 </div>
                 <span class="text-lg font-bold text-emerald-600 dark:text-emerald-400">{formatCurrency(stats.totalRevenue)}</span>
             </div>
-            <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">ລາຍຮັບລວມ</p>
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">{t("reports.totalRevenue")}</p>
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
             <div class="flex items-center justify-between">
@@ -270,7 +272,7 @@ ${filteredProducts.map((p, i) => `<tr><td>${i + 1}</td><td>${p.name || ''}</td><
                 </div>
                 <span class="text-sm font-bold text-amber-600 dark:text-amber-400 truncate max-w-20">{stats.topSeller?.name || "-"}</span>
             </div>
-            <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">ຂາຍດີທີ່ສຸດ</p>
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">{t("reports.bestSeller")}</p>
         </div>
     </div>
 
@@ -278,7 +280,7 @@ ${filteredProducts.map((p, i) => `<tr><td>${i + 1}</td><td>${p.name || ''}</td><
     <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm mb-6">
         <div class="relative">
             <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-            <input type="text" bind:value={searchQuery} placeholder="ຄົ້ນຫາສິນຄ້າ..." class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500" />
+            <input type="text" bind:value={searchQuery} placeholder={t("products.searchPlaceholder")} class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500" />
         </div>
     </div>
 
@@ -290,7 +292,7 @@ ${filteredProducts.map((p, i) => `<tr><td>${i + 1}</td><td>${p.name || ''}</td><
     {:else if paginatedProducts.length === 0}
         <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-16 text-center">
             <BarChart3 class="w-16 h-16 mx-auto text-gray-300 dark:text-gray-600" />
-            <h3 class="text-lg font-semibold text-gray-900 dark:text-white mt-4">ບໍ່ມີຂໍ້ມູນ</h3>
+            <h3 class="text-lg font-semibold text-gray-900 dark:text-white mt-4">{t("common.noData")}</h3>
         </div>
     {:else}
         <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden">
@@ -299,11 +301,11 @@ ${filteredProducts.map((p, i) => `<tr><td>${i + 1}</td><td>${p.name || ''}</td><
                     <thead>
                         <tr class="border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
                             <th class="text-left px-6 py-4 text-xs font-semibold text-gray-500 uppercase">#</th>
-                            <th class="text-left px-6 py-4 text-xs font-semibold text-gray-500 uppercase">ສິນຄ້າ</th>
+                            <th class="text-left px-6 py-4 text-xs font-semibold text-gray-500 uppercase">{t("products.title")}</th>
                             <th class="text-left px-6 py-4 text-xs font-semibold text-gray-500 uppercase">SKU</th>
-                            <th class="text-right px-6 py-4 text-xs font-semibold text-gray-500 uppercase">ຈຳນວນຂາຍ</th>
-                            <th class="text-right px-6 py-4 text-xs font-semibold text-gray-500 uppercase">ລາຍຮັບ</th>
-                            <th class="text-center px-6 py-4 text-xs font-semibold text-gray-500 uppercase">ແນວໂນ້ມ</th>
+                            <th class="text-right px-6 py-4 text-xs font-semibold text-gray-500 uppercase">{t("reports.salesCount")}</th>
+                            <th class="text-right px-6 py-4 text-xs font-semibold text-gray-500 uppercase">{t("reports.revenue")}</th>
+                            <th class="text-center px-6 py-4 text-xs font-semibold text-gray-500 uppercase">{t("reports.trend")}</th>
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-gray-200 dark:divide-gray-700">
@@ -354,18 +356,18 @@ ${filteredProducts.map((p, i) => `<tr><td>${i + 1}</td><td>${p.name || ''}</td><
     {#if totalItems > 0}
         <div class="flex flex-col sm:flex-row items-center justify-between gap-4 mt-6">
             <div class="flex items-center gap-2">
-                <span class="text-sm text-gray-500 dark:text-gray-400">ສະແດງ:</span>
+                <span class="text-sm text-gray-500 dark:text-gray-400">{t("common.show")}:</span>
                 <select 
                     bind:value={itemsPerPage} 
                     onchange={() => changePageSize(itemsPerPage)}
                     class="px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm"
                 >
                     {#each pageSizeOptions as size (size)}
-                        <option value={size}>{size} ລາຍການ</option>
+                        <option value={size}>{size} {t("common.items")}</option>
                     {/each}
                 </select>
                 <span class="text-sm text-gray-500 dark:text-gray-400">
-                    ({(currentPage - 1) * itemsPerPage + 1} - {Math.min(currentPage * itemsPerPage, totalItems)} ຈາກ {totalItems})
+                    ({(currentPage - 1) * itemsPerPage + 1} - {Math.min(currentPage * itemsPerPage, totalItems)} {t("common.from")} {totalItems})
                 </span>
             </div>
             <div class="flex items-center gap-2">

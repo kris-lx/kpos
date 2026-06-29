@@ -326,7 +326,7 @@
                                 onclick={(e) => { e.stopPropagation(); selectAllInModule(module); }}
                                 class="px-2 py-1 text-xs font-medium text-green-600 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-900/20 rounded transition-colors"
                             >
-                                ເລືອກທັງໝົດ
+                                {t("common.selectAll")}
                             </button>
                             <button
                                 onclick={(e) => { e.stopPropagation(); deselectAllInModule(module); }}
@@ -381,7 +381,9 @@
                                         </p>
                                     </div>
                                     {#if isFromRole && !isCustom}
-                                        <Lock class="w-4 h-4 text-blue-400 shrink-0" title="From Role" />
+                                        <span title="From Role">
+                                            <Lock class="w-4 h-4 text-blue-400 shrink-0" />
+                                        </span>
                                     {/if}
                                 </button>
                             {/each}

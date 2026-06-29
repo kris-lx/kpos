@@ -87,10 +87,13 @@
             if (searchQuery.trim()) {
                 params.append("search", searchQuery.trim());
             }
+            if (typeFilter) {
+                params.append("type", typeFilter);
+            }
             const [adjRes, prodRes, invRes] = await Promise.all([
                 api.get(`inventory/adjustments?${params}`).json<any>(),
-                api.get(`products?limit=1000${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>(),
-                api.get(`inventory?limit=1000${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>(),
+                api.get(`products?all=true${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>(),
+                api.get(`inventory?all=true${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>(),
             ]);
             adjustments = adjRes.data || [];
             totalItems = adjRes.meta?.total || 0;
@@ -168,7 +171,7 @@
     async function exportToCsv() {
         try {
             const activeBranchId = auth.activeBranchId;
-            const res = await api.get(`inventory/adjustments?limit=10000${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>();
+            const res = await api.get(`inventory/adjustments?all=true${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>();
             const rows: any[] = res.data || [];
             let csv = '﻿';
             csv += 'ວັນທີ,ຊື່ສິນຄ້າ,ປະເພດ,ຈຳນວນ,ເຫດຜົນ,ເລກອ້າງອີງ\n';
@@ -180,9 +183,9 @@
                 csv += `"${date}","${productName}","${typeLabel}","${item.quantity || 0}","${reasonLabel}","${item.reference || ''}"\n`;
             }
             downloadFile(csv, `adjustments-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
-            toast.success('ສົ່ງອອກ CSV ສຳເລັດ');
+            toast.success(t('common.exportSuccess'));
         } catch {
-            toast.error('ສົ່ງອອກລົ້ມເຫລວ');
+            toast.error(t('common.exportFailed'));
         }
     }
 
@@ -281,7 +284,7 @@
             <div class="flex gap-2">
                 {#each [{ id: null, label: "ທັງໝົດ" }, { id: "increase", label: "ເພີ່ມ" }, { id: "decrease", label: "ຫຼຸດ" }] as filter (filter.id)}
                     <button
-                        onclick={() => { typeFilter = filter.id; currentPage = 1; }}
+                        onclick={() => { typeFilter = filter.id; currentPage = 1; loadData(); }}
                         class={cn("px-3 py-2 rounded-lg text-sm font-medium transition-all", typeFilter === filter.id ? "bg-orange-100 dark:bg-orange-900/50 text-orange-700 dark:text-orange-400" : "text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700")}
                     >
                         {filter.label}
@@ -364,7 +367,7 @@
                     onchange={() => { currentPage = 1; loadData(); }}
                     class="px-2 py-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm"
                 >
-                    {#each [10, 20, 50, 100] as size (size)}
+                    {#each [5, 10, 20, 50, 70, 100] as size (size)}
                         <option value={size}>{size}</option>
                     {/each}
                 </select>
@@ -396,8 +399,8 @@
 
             <form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }} class="p-6 space-y-4">
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ສິນຄ້າ *</label>
-                    <select bind:value={formData.productId} required class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white">
+                    <label for="a11y-app-inventory-adjust-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ສິນຄ້າ *</label>
+                    <select id="a11y-app-inventory-adjust-page-svelte-1" bind:value={formData.productId} required class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white">
                         <option value="">ເລືອກສິນຄ້າ</option>
                         {#each products as product (product.id)}
                             <option value={product.id}>{product.name} (ສະຕ໋ອກ: {product.stock || 0})</option>
@@ -407,21 +410,21 @@
 
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ປະເພດ</label>
-                        <select bind:value={formData.adjustmentType} class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white">
+                        <label for="a11y-app-inventory-adjust-page-svelte-2" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ປະເພດ</label>
+                        <select id="a11y-app-inventory-adjust-page-svelte-2" bind:value={formData.adjustmentType} class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white">
                             <option value="increase">ເພີ່ມ (+)</option>
                             <option value="decrease">ຫຼຸດ (-)</option>
                         </select>
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຈຳນວນ *</label>
-                        <input type="number" bind:value={formData.quantity} min="1" required class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
+                        <label for="a11y-app-inventory-adjust-page-svelte-3" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຈຳນວນ *</label>
+                        <input id="a11y-app-inventory-adjust-page-svelte-3" type="number" bind:value={formData.quantity} min="1" required class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
                     </div>
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ເຫດຜົນ</label>
-                    <select bind:value={formData.reason} class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white">
+                    <label for="a11y-app-inventory-adjust-page-svelte-4" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ເຫດຜົນ</label>
+                    <select id="a11y-app-inventory-adjust-page-svelte-4" bind:value={formData.reason} class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white">
                         <option value="">ເລືອກເຫດຜົນ</option>
                         {#each adjustReasons as r (r.value)}
                             <option value={r.value}>{r.labelLao || r.label}</option>
@@ -430,13 +433,13 @@
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ວັນທີ</label>
-                    <input type="date" bind:value={formData.date} class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
+                    <label for="a11y-app-inventory-adjust-page-svelte-5" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ວັນທີ</label>
+                    <input id="a11y-app-inventory-adjust-page-svelte-5" type="date" bind:value={formData.date} class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white" />
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ໝາຍເຫດ</label>
-                    <textarea bind:value={formData.notes} rows="2" class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white resize-none"></textarea>
+                    <label for="a11y-app-inventory-adjust-page-svelte-6" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ໝາຍເຫດ</label>
+                    <textarea id="a11y-app-inventory-adjust-page-svelte-6" bind:value={formData.notes} rows="2" class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white resize-none"></textarea>
                 </div>
 
                 <div class="flex justify-end gap-3 pt-4">

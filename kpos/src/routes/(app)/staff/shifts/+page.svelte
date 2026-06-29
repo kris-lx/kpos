@@ -77,7 +77,8 @@
     let currentPage = $state(1);
     let totalPages = $state(1);
     let totalShifts = $state(0);
-    const pageSize = 20;
+    let pageSize = $state(20);
+    const pageSizeOptions = [5, 10, 20, 50, 70, 100];
 
     // Form state
     let openingBalance = $state(0);
@@ -126,6 +127,7 @@
                 shifts = response.data || [];
                 totalShifts = response.meta?.total || 0;
                 totalPages = response.meta?.totalPages || 1;
+                if (currentPage > totalPages) currentPage = totalPages;
             }
         } catch (error) {
             console.error("Failed to load shifts:", error);
@@ -306,6 +308,16 @@
                 return "text-gray-600 dark:text-gray-400";
         }
     }
+
+    function changePageSize(size: number) {
+        pageSize = size;
+        currentPage = 1;
+        loadShifts();
+    }
+
+    function closeFromBackdrop(event: MouseEvent, close: () => void) {
+        if (event.target === event.currentTarget) close();
+    }
 </script>
 
 <svelte:head>
@@ -372,7 +384,7 @@
                     <div>
                         <div class="flex items-center gap-2">
                             <h2 class="text-xl font-bold">{t("shifts.currentShift")}</h2>
-                            <span class="px-2 py-0.5 bg-success-400/30 border border-success-300/50 rounded-full text-xs font-medium text-success-100 animate-pulse">● ກຳລັງເຮັດວຽກ</span>
+                            <span class="px-2 py-0.5 bg-success-400/30 border border-success-300/50 rounded-full text-xs font-medium text-success-100 animate-pulse">● {t("shifts.working")}</span>
                         </div>
                         <p class="text-primary-100">{currentShift.shiftNo}</p>
                     </div>
@@ -390,7 +402,7 @@
                         class="flex items-center gap-2 px-5 py-2.5 bg-danger-500 hover:bg-danger-600 rounded-xl text-sm font-semibold transition-colors shadow-lg"
                     >
                         <Square class="w-4 h-4" />
-                        ຈົບການເຮັດວຽກ
+                        {t("shifts.closeShift")}
                     </button>
                 </div>
             </div>
@@ -420,14 +432,14 @@
             <div class="w-16 h-16 mx-auto rounded-full bg-primary-50 dark:bg-primary-900/30 flex items-center justify-center mb-4">
                 <Play class="w-8 h-8 text-primary-500" />
             </div>
-            <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-1">ຍັງບໍ່ໄດ້ເລີ່ມກະ</h3>
-            <p class="text-sm text-gray-500 dark:text-gray-400 mb-5">ກົດ "ເລີ່ມການເຮັດວຽກ" ເພື່ອເລີ່ມກະວຽກ</p>
+            <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-1">{t("shifts.notStarted")}</h3>
+            <p class="text-sm text-gray-500 dark:text-gray-400 mb-5">{t("shifts.startWorkHint")}</p>
             <button
                 onclick={() => (showOpenModal = true)}
                 class="inline-flex items-center gap-2 px-6 py-3 bg-primary-600 text-white rounded-xl font-semibold hover:bg-primary-700 transition-colors shadow-lg"
             >
                 <Play class="w-5 h-5" />
-                ເລີ່ມການເຮັດວຽກ
+                {t("shifts.startWork")}
             </button>
         </div>
     {/if}
@@ -663,12 +675,22 @@
             </div>
 
             <!-- Pagination -->
-            {#if totalPages > 1}
-                <div class="flex items-center justify-between px-4 py-3 border-t border-gray-200 dark:border-gray-700">
+            {#if totalShifts > 0}
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-4 py-3 border-t border-gray-200 dark:border-gray-700">
                     <p class="text-sm text-gray-500 dark:text-gray-400">
                         {t("common.showing")} {(currentPage - 1) * pageSize + 1} - {Math.min(currentPage * pageSize, totalShifts)} {t("common.of")} {totalShifts}
                     </p>
                     <div class="flex items-center gap-2">
+                        <select
+                            value={pageSize}
+                            onchange={(e) => changePageSize(Number(e.currentTarget.value))}
+                            class="px-2 py-1.5 border border-gray-200 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-sm text-gray-700 dark:text-gray-200"
+                            aria-label="Rows per page"
+                        >
+                            {#each pageSizeOptions as size (size)}
+                                <option value={size}>{size}</option>
+                            {/each}
+                        </select>
                         <button
                             onclick={() => {
                                 if (currentPage > 1) {
@@ -707,7 +729,7 @@
 {#if showOpenModal}
     <div
         class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
-        onclick={() => (showOpenModal = false)}
+        onclick={(e) => closeFromBackdrop(e, () => (showOpenModal = false))}
         onkeydown={(e) => e.key === "Escape" && (showOpenModal = false)}
         role="dialog"
         aria-modal="true"
@@ -715,8 +737,6 @@
     >
         <div
             class="bg-white dark:bg-gray-800 rounded-xl shadow-xl w-full max-w-md"
-            onclick={(e) => e.stopPropagation()}
-            onkeydown={(e) => e.stopPropagation()}
             role="document"
         >
             <div class="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700">
@@ -779,7 +799,7 @@
 {#if showCloseModal}
     <div
         class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
-        onclick={() => (showCloseModal = false)}
+        onclick={(e) => closeFromBackdrop(e, () => (showCloseModal = false))}
         onkeydown={(e) => e.key === "Escape" && (showCloseModal = false)}
         role="dialog"
         aria-modal="true"
@@ -787,8 +807,6 @@
     >
         <div
             class="bg-white dark:bg-gray-800 rounded-xl shadow-xl w-full max-w-md"
-            onclick={(e) => e.stopPropagation()}
-            onkeydown={(e) => e.stopPropagation()}
             role="document"
         >
             <div class="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700">
@@ -873,7 +891,7 @@
 {#if showCashMovementModal}
     <div
         class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
-        onclick={() => (showCashMovementModal = false)}
+        onclick={(e) => closeFromBackdrop(e, () => (showCashMovementModal = false))}
         onkeydown={(e) => e.key === "Escape" && (showCashMovementModal = false)}
         role="dialog"
         aria-modal="true"
@@ -881,8 +899,6 @@
     >
         <div
             class="bg-white dark:bg-gray-800 rounded-xl shadow-xl w-full max-w-md"
-            onclick={(e) => e.stopPropagation()}
-            onkeydown={(e) => e.stopPropagation()}
             role="document"
         >
             <div class="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700">
@@ -898,15 +914,16 @@
             </div>
             <div class="p-4 space-y-4">
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    <p class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                         {t("shifts.movementType")}
-                    </label>
+                    </p>
                     <div class="grid grid-cols-3 gap-2">
                         {#each [
                             { key: "FLOAT", label: t("shifts.float"), icon: ArrowDownCircle, color: "green" },
                             { key: "PICKUP", label: t("shifts.pickup"), icon: ArrowUpCircle, color: "blue" },
                             { key: "PAYOUT", label: t("shifts.payout"), icon: ArrowUpCircle, color: "red" },
                         ] as type}
+                            {@const MovementTypeIcon = type.icon}
                             <button
                                 onclick={() => (movementType = type.key as any)}
                                 class={cn(
@@ -920,8 +937,7 @@
                                         : "border-gray-200 dark:border-gray-600 hover:border-gray-300 dark:hover:border-gray-500",
                                 )}
                             >
-                                <svelte:component
-                                    this={type.icon}
+                                <MovementTypeIcon
                                     class={cn(
                                         "w-6 h-6",
                                         type.color === "green"
@@ -994,7 +1010,7 @@
 {#if showDetailModal && selectedShift}
     <div
         class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
-        onclick={() => (showDetailModal = false)}
+        onclick={(e) => closeFromBackdrop(e, () => (showDetailModal = false))}
         onkeydown={(e) => e.key === "Escape" && (showDetailModal = false)}
         role="dialog"
         aria-modal="true"
@@ -1002,8 +1018,6 @@
     >
         <div
             class="bg-white dark:bg-gray-800 rounded-xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col"
-            onclick={(e) => e.stopPropagation()}
-            onkeydown={(e) => e.stopPropagation()}
             role="document"
         >
             <div class="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700">
@@ -1114,10 +1128,10 @@
                         </h4>
                         <div class="bg-gray-50 dark:bg-gray-700/50 rounded-lg divide-y divide-gray-200 dark:divide-gray-600">
                             {#each selectedShift.cashMovements as movement (movement.id)}
+                                {@const MovementIcon = getMovementIcon(movement.type)}
                                 <div class="p-3 flex justify-between items-center">
                                     <div class="flex items-center gap-3">
-                                        <svelte:component
-                                            this={getMovementIcon(movement.type)}
+                                        <MovementIcon
                                             class="w-5 h-5 {getMovementColor(movement.type)}"
                                         />
                                         <div>

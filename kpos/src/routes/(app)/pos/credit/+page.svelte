@@ -2,6 +2,7 @@
     import { onMount } from "svelte";
     import { i18n } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
+    import { auth } from "$stores";
     import { formatCurrency, formatDate, formatDateTime } from "$lib/utils";
     import { toast } from "svelte-sonner";
     import MoneyInput from "$lib/components/MoneyInput.svelte";
@@ -34,24 +35,37 @@
         loadCreditSales();
     });
 
+    async function ensureAuthReady(): Promise<boolean> {
+        if (auth.isAuthenticated) return true;
+        if (!auth.user) return false;
+        return auth.refresh();
+    }
+
+    function isAuthError(err: unknown): boolean {
+        const status = (err as { response?: { status?: number } })?.response?.status;
+        return status === 401 || status === 403;
+    }
+
     async function loadCreditSales() {
         loading = true;
         error = null;
         try {
+            if (!(await ensureAuthReady())) return;
             const response = await api.get("sales/credit").json<any>();
             if (response.success) {
                 creditSales = response.data || [];
-                toast.success("ໂຫຼດຂໍ້ມູນສຳເລັດ");
+                toast.success(t('common.success'));
             } else {
-                error = "ບໍ່ສາມາດໂຫຼດຂໍ້ມູນໄດ້";
+                error = t('common.loadError');
                 creditSales = [];
-                toast.error("ບໍ່ສາມາດໂຫຼດຂໍ້ມູນໄດ້");
+                toast.error(t('common.loadError'));
             }
         } catch (err) {
+            if (isAuthError(err)) return;
             console.error("Failed to load credit sales:", err);
-            error = "ເກີດຂໍ້ຜິດພາດໃນການໂຫຼດຂໍ້ມູນ";
+            error = t('common.loadError');
             creditSales = [];
-            toast.error("ເກີດຂໍ້ຜິດພາດໃນການໂຫຼດຂໍ້ມູນ");
+            toast.error(t('common.genericError'));
         } finally {
             loading = false;
         }

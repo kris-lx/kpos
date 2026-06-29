@@ -227,17 +227,17 @@
             const res = await api.get(`inventory?limit=10000${auth.activeBranchId ? `&branchId=${auth.activeBranchId}` : ''}`).json<any>();
             const rows: any[] = res.data || [];
             let csv = '﻿';
-            csv += 'ຊື່ສິນຄ້າ,SKU,ສາຂາ,ສະຕ໋ອກ,ສຳຮອງ,ມີຢູ່,ທີ່ຕັ້ງ,ສະຖານະ\n';
+            csv += `${t("inventory.csvHeaderProductName")},${t("product.sku")},${t("staff.branch")},${t("inventory.stock")},${t("inventory.reserved")},${t("inventory.available")},${t("inventory.location")},${t("staff.status")}\n`;
             for (const item of rows) {
                 const qty = item.quantity ?? 0;
                 const min = item.minStock ?? item.product?.minStock ?? 0;
-                const status = qty <= 0 ? 'ໝົດສິນຄ້າ' : qty <= min ? 'ສະຕ໋ອກຕ່ຳ' : 'ປົກກະຕິ';
+                const status = qty <= 0 ? t("inventory.outOfStock") : qty <= min ? t("inventory.lowStock") : t("inventory.statusNormal");
                 csv += `"${item.product?.name || item.name || ''}","${item.product?.sku || item.sku || ''}","${item.branch?.name || ''}","${qty}","${item.reserved ?? 0}","${item.available ?? qty}","${item.location || ''}","${status}"\n`;
             }
             downloadFile(csv, `inventory-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
-            toast.success('ສົ່ງອອກ CSV ສຳເລັດ');
+            toast.success(t("reports.exportSuccess"));
         } catch {
-            toast.error('ສົ່ງອອກລົ້ມເຫລວ');
+            toast.error(t("reports.exportFailed"));
         }
     }
 
@@ -281,7 +281,7 @@
                 class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-700 transition-all"
             >
                 <Download class="w-4 h-4" />
-                ສົ່ງອອກ
+                {t("common.export")}
             </button>
         </div>
     </div>
@@ -323,13 +323,13 @@
         <div class="bg-white dark:bg-gray-900 rounded-xl p-4">
             <div class="flex items-center gap-3">
                 <div
-                    class="w-10 h-10 rounded-lg bg-error-100 dark:bg-error-900/30 flex items-center justify-center"
+                    class="w-10 h-10 rounded-lg bg-danger-100 dark:bg-danger-900/30 flex items-center justify-center"
                 >
-                    <Package class="w-5 h-5 text-error-600" />
+                    <Package class="w-5 h-5 text-danger-600" />
                 </div>
                 <div>
                     <p class="text-sm text-gray-500">{t("inventory.outOfStock")}</p>
-                    <p class="text-xl font-bold text-error-600">
+                    <p class="text-xl font-bold text-danger-600">
                         {stats.outOfStock}
                     </p>
                 </div>
@@ -398,7 +398,7 @@
                 class={cn(
                     "px-4 py-2.5 rounded-xl text-sm font-medium transition-colors",
                     filterType === "out"
-                        ? "bg-error-500 text-white"
+                        ? "bg-danger-500 text-white"
                         : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700",
                 )}
             >
@@ -531,7 +531,7 @@
                                         class={cn(
                                             "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium",
                                             product.stock === 0
-                                                ? "bg-error-100 dark:bg-error-900/30 text-error-700 dark:text-error-400"
+                                                ? "bg-danger-100 dark:bg-danger-900/30 text-danger-700 dark:text-danger-400"
                                                 : product.stock <=
                                                     product.minStock
                                                   ? "bg-warning-100 dark:bg-warning-900/30 text-warning-700 dark:text-warning-400"
@@ -712,8 +712,8 @@
                         class={cn(
                             "flex items-center justify-center gap-2 p-4 rounded-xl border-2 transition-colors",
                             adjustmentType === "subtract"
-                                ? "border-error-500 bg-error-50 dark:bg-error-900/30 text-error-700 dark:text-error-400"
-                                : "border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:border-error-300",
+                                ? "border-danger-500 bg-danger-50 dark:bg-danger-900/30 text-danger-700 dark:text-danger-400"
+                                : "border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:border-danger-300",
                         )}
                     >
                         <ArrowDown class="w-5 h-5" />
@@ -796,7 +796,7 @@
                             "flex-1 py-2.5 rounded-xl font-medium text-white disabled:opacity-50",
                             adjustmentType === "add"
                                 ? "bg-success-500 hover:bg-success-600"
-                                : "bg-error-500 hover:bg-error-600",
+                                : "bg-danger-500 hover:bg-danger-600",
                         )}
                     >
                         {adjustmentType === "add" ? t("inventory.addStock") : t("inventory.reduceStock")}

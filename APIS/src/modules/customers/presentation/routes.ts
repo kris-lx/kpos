@@ -5,7 +5,7 @@
 import { Router } from 'express';
 import { authenticate, authorize, branchFilter, buildScopeCondition, ensureScopeAccess, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { db, dbRead } from '@/config/database.config';
-import { customers, membershipTiers, settings, pointsHistory } from '@/db/schema/tables';
+import { customers, membershipTiers, settings, pointsHistory, transactions } from '@/db/schema/tables';
 import { eq, and, or, ilike, desc, asc, count, sql } from 'drizzle-orm';
 
 export const customerRoutes = Router();
@@ -253,8 +253,13 @@ customerRoutes.delete('/loyalty/tiers/:id', authenticate, authorize('customers:d
 // Get loyalty settings
 customerRoutes.get('/loyalty/settings', authenticate, async (req, res, next) => {
     try {
+        const loyaltyTenantId = req.authUser?.tenantId;
+        const loyaltyGetConds: any[] = [eq(settings.category, 'loyalty'), eq(settings.key, 'program_settings')];
+        if (loyaltyTenantId && !req.authUser?.isSuperAdmin) {
+            loyaltyGetConds.push(eq(settings.tenantId, loyaltyTenantId));
+        }
         const setting = await db.query.settings.findFirst({
-            where: and(eq(settings.category, 'loyalty'), eq(settings.key, 'program_settings')),
+            where: and(...loyaltyGetConds),
         });
 
         const defaults = {
@@ -278,8 +283,13 @@ customerRoutes.get('/loyalty/settings', authenticate, async (req, res, next) => 
 // Save loyalty settings
 customerRoutes.put('/loyalty/settings', authenticate, authorize('settings:update'), async (req, res, next) => {
     try {
+        const loyaltyPutTenantId = req.authUser?.tenantId;
+        const loyaltyPutConds: any[] = [eq(settings.category, 'loyalty'), eq(settings.key, 'program_settings')];
+        if (loyaltyPutTenantId && !req.authUser?.isSuperAdmin) {
+            loyaltyPutConds.push(eq(settings.tenantId, loyaltyPutTenantId));
+        }
         const existing = await db.query.settings.findFirst({
-            where: and(eq(settings.category, 'loyalty'), eq(settings.key, 'program_settings')),
+            where: and(...loyaltyPutConds),
         });
 
         let result;
@@ -290,6 +300,7 @@ customerRoutes.put('/loyalty/settings', authenticate, authorize('settings:update
                 .returning();
         } else {
             [result] = await db.insert(settings).values({
+                tenantId: loyaltyPutTenantId,
                 category: 'loyalty',
                 key: 'program_settings',
                 value: req.body,
@@ -310,7 +321,12 @@ customerRoutes.get('/lookup/:code', authenticate, async (req, res, next) => {
         const tenantId = req.authUser?.tenantId;
         const lookupConds: any[] = [
             eq(customers.isActive, true),
-            or(eq(customers.phone, req.params.code), eq(customers.memberCode, req.params.code)),
+            or(
+                eq(customers.id, req.params.code),
+                eq(customers.phone, req.params.code),
+                eq(customers.email, req.params.code),
+                eq(customers.memberCode, req.params.code),
+            ),
         ];
         if (tenantId && !req.authUser?.isSuperAdmin) {
             lookupConds.push(eq(customers.tenantId, tenantId));
@@ -510,16 +526,30 @@ customerRoutes.delete('/:id', authenticate, authorize('customers:delete'), async
 // Add points to customer
 customerRoutes.post('/:id/points', authenticate, authorize('customers:update'), async (req, res, next) => {
     try {
-        const { points } = req.body;
+        const { points, reason } = req.body;
 
         const existing = await db.query.customers.findFirst({ where: eq(customers.id, req.params.id) });
         if (!existing) return res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Customer not found' } });
         if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this customer' } });
 
-        const [customer] = await db.update(customers)
-            .set({ points: sql`${customers.points} + ${points}`, updatedAt: new Date() })
-            .where(eq(customers.id, req.params.id))
-            .returning();
+        const adjustTenantId = req.authUser?.tenantId;
+        const adjustUserId = req.authUser?.userId;
+
+        const customer = await db.transaction(async (tx) => {
+            const [updated] = await tx.update(customers)
+                .set({ points: sql`${customers.points} + ${points}`, updatedAt: new Date() })
+                .where(eq(customers.id, req.params.id))
+                .returning();
+            await tx.insert(pointsHistory).values({
+                tenantId: adjustTenantId,
+                customerId: req.params.id,
+                points,
+                type: 'ADJUST',
+                reason: reason || 'Manual adjustment',
+                createdBy: adjustUserId,
+            });
+            return updated;
+        });
 
         res.json({ success: true, data: customer });
     } catch (error) {
@@ -558,6 +588,38 @@ customerRoutes.get('/:id/points/history', authenticate, async (req, res, next) =
     }
 });
 
+// Get purchase/sales history for a customer
+customerRoutes.get('/:id/sales', authenticate, async (req, res, next) => {
+    try {
+        const customer = await db.query.customers.findFirst({ where: eq(customers.id, req.params.id) });
+        if (!customer) return res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Customer not found' } });
+        if (!ensureScopeAccess(customer, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
+
+        const { page = 1, limit = 20 } = req.query;
+        const skip = (Number(page) - 1) * Number(limit);
+        const whereClause = eq(transactions.customerId, req.params.id);
+
+        const [txns, [{ value: total }]] = await Promise.all([
+            db.query.transactions.findMany({
+                where: whereClause,
+                orderBy: desc(transactions.createdAt),
+                offset: skip,
+                limit: Number(limit),
+                with: { items: { columns: { id: true, productName: true, quantity: true, unitPrice: true } } },
+            }),
+            db.select({ value: count() }).from(transactions).where(whereClause),
+        ]);
+
+        res.json({
+            success: true,
+            data: txns,
+            meta: { page: Number(page), limit: Number(limit), total, totalPages: Math.ceil(total / Number(limit)) },
+        });
+    } catch (error) {
+        next(error);
+    }
+});
+
 // Adjust points for a customer (add/deduct)
 customerRoutes.post('/:id/points/adjust', authenticate, authorize('customers:update'), async (req, res, next) => {
     try {
@@ -580,6 +642,7 @@ customerRoutes.post('/:id/points/adjust', authenticate, authorize('customers:upd
         }
 
         // Update customer points and create history record in a transaction
+        const adjustTenantId = req.authUser?.tenantId;
         const { updatedCustomer, historyRecord } = await db.transaction(async (tx) => {
             const [updatedCustomer] = await tx.update(customers)
                 .set({ points: sql`${customers.points} + ${points}`, updatedAt: new Date() })
@@ -587,6 +650,7 @@ customerRoutes.post('/:id/points/adjust', authenticate, authorize('customers:upd
                 .returning();
 
             const [historyRecord] = await tx.insert(pointsHistory).values({
+                tenantId: adjustTenantId,
                 customerId,
                 points,
                 type: 'ADJUST',

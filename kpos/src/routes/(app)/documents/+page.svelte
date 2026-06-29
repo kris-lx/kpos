@@ -371,7 +371,7 @@
                 <!-- Pagination -->
                 <div class="p-4 border-t border-gray-200 dark:border-gray-700 flex flex-col sm:flex-row items-center justify-between gap-4">
                     <div class="text-sm text-gray-500 dark:text-gray-400">
-                        ສະແດງ {(currentPage - 1) * rowsPerPage + 1} - {Math.min(currentPage * rowsPerPage, totalRecords)} ຈາກ {totalRecords} ລາຍການ
+                        {t("common.showing")} {(currentPage - 1) * rowsPerPage + 1} - {Math.min(currentPage * rowsPerPage, totalRecords)} {t("common.of")} {totalRecords} {t("common.items")}
                     </div>
                     <div class="flex items-center gap-2">
                         <select
@@ -379,9 +379,9 @@
                             onchange={() => { currentPage = 1; loadDocuments(); }}
                             class="px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
                         >
-                            <option value={10}>10 ລາຍການ</option>
-                            <option value={25}>25 ລາຍການ</option>
-                            <option value={50}>50 ລາຍການ</option>
+                            <option value={10}>10 {t("common.items")}</option>
+                            <option value={25}>25 {t("common.items")}</option>
+                            <option value={50}>50 {t("common.items")}</option>
                         </select>
                         <div class="flex items-center gap-1">
                             <button

@@ -72,17 +72,17 @@
                 customers = response.data || [];
                 totalItems = response.meta?.total || response.pagination?.total || customers.length;
             } else {
-                error = "ບໍ່ສາມາດໂຫຼດຂໍ້ມູນລູກຄ້າໄດ້";
+                error = t('common.loadError');
                 customers = [];
                 totalItems = 0;
-                toast.error("ບໍ່ສາມາດໂຫຼດຂໍ້ມູນລູກຄ້າໄດ້");
+                toast.error(t('common.loadError'));
             }
         } catch (err) {
             console.error("Failed to load customers:", err);
-            error = "ເກີດຂໍ້ຜິດພາດໃນການໂຫຼດຂໍ້ມູນລູກຄ້າ";
+            error = t('common.loadError');
             customers = [];
             totalItems = 0;
-            toast.error("ເກີດຂໍ້ຜິດພາດໃນການໂຫຼດຂໍ້ມູນລູກຄ້າ");
+            toast.error(t('common.genericError'));
         } finally {
             loading = false;
         }
@@ -431,7 +431,7 @@
             </div>
             <div class="space-y-4">
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ປະເພດ</label>
+                    <p class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ປະເພດ</p>
                     <div class="flex gap-4">
                         <label class="flex items-center gap-2 cursor-pointer">
                             <input type="radio" bind:group={adjustForm.type} value="add" class="text-primary-600" />
@@ -446,8 +446,8 @@
                     </div>
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ຈຳນວນຄະແນນ</label>
-                    <input
+                    <label for="a11y-app-customers-points-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ຈຳນວນຄະແນນ</label>
+                    <input id="a11y-app-customers-points-page-svelte-1"
                         type="number"
                         bind:value={adjustForm.points}
                         min="0"
@@ -455,8 +455,8 @@
                     />
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ເຫດຜົນ</label>
-                    <textarea
+                    <label for="a11y-app-customers-points-page-svelte-2" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ເຫດຜົນ</label>
+                    <textarea id="a11y-app-customers-points-page-svelte-2"
                         bind:value={adjustForm.reason}
                         rows="3"
                         class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:placeholder-gray-400"

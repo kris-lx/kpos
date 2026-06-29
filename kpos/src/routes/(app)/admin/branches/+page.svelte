@@ -1,10 +1,11 @@
-﻿<script lang="ts">
+<script lang="ts">
     import { createQuery, createMutation, useQueryClient } from "@tanstack/svelte-query";
     import { get } from "svelte/store";
     import { api } from "$lib/api";
     import { goto } from "$app/navigation";
     import { onMount } from "svelte";
     import { toast } from "svelte-sonner";
+    import { t } from '$lib/i18n/index.svelte';
     import { cn, formatPhone, formatDate } from "$lib/utils";
     import {
         Building2,
@@ -55,7 +56,7 @@
             if (user.isSuperAdmin || ['admin', 'hq_admin', 'hq_manager', 'store_owner', 'branch_admin', 'store_manager'].includes(user.role)) {
                 canAccess = true;
             } else {
-                toast.error("ທ່ານບໍ່ມີສິດເຂົ້າເຖິງໜ້ານີ້");
+                toast.error(t('common.accessDenied'));
                 goto("/dashboard");
             }
         } catch {
@@ -87,11 +88,11 @@
             return api.post("admin/branches", { json: data }).json();
         },
         onSuccess: () => {
-            toast.success("ສ້າງສາຂາສຳເລັດ");
+            toast.success(t('common.created'));
             get(branchesQuery).refetch();
             showFormModal = false;
         },
-        onError: () => toast.error("ເກີດຂໍ້ຜິດພາດ")
+        onError: () => toast.error(t('common.genericError'))
     });
 
     const updateMutationFn = createMutation({
@@ -103,7 +104,7 @@
             get(branchesQuery).refetch();
             showFormModal = false;
         },
-        onError: () => toast.error("ເກີດຂໍ້ຜິດພາດ")
+        onError: () => toast.error(t('common.genericError'))
     });
 
     const deleteMutationFn = createMutation({
@@ -115,7 +116,7 @@
             get(branchesQuery).refetch();
             showDeleteModal = false;
         },
-        onError: () => toast.error("ເກີດຂໍ້ຜິດພາດ")
+        onError: () => toast.error(t('common.genericError'))
     });
 
     let showFormModal = $state(false);
@@ -368,7 +369,7 @@
     <!-- Detail Modal -->
     {#if showDetailModal && selectedBranch}
         <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showDetailModal = false}></div>
+            <button type="button" aria-label="Close modal" class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showDetailModal = false}></button>
             <div class="relative bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden max-h-[90vh] overflow-y-auto">
                 <div class="sticky top-0 bg-gradient-to-r from-blue-600 to-cyan-600 p-6 text-white">
                     <button onclick={() => showDetailModal = false} class="absolute top-4 right-4 w-8 h-8 bg-white/20 hover:bg-white/30 rounded-lg flex items-center justify-center transition-colors">
@@ -474,7 +475,7 @@
     <!-- Form Modal -->
     {#if showFormModal}
         <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showFormModal = false}></div>
+            <button type="button" aria-label="Close modal" class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showFormModal = false}></button>
             <div class="relative bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden max-h-[90vh] overflow-y-auto">
                 <div class="sticky top-0 bg-gradient-to-r from-blue-600 to-cyan-600 p-6 text-white">
                     <button onclick={() => showFormModal = false} class="absolute top-4 right-4 w-8 h-8 bg-white/20 hover:bg-white/30 rounded-lg flex items-center justify-center transition-colors">
@@ -491,8 +492,8 @@
                 <form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }} class="p-6 space-y-4">
                     <div class="grid grid-cols-2 gap-4">
                         <div class="col-span-2 sm:col-span-1">
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ຊື່ສາຂາ *</label>
-                            <input
+                            <label for="a11y-app-admin-branches-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ຊື່ສາຂາ *</label>
+                            <input id="a11y-app-admin-branches-page-svelte-1"
                                 type="text"
                                 bind:value={formData.name}
                                 placeholder="ເຊັ່ນ: ສາຂາຕົ້ນຕານ"
@@ -500,8 +501,8 @@
                             />
                         </div>
                         <div class="col-span-2 sm:col-span-1">
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ລະຫັດສາຂາ *</label>
-                            <input
+                            <label for="a11y-app-admin-branches-page-svelte-2" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ລະຫັດສາຂາ *</label>
+                            <input id="a11y-app-admin-branches-page-svelte-2"
                                 type="text"
                                 bind:value={formData.code}
                                 placeholder="ເຊັ່ນ: BR001"
@@ -511,8 +512,8 @@
                     </div>
 
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ທີ່ຢູ່</label>
-                        <textarea
+                        <label for="a11y-app-admin-branches-page-svelte-3" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ທີ່ຢູ່</label>
+                        <textarea id="a11y-app-admin-branches-page-svelte-3"
                             bind:value={formData.address}
                             placeholder="ທີ່ຢູ່ສາຂາ"
                             rows="2"
@@ -522,8 +523,8 @@
 
                     <div class="grid grid-cols-2 gap-4">
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ເບີໂທ</label>
-                            <input
+                            <label for="a11y-app-admin-branches-page-svelte-4" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ເບີໂທ</label>
+                            <input id="a11y-app-admin-branches-page-svelte-4"
                                 type="tel"
                                 bind:value={formData.phone}
                                 placeholder="020 xxxx xxxx"
@@ -531,8 +532,8 @@
                             />
                         </div>
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ອີເມວ</label>
-                            <input
+                            <label for="a11y-app-admin-branches-page-svelte-5" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ອີເມວ</label>
+                            <input id="a11y-app-admin-branches-page-svelte-5"
                                 type="email"
                                 bind:value={formData.email}
                                 placeholder="example@email.com"
@@ -574,7 +575,7 @@
     <!-- Delete Modal -->
     {#if showDeleteModal && selectedBranch}
         <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showDeleteModal = false}></div>
+            <button type="button" aria-label="Close modal" class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showDeleteModal = false}></button>
             <div class="relative bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
                 <div class="p-6 text-center">
                     <div class="w-16 h-16 bg-danger-100 dark:bg-danger-900/30 rounded-full flex items-center justify-center mx-auto mb-4">

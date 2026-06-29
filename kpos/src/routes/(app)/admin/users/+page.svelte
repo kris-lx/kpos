@@ -1,10 +1,11 @@
-﻿<script lang="ts">
+<script lang="ts">
     import { createQuery, createMutation, useQueryClient } from "@tanstack/svelte-query";
     import { get } from "svelte/store";
     import { api } from "$lib/api";
     import { goto } from "$app/navigation";
     import { onMount } from "svelte";
     import { toast } from "svelte-sonner";
+    import { t } from '$lib/i18n/index.svelte';
     import { cn, formatDate } from "$lib/utils";
     import {
         Users,
@@ -66,7 +67,7 @@
             if (user.isSuperAdmin || ['admin', 'hq_admin', 'hq_manager', 'store_owner', 'branch_admin', 'store_manager'].includes(user.role)) {
                 canAccess = true;
             } else {
-                toast.error("ທ່ານບໍ່ມີສິດເຂົ້າເຖິງໜ້ານີ້");
+                toast.error(t('common.accessDenied'));
                 goto("/dashboard");
             }
         } catch {
@@ -130,10 +131,10 @@
             return api.patch(`admin/users/${id}/super-admin`, { json: { isSuperAdmin: value } }).json();
         },
         onSuccess: () => {
-            toast.success("ອັບເດດສຳເລັດ");
+            toast.success(t('common.updated'));
             get(usersQuery).refetch();
         },
-        onError: () => toast.error("ເກີດຂໍ້ຜິດພາດ")
+        onError: () => toast.error(t('common.genericError'))
     });
 
     const updateMutationFn = createMutation({
@@ -141,11 +142,11 @@
             return api.patch(`admin/users/${id}`, { json: data }).json();
         },
         onSuccess: () => {
-            toast.success("ອັບເດດຜູ້ໃຊ້ສຳເລັດ");
+            toast.success(t('common.updated'));
             get(usersQuery).refetch();
             showFormModal = false;
         },
-        onError: () => toast.error("ເກີດຂໍ້ຜິດພາດ")
+        onError: () => toast.error(t('common.genericError'))
     });
 
     const createMutationFn = createMutation({
@@ -153,7 +154,7 @@
             return api.post(`admin/users`, { json: data }).json();
         },
         onSuccess: () => {
-            toast.success("ເພີ່ມຜູ້ໃຊ້ສຳເລັດ");
+            toast.success(t('common.added'));
             get(usersQuery).refetch();
             showFormModal = false;
         },
@@ -167,11 +168,11 @@
             return api.delete(`admin/users/${id}`).json();
         },
         onSuccess: () => {
-            toast.success("ລຶບຜູ້ໃຊ້ສຳເລັດ");
+            toast.success(t('common.deleted'));
             get(usersQuery).refetch();
             showDeleteModal = false;
         },
-        onError: () => toast.error("ເກີດຂໍ້ຜິດພາດ")
+        onError: () => toast.error(t('common.genericError'))
     });
 
     let showFormModal = $state(false);
@@ -183,6 +184,7 @@
         name: "",
         email: "",
         phone: "",
+        password: "",
         roleId: "",
         branchId: "",
         isActive: true,
@@ -191,88 +193,7 @@
 
     // Permission accordion states
     let openPermissionGroups = $state<Record<string, boolean>>({});
-
-    // Default permission groups (fallback if API not available)
-    const defaultPermissionGroups = [
-        {
-            key: "pos",
-            label: "ຂາຍໜ້າຮ້ານ (POS)",
-            icon: "ShoppingCart",
-            color: "from-emerald-500 to-success-500",
-            permissions: [
-                { key: "pos.view", label: "ເບິ່ງໜ້າ POS" },
-                { key: "pos.sale", label: "ຂາຍສິນຄ້າ" },
-                { key: "pos.discount", label: "ໃຫ້ສ່ວນຫຼຸດ" },
-                { key: "pos.void", label: "ຍົກເລີກລາຍການ" },
-                { key: "pos.refund", label: "ຄືນເງິນ" }
-            ]
-        },
-        {
-            key: "products",
-            label: "ສິນຄ້າ",
-            icon: "Package",
-            color: "from-blue-500 to-cyan-500",
-            permissions: [
-                { key: "products.view", label: "ເບິ່ງສິນຄ້າ" },
-                { key: "products.create", label: "ເພີ່ມສິນຄ້າ" },
-                { key: "products.edit", label: "ແກ້ໄຂສິນຄ້າ" },
-                { key: "products.delete", label: "ລຶບສິນຄ້າ" },
-                { key: "products.import", label: "ນຳເຂົ້າສິນຄ້າ" }
-            ]
-        },
-        {
-            key: "inventory",
-            label: "ສາງສິນຄ້າ",
-            icon: "Package",
-            color: "from-amber-500 to-orange-500",
-            permissions: [
-                { key: "inventory.view", label: "ເບິ່ງສາງ" },
-                { key: "inventory.adjust", label: "ປັບສາງ" },
-                { key: "inventory.transfer", label: "ໂອນສິນຄ້າ" },
-                { key: "inventory.count", label: "ນັບສາງ" }
-            ]
-        },
-        {
-            key: "reports",
-            label: "ລາຍງານ",
-            icon: "BarChart3",
-            color: "from-violet-500 to-purple-500",
-            permissions: [
-                { key: "reports.sales", label: "ລາຍງານຂາຍ" },
-                { key: "reports.products", label: "ລາຍງານສິນຄ້າ" },
-                { key: "reports.inventory", label: "ລາຍງານສາງ" },
-                { key: "reports.staff", label: "ລາຍງານພະນັກງານ" },
-                { key: "reports.customers", label: "ລາຍງານລູກຄ້າ" },
-                { key: "reports.export", label: "ສົ່ງອອກລາຍງານ" }
-            ]
-        },
-        {
-            key: "restaurant",
-            label: "ຮ້ານອາຫານ",
-            icon: "Utensils",
-            color: "from-pink-500 to-rose-500",
-            permissions: [
-                { key: "restaurant.view", label: "ເບິ່ງໂຕະ" },
-                { key: "restaurant.manage", label: "ຈັດການໂຕະ" },
-                { key: "restaurant.kitchen", label: "ເບິ່ງຄົວ" }
-            ]
-        },
-        {
-            key: "settings",
-            label: "ຕັ້ງຄ່າ",
-            icon: "Settings",
-            color: "from-gray-500 to-slate-500",
-            permissions: [
-                { key: "settings.general", label: "ຕັ້ງຄ່າທົ່ວໄປ" },
-                { key: "settings.payment", label: "ຕັ້ງຄ່າການຊຳລະ" },
-                { key: "settings.printer", label: "ຕັ້ງຄ່າເຄື່ອງພິມ" },
-                { key: "settings.tax", label: "ຕັ້ງຄ່າອາກອນ" }
-            ]
-        }
-    ];
-
-    // Use API data or fallback to defaults
-    let permissionGroups = $derived($permissionsQuery.data?.length ? $permissionsQuery.data : defaultPermissionGroups);
+    let permissionGroups = $derived($permissionsQuery.data || []);
 
     // Icon mapping for dynamic icons
     const iconMap: Record<string, any> = {
@@ -330,6 +251,7 @@
             name: user.name || "",
             email: user.email || "",
             phone: user.phone || "",
+            password: "",
             roleId: user.roleId || user.roleRelation?.id || "",
             branchId: user.branchId || user.branch?.id || "",
             isActive: user.isActive !== false,
@@ -351,7 +273,7 @@
 
     function handleSubmit() {
         if (!formData.name.trim()) {
-            toast.error("ກະລຸນາປ້ອນຊື່ຜູ້ໃຊ້");
+            toast.error(t('common.pleaseEnterName'));
             return;
         }
         const permissionsArray = Object.entries(formData.permissions as Record<string, boolean>)
@@ -450,10 +372,10 @@
                     <!-- Search -->
                     <div class="flex-1 relative">
                         <Search class="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                        <input 
-                            type="text" 
+                        <input
+                            type="text"
                             bind:value={searchQuery}
-                            placeholder="ຄົ້ນຫາຜູ້ໃຊ້..." 
+                            placeholder="ຄົ້ນຫາຜູ້ໃຊ້..."
                             class="w-full pl-12 pr-4 py-3 bg-gray-50 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-600 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all text-gray-900 dark:text-white"
                         />
                     </div>
@@ -594,6 +516,7 @@
                                         <td class="px-6 py-4">
                                             <div class="flex justify-center">
                                                 <button
+                                                    aria-label={user.isSuperAdmin ? "Remove super admin" : "Make super admin"}
                                                     onclick={() => isSuperAdmin && toggleSuperAdmin(user)}
                                                     disabled={!isSuperAdmin || $toggleSuperAdminMutation.isPending}
                                                     class={cn(
@@ -735,7 +658,7 @@
     <!-- Detail Modal -->
     {#if showDetailModal && selectedUser}
         <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showDetailModal = false}></div>
+            <button type="button" aria-label="Close modal" class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showDetailModal = false}></button>
             <div class="relative bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden max-h-[90vh] overflow-y-auto">
                 <div class="sticky top-0 bg-gradient-to-r from-emerald-600 to-teal-600 p-6 text-white">
                     <button onclick={() => showDetailModal = false} class="absolute top-4 right-4 w-8 h-8 bg-white/20 hover:bg-white/30 rounded-lg flex items-center justify-center transition-colors">
@@ -844,7 +767,7 @@
     <!-- Form Modal -->
     {#if showFormModal}
         <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showFormModal = false}></div>
+            <button type="button" aria-label="Close modal" class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showFormModal = false}></button>
             <div class="relative bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden max-h-[90vh] overflow-y-auto">
                 <div class="sticky top-0 bg-gradient-to-r from-emerald-600 to-teal-600 p-6 text-white">
                     <button onclick={() => showFormModal = false} class="absolute top-4 right-4 w-8 h-8 bg-white/20 hover:bg-white/30 rounded-lg flex items-center justify-center transition-colors">
@@ -860,8 +783,8 @@
                 </div>
                 <form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }} class="p-6 space-y-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ຊື່ຜູ້ໃຊ້ *</label>
-                        <input
+                        <label for="a11y-app-admin-users-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ຊື່ຜູ້ໃຊ້ *</label>
+                        <input id="a11y-app-admin-users-page-svelte-1"
                             type="text"
                             bind:value={formData.name}
                             placeholder="ເຊັ່ນ: ທ. ວິໄລວັນ"
@@ -871,8 +794,8 @@
 
                     <div class="grid grid-cols-2 gap-4">
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ອີເມວ</label>
-                            <input
+                            <label for="a11y-app-admin-users-page-svelte-2" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ອີເມວ</label>
+                            <input id="a11y-app-admin-users-page-svelte-2"
                                 type="email"
                                 bind:value={formData.email}
                                 placeholder="example@email.com"
@@ -880,8 +803,8 @@
                             />
                         </div>
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ເບີໂທ</label>
-                            <input
+                            <label for="a11y-app-admin-users-page-svelte-3" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ເບີໂທ</label>
+                            <input id="a11y-app-admin-users-page-svelte-3"
                                 type="tel"
                                 bind:value={formData.phone}
                                 placeholder="020 xxxx xxxx"
@@ -891,8 +814,8 @@
                     </div>
 
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ບົດບາດ</label>
-                        <select
+                        <label for="a11y-app-admin-users-page-svelte-4" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ບົດບາດ</label>
+                        <select id="a11y-app-admin-users-page-svelte-4"
                             bind:value={formData.roleId}
                             class="w-full px-4 py-3 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-transparent text-gray-900 dark:text-white"
                         >
@@ -904,8 +827,8 @@
                     </div>
 
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ສາຂາ</label>
-                        <select
+                        <label for="a11y-app-admin-users-page-svelte-5" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ສາຂາ</label>
+                        <select id="a11y-app-admin-users-page-svelte-5"
                             bind:value={formData.branchId}
                             class="w-full px-4 py-3 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-transparent text-gray-900 dark:text-white"
                         >
@@ -928,8 +851,8 @@
 
                     {#if !selectedUser}
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ລະຫັດຜ່ານ *</label>
-                            <input
+                            <label for="a11y-app-admin-users-page-svelte-6" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ລະຫັດຜ່ານ *</label>
+                            <input id="a11y-app-admin-users-page-svelte-6"
                                 type="password"
                                 bind:value={(formData as any).password}
                                 placeholder="ລະຫັດຜ່ານ"
@@ -980,7 +903,7 @@
     <!-- Delete Modal -->
     {#if showDeleteModal && selectedUser}
         <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showDeleteModal = false}></div>
+            <button type="button" aria-label="Close modal" class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showDeleteModal = false}></button>
             <div class="relative bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
                 <div class="p-6 text-center">
                     <div class="w-16 h-16 bg-danger-100 dark:bg-danger-900/30 rounded-full flex items-center justify-center mx-auto mb-4">

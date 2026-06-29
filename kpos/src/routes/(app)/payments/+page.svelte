@@ -149,7 +149,7 @@
                     transactionNo: tx.transactionNo || tx.id.slice(-8).toUpperCase(),
                     amount: tx.total || tx.amount || 0,
                     method: tx.payments?.[0]?.paymentMethod?.code || tx.paymentMethod || "cash",
-                    methodName: tx.payments?.[0]?.paymentMethod?.name || tx.paymentMethodName || "ເງິນສົດ",
+                    methodName: tx.payments?.[0]?.paymentMethod?.name || tx.paymentMethodName || t("payments.cash"),
                     status: (tx.status || "completed").toLowerCase(),
                     createdAt: tx.createdAt,
                     customer: tx.customer?.name || t("pos.walkIn"),
@@ -186,10 +186,10 @@
             console.error("Failed to load payment methods:", error);
             // Default methods
             paymentMethods = [
-                { id: "1", code: "cash", name: "ເງິນສົດ", icon: Banknote, isActive: true, fee: 0 },
-                { id: "2", code: "card", name: "ບັດເຄຣດິດ/ເດບິດ", icon: CreditCard, isActive: true, fee: 2.5 },
+                { id: "1", code: "cash", name: t("payments.cash"), icon: Banknote, isActive: true, fee: 0 },
+                { id: "2", code: "card", name: t("payments.card"), icon: CreditCard, isActive: true, fee: 2.5 },
                 { id: "3", code: "promptpay", name: "QR Code", icon: QrCode, isActive: true, fee: 0.25 },
-                { id: "4", code: "bank", name: "ໂອນເງິນ", icon: Building, isActive: true, fee: 0 },
+                { id: "4", code: "bank", name: t("payments.bankTransfer"), icon: Building, isActive: true, fee: 0 },
             ];
         }
     }
@@ -243,12 +243,12 @@
 
     function exportToCSV() {
         let csv = '\ufeff';
-        csv += 'ວັນທີ,ລະຫັດ,ລູກຄ້າ,ວິທີຊຳລະ,ຍອດເງິນ,ສະຖານະ\n';
+        csv += `${t("common.date")},${t("common.code")},${t("customers.customer")},${t("payments.method")},${t("payments.amount")},${t("payments.status")}\n`;
         for (const tx of filteredTransactions) {
             csv += `"${formatDate(tx.createdAt)}","${tx.transactionNo}","${tx.customer}","${tx.methodName}","${tx.amount}","${tx.status}"\n`;
         }
         downloadFile(csv, `payments-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
-        toast.success('ສົ່ງອອກ CSV ສຳເລັດ');
+        toast.success(t("reports.exportSuccess"));
     }
 
     function exportToPDF() {
@@ -256,16 +256,16 @@
             `<tr><td>${formatDate(tx.createdAt)}</td><td>${tx.transactionNo}</td><td>${tx.customer}</td><td>${tx.methodName}</td><td style="text-align:right">${formatCurrency(tx.amount)}</td><td>${tx.status}</td></tr>`
         ).join('');
         const total = filteredTransactions.reduce((s, tx) => s + (tx.amount || 0), 0);
-        const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>ລາຍງານການຊຳລະ</title>
+        const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${t("payments.reportTitle")}</title>
 <style>body{font-family:'Noto Sans Lao',sans-serif;padding:20px}h1{text-align:center}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ddd;padding:8px;font-size:12px}th{background:#f5f5f5}tfoot td{font-weight:bold;background:#f9f9f9}</style></head>
-<body><h1>ລາຍງານການຊຳລະ</h1><p style="text-align:center">${new Date().toLocaleDateString('lo-LA')}</p>
-<table><thead><tr><th>ວັນທີ</th><th>ລະຫັດ</th><th>ລູກຄ້າ</th><th>ວິທີຊຳລະ</th><th>ຍອດເງິນ</th><th>ສະຖານະ</th></tr></thead><tbody>${rows}</tbody>
-<tfoot><tr><td colspan="4">ລວມ</td><td style="text-align:right">${formatCurrency(total)}</td><td>${filteredTransactions.length} ລາຍການ</td></tr></tfoot></table></body></html>`;
+<body><h1>${t("payments.reportTitle")}</h1><p style="text-align:center">${new Date().toLocaleDateString('lo-LA')}</p>
+<table><thead><tr><th>${t("common.date")}</th><th>${t("common.code")}</th><th>${t("customers.customer")}</th><th>${t("payments.method")}</th><th>${t("payments.amount")}</th><th>${t("payments.status")}</th></tr></thead><tbody>${rows}</tbody>
+<tfoot><tr><td colspan="4">${t("common.total")}</td><td style="text-align:right">${formatCurrency(total)}</td><td>${filteredTransactions.length} ${t("common.items")}</td></tr></tfoot></table></body></html>`;
         const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
         const url = URL.createObjectURL(blob);
         const w = window.open(url, '_blank');
         if (w) w.onload = () => w.print();
-        toast.success('ສົ່ງອອກ PDF ສຳເລັດ');
+        toast.success(t("reports.exportSuccess"));
     }
 
     function exportToWord() {
@@ -274,11 +274,11 @@
         ).join('');
         const total = filteredTransactions.reduce((s, tx) => s + (tx.amount || 0), 0);
         const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office"><head><meta charset="utf-8"><style>table{width:100%;border-collapse:collapse}th,td{border:1px solid #000;padding:8px}th{background:#f0f0f0}tfoot td{font-weight:bold}</style></head>
-<body><h1 style="text-align:center">ລາຍງານການຊຳລະ</h1><p style="text-align:center">${new Date().toLocaleDateString('lo-LA')}</p>
-<table><thead><tr><th>ວັນທີ</th><th>ລະຫັດ</th><th>ລູກຄ້າ</th><th>ວິທີຊຳລະ</th><th>ຍອດເງິນ</th><th>ສະຖານະ</th></tr></thead><tbody>${rows}</tbody>
-<tfoot><tr><td colspan="4">ລວມ</td><td>${formatCurrency(total)}</td><td>${filteredTransactions.length} ລາຍການ</td></tr></tfoot></table></body></html>`;
+<body><h1 style="text-align:center">${t("payments.reportTitle")}</h1><p style="text-align:center">${new Date().toLocaleDateString('lo-LA')}</p>
+<table><thead><tr><th>${t("common.date")}</th><th>${t("common.code")}</th><th>${t("customers.customer")}</th><th>${t("payments.method")}</th><th>${t("payments.amount")}</th><th>${t("payments.status")}</th></tr></thead><tbody>${rows}</tbody>
+<tfoot><tr><td colspan="4">${t("common.total")}</td><td>${formatCurrency(total)}</td><td>${filteredTransactions.length} ${t("common.items")}</td></tr></tfoot></table></body></html>`;
         downloadFile(html, `payments-${new Date().toISOString().split('T')[0]}.doc`, 'application/msword');
-        toast.success('ສົ່ງອອກ Word ສຳເລັດ');
+        toast.success(t("reports.exportSuccess"));
     }
 
     // Filtered transactions
@@ -398,7 +398,7 @@
                 </div>
             </div>
             <p class="text-xl font-bold text-gray-900 dark:text-white mt-3">{formatCurrency(stats.cashTotal)}</p>
-            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">ເງິນສົດ</p>
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">{t("payments.cash")}</p>
         </div>
         
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
@@ -408,7 +408,7 @@
                 </div>
             </div>
             <p class="text-xl font-bold text-gray-900 dark:text-white mt-3">{formatCurrency(stats.cardTotal)}</p>
-            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">ບັດ</p>
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">{t("payments.cardShort")}</p>
         </div>
         
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
@@ -495,7 +495,7 @@
             <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-16 text-center shadow-sm">
                 <Receipt class="w-16 h-16 mx-auto text-gray-300 dark:text-gray-600" />
                 <h3 class="text-lg font-semibold text-gray-900 dark:text-white mt-4">{t("payments.noTransactions")}</h3>
-                <p class="text-gray-500 dark:text-gray-400 mt-2">ບໍ່ມີທຸລະກຳ</p>
+                <p class="text-gray-500 dark:text-gray-400 mt-2">{t("payments.noTransactionsDesc")}</p>
             </div>
         {:else}
             <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden">
@@ -632,7 +632,7 @@
                         {#if method.fee > 0}
                             <div class="mt-4 flex items-center gap-2 text-sm">
                                 <Percent class="w-4 h-4 text-gray-400" />
-                                <span class="text-gray-600 dark:text-gray-400">ຄ່າທຳນຽມ:</span>
+                                <span class="text-gray-600 dark:text-gray-400">{t("payments.fee")}:</span>
                                 <span class="font-medium text-gray-900 dark:text-white">{method.fee}%</span>
                             </div>
                         {/if}
@@ -660,7 +660,7 @@
         <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-16 text-center shadow-sm">
             <Building class="w-16 h-16 mx-auto text-gray-300 dark:text-gray-600" />
             <h3 class="text-lg font-semibold text-gray-900 dark:text-white mt-4">{t("payments.noSettlements")}</h3>
-            <p class="text-gray-500 dark:text-gray-400 mt-2">ບໍ່ມີຂໍ້ມູນການສົ່ງເງິນ</p>
+            <p class="text-gray-500 dark:text-gray-400 mt-2">{t("payments.noSettlementsDesc")}</p>
         </div>
     {/if}
 </div>

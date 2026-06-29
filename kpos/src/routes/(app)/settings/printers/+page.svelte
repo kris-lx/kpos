@@ -1,27 +1,59 @@
-﻿<script lang="ts">
-    import { i18n } from "$lib/i18n/index.svelte";
+<script lang="ts">
+    import { t } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
     import { onMount } from "svelte";
     import { toast } from "svelte-sonner";
     import { auth } from "$stores";
-    import { Loader2, Save, Printer, Plus, Trash2, Edit, AlertCircle, RefreshCw } from "lucide-svelte";
-    const t = i18n.t;
+    import {
+        Loader2, Save, Printer, Plus, Trash2, Edit, AlertCircle,
+        RefreshCw, ChevronLeft, Wifi, Bluetooth, Usb, Settings2,
+        CheckCircle2, XCircle, Zap,
+    } from "lucide-svelte";
 
-    let printers = $state<any[]>([]);
+    // ── Types ────────────────────────────────────────────────────────────────
+    interface PrinterConfig {
+        id: string;
+        name: string;
+        type: string;
+        connectionType: string;
+        ipAddress?: string;
+        port?: number;
+        serialPort?: string;
+        usbDevice?: string;
+        isDefault: boolean;
+        isActive: boolean;
+        paperWidth: number;
+        characterEncoding: string;
+        settings: {
+            printSpeed: string;
+            density: string;
+            cutPaper: boolean;
+            openCashDrawer: boolean;
+        };
+        status?: string;
+    }
+
+    // ── State ────────────────────────────────────────────────────────────────
+    let printers = $state<PrinterConfig[]>([]);
     let loading = $state(true);
-    let error = $state<string | null>(null);
+    let saving = $state(false);
+    let testingId = $state<string | null>(null);
     let showModal = $state(false);
-    let testingPrinter = $state<string | null>(null);
-    let editingPrinter = $state<any>(null);
-    let formData = $state({
+    let editingId = $state<string | null>(null);
+    let showAdvanced = $state(false);
+
+    const defaultForm = (): Omit<PrinterConfig, 'id'> => ({
         name: "",
         type: "receipt",
-        connectionType: "usb",
+        connectionType: "network",
         ipAddress: "",
         port: 9100,
+        serialPort: "COM1",
+        usbDevice: "",
         isDefault: false,
         isActive: true,
         paperWidth: 80,
+        characterEncoding: "UTF-8",
         settings: {
             printSpeed: "normal",
             density: "medium",
@@ -30,274 +62,355 @@
         },
     });
 
-    const defaultPrinterTypes = [
-        { value: "receipt", label: "ເຄື່ອງພິມໃບບິນ" },
-        { value: "kitchen", label: "ເຄື່ອງພິມເຮືອນຄົວ" },
-        { value: "label", label: "ເຄື່ອງພິມລາຄາ/ບາໂຄດ" },
-        { value: "report", label: "ເຄື່ອງພິມລາຍງານ" },
-    ];
-    const defaultConnectionTypes = [
-        { value: "usb", label: "USB" },
-        { value: "network", label: "Network (LAN)" },
-        { value: "bluetooth", label: "Bluetooth" },
-        { value: "serial", label: "Serial Port" },
-    ];
-    let printerTypes = $state(defaultPrinterTypes);
-    let connectionTypes = $state(defaultConnectionTypes);
+    let form = $state(defaultForm());
 
-    async function loadEnums() {
-        try {
-            const res = await api.get('settings/enums?type=printer_type,connection_type').json<any>();
-            if (res.data?.printer_type?.length) printerTypes = res.data.printer_type.map((e: any) => ({ value: e.value, label: e.labelLao || e.label }));
-            if (res.data?.connection_type?.length) connectionTypes = res.data.connection_type.map((e: any) => ({ value: e.value, label: e.labelLao || e.label }));
-        } catch { /* keep defaults */ }
-    }
+    // ── Lookup tables ─────────────────────────────────────────────────────────
+    const printerTypes = $derived([
+        { value: "receipt",     label: t("printers.receipt") },
+        { value: "kitchen",     label: t("printers.kitchen") },
+        { value: "label",       label: t("printers.label") },
+        { value: "report",      label: t("printers.report") },
+    ]);
 
+    const connectionTypes = $derived([
+        { value: "network",      label: t("printers.network") },
+        { value: "usb",          label: t("printers.usb") },
+        { value: "bluetooth",    label: t("printers.bluetooth") },
+        { value: "serial",       label: t("printers.serial") },
+        { value: "windowsPrint", label: t("printers.windowsPrint") },
+    ]);
+
+    const paperWidths = $derived([
+        { value: 57,  label: t("printers.paper57") },
+        { value: 58,  label: t("printers.paper58") },
+        { value: 76,  label: t("printers.paper76") },
+        { value: 80,  label: t("printers.paper80") },
+        { value: 110, label: t("printers.paper110") },
+    ]);
+
+    const encodings = [
+        { value: "UTF-8",   label: "UTF-8 (Universal)" },
+        { value: "TIS-620", label: "TIS-620 (Thai)" },
+        { value: "CP437",   label: "CP437 (Latin/English)" },
+        { value: "CP850",   label: "CP850 (Western Europe)" },
+        { value: "GB18030", label: "GB18030 (Chinese)" },
+        { value: "Shift-JIS", label: "Shift-JIS (Japanese)" },
+    ];
+
+    // ── Load ─────────────────────────────────────────────────────────────────
     $effect(() => {
-        auth.activeStoreId;
+        void auth.activeStoreId;
         loadPrinters();
-    });
-
-    onMount(() => {
-        loadEnums();
     });
 
     async function loadPrinters() {
         loading = true;
-        error = null;
         try {
-            const response = await api.get("settings/printers").json<any>();
-            if (response.success) {
-                printers = response.data || [];
-            } else {
-                throw new Error(response.message || "Failed to load printers");
-            }
-        } catch (err) {
-            console.error("Failed to load printers:", err);
+            const res = await api.get("settings/printers").json<any>();
+            printers = res.success ? (res.data || []) : [];
+        } catch {
+            toast.error(t("printers.loadFailed"));
             printers = [];
-            error = "ບໍ່ສາມາດໂຫລດຂໍ້ມູນເຄື່ອງພິມໄດ້";
-            toast.error("ບໍ່ສາມາດໂຫລດຂໍ້ມູນເຄື່ອງພິມໄດ້");
         } finally {
             loading = false;
         }
     }
 
-    function openModal(printer?: any) {
-        if (printer) {
-            editingPrinter = printer;
-            formData = { ...printer };
-        } else {
-            editingPrinter = null;
-            formData = {
-                name: "",
-                type: "receipt",
-                connectionType: "usb",
-                ipAddress: "",
-                port: 9100,
-                isDefault: false,
-                isActive: true,
-                paperWidth: 80,
-                settings: {
-                    printSpeed: "normal",
-                    density: "medium",
-                    cutPaper: true,
-                    openCashDrawer: false,
-                },
-            };
-        }
+    // ── Modal ─────────────────────────────────────────────────────────────────
+    function openAdd() {
+        editingId = null;
+        form = defaultForm();
+        showAdvanced = false;
         showModal = true;
     }
 
+    function openEdit(p: PrinterConfig) {
+        editingId = p.id;
+        form = {
+            name: p.name,
+            type: p.type,
+            connectionType: p.connectionType,
+            ipAddress: p.ipAddress ?? "",
+            port: p.port ?? 9100,
+            serialPort: p.serialPort ?? "COM1",
+            usbDevice: p.usbDevice ?? "",
+            isDefault: p.isDefault,
+            isActive: p.isActive,
+            paperWidth: p.paperWidth ?? 80,
+            characterEncoding: p.characterEncoding ?? "UTF-8",
+            settings: {
+                printSpeed: p.settings?.printSpeed ?? "normal",
+                density: p.settings?.density ?? "medium",
+                cutPaper: p.settings?.cutPaper ?? true,
+                openCashDrawer: p.settings?.openCashDrawer ?? false,
+            },
+        };
+        showAdvanced = false;
+        showModal = true;
+    }
+
+    // ── Save ──────────────────────────────────────────────────────────────────
     async function savePrinter() {
+        if (!form.name.trim()) return;
+        saving = true;
         try {
-            if (editingPrinter) {
-                await api.put(`settings/printers/${editingPrinter.id}`, {
-                    json: formData,
-                }).json();
-                toast.success("ແກ້ໄຂເຄື່ອງພິມສຳເລັດ");
+            const payload = { ...form };
+            if (editingId) {
+                await api.put(`settings/printers/${editingId}`, { json: payload }).json();
+                toast.success(t("printers.updateSuccess"));
             } else {
-                await api.post("settings/printers", { json: formData }).json();
-                toast.success("ເພີ່ມເຄື່ອງພິມສຳເລັດ");
+                await api.post("settings/printers", { json: payload }).json();
+                toast.success(t("printers.addSuccess"));
             }
             showModal = false;
             loadPrinters();
-        } catch (error) {
-            console.error("Failed to save printer:", error);
-            toast.error("ບັນທຶກບໍ່ສຳເລັດ");
-        }
-    }
-
-    async function testPrint(printer: any) {
-        testingPrinter = printer.id;
-        try {
-            await api.post(`settings/printers/${printer.id}/test`).json();
-            toast.success("ສົ່ງພິມທົດສອບແລ້ວ");
-        } catch (error) {
-            console.error("Failed to test print:", error);
-            toast.error("ພິມທົດສອບບໍ່ສຳເລັດ");
+        } catch {
+            toast.error(t("printers.saveFailed"));
         } finally {
-            testingPrinter = null;
+            saving = false;
         }
     }
 
-    async function deletePrinter(printer: any) {
-        if (!confirm("ຕ້ອງການລົບເຄື່ອງພິມນີ້ບໍ?")) return;
+    // ── Delete ────────────────────────────────────────────────────────────────
+    async function deletePrinter(p: PrinterConfig) {
+        if (!confirm(t("printers.confirmDelete"))) return;
         try {
-            await api.delete(`settings/printers/${printer.id}`).json();
-            toast.success("ລົບເຄື່ອງພິມສຳເລັດ");
+            await api.delete(`settings/printers/${p.id}`).json();
+            toast.success(t("printers.deleteSuccess"));
             loadPrinters();
-        } catch (error) {
-            console.error("Failed to delete printer:", error);
-            toast.error("ລົບບໍ່ສຳເລັດ");
+        } catch {
+            toast.error(t("printers.deleteFailed"));
         }
     }
 
-    function getStatusColor(status: string): string {
-        return status === "online"
-            ? "bg-success-100 dark:bg-success-900/50 text-success-700 dark:text-success-300"
-            : "bg-danger-100 dark:bg-danger-900/50 text-danger-700 dark:text-danger-300";
+    // ── Test print ────────────────────────────────────────────────────────────
+    async function testPrint(p: PrinterConfig) {
+        testingId = p.id;
+        try {
+            if (p.connectionType === "windowsPrint") {
+                // System print dialog — open a test page in a new window
+                const w = window.open("", "_blank", "width=400,height=300");
+                if (w) {
+                    w.document.write(`<html><body style="font-family:monospace;text-align:center">
+                        <h2>** KPOS TEST PRINT **</h2>
+                        <hr/><p>Printer: ${p.name}</p>
+                        <p>Time: ${new Date().toLocaleString()}</p>
+                        <hr/><p>PRINTER OK</p>
+                    </body></html>`);
+                    w.document.close();
+                    w.print();
+                    w.close();
+                }
+                toast.success(t("printers.testSuccess"));
+                return;
+            }
+
+            if (p.connectionType === "usb" && "usb" in navigator) {
+                // Try Web USB API
+                try {
+                    const device = await (navigator as any).usb.requestDevice({ filters: [] });
+                    await device.open();
+                    const config = device.configuration || await device.selectConfiguration(1);
+                    const iface = config?.interfaces?.[0];
+                    if (iface) {
+                        await device.claimInterface(iface.interfaceNumber);
+                        const ep = iface.alternate.endpoints.find((e: any) => e.direction === "out");
+                        if (ep) {
+                            const ESC = 0x1B; const GS = 0x1D;
+                            const data = new Uint8Array([
+                                ESC, 0x40,
+                                ESC, 0x61, 0x01,
+                                ...new TextEncoder().encode("** KPOS TEST **\nPRINTER OK\n\n\n"),
+                                GS, 0x56, 0x41, 0x03,
+                            ]);
+                            await device.transferOut(ep.endpointNumber, data);
+                        }
+                        await device.releaseInterface(iface.interfaceNumber);
+                    }
+                    await device.close();
+                    toast.success(t("printers.testSuccess"));
+                    return;
+                } catch (usbErr: any) {
+                    if (usbErr?.name === "NotFoundError") {
+                        toast.error("No USB printer selected");
+                        return;
+                    }
+                    // Fall through to backend test
+                }
+            }
+
+            // For network and others: call backend
+            const res = await api.post(`settings/printers/${p.id}/test`, {}).json<any>();
+            if (res.success) {
+                toast.success(t("printers.testSuccess"));
+            } else {
+                toast.error(res.error?.message || t("printers.testFailed"));
+            }
+        } catch (err: any) {
+            const msg = err?.message || t("printers.testFailed");
+            toast.error(msg.includes("PRINTER_UNREACHABLE") ? t("printers.testFailed") + ": " + msg : t("printers.testFailed"));
+        } finally {
+            testingId = null;
+        }
     }
 
-    function getTypeIcon(type: string): string {
-        const icons: Record<string, string> = {
-            receipt:
-                "M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z",
-            kitchen:
-                "M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4",
-            label: "M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z",
-            report: "M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z",
-        };
-        return icons[type] || icons.receipt;
+    // ── USB detection ─────────────────────────────────────────────────────────
+    async function detectUsb() {
+        if (!("usb" in navigator)) {
+            toast.error("Web USB API is not supported in this browser. Use Chrome or Edge.");
+            return;
+        }
+        try {
+            const device = await (navigator as any).usb.requestDevice({ filters: [] });
+            form = { ...form, connectionType: "usb", usbDevice: device.productName || device.serialNumber || "USB Printer" };
+            toast.success(`Found: ${device.productName || "USB Device"}`);
+        } catch (err: any) {
+            if (err?.name !== "NotFoundError") toast.error("USB detection failed");
+        }
     }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+    function typeLabel(v: string) {
+        return printerTypes.find(p => p.value === v)?.label ?? v;
+    }
+    function connLabel(v: string) {
+        return connectionTypes.find(c => c.value === v)?.label ?? v;
+    }
+    function paperLabel(v: number) {
+        return paperWidths.find(p => p.value === v)?.label ?? `${v}mm`;
+    }
+
+    const connIcon: Record<string, any> = {
+        network: Wifi,
+        bluetooth: Bluetooth,
+        usb: Usb,
+        serial: Settings2,
+        windowsPrint: Printer,
+    };
 </script>
 
-<svelte:head>
-    <title>{t("settings.printers")} - KPOS</title>
-</svelte:head>
+<svelte:head><title>{t("settings.printers")} - KPOS</title></svelte:head>
 
-<div class="p-6">
-    <div class="flex justify-between items-center mb-6">
-        <div>
-            <h1 class="text-2xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
-                <Printer class="w-6 h-6" />
-                {t("settings.printers")}
-            </h1>
-            <p class="text-gray-500 dark:text-gray-400">{t('printers.subtitle')}</p>
+<div class="p-6 max-w-4xl">
+    <!-- Header -->
+    <div class="flex items-center justify-between mb-6">
+        <div class="flex items-center gap-3">
+            <a href="/settings" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+                <ChevronLeft class="w-5 h-5" />
+            </a>
+            <div>
+                <h1 class="text-xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
+                    <Printer class="w-5 h-5" />
+                    {t("printers.title")}
+                </h1>
+                <p class="text-sm text-gray-500 dark:text-gray-400">{t("printers.subtitle")}</p>
+            </div>
         </div>
-        <button
-            onclick={() => openModal()}
-            class="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 flex items-center gap-2"
-        >
+        <button onclick={openAdd}
+            class="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 text-sm font-medium transition-colors">
             <Plus class="w-4 h-4" />
-            {t('printers.addPrinter')}
+            {t("printers.addPrinter")}
         </button>
     </div>
 
+    <!-- Content -->
     {#if loading}
-        <div class="flex justify-center py-12">
-            <Loader2 class="h-8 w-8 animate-spin text-primary-600" />
+        <div class="flex justify-center py-16">
+            <Loader2 class="w-8 h-8 animate-spin text-primary-600" />
         </div>
-    {:else if error}
-        <div class="flex flex-col items-center justify-center py-12 text-center">
-            <AlertCircle class="h-12 w-12 text-danger-500 mb-4" />
-            <p class="text-danger-600 dark:text-danger-400 mb-4">{error}</p>
-            <button
-                onclick={() => loadPrinters()}
-                class="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 flex items-center gap-2"
-            >
-                <RefreshCw class="w-4 h-4" />
-                {t('common.tryAgain')}
+    {:else if printers.length === 0}
+        <div class="flex flex-col items-center justify-center py-16 text-center bg-white dark:bg-gray-900 rounded-xl border border-gray-100 dark:border-gray-800">
+            <Printer class="w-12 h-12 text-gray-300 dark:text-gray-600 mb-4" />
+            <p class="text-gray-500 dark:text-gray-400 mb-4">{t("printers.noPrinters")}</p>
+            <button onclick={openAdd}
+                class="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 text-sm font-medium">
+                <Plus class="w-4 h-4" />
+                {t("printers.addPrinter")}
             </button>
         </div>
     {:else}
-        <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
             {#each printers as printer (printer.id)}
-                <div
-                    class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 hover:shadow-md transition-shadow"
-                >
+                {@const ConnIcon = connIcon[printer.connectionType] ?? Printer}
+                <div class="bg-white dark:bg-gray-900 rounded-xl border border-gray-100 dark:border-gray-800 p-4 flex flex-col gap-3 hover:shadow-md transition-shadow">
+                    <!-- Card header -->
                     <div class="flex items-start justify-between">
                         <div class="flex items-center gap-3">
-                            <div
-                                class="w-12 h-12 rounded-lg bg-gray-100 dark:bg-gray-700 flex items-center justify-center"
-                            >
-                                <Printer class="w-6 h-6 text-gray-600 dark:text-gray-300" />
+                            <div class="w-10 h-10 rounded-xl bg-primary-50 dark:bg-primary-900/30 flex items-center justify-center shrink-0">
+                                <Printer class="w-5 h-5 text-primary-600 dark:text-primary-400" />
                             </div>
                             <div>
-                                <h3 class="font-medium text-gray-900 dark:text-white">
-                                    {printer.name}
-                                </h3>
-                                <p class="text-sm text-gray-500 dark:text-gray-400">
-                                    {printerTypes.find(
-                                        (t) => t.value === printer.type,
-                                    )?.label}
-                                </p>
+                                <h3 class="font-semibold text-gray-900 dark:text-white text-sm leading-tight">{printer.name}</h3>
+                                <p class="text-xs text-gray-500 dark:text-gray-400">{typeLabel(printer.type)}</p>
                             </div>
                         </div>
-                        <span
-                            class="px-2 py-1 text-xs rounded {getStatusColor(
-                                printer.status || 'offline',
-                            )}"
-                        >
-                            {printer.status === "online" ? "ອອນລາຍ" : "ອອບລາຍ"}
+                        <!-- Status badge -->
+                        <span class="flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium {printer.status === 'online'
+                            ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400'
+                            : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400'}">
+                            {#if printer.status === 'online'}
+                                <CheckCircle2 class="w-3 h-3" />
+                                {t("printers.online")}
+                            {:else}
+                                <XCircle class="w-3 h-3" />
+                                {t("printers.offline")}
+                            {/if}
                         </span>
                     </div>
 
-                    <div class="mt-3 space-y-1 text-sm text-gray-500 dark:text-gray-400">
-                        <p>
-                            ການເຊື່ອມຕໍ່: {connectionTypes.find(
-                                (c) => c.value === printer.connectionType,
-                            )?.label}
-                        </p>
-                        {#if printer.ipAddress}
-                            <p>
-                                IP: {printer.ipAddress}:{printer.port || 9100}
-                            </p>
+                    <!-- Details -->
+                    <div class="space-y-1 text-xs text-gray-500 dark:text-gray-400">
+                        <div class="flex items-center gap-1.5">
+                            <ConnIcon class="w-3.5 h-3.5 shrink-0" />
+                            <span>{t("printers.connectionLabel")} {connLabel(printer.connectionType)}</span>
+                        </div>
+                        {#if printer.connectionType === "network" && printer.ipAddress}
+                            <p class="pl-5">IP: {printer.ipAddress}:{printer.port ?? 9100}</p>
                         {/if}
-                        <p>ຂະໜາດກະດາດ: {printer.paperWidth}mm</p>
+                        {#if printer.connectionType === "serial" && printer.serialPort}
+                            <p class="pl-5">{printer.serialPort}</p>
+                        {/if}
+                        <p class="flex items-center gap-1">
+                            <span>{t("printers.paperWidthLabel")}</span>
+                            <span>{paperLabel(printer.paperWidth ?? 80)}</span>
+                        </p>
                     </div>
 
-                    <div class="mt-3 flex items-center gap-2">
+                    <!-- Tags -->
+                    <div class="flex flex-wrap gap-1.5">
                         {#if printer.isDefault}
-                            <span
-                                class="px-2 py-1 text-xs bg-primary-100 dark:bg-primary-900/50 text-primary-700 dark:text-primary-300 rounded"
-                                >ຄ່າເລີ່ມຕົ້ນ</span
-                            >
+                            <span class="px-2 py-0.5 text-xs bg-primary-100 dark:bg-primary-900/40 text-primary-700 dark:text-primary-300 rounded-full">
+                                {t("printers.default")}
+                            </span>
                         {/if}
                         {#if !printer.isActive}
-                            <span
-                                class="px-2 py-1 text-xs bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 rounded"
-                                >ປິດໃຊ້ງານ</span
-                            >
+                            <span class="px-2 py-0.5 text-xs bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 rounded-full">
+                                {t("printers.disabled")}
+                            </span>
                         {/if}
                     </div>
 
-                    <div class="mt-4 flex gap-2 border-t border-gray-200 dark:border-gray-700 pt-3">
-                        <button
-                            onclick={() => testPrint(printer)}
-                            disabled={testingPrinter === printer.id}
-                            class="px-3 py-1 text-sm bg-success-50 dark:bg-success-900/30 text-success-600 dark:text-success-400 hover:bg-success-100 dark:hover:bg-success-900/50 rounded disabled:opacity-50 flex items-center gap-1"
-                        >
-                            {#if testingPrinter === printer.id}
+                    <!-- Actions -->
+                    <div class="flex gap-2 border-t border-gray-100 dark:border-gray-800 pt-3 mt-auto">
+                        <button onclick={() => testPrint(printer)} disabled={testingId === printer.id}
+                            class="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 text-xs font-medium rounded-lg bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 disabled:opacity-50 transition-colors">
+                            {#if testingId === printer.id}
                                 <Loader2 class="w-3 h-3 animate-spin" />
-                                ກຳລັງທົດສອບ...
+                                {t("printers.testing")}
                             {:else}
-                                <Printer class="w-3 h-3" />
-                                ທົດສອບ
+                                <Zap class="w-3 h-3" />
+                                {t("printers.testPrint")}
                             {/if}
                         </button>
-                        <button
-                            onclick={() => openModal(printer)}
-                            class="px-3 py-1 text-sm text-primary-600 dark:text-primary-400 hover:bg-primary-50 dark:hover:bg-primary-900/30 rounded flex items-center gap-1"
-                        >
+                        <button onclick={() => openEdit(printer)}
+                            class="flex items-center gap-1 px-2 py-1.5 text-xs font-medium rounded-lg text-primary-600 dark:text-primary-400 hover:bg-primary-50 dark:hover:bg-primary-900/20 transition-colors">
                             <Edit class="w-3 h-3" />
-                            ແກ້ໄຂ
+                            {t("common.edit")}
                         </button>
-                        <button
-                            onclick={() => deletePrinter(printer)}
-                            class="px-3 py-1 text-sm text-danger-600 dark:text-danger-400 hover:bg-danger-50 dark:hover:bg-danger-900/30 rounded flex items-center gap-1"
-                        >
+                        <button onclick={() => deletePrinter(printer)}
+                            class="flex items-center gap-1 px-2 py-1.5 text-xs font-medium rounded-lg text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors">
                             <Trash2 class="w-3 h-3" />
-                            ລົບ
+                            {t("common.delete")}
                         </button>
                     </div>
                 </div>
@@ -306,135 +419,197 @@
     {/if}
 </div>
 
+<!-- Modal -->
 {#if showModal}
-    <div
-        class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
-    >
-        <div
-            class="bg-white dark:bg-gray-800 rounded-lg p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto"
-        >
-            <h2 class="text-xl font-bold mb-4 text-gray-900 dark:text-white flex items-center gap-2">
-                {#if editingPrinter}
-                    <Edit class="w-5 h-5" />
-                    ແກ້ໄຂເຄື່ອງພິມ
-                {:else}
-                    <Plus class="w-5 h-5" />
-                    ເພີ່ມເຄື່ອງພິມ
-                {/if}
-            </h2>
-            <div class="space-y-4">
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
-                        >ຊື່ເຄື່ອງພິມ</label
-                    >
-                    <input
-                        type="text"
-                        bind:value={formData.name}
-                        class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-primary-500"
-                    />
-                </div>
-                <div class="grid grid-cols-2 gap-4">
+    <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+        role="dialog" aria-modal="true" tabindex="-1"
+        onkeydown={(e) => e.key === "Escape" && (showModal = false)}>
+        <div class="bg-white dark:bg-gray-900 rounded-2xl w-full max-w-lg max-h-[92vh] overflow-y-auto shadow-2xl">
+            <div class="p-6">
+                <!-- Modal header -->
+                <h2 class="text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2 mb-5">
+                    {#if editingId}
+                        <Edit class="w-5 h-5" />
+                        {t("printers.editPrinter")}
+                    {:else}
+                        <Plus class="w-5 h-5" />
+                        {t("printers.addPrinter")}
+                    {/if}
+                </h2>
+
+                <div class="space-y-4">
+                    <!-- Name -->
                     <div>
-                        <label
-                            class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
-                            >ປະເພດ</label
-                        >
-                        <select
-                            bind:value={formData.type}
-                            class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-primary-500"
-                        >
-                            {#each printerTypes as type (type.value)}
-                                <option value={type.value}>{type.label}</option>
-                            {/each}
-                        </select>
+                        <label for="pr-name" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            {t("printers.name")} <span class="text-red-500">*</span>
+                        </label>
+                        <input id="pr-name" type="text" bind:value={form.name} placeholder="e.g. Front Desk Printer"
+                            class="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-primary-500 focus:outline-none text-sm" />
                     </div>
-                    <div>
-                        <label
-                            class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
-                            >ການເຊື່ອມຕໍ່</label
-                        >
-                        <select
-                            bind:value={formData.connectionType}
-                            class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-primary-500"
-                        >
-                            {#each connectionTypes as conn (conn.value)}
-                                <option value={conn.value}>{conn.label}</option>
-                            {/each}
-                        </select>
-                    </div>
-                </div>
-                {#if formData.connectionType === "network"}
-                    <div class="grid grid-cols-2 gap-4">
+
+                    <!-- Type + Connection -->
+                    <div class="grid grid-cols-2 gap-3">
                         <div>
-                            <label
-                                class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
-                                >IP Address</label
-                            >
-                            <input
-                                type="text"
-                                bind:value={formData.ipAddress}
-                                placeholder="192.168.1.100"
-                                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-primary-500"
-                            />
+                            <label for="pr-type" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t("printers.type")}</label>
+                            <select id="pr-type" bind:value={form.type}
+                                class="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-primary-500 focus:outline-none text-sm">
+                                {#each printerTypes as pt}
+                                    <option value={pt.value}>{pt.label}</option>
+                                {/each}
+                            </select>
                         </div>
                         <div>
-                            <label
-                                class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
-                                >Port</label
-                            >
-                            <input
-                                type="number"
-                                bind:value={formData.port}
-                                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-primary-500"
-                            />
+                            <label for="pr-conn" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t("printers.connection")}</label>
+                            <select id="pr-conn" bind:value={form.connectionType}
+                                class="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-primary-500 focus:outline-none text-sm">
+                                {#each connectionTypes as ct}
+                                    <option value={ct.value}>{ct.label}</option>
+                                {/each}
+                            </select>
                         </div>
                     </div>
-                {/if}
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
-                        >ຂະໜາດກະດາດ (mm)</label
-                    >
-                    <select
-                        bind:value={formData.paperWidth}
-                        class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-primary-500"
-                    >
-                        <option value={57}>57mm (ມ້ວນນ້ອຍ)</option>
-                        <option value={80}>80mm (ມ້ວນໃຫຍ່)</option>
-                    </select>
+
+                    <!-- Network fields -->
+                    {#if form.connectionType === "network"}
+                        <div class="grid grid-cols-3 gap-3">
+                            <div class="col-span-2">
+                                <label for="pr-ip" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t("printers.ipAddress")}</label>
+                                <input id="pr-ip" type="text" bind:value={form.ipAddress} placeholder="192.168.1.100"
+                                    class="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-primary-500 focus:outline-none text-sm font-mono" />
+                            </div>
+                            <div>
+                                <label for="pr-port" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t("printers.port")}</label>
+                                <input id="pr-port" type="number" bind:value={form.port} min="1" max="65535"
+                                    class="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-primary-500 focus:outline-none text-sm font-mono" />
+                            </div>
+                        </div>
+                    {/if}
+
+                    <!-- Serial fields -->
+                    {#if form.connectionType === "serial"}
+                        <div>
+                            <label for="pr-serial" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t("printers.serialPort")}</label>
+                            <input id="pr-serial" type="text" bind:value={form.serialPort} placeholder="COM1 or /dev/ttyUSB0"
+                                class="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-primary-500 focus:outline-none text-sm font-mono" />
+                        </div>
+                    {/if}
+
+                    <!-- USB fields -->
+                    {#if form.connectionType === "usb"}
+                        <div>
+                            <label for="pr-usb" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t("printers.usbDevice")}</label>
+                            <div class="flex gap-2">
+                                <input id="pr-usb" type="text" bind:value={form.usbDevice} placeholder="USB Printer Name"
+                                    class="flex-1 px-3 py-2 border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-primary-500 focus:outline-none text-sm" />
+                                <button type="button" onclick={detectUsb}
+                                    class="px-3 py-2 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 text-sm transition-colors whitespace-nowrap flex items-center gap-1">
+                                    <Usb class="w-4 h-4" />
+                                    {t("printers.detectUsb")}
+                                </button>
+                            </div>
+                            <p class="text-xs text-gray-400 mt-1">Requires Chrome or Edge browser</p>
+                        </div>
+                    {/if}
+
+                    <!-- System print info -->
+                    {#if form.connectionType === "windowsPrint"}
+                        <div class="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg text-sm text-blue-700 dark:text-blue-300">
+                            Uses the browser's built-in print dialog — works with any OS printer (Windows, macOS, Linux). No driver needed.
+                        </div>
+                    {/if}
+
+                    <!-- Paper width + Encoding -->
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label for="pr-paper" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t("printers.paperSize")}</label>
+                            <select id="pr-paper" bind:value={form.paperWidth}
+                                class="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-primary-500 focus:outline-none text-sm">
+                                {#each paperWidths as pw}
+                                    <option value={pw.value}>{pw.label}</option>
+                                {/each}
+                            </select>
+                        </div>
+                        <div>
+                            <label for="pr-enc" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t("printers.characterEncoding")}</label>
+                            <select id="pr-enc" bind:value={form.characterEncoding}
+                                class="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-primary-500 focus:outline-none text-sm">
+                                {#each encodings as enc}
+                                    <option value={enc.value}>{enc.label}</option>
+                                {/each}
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Checkboxes -->
+                    <div class="flex flex-wrap gap-4">
+                        <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
+                            <input type="checkbox" bind:checked={form.isActive} class="rounded" />
+                            {t("printers.enabled")}
+                        </label>
+                        <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
+                            <input type="checkbox" bind:checked={form.isDefault} class="rounded" />
+                            {t("printers.setDefault")}
+                        </label>
+                    </div>
+
+                    <!-- Advanced settings toggle -->
+                    <button type="button" onclick={() => showAdvanced = !showAdvanced}
+                        class="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors">
+                        <Settings2 class="w-4 h-4" />
+                        {t("printers.advancedSettings")}
+                        <span class="text-xs">{showAdvanced ? "▲" : "▼"}</span>
+                    </button>
+
+                    {#if showAdvanced}
+                        <div class="p-4 bg-gray-50 dark:bg-gray-800/50 rounded-xl space-y-3">
+                            <!-- Print speed -->
+                            <div class="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label for="pr-speed" class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">{t("printers.printSpeed")}</label>
+                                    <select id="pr-speed" bind:value={form.settings.printSpeed}
+                                        class="w-full px-3 py-1.5 border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-lg text-sm">
+                                        <option value="slow">{t("printers.slow")}</option>
+                                        <option value="normal">{t("printers.normal")}</option>
+                                        <option value="fast">{t("printers.fast")}</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label for="pr-density" class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">{t("printers.density")}</label>
+                                    <select id="pr-density" bind:value={form.settings.density}
+                                        class="w-full px-3 py-1.5 border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-lg text-sm">
+                                        <option value="low">{t("printers.low")}</option>
+                                        <option value="medium">{t("printers.medium")}</option>
+                                        <option value="high">{t("printers.high")}</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <!-- Cut + Drawer checkboxes -->
+                            <div class="flex flex-wrap gap-4">
+                                <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
+                                    <input type="checkbox" bind:checked={form.settings.cutPaper} class="rounded" />
+                                    {t("printers.cutPaper")}
+                                </label>
+                                <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
+                                    <input type="checkbox" bind:checked={form.settings.openCashDrawer} class="rounded" />
+                                    {t("printers.openDrawer")}
+                                </label>
+                            </div>
+                        </div>
+                    {/if}
                 </div>
-                <div class="flex items-center gap-4">
-                    <label class="flex items-center gap-2">
-                        <input
-                            type="checkbox"
-                            bind:checked={formData.isActive}
-                        />
-                        <span class="text-sm text-gray-700 dark:text-gray-300">{t('printers.enabled')}</span>
-                    </label>
-                    <label class="flex items-center gap-2">
-                        <input
-                            type="checkbox"
-                            bind:checked={formData.isDefault}
-                        />
-                        <span class="text-sm text-gray-700 dark:text-gray-300"
-                            >ຕັ້ງເປັນຄ່າເລີ່ມຕົ້ນ</span
-                        >
-                    </label>
+
+                <!-- Footer -->
+                <div class="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-100 dark:border-gray-800">
+                    <button onclick={() => (showModal = false)}
+                        class="px-4 py-2 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors">
+                        {t("common.cancel")}
+                    </button>
+                    <button onclick={savePrinter} disabled={saving || !form.name.trim()}
+                        class="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-60 text-sm font-medium transition-colors">
+                        {#if saving}<Loader2 class="w-4 h-4 animate-spin" />{:else}<Save class="w-4 h-4" />{/if}
+                        {t("common.save")}
+                    </button>
                 </div>
-            </div>
-            <div class="flex justify-end gap-3 mt-6">
-                <button
-                    onclick={() => (showModal = false)}
-                    class="px-4 py-2 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg"
-                >
-                    ຍົກເລີກ
-                </button>
-                <button
-                    onclick={savePrinter}
-                    class="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 flex items-center gap-2"
-                >
-                    <Save class="w-4 h-4" />
-                    ບັນທຶກ
-                </button>
             </div>
         </div>
     </div>

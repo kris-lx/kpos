@@ -24,30 +24,30 @@
         error = "";
 
         if (!token) {
-            error = "ລິ້ງລີເຊັດລະຫັດຜ່ານບໍ່ຖືກຕ້ອງ ກະລຸນາຂໍລິ້ງໃໝ່";
+            error = t("auth.invalidResetLink");
             return;
         }
         if (password.length < 8) {
-            error = "ລະຫັດຜ່ານຕ້ອງມີຢ່າງໜ້ອຍ 8 ຕົວອັກສອນ";
+            error = t("auth.passwordMinLength");
             return;
         }
         if (password !== confirmPassword) {
-            error = "ລະຫັດຜ່ານທັງສອງບໍ່ຕົງກັນ";
+            error = t("auth.passwordsDoNotMatch");
             return;
         }
 
         isLoading = true;
         try {
             await api.post("auth/reset-password", { json: { token, password } }).json();
-            successMessage = "ລີເຊັດລະຫັດຜ່ານສຳເລັດ! ກຳລັງພາທ່ານໄປໜ້າເຂົ້າສູ່ລະບົບ...";
-            toast.success("ລີເຊັດລະຫັດຜ່ານສຳເລັດ");
+            successMessage = t("auth.resetPasswordSuccessMessage");
+            toast.success(t("auth.resetPasswordSuccess"));
             setTimeout(() => goto("/login"), 2000);
         } catch (err: any) {
             const msg = err?.response ? await err.response.json().catch(() => null) : null;
             if (msg?.error?.code === "INVALID_TOKEN") {
-                error = "ລິ້ງລີເຊັດໝົດອາຍຸແລ້ວ ກະລຸນາຂໍລິ້ງໃໝ່";
+                error = t("auth.resetLinkExpired");
             } else {
-                error = "ເກີດຂໍ້ຜິດພາດ ກະລຸນາລອງໃໝ່ອີກຄັ້ງ";
+                error = t("common.genericError");
             }
             console.error(err);
         } finally {
@@ -57,7 +57,7 @@
 </script>
 
 <svelte:head>
-    <title>ລີເຊັດລະຫັດຜ່ານ - {t("app.name")}</title>
+    <title>{t("auth.resetPassword")} - {t("app.name")}</title>
 </svelte:head>
 
 <div class="min-h-screen flex items-center justify-center bg-linear-to-br from-primary-500 to-primary-700 dark:from-gray-900 dark:to-gray-800 p-4">
@@ -118,16 +118,16 @@
                     <KeyRound class="w-6 h-6" />
                 </div>
                 <h2 class="text-xl font-semibold text-gray-900 dark:text-white mb-2">
-                    ສ້າງລະຫັດຜ່ານໃໝ່
+                    {t("auth.createNewPassword")}
                 </h2>
                 <p class="text-sm text-gray-500 dark:text-gray-400">
-                    ກະລຸນາປ້ອນລະຫັດຜ່ານໃໝ່ຂອງທ່ານ
+                    {t("auth.enterNewPassword")}
                 </p>
             </div>
 
             {#if !token}
                 <div class="mb-4 p-4 bg-danger-50 dark:bg-danger-900/20 border border-danger-200 dark:border-danger-800 rounded-xl text-danger-600 dark:text-danger-400 text-sm">
-                    ລິ້ງລີເຊັດລະຫັດຜ່ານບໍ່ຖືກຕ້ອງ ກະລຸນາ<a href="/forgot-password" class="underline font-medium">ຂໍລິ້ງໃໝ່</a>
+                    {t("auth.invalidResetLink")} <a href="/forgot-password" class="underline font-medium">{t("auth.requestNewLink")}</a>
                 </div>
             {/if}
 
@@ -148,7 +148,7 @@
                     <!-- New Password -->
                     <div>
                         <label for="password" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                            ລະຫັດຜ່ານໃໝ່
+                            {t("auth.newPassword")}
                         </label>
                         <div class="relative">
                             <input
@@ -165,7 +165,7 @@
                                     "focus:ring-2 focus:ring-primary-500 focus:border-primary-500",
                                     "disabled:opacity-60 disabled:cursor-not-allowed"
                                 )}
-                                placeholder="ຢ່າງໜ້ອຍ 8 ຕົວອັກສອນ"
+                                placeholder={t("auth.passwordMinPlaceholder")}
                             />
                             <button
                                 type="button"
@@ -184,7 +184,7 @@
                     <!-- Confirm Password -->
                     <div>
                         <label for="confirm-password" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                            ຢືນຢັນລະຫັດຜ່ານໃໝ່
+                            {t("auth.confirmNewPassword")}
                         </label>
                         <div class="relative">
                             <input
@@ -200,7 +200,7 @@
                                     "focus:ring-2 focus:ring-primary-500 focus:border-primary-500",
                                     "disabled:opacity-60 disabled:cursor-not-allowed"
                                 )}
-                                placeholder="ຢືນຢັນລະຫັດຜ່ານ"
+                                placeholder={t("auth.confirmPasswordPlaceholder")}
                             />
                             <button
                                 type="button"
@@ -228,19 +228,19 @@
                     >
                         {#if isLoading}
                             <div class="animate-spin rounded-full h-5 w-5 border-2 border-white border-t-transparent"></div>
-                            <span>ກຳລັງລີເຊັດ...</span>
+                            <span>{t("auth.resetting")}</span>
                         {:else}
-                            <span>ລີເຊັດລະຫັດຜ່ານ</span>
+                            <span>{t("auth.resetPassword")}</span>
                         {/if}
                     </button>
 
                     <p class="text-center text-sm text-gray-500 dark:text-gray-400 mt-2">
                         <a href="/forgot-password" class="text-primary-600 hover:text-primary-700 dark:text-primary-400">
-                            ຂໍລິ້ງລີເຊັດໃໝ່
+                            {t("auth.requestNewResetLink")}
                         </a>
                         &nbsp;·&nbsp;
                         <a href="/login" class="text-primary-600 hover:text-primary-700 dark:text-primary-400">
-                            ກັບໄປເຂົ້າສູ່ລະບົບ
+                            {t("auth.backToLogin")}
                         </a>
                     </p>
                 </form>

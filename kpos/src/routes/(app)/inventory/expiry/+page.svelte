@@ -5,6 +5,7 @@
     import { api } from "$api";
     import { auth } from "$stores";
     import { formatDate } from "$lib/utils";
+    import { toast } from "svelte-sonner";
     import {
         Clock,
         Search,
@@ -116,7 +117,7 @@
     async function exportToCsv() {
         try {
             const activeBranchId = auth.activeBranchId;
-            const res = await api.get(`inventory/expiry?limit=10000${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>();
+            const res = await api.get(`inventory/expiring?all=true${activeBranchId ? `&branchId=${activeBranchId}` : ''}`).json<any>();
             const rows: any[] = res.data || [];
             let csv = '﻿';
             csv += 'ຊື່ສິນຄ້າ,SKU,Batch,ຈຳນວນ,ວັນໝົດອາຍຸ,ຈຳນວນວັນ,ສະຖານະ\n';
@@ -127,9 +128,9 @@
                 csv += `"${item.product?.name || item.productName || ''}","${item.product?.sku || item.sku || ''}","${item.batchNumber || ''}","${item.quantity || 0}","${expiryDate}","${days}","${config.label}"\n`;
             }
             downloadFile(csv, `expiry-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
-            toast.success('ສົ່ງອອກ CSV ສຳເລັດ');
+            toast.success(t('common.exportSuccess'));
         } catch {
-            toast.error('ສົ່ງອອກລົ້ມເຫລວ');
+            toast.error(t('common.exportFailed'));
         }
     }
 
@@ -260,6 +261,7 @@
                         {#each expiringProducts as product (product.id)}
                             {@const days = getDaysUntilExpiry(product.expiryDate)}
                             {@const config = getExpiryConfig(days)}
+                            {@const StatusIcon = config.icon}
                             <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-all">
                                 <td class="px-6 py-4">
                                     <div class="flex items-center gap-2">
@@ -280,7 +282,7 @@
                                 <td class="px-6 py-4">
                                     <div class="flex justify-center">
                                         <span class={cn("inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium", config.bg, config.text)}>
-                                            <svelte:component this={config.icon} class="w-3.5 h-3.5" />
+                                            <StatusIcon class="w-3.5 h-3.5" />
                                             {config.label}
                                         </span>
                                     </div>
@@ -303,7 +305,7 @@
                     onchange={() => { currentPage = 1; loadData(); }}
                     class="px-2 py-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm"
                 >
-                    {#each [10, 20, 50, 100] as size (size)}
+                    {#each [5, 10, 20, 50, 70, 100] as size (size)}
                         <option value={size}>{size}</option>
                     {/each}
                 </select>

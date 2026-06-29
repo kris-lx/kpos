@@ -95,7 +95,9 @@ export class OrderService {
 
     async create(data: CreateOrderDTO): Promise<Order> {
         const orderNo = this.generateOrderNumber();
+        const tenantId = (data as any).tenantId || undefined;
         const itemsData = data.items.map(item => ({
+            tenantId,
             productId: item.productId,
             productName: item.productName,
             quantity: item.quantity,
@@ -109,7 +111,7 @@ export class OrderService {
         const subtotal = itemsData.reduce((sum, item) => sum + item.total, 0);
 
         const [order] = await db.insert(orders).values({
-            tenantId: (data as any).tenantId || undefined,
+            tenantId,
             orderNo, branchId: data.branchId, tableId: data.tableId,
             type: data.type || OrderType.DINE_IN, guestCount: data.guestCount || 1,
             note: data.note, kitchenNote: data.kitchenNote, subtotal, total: subtotal,
@@ -155,8 +157,9 @@ export class OrderService {
         } as any);
     }
 
-    async addItems(orderId: string, items: CreateOrderItemDTO[]): Promise<Order> {
+    async addItems(orderId: string, items: CreateOrderItemDTO[], tenantId?: string | null): Promise<Order> {
         const newItems = items.map(item => ({
+            tenantId: tenantId || undefined,
             orderId,
             productId: item.productId,
             productName: item.productName,
@@ -172,11 +175,15 @@ export class OrderService {
             await db.insert(orderItems).values(oi);
         }
 
-        const allItems = await db.query.orderItems.findMany({ where: eq(orderItems.orderId, orderId) });
+        const itemConds: any[] = [eq(orderItems.orderId, orderId)];
+        if (tenantId) itemConds.push(eq(orderItems.tenantId, tenantId));
+        const allItems = await db.query.orderItems.findMany({ where: and(...itemConds) });
         const subtotal = allItems.reduce((sum: number, item: any) => sum + item.total, 0);
 
-        await db.update(orders).set({ subtotal, total: subtotal }).where(eq(orders.id, orderId));
-        const order = await db.query.orders.findFirst({ where: eq(orders.id, orderId), with: { items: true } });
+        const orderConds: any[] = [eq(orders.id, orderId)];
+        if (tenantId) orderConds.push(eq(orders.tenantId, tenantId));
+        await db.update(orders).set({ subtotal, total: subtotal }).where(and(...orderConds));
+        const order = await db.query.orders.findFirst({ where: and(...orderConds), with: { items: true } });
 
         return new Order({
             ...order,

@@ -5,6 +5,7 @@
     import { onMount } from 'svelte';
     import { api } from '$api';
     import { auth } from '$stores/auth.svelte';
+    import { t } from '$lib/i18n/index.svelte';
     import { Building2, ChevronDown, Check, Search, Loader2 } from 'lucide-svelte';
     import { cn } from '$utils';
 
@@ -82,7 +83,7 @@
             {#if loading}
                 <Loader2 class="h-3 w-3 animate-spin inline" />
             {:else}
-                {selected?.name ?? 'ທຸກສາຂາ'}
+                {selected?.name ?? t('branches.allBranches')}
             {/if}
         </span>
         <ChevronDown class={cn('h-4 w-4 transition-transform', isOpen && 'rotate-180')} />
@@ -95,7 +96,7 @@
                     <Search class="h-3.5 w-3.5 text-base-content/50" />
                     <input
                         type="text"
-                        placeholder="ຄົ້ນຫາສາຂາ..."
+                        placeholder={t('branches.searchPlaceholder')}
                         class="flex-1 bg-transparent text-sm outline-none py-1"
                         bind:value={search}
                         onclick={e => e.stopPropagation()}
@@ -128,7 +129,7 @@
                 {/each}
 
                 {#if filtered.length === 0}
-                    <div class="text-center py-6 text-base-content/50 text-sm">ບໍ່ພົບສາຂາ</div>
+                    <div class="text-center py-6 text-base-content/50 text-sm">{t('branches.noBranches')}</div>
                 {/if}
             </div>
         </div>

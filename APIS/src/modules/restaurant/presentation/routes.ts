@@ -14,10 +14,53 @@ import { TableStatus } from '../domain/entities/Table';
 import { OrderStatus, OrderItemStatus } from '../domain/entities/Order';
 import { ReservationStatus } from '../domain/entities/Reservation';
 import { db } from '@/config/database.config';
-import { branches } from '@/db/schema/tables';
+import { branches, tables as restaurantTables, orderItems } from '@/db/schema/tables';
 import { eq, and } from 'drizzle-orm';
 
 export const restaurantRoutes = Router();
+
+async function resolveScopedBranch(req: Request, branchId?: string | null) {
+    const effectiveBranchId = branchId || req.authUser?.activeBranchId || req.user?.branchId;
+    if (!effectiveBranchId) return null;
+
+    const conditions: any[] = [eq(branches.id, String(effectiveBranchId)), eq(branches.isActive, true)];
+    if (req.authUser?.tenantId && !req.authUser.isSuperAdmin) {
+        conditions.push(eq(branches.tenantId, req.authUser.tenantId));
+    }
+
+    const branch = await db.query.branches.findFirst({
+        where: and(...conditions),
+        columns: { id: true, tenantId: true },
+    });
+
+    if (!branch || !ensureScopeAccess({ branchId: branch.id, tenantId: branch.tenantId }, req)) {
+        return null;
+    }
+
+    return branch;
+}
+
+async function ensureScopedTable(req: Request, tableId: string, branchId?: string | null) {
+    const conditions: any[] = [eq(restaurantTables.id, tableId), eq(restaurantTables.isActive, true)];
+    if (req.authUser?.tenantId && !req.authUser.isSuperAdmin) {
+        conditions.push(eq(restaurantTables.tenantId, req.authUser.tenantId));
+    }
+    if (branchId) conditions.push(eq(restaurantTables.branchId, branchId));
+
+    const table = await db.query.tables.findFirst({
+        where: and(...conditions),
+        columns: { id: true, branchId: true, tenantId: true },
+    });
+
+    return !!table && ensureScopeAccess(table, req);
+}
+
+async function loadScopedOrder(req: Request, orderId: string) {
+    const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+    const order = await orderService.findById(orderId, tenantId);
+    if (!order || !ensureScopeAccess(order as any, req)) return null;
+    return order;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TABLES
@@ -48,17 +91,18 @@ restaurantRoutes.get('/tables', authenticate, branchFilter(), async (req: Reques
 });
 
 // Get table stats
-restaurantRoutes.get('/tables/stats', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.get('/tables/stats', authenticate, branchFilter(), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { branchId } = req.query;
-        
-        if (!branchId) {
-            res.status(400).json({ success: false, error: { code: 'RES_001', message: 'branchId is required' } });
+
+        const branch = await resolveScopedBranch(req, branchId as string | undefined);
+        if (!branch) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Invalid branch or no access' } });
             return;
         }
 
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
-        const stats = await tableService.getStats(branchId as string, tenantId);
+        const stats = await tableService.getStats(branch.id, tenantId);
         res.json({ success: true, data: stats });
     } catch (error) {
         next(error);
@@ -90,7 +134,17 @@ restaurantRoutes.get('/tables/:id', authenticate, async (req: Request, res: Resp
 // Create table
 restaurantRoutes.post('/tables', authenticate, authorize('tables:create'), async (req: Request, res: Response, next: NextFunction) => {
     try {
-        const table = await tableService.create({ ...req.body, tenantId: req.authUser?.tenantId || req.user?.tenantId });
+        const branch = await resolveScopedBranch(req, req.body.branchId);
+        if (!branch) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Invalid branch or no access' } });
+            return;
+        }
+
+        const table = await tableService.create({
+            ...req.body,
+            branchId: branch.id,
+            tenantId: req.authUser?.tenantId || req.user?.tenantId || branch.tenantId,
+        });
         res.status(201).json({ success: true, data: table });
     } catch (error) {
         next(error);
@@ -101,6 +155,14 @@ restaurantRoutes.post('/tables', authenticate, authorize('tables:create'), async
 restaurantRoutes.put('/tables/:id', authenticate, authorize('tables:update'), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        if (!(await ensureScopedTable(req, req.params.id))) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Table not found or no access' } });
+            return;
+        }
+        if (req.body.branchId && !(await resolveScopedBranch(req, req.body.branchId))) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Invalid branch or no access' } });
+            return;
+        }
         const table = await tableService.update(req.params.id, req.body, tenantId);
         res.json({ success: true, data: table });
     } catch (error) {
@@ -109,10 +171,14 @@ restaurantRoutes.put('/tables/:id', authenticate, authorize('tables:update'), as
 });
 
 // Update table status
-restaurantRoutes.patch('/tables/:id/status', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.patch('/tables/:id/status', authenticate, authorize('tables:update'), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { status } = req.body;
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        if (!(await ensureScopedTable(req, req.params.id))) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Table not found or no access' } });
+            return;
+        }
         const table = await tableService.updateStatus(req.params.id, status as TableStatus, tenantId);
         res.json({ success: true, data: table });
     } catch (error) {
@@ -124,6 +190,10 @@ restaurantRoutes.patch('/tables/:id/status', authenticate, async (req: Request, 
 restaurantRoutes.delete('/tables/:id', authenticate, authorize('tables:delete'), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        if (!(await ensureScopedTable(req, req.params.id))) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Table not found or no access' } });
+            return;
+        }
         await tableService.delete(req.params.id, tenantId);
         res.json({ success: true, message: 'Table deleted successfully' });
     } catch (error) {
@@ -197,17 +267,18 @@ restaurantRoutes.get('/orders', authenticate, branchFilter(), async (req: Reques
 });
 
 // Get order stats
-restaurantRoutes.get('/orders/stats', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.get('/orders/stats', authenticate, branchFilter(), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { branchId } = req.query;
-        
-        if (!branchId) {
-            res.status(400).json({ success: false, error: { code: 'RES_001', message: 'branchId is required' } });
+
+        const branch = await resolveScopedBranch(req, branchId as string | undefined);
+        if (!branch) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Invalid branch or no access' } });
             return;
         }
 
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
-        const stats = await orderService.getStats(branchId as string, tenantId);
+        const stats = await orderService.getStats(branch.id, tenantId);
         res.json({ success: true, data: stats });
     } catch (error) {
         next(error);
@@ -224,6 +295,10 @@ restaurantRoutes.get('/orders/:id', authenticate, async (req: Request, res: Resp
             res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Order not found or no access' } });
             return;
         }
+        if (!ensureScopeAccess(order as any, req)) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
+            return;
+        }
 
         res.json({ success: true, data: order });
     } catch (error) {
@@ -232,9 +307,24 @@ restaurantRoutes.get('/orders/:id', authenticate, async (req: Request, res: Resp
 });
 
 // Create order
-restaurantRoutes.post('/orders', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.post('/orders', authenticate, authorize('restaurant:manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
-        const order = await orderService.create({ ...req.body, tenantId: req.authUser?.tenantId || req.user?.tenantId });
+        const branch = await resolveScopedBranch(req, req.body.branchId);
+        if (!branch) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Invalid branch or no access' } });
+            return;
+        }
+
+        if (req.body.tableId && !(await ensureScopedTable(req, req.body.tableId, branch.id))) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Invalid table or no access' } });
+            return;
+        }
+
+        const order = await orderService.create({
+            ...req.body,
+            branchId: branch.id,
+            tenantId: req.authUser?.tenantId || req.user?.tenantId || branch.tenantId,
+        });
         res.status(201).json({ success: true, data: order });
     } catch (error) {
         next(error);
@@ -242,9 +332,22 @@ restaurantRoutes.post('/orders', authenticate, async (req: Request, res: Respons
 });
 
 // Update order
-restaurantRoutes.put('/orders/:id', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.put('/orders/:id', authenticate, authorize('restaurant:manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        const existingOrder = await loadScopedOrder(req, req.params.id);
+        if (!existingOrder) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Order not found or no access' } });
+            return;
+        }
+        if (req.body.branchId && !(await resolveScopedBranch(req, req.body.branchId))) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Invalid branch or no access' } });
+            return;
+        }
+        if (req.body.tableId && !(await ensureScopedTable(req, req.body.tableId, (existingOrder as any).branchId))) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Invalid table or no access' } });
+            return;
+        }
         const order = await orderService.update(req.params.id, req.body, tenantId);
         res.json({ success: true, data: order });
     } catch (error) {
@@ -253,10 +356,15 @@ restaurantRoutes.put('/orders/:id', authenticate, async (req: Request, res: Resp
 });
 
 // Update order status
-restaurantRoutes.patch('/orders/:id/status', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.patch('/orders/:id/status', authenticate, authorize('restaurant:manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { status } = req.body;
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        const existingOrder = await loadScopedOrder(req, req.params.id);
+        if (!existingOrder) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Order not found or no access' } });
+            return;
+        }
         const order = await orderService.update(req.params.id, { status: status as OrderStatus }, tenantId);
         res.json({ success: true, data: order });
     } catch (error) {
@@ -265,10 +373,16 @@ restaurantRoutes.patch('/orders/:id/status', authenticate, async (req: Request, 
 });
 
 // Add items to order
-restaurantRoutes.post('/orders/:id/items', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.post('/orders/:id/items', authenticate, authorize('restaurant:manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { items } = req.body;
-        const order = await orderService.addItems(req.params.id, items);
+        const existingOrder = await loadScopedOrder(req, req.params.id);
+        if (!existingOrder) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Order not found or no access' } });
+            return;
+        }
+
+        const order = await orderService.addItems(req.params.id, items, (existingOrder as any).tenantId);
         res.json({ success: true, data: order });
     } catch (error) {
         next(error);
@@ -294,9 +408,22 @@ restaurantRoutes.get('/kitchen', authenticate, branchFilter(), async (req: Reque
 });
 
 // Update order item status (kitchen)
-restaurantRoutes.put('/kitchen/:orderId/items/:itemId', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.put('/kitchen/:orderId/items/:itemId', authenticate, authorize('restaurant:kitchen', 'restaurant:manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { status } = req.body;
+        const order = await loadScopedOrder(req, req.params.orderId);
+        if (!order) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Order not found or no access' } });
+            return;
+        }
+        const itemRecord = await db.query.orderItems.findFirst({
+            where: and(eq(orderItems.id, req.params.itemId), eq(orderItems.orderId, req.params.orderId)),
+            columns: { id: true },
+        });
+        if (!itemRecord) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Item not found or no access' } });
+            return;
+        }
         const item = await orderService.updateItemStatus(req.params.itemId, status as OrderItemStatus);
         res.json({ success: true, data: item });
     } catch (error) {
@@ -305,9 +432,22 @@ restaurantRoutes.put('/kitchen/:orderId/items/:itemId', authenticate, async (req
 });
 
 // Legacy endpoint for backward compatibility
-restaurantRoutes.patch('/kitchen/items/:id/status', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.patch('/kitchen/items/:id/status', authenticate, authorize('restaurant:kitchen', 'restaurant:manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { status } = req.body;
+        const itemRecord = await db.query.orderItems.findFirst({
+            where: eq(orderItems.id, req.params.id),
+            columns: { id: true, orderId: true },
+        });
+        if (!itemRecord) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Item not found or no access' } });
+            return;
+        }
+        const order = await loadScopedOrder(req, itemRecord.orderId);
+        if (!order) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Item not found or no access' } });
+            return;
+        }
         const item = await orderService.updateItemStatus(req.params.id, status as OrderItemStatus);
         res.json({ success: true, data: item });
     } catch (error) {
@@ -352,18 +492,19 @@ restaurantRoutes.get('/reservations', authenticate, branchFilter(), async (req: 
 });
 
 // Get reservation stats
-restaurantRoutes.get('/reservations/stats', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.get('/reservations/stats', authenticate, branchFilter(), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { branchId, date } = req.query;
-        
-        if (!branchId) {
-            res.status(400).json({ success: false, error: { code: 'RES_001', message: 'branchId is required' } });
+
+        const branch = await resolveScopedBranch(req, branchId as string | undefined);
+        if (!branch) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Invalid branch or no access' } });
             return;
         }
 
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         const stats = await reservationService.getStats(
-            branchId as string, 
+            branch.id,
             date ? new Date(date as string) : undefined,
             tenantId
         );
@@ -383,6 +524,10 @@ restaurantRoutes.get('/reservations/:id', authenticate, async (req: Request, res
             res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Reservation not found or no access' } });
             return;
         }
+        if (!ensureScopeAccess(reservation as any, req)) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
+            return;
+        }
 
         res.json({ success: true, data: reservation });
     } catch (error) {
@@ -391,9 +536,24 @@ restaurantRoutes.get('/reservations/:id', authenticate, async (req: Request, res
 });
 
 // Create reservation
-restaurantRoutes.post('/reservations', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.post('/reservations', authenticate, authorize('restaurant:reservations', 'restaurant:manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
-        const reservation = await reservationService.create({ ...req.body, tenantId: req.authUser?.tenantId || req.user?.tenantId });
+        const branch = await resolveScopedBranch(req, req.body.branchId);
+        if (!branch) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Invalid branch or no access' } });
+            return;
+        }
+
+        if (req.body.tableId && !(await ensureScopedTable(req, req.body.tableId, branch.id))) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Invalid table or no access' } });
+            return;
+        }
+
+        const reservation = await reservationService.create({
+            ...req.body,
+            branchId: branch.id,
+            tenantId: req.authUser?.tenantId || req.user?.tenantId || branch.tenantId,
+        });
         res.status(201).json({ success: true, data: reservation });
     } catch (error) {
         next(error);
@@ -401,9 +561,22 @@ restaurantRoutes.post('/reservations', authenticate, async (req: Request, res: R
 });
 
 // Update reservation
-restaurantRoutes.put('/reservations/:id', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.put('/reservations/:id', authenticate, authorize('restaurant:reservations', 'restaurant:manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        const existing = await reservationService.findById(req.params.id, tenantId);
+        if (!existing || !ensureScopeAccess(existing as any, req)) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Reservation not found or no access' } });
+            return;
+        }
+        if (req.body.branchId && !(await resolveScopedBranch(req, req.body.branchId))) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Invalid branch or no access' } });
+            return;
+        }
+        if (req.body.tableId && !(await ensureScopedTable(req, req.body.tableId, (existing as any).branchId))) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Invalid table or no access' } });
+            return;
+        }
         const reservation = await reservationService.update(req.params.id, req.body, tenantId);
         res.json({ success: true, data: reservation });
     } catch (error) {
@@ -412,10 +585,15 @@ restaurantRoutes.put('/reservations/:id', authenticate, async (req: Request, res
 });
 
 // Update reservation status
-restaurantRoutes.patch('/reservations/:id/status', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.patch('/reservations/:id/status', authenticate, authorize('restaurant:reservations', 'restaurant:manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { status } = req.body;
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        const existing = await reservationService.findById(req.params.id, tenantId);
+        if (!existing || !ensureScopeAccess(existing as any, req)) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Reservation not found or no access' } });
+            return;
+        }
         const reservation = await reservationService.update(req.params.id, { status: status as ReservationStatus }, tenantId);
         res.json({ success: true, data: reservation });
     } catch (error) {
@@ -424,9 +602,14 @@ restaurantRoutes.patch('/reservations/:id/status', authenticate, async (req: Req
 });
 
 // Delete reservation
-restaurantRoutes.delete('/reservations/:id', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.delete('/reservations/:id', authenticate, authorize('restaurant:reservations', 'restaurant:manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        const existing = await reservationService.findById(req.params.id, tenantId);
+        if (!existing || !ensureScopeAccess(existing as any, req)) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Reservation not found or no access' } });
+            return;
+        }
         await reservationService.delete(req.params.id, tenantId);
         res.json({ success: true, message: 'Reservation deleted successfully' });
     } catch (error) {

@@ -5,7 +5,6 @@
     import { auth } from "$stores";
     import { api } from "$lib/api";
     import { fade } from "svelte/transition";
-    import StoreSelector from "./StoreSelector.svelte";
     import { onMount } from "svelte";
     import {
         Store,
@@ -152,16 +151,32 @@
         return msg.includes('Failed to fetch') || msg.includes('ERR_CONNECTION_REFUSED') || msg.includes('NetworkError');
     }
 
+    function getResponseStatus(err: unknown): number | undefined {
+        return (err as { response?: { status?: number } })?.response?.status;
+    }
+
+    function isAuthError(err: unknown): boolean {
+        return getResponseStatus(err) === 401 || getResponseStatus(err) === 403;
+    }
+
+    async function ensureAuthReady(): Promise<boolean> {
+        if (auth.isAuthenticated) return true;
+        if (!auth.user) return false;
+        return auth.refresh();
+    }
+
     // Load held orders count
     async function loadHeldOrdersCount() {
-        if (!auth.isAuthenticated || badgePollFailures >= MAX_BADGE_FAILURES) return;
+        if (badgePollFailures >= MAX_BADGE_FAILURES) return;
+        if (!(await ensureAuthReady())) return;
         try {
-            const response = await api.get("sales/held").json<any>();
+            const response = await api.get("sales/held?limit=1").json<any>();
             if (response.success && response.data) {
-                heldOrdersCount = response.data.length;
+                heldOrdersCount = response.pagination?.total ?? response.meta?.total ?? response.data.length;
             }
             badgePollFailures = 0;
         } catch (err) {
+            if (isAuthError(err)) return;
             if (isNetworkError(err)) {
                 badgePollFailures++;
             }
@@ -170,7 +185,8 @@
 
     // Load pending credit sales count
     async function loadPendingCreditCount() {
-        if (!auth.isAuthenticated || badgePollFailures >= MAX_BADGE_FAILURES) return;
+        if (badgePollFailures >= MAX_BADGE_FAILURES) return;
+        if (!(await ensureAuthReady())) return;
         try {
             const response = await api.get("sales/credit").json<any>();
             if (response.success && response.data) {
@@ -180,6 +196,7 @@
             }
             badgePollFailures = 0;
         } catch (err) {
+            if (isAuthError(err)) return;
             if (isNetworkError(err)) {
                 badgePollFailures++;
             }
@@ -208,6 +225,7 @@
     async function loadMenuFromApi() {
         menuLoading = true;
         try {
+            if (!(await ensureAuthReady())) return;
             const res = await api.get('users/me/menu').json<any>();
             if (res.success && Array.isArray(res.data)) {
                 menuItems = res.data.map(mapApiMenuItem);
@@ -216,6 +234,7 @@
                 }
             }
         } catch (err) {
+            if (isAuthError(err)) return;
             console.error('[Sidebar] Failed to load menu from API:', err);
         } finally {
             menuLoading = false;
@@ -233,14 +252,18 @@
             loadPendingCreditCount();
         }, 30000);
         // On tab focus: reset failure counter so we retry the server after coming back
-        document.addEventListener('visibilitychange', () => {
+        const handleVisibilityChange = () => {
             if (!document.hidden) {
                 badgePollFailures = 0;
                 loadHeldOrdersCount();
                 loadPendingCreditCount();
             }
-        });
-        return () => { clearInterval(interval); };
+        };
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+        return () => {
+            clearInterval(interval);
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
+        };
     });
 
     function toggleMenu(menuId: string) {
@@ -292,7 +315,7 @@
     function getBadgeClass(color?: string): string {
         switch (color) {
             case "error":
-                return "bg-error-500 text-white";
+                return "bg-danger-500 text-white";
             case "warning":
                 return "bg-warning-500 text-white";
             case "success":
@@ -347,13 +370,6 @@
         {/if}
     </div>
 
-    <!-- Store Selector (only show when sidebar is open and user has multiple stores) -->
-    {#if isOpen && auth.accessibleStores.length > 1}
-        <div class="px-3 py-2 border-b border-gray-200 dark:border-gray-800 shrink-0">
-            <StoreSelector />
-        </div>
-    {/if}
-
     <!-- Navigation -->
     <nav class={cn("flex-1 py-4 px-3", isOpen ? "overflow-y-auto scrollbar-thin" : "overflow-visible")}>
         {#if menuLoading}
@@ -369,6 +385,29 @@
             </ul>
         {:else}
         <ul class="space-y-1">
+            {#if menuItems.length === 0}
+                <!-- Fallback navigation when API fails to load menu -->
+                <li>
+                    <a href="/dashboard" class={cn("flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800 transition-colors", !isOpen && "justify-center")}>
+                        <LayoutDashboard class="w-5 h-5 shrink-0" />
+                        {#if isOpen}<span>Dashboard</span>{/if}
+                    </a>
+                </li>
+                <li>
+                    <a href="/pos" class={cn("flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800 transition-colors", !isOpen && "justify-center")}>
+                        <ShoppingCart class="w-5 h-5 shrink-0" />
+                        {#if isOpen}<span>POS</span>{/if}
+                    </a>
+                </li>
+                {#if isOpen}
+                    <li class="mt-2 px-3 py-2">
+                        <p class="text-xs text-warning-500 dark:text-warning-400 flex items-center gap-1.5">
+                            <HelpCircle class="w-3.5 h-3.5 shrink-0" />
+                            ໂຫຼດເມນູບໍ່ໄດ້ — ກວດສອບການເຊື່ອມຕໍ່
+                        </p>
+                    </li>
+                {/if}
+            {:else}
             {#each menuItems as item}
                 {#if isParentVisible(item)}
                     <li class="relative">
@@ -411,7 +450,7 @@
                                 <!-- Collapsed Popup Submenu -->
                                 {#if !isOpen && hoveredMenu === item.id}
                                     <div
-                                        class="absolute left-full top-0 ml-2 z-60 min-w-56 bg-white dark:bg-gray-900 rounded-xl shadow-xl border border-gray-200 dark:border-gray-700 py-2"
+                                        class="absolute left-full top-0 ml-2 z-[60] min-w-56 bg-white dark:bg-gray-900 rounded-xl shadow-xl border border-gray-200 dark:border-gray-700 py-2"
                                         transition:fade={{ duration: 100 }}
                                     >
                                         <div class="px-3 py-2 border-b border-gray-100 dark:border-gray-800 mb-1">
@@ -567,7 +606,7 @@
                                 <!-- Collapsed Tooltip for single items -->
                                 {#if !isOpen && hoveredMenu === item.id}
                                     <div
-                                        class="absolute left-full top-0 ml-2 z-60 bg-white dark:bg-gray-900 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 px-3 py-2 whitespace-nowrap"
+                                        class="absolute left-full top-0 ml-2 z-[60] bg-white dark:bg-gray-900 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 px-3 py-2 whitespace-nowrap"
                                         transition:fade={{ duration: 100 }}
                                     >
                                         <span class="text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -580,6 +619,7 @@
                     </li>
                 {/if}
             {/each}
+            {/if}
         </ul>
         {/if}
     </nav>
@@ -597,7 +637,7 @@
             <div
                 class="w-9 h-9 rounded-full bg-linear-to-br from-primary-400 to-primary-600 flex items-center justify-center text-white font-medium"
             >
-                {auth.user?.name?.charAt(0) || "U"}
+                {auth.user?.name?.charAt(0)}
             </div>
             {#if isOpen}
                 <div class="flex-1 min-w-0">

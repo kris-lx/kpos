@@ -2,6 +2,7 @@
     import { auth } from "$stores";
     import { goto } from "$app/navigation";
     import { onMount } from "svelte";
+    import { t } from "$lib/i18n/index.svelte";
 
     onMount(() => {
         // Redirect to login if not authenticated
@@ -21,6 +22,6 @@
         <div
             class="animate-spin rounded-full h-12 w-12 border-4 border-primary-500 border-t-transparent mx-auto"
         ></div>
-        <p class="mt-4 text-gray-600 dark:text-gray-400">ກຳລັງໂຫຼດ...</p>
+        <p class="mt-4 text-gray-600 dark:text-gray-400">{t("common.loading")}</p>
     </div>
 </div>

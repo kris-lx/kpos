@@ -415,19 +415,19 @@
         {#if allStores.length > pageSize}
             <div class="mt-6 flex flex-col sm:flex-row items-center justify-between gap-4 bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700">
                 <div class="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
-                    <span>ສະແດງ</span>
+                    <span>{t("common.showing")}</span>
                     <select bind:value={pageSize} onchange={() => (currentPage = 1)} class="px-2 py-1 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white">
                         {#each pageSizeOptions as size (size)}
                             <option value={size}>{size}</option>
                         {/each}
                     </select>
-                    <span>ຈາກ {allStores.length}</span>
+                    <span>{t("common.of")} {allStores.length}</span>
                 </div>
                 <div class="flex items-center gap-2">
                     <button onclick={() => currentPage = Math.max(1, currentPage - 1)} disabled={currentPage === 1} class="p-2 rounded-lg border border-gray-300 dark:border-gray-600 disabled:opacity-50">
                         <ChevronLeft class="w-4 h-4" />
                     </button>
-                    <span class="text-sm text-gray-600 dark:text-gray-400">ໜ້າ {currentPage} / {totalPages}</span>
+                    <span class="text-sm text-gray-600 dark:text-gray-400">{t("common.page")} {currentPage} / {totalPages}</span>
                     <button onclick={() => currentPage = Math.min(totalPages, currentPage + 1)} disabled={currentPage >= totalPages} class="p-2 rounded-lg border border-gray-300 dark:border-gray-600 disabled:opacity-50">
                         <ChevronRight class="w-4 h-4" />
                     </button>
@@ -455,8 +455,8 @@
             <form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }} class="p-6 space-y-4">
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("stores.name")} *</label>
-                        <input
+                        <label for="a11y-app-management-stores-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("stores.name")} *</label>
+                        <input id="a11y-app-management-stores-page-svelte-1"
                             type="text"
                             bind:value={formData.name}
                             required
@@ -464,8 +464,8 @@
                         />
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("stores.code")} *</label>
-                        <input
+                        <label for="a11y-app-management-stores-page-svelte-2" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("stores.code")} *</label>
+                        <input id="a11y-app-management-stores-page-svelte-2"
                             type="text"
                             bind:value={formData.code}
                             required
@@ -475,8 +475,8 @@
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("stores.branch")} *</label>
-                    <select
+                    <label for="a11y-app-management-stores-page-svelte-3" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("stores.branch")} *</label>
+                    <select id="a11y-app-management-stores-page-svelte-3"
                         bind:value={formData.branchId}
                         required
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white"
@@ -491,8 +491,8 @@
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("stores.address")}</label>
-                    <input
+                    <label for="a11y-app-management-stores-page-svelte-4" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("stores.address")}</label>
+                    <input id="a11y-app-management-stores-page-svelte-4"
                         type="text"
                         bind:value={formData.address}
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white"
@@ -501,16 +501,16 @@
 
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("stores.phone")}</label>
-                        <input
+                        <label for="a11y-app-management-stores-page-svelte-5" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("stores.phone")}</label>
+                        <input id="a11y-app-management-stores-page-svelte-5"
                             type="text"
                             bind:value={formData.phone}
                             class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white"
                         />
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("stores.email")}</label>
-                        <input
+                        <label for="a11y-app-management-stores-page-svelte-6" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("stores.email")}</label>
+                        <input id="a11y-app-management-stores-page-svelte-6"
                             type="email"
                             bind:value={formData.email}
                             class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white"
@@ -519,8 +519,8 @@
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("stores.description")}</label>
-                    <textarea
+                    <label for="a11y-app-management-stores-page-svelte-7" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("stores.description")}</label>
+                    <textarea id="a11y-app-management-stores-page-svelte-7"
                         bind:value={formData.description}
                         rows="2"
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white resize-none"

@@ -10,6 +10,7 @@ import { connectRabbitMQ, disconnectRabbitMQ } from './config/rabbitmq.config';
 import { startWorkers, startScheduledJobs } from './infrastructure/workers';
 import { ensureSystemEnums } from './db/ensure-enums';
 import { ensureDefaultTenant } from './db/ensure-tenant';
+import { patchSystemRolePermissions } from './db/ensure-roles';
 
 async function main(): Promise<void> {
     try {
@@ -21,6 +22,7 @@ async function main(): Promise<void> {
 
         console.log('🔌 Connecting to Redis...');
         await connectRedis();
+        await patchSystemRolePermissions();
 
         console.log('🔌 Connecting to RabbitMQ...');
         await connectRabbitMQ();

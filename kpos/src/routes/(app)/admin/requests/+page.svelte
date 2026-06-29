@@ -1,10 +1,11 @@
-﻿<script lang="ts">
+<script lang="ts">
     import { createQuery, createMutation, useQueryClient } from "@tanstack/svelte-query";
     import { get } from "svelte/store";
     import { api } from "$lib/api";
     import { goto } from "$app/navigation";
     import { onMount } from "svelte";
     import { toast } from "svelte-sonner";
+    import { t } from '$lib/i18n/index.svelte';
     import { cn, formatDateTime } from "$lib/utils";
     import {
         FileCheck, Clock, CheckCircle, XCircle, Search,
@@ -26,7 +27,7 @@
             if (auth.roleLevel <= 2) {
                 canAccess = true;
             } else {
-                toast.error("ທ່ານບໍ່ມີສິດເຂົ້າເຖິງໜ້ານີ້");
+                toast.error(t('common.accessDenied'));
                 goto("/admin");
             }
         } catch { goto("/dashboard"); }
@@ -75,7 +76,7 @@
             if (tenant) {
                 toast.success(`✅ ອະນຸມັດສຳເລັດ — ສ້າງ Tenant: ${tenant.name} (${tenant.code})`);
             } else {
-                toast.success("ອະນຸມັດສຳເລັດ");
+                toast.success(t('common.approveSuccess'));
             }
             get(requestsQuery).refetch();
             showReviewModal = false;
@@ -88,7 +89,7 @@
         mutationFn: async ({ id, note }: { id: string; note: string }) =>
             api.post(`admin/requests/${id}/reject`, { json: { note } }).json<any>(),
         onSuccess: () => {
-            toast.success("ປະຕິເສດສຳເລັດ");
+            toast.success(t('common.rejectSuccess'));
             get(requestsQuery).refetch();
             showReviewModal = false;
             showDetailModal = false;
@@ -124,7 +125,7 @@
         if (reviewAction === "approve") {
             $approveMutation.mutate({ id: selectedRequest.id, note: reviewNote || undefined });
         } else {
-            if (!reviewNote.trim()) { toast.error("ກະລຸນາລະບຸເຫດຜົນ"); return; }
+            if (!reviewNote.trim()) { toast.error(t('common.pleaseSpecifyReason')); return; }
             $rejectMutation.mutate({ id: selectedRequest.id, note: reviewNote });
         }
     }
@@ -491,7 +492,7 @@
         {@const typeInfo = getTypeInfo(req.type)}
         {@const TIcon = typeInfo.icon}
         <div class="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
-            <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showDetailModal = false}></div>
+            <button type="button" aria-label="Close modal" class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showDetailModal = false}></button>
             <div class="relative bg-white dark:bg-gray-900 rounded-t-3xl sm:rounded-2xl shadow-2xl w-full sm:max-w-2xl max-h-[92vh] flex flex-col overflow-hidden">
                 <!-- Header -->
                 <div class="bg-linear-to-r from-violet-600 to-purple-600 px-6 py-5 text-white shrink-0">
@@ -652,8 +653,8 @@
 
     <!-- ═══ DOCUMENT VIEWER MODAL ═══ -->
     {#if showDocViewer && selectedDocUrl}
-        <div class="fixed inset-0 z-60 flex items-center justify-center p-4">
-            <div class="absolute inset-0 bg-black/80 backdrop-blur-md" onclick={() => showDocViewer = false}></div>
+        <div class="fixed inset-0 z-[60] flex items-center justify-center p-4">
+            <button type="button" aria-label="Close modal" class="absolute inset-0 bg-black/80 backdrop-blur-md" onclick={() => showDocViewer = false}></button>
             <div class="relative w-full max-w-4xl max-h-[90vh] bg-gray-900 rounded-2xl overflow-hidden flex flex-col">
                 <div class="flex items-center justify-between px-5 py-3 border-b border-gray-700 shrink-0">
                     <p class="text-sm text-gray-300 font-medium truncate">{getFileName(selectedDocUrl)}</p>
@@ -725,7 +726,7 @@
     <!-- ═══ REVIEW MODAL ═══ -->
     {#if showReviewModal && selectedRequest}
         <div class="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
-            <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showReviewModal = false}></div>
+            <button type="button" aria-label="Close modal" class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showReviewModal = false}></button>
             <div class="relative bg-white dark:bg-gray-900 rounded-t-3xl sm:rounded-2xl shadow-2xl w-full sm:max-w-md overflow-hidden">
                 <div class={cn("px-6 py-5 text-white", reviewAction === 'approve' ? 'bg-linear-to-r from-emerald-500 to-success-500' : 'bg-linear-to-r from-danger-500 to-rose-600')}>
                     <div class="flex items-center gap-3">

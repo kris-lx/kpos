@@ -35,7 +35,7 @@
     let exporting = $state(false);
 
     // Page size options
-    const pageSizeOptions = [5, 10, 20, 50, 70, 80, 100];
+    const pageSizeOptions = [5, 10, 20, 50, 70, 100];
 
     // Data
     let inventoryReport = $state<any[]>([]);
@@ -147,10 +147,12 @@
 <table><tr><th>ລຳດັບ</th><th>ສິນຄ້າ</th><th>SKU</th><th>ສະຕ໋ອກ</th><th>ຕໍ່າສຸດ</th><th>ລາຄາ</th><th>ມູນຄ່າ</th><th>ສະຖານະ</th></tr>
 ${filteredInventory.map((p, i) => { const st = getStockStatus(p.currentStock || 0, p.minStock || 10); const cls = st.label === 'ໝົດສາງ' ? 'out' : st.label === 'ຕໍ່າ' ? 'low' : 'ok'; return `<tr><td>${i + 1}</td><td>${p.name || ''}</td><td>${p.sku || ''}</td><td class="text-right">${p.currentStock || 0}</td><td class="text-right">${p.minStock || 0}</td><td class="text-right">${formatCurrency(p.unitCost || 0)}</td><td class="text-right">${formatCurrency((p.currentStock || 0) * (p.unitCost || 0))}</td><td class="${cls}">${st.label}</td></tr>`; }).join('')}
 </table></body></html>`;
-        const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        const w = window.open(url, '_blank');
-        if (w) w.onload = () => w.print();
+        const w = window.open('', '_blank');
+        if (w) {
+            w.document.write(html);
+            w.document.close();
+            w.onload = () => w.print();
+        }
         toast.success(t("reports.exportSuccess"));
         exporting = false;
     }
@@ -177,7 +179,7 @@ ${filteredInventory.map((p, i) => { const st = getStockStatus(p.currentStock || 
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+        setTimeout(() => URL.revokeObjectURL(url), 0);
     }
 </script>
 

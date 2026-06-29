@@ -1,5 +1,4 @@
 ﻿<script lang="ts">
-    import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
     import { formatCurrency, formatDate } from "$lib/utils";
@@ -95,35 +94,32 @@
     // Search & Filter
     let searchQuery = $state("");
     let selectedLevelFilter = $state<string | null>(null);
+    let searchTimeout: ReturnType<typeof setTimeout>;
 
     // Pagination
     let currentPage = $state(1);
     let limit = $state(20);
     let totalItems = $state(0);
-    let totalPages = $derived(Math.ceil(totalItems / limit));
+    const pageSizeOptions = [5, 10, 20, 50, 70, 100];
+    let totalProducts = $state(0);
+    let totalPages = $derived(Math.max(1, Math.ceil(totalItems / limit)));
 
     // Computed
-    let filteredLevels = $derived.by(() => {
-        if (!searchQuery) return priceLevels;
-        const query = searchQuery.toLowerCase();
-        return priceLevels.filter(
-            (level) =>
-                level.name.toLowerCase().includes(query) ||
-                level.description?.toLowerCase().includes(query)
-        );
-    });
+    let filteredLevels = $derived(priceLevels);
 
     // Stats
     let stats = $derived({
         totalLevels: priceLevels.length,
         defaultLevel: priceLevels.find((l) => l.isDefault),
-        totalProducts: products.length,
+        totalProducts,
         productsWithPricing: new Set(
             priceLevels.flatMap((l) => l.products?.map((p) => p.productId) || [])
         ).size,
     });
 
-    onMount(() => {
+    $effect(() => {
+        currentPage;
+        limit;
         loadData();
     });
 
@@ -132,18 +128,20 @@
         error = null;
         try {
             const [levelsRes, productsRes] = await Promise.all([
-                api.get("products/price-levels").json<any>(),
-                api.get("products").json<any>(),
+                api.get("products/price-levels", { searchParams: { page: currentPage, limit, ...(searchQuery ? { search: searchQuery } : {}) } }).json<any>(),
+                api.get("products", { searchParams: { all: "true" } }).json<any>(),
             ]);
 
             if (levelsRes.success) {
                 priceLevels = levelsRes.data || [];
+                totalItems = levelsRes.meta?.total ?? priceLevels.length;
             } else {
                 throw new Error(levelsRes.error?.message || "Failed to load price levels");
             }
 
             if (productsRes.success) {
                 products = productsRes.data || [];
+                totalProducts = productsRes.meta?.total ?? productsRes.pagination?.total ?? products.length;
             }
         } catch (err: any) {
             console.error("Failed to load data:", err);
@@ -287,8 +285,20 @@
     function goToPage(page: number) {
         if (page >= 1 && page <= totalPages) {
             currentPage = page;
-            loadData();
         }
+    }
+
+    function changePageSize(size: number) {
+        limit = size;
+        currentPage = 1;
+    }
+
+    function handleSearch() {
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(() => {
+            currentPage = 1;
+            loadData();
+        }, 300);
     }
 
     function copyPrice(price: number) {
@@ -421,6 +431,28 @@
             </button>
         </div>
     {:else if !error}
+        <div class="mb-4 flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
+            <div class="relative w-full sm:max-w-md">
+                <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                <input
+                    type="text"
+                    bind:value={searchQuery}
+                    oninput={handleSearch}
+                    placeholder="ຄົ້ນຫາລະດັບລາຄາ..."
+                    class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-success-500"
+                />
+            </div>
+            <select
+                value={limit}
+                onchange={(e) => changePageSize(Number(e.currentTarget.value))}
+                class="px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
+            >
+                {#each pageSizeOptions as size (size)}
+                    <option value={size}>{size} / ໜ້າ</option>
+                {/each}
+            </select>
+        </div>
+
         <!-- Price Levels Grid -->
         <div class="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
             {#each filteredLevels as level (level.id)}
@@ -537,6 +569,21 @@
                 </div>
             {/each}
         </div>
+
+        <div class="mt-6 flex flex-col sm:flex-row items-center justify-between gap-3 rounded-xl bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 px-4 py-3">
+            <p class="text-sm text-gray-500 dark:text-gray-400">
+                {(currentPage - 1) * limit + 1} - {Math.min(currentPage * limit, totalItems)} / {totalItems}
+            </p>
+            <div class="flex items-center gap-2">
+                <button onclick={() => goToPage(currentPage - 1)} disabled={currentPage <= 1} class="p-2 rounded-lg border border-gray-200 dark:border-gray-700 disabled:opacity-40">
+                    <ChevronLeft class="w-4 h-4" />
+                </button>
+                <span class="px-3 text-sm text-gray-600 dark:text-gray-300">{currentPage} / {totalPages}</span>
+                <button onclick={() => goToPage(currentPage + 1)} disabled={currentPage >= totalPages} class="p-2 rounded-lg border border-gray-200 dark:border-gray-700 disabled:opacity-40">
+                    <ChevronRight class="w-4 h-4" />
+                </button>
+            </div>
+        </div>
     {/if}
 </div>
 
@@ -572,10 +619,10 @@
                 class="p-6 space-y-5"
             >
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    <label for="a11y-app-products-pricing-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                         ຊື່ລະດັບລາຄາ <span class="text-danger-500">*</span>
                     </label>
-                    <input
+                    <input id="a11y-app-products-pricing-page-svelte-1"
                         type="text"
                         bind:value={levelFormData.name}
                         required
@@ -585,10 +632,10 @@
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    <label for="a11y-app-products-pricing-page-svelte-2" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                         ລາຍລະອຽດ
                     </label>
-                    <textarea
+                    <textarea id="a11y-app-products-pricing-page-svelte-2"
                         bind:value={levelFormData.description}
                         rows="3"
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-success-500 resize-none"
@@ -667,10 +714,10 @@
                 class="p-6 space-y-5"
             >
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    <label for="a11y-app-products-pricing-page-svelte-3" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                         ເລືອກສິນຄ້າ <span class="text-danger-500">*</span>
                     </label>
-                    <select
+                    <select id="a11y-app-products-pricing-page-svelte-3"
                         bind:value={priceFormData.productId}
                         required
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-success-500"
@@ -685,12 +732,12 @@
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    <label for="a11y-app-products-pricing-page-svelte-4" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                         ລາຄາພິເສດ (₭) <span class="text-danger-500">*</span>
                     </label>
                     <div class="relative">
                         <DollarSign class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                        <MoneyInput
+                        <MoneyInput id="a11y-app-products-pricing-page-svelte-4"
                             bind:value={priceFormData.price}
                             min={0}
                             required

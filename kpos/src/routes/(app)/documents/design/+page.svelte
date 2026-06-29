@@ -220,7 +220,7 @@
         {
             id: "2",
             type: "storeName",
-            content: "KPOS Demo Store",
+            content: "{{storeName}}",
             align: "center",
             fontSize: 18,
             bold: true,
@@ -229,7 +229,7 @@
         {
             id: "3",
             type: "address",
-            content: "123 ຖະໜົນລ້ານຊ້າງ, ນະຄອນຫຼວງວຽງຈັນ",
+            content: "{{address}}",
             align: "center",
             fontSize: 12,
             bold: false,
@@ -238,7 +238,7 @@
         {
             id: "4",
             type: "phone",
-            content: "ໂທ: 021-123456",
+            content: "{{phone}}",
             align: "center",
             fontSize: 12,
             bold: false,
@@ -488,10 +488,9 @@
 
     function renderContent(element: (typeof receiptElements)[0]): string {
         let content = element.content;
-        // Branch identity — use real settings, fall back to sample
-        const storeName = receiptSettings.branchName || 'KPOS Demo Store';
-        const address = receiptSettings.branchAddress || '123 ຖະໜົນລ້ານຊ້າງ, ນະຄອນຫຼວງວຽງຈັນ';
-        const phone = receiptSettings.branchPhone || 'ໂທ: 021-123456';
+        const storeName = receiptSettings.branchName || '';
+        const address = receiptSettings.branchAddress || '';
+        const phone = receiptSettings.branchPhone || '';
         const taxId = receiptSettings.branchTaxId || sampleData.taxId;
         // For typed elements that render static branch info
         if (element.type === 'storeName') return storeName;
@@ -682,10 +681,10 @@
     );
 
     function printReceipt() {
-        const storeName = receiptSettings.branchName || 'KPOS Demo Store';
+        const storeName = receiptSettings.branchName || '';
         const logoUrl = receiptSettings.branchLogo || '';
-        const address = receiptSettings.branchAddress || '123 ຖະໜົນລ້ານຊ້າງ, ນະຄອນຫຼວງວຽງຈັນ';
-        const phone = receiptSettings.branchPhone || 'ໂທ: 021-123456';
+        const address = receiptSettings.branchAddress || '';
+        const phone = receiptSettings.branchPhone || '';
         const taxId = receiptSettings.branchTaxId || sampleData.taxId;
         const pw = paperWidth * 3;
         const cssRules = [
@@ -1320,14 +1319,14 @@
                                     </div>
                                 {/if}
                                 <div>
-                                    <label class="block text-xs text-gray-500 dark:text-gray-400 mb-1">ຂໍ້ຄວາມລຸ່ມ (Footer)</label>
-                                    <input type="text" bind:value={receiptSettingsForm.footerText}
+                                    <label for="a11y-app-documents-design-page-svelte-1001" class="block text-xs text-gray-500 dark:text-gray-400 mb-1">ຂໍ້ຄວາມລຸ່ມ (Footer)</label>
+                                    <input id="a11y-app-documents-design-page-svelte-1001" type="text" bind:value={receiptSettingsForm.footerText}
                                         class="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-xs px-2 py-1.5 text-gray-900 dark:text-white" />
                                 </div>
                                 <div>
-                                    <label class="block text-xs text-gray-500 dark:text-gray-400 mb-1">ສີຫຼັກ</label>
+                                    <label for="a11y-app-documents-design-page-svelte-1" class="block text-xs text-gray-500 dark:text-gray-400 mb-1">ສີຫຼັກ</label>
                                     <div class="flex items-center gap-2">
-                                        <input type="color" bind:value={receiptSettingsForm.primaryColor}
+                                        <input id="a11y-app-documents-design-page-svelte-1" type="color" bind:value={receiptSettingsForm.primaryColor}
                                             class="w-8 h-8 rounded cursor-pointer border border-gray-200 p-0.5" />
                                         <input type="text" bind:value={receiptSettingsForm.primaryColor}
                                             class="flex-1 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-xs px-2 py-1.5 font-mono" />

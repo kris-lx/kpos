@@ -179,7 +179,7 @@
                         {t("nav.categories")}
                     </h1>
                     <p class="text-sm text-gray-500 dark:text-gray-400">
-                        ຈັດການໝວດໝູ່ສິນຄ້າ
+                        {t("categories.subtitle")}
                     </p>
                 </div>
             </div>
@@ -235,15 +235,15 @@
                     <AlertCircle class="w-10 h-10 text-danger-500 dark:text-danger-400" />
                 </div>
                 <div class="text-center">
-                    <p class="font-semibold text-gray-900 dark:text-white">ໂຫຼດໝວດໝູ່ບໍ່ສຳເລັດ</p>
-                    <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">ກວດສອບການເຊື່ອມຕໍ່ ແລ້ວລອງໃໝ່</p>
+                    <p class="font-semibold text-gray-900 dark:text-white">{t("categories.loadFailed")}</p>
+                    <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">{t("common.checkConnectionAndRetry")}</p>
                 </div>
                 <button
                     onclick={() => $categoriesQuery.refetch()}
                     class="flex items-center gap-2 px-4 py-2 bg-purple-500 text-white rounded-xl text-sm font-medium hover:bg-purple-600 transition-all"
                 >
                     <RefreshCw class="w-4 h-4" />
-                    ລອງໃໝ່
+                    {t("common.retry")}
                 </button>
             </div>
         {:else if paginatedCategories.length === 0}
@@ -362,11 +362,14 @@
 {#if showModal}
     <div
         class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
-        onclick={closeModal}
+        onclick={(e) => e.target === e.currentTarget && closeModal()}
+        onkeydown={(e) => e.key === "Escape" && closeModal()}
+        role="dialog"
+        aria-modal="true"
+        tabindex="-1"
     >
         <div
             class="bg-white dark:bg-gray-800 rounded-2xl w-full max-w-md shadow-2xl"
-            onclick={(e) => e.stopPropagation()}
         >
             <!-- Header -->
             <div class="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700 bg-gradient-to-r from-purple-500 to-pink-600 rounded-t-2xl">
@@ -381,10 +384,10 @@
             <!-- Form -->
             <form onsubmit={handleSubmit} class="p-6 space-y-4">
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                    <label for="a11y-app-categories-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                         {t("common.name")} *
                     </label>
-                    <input
+                    <input id="a11y-app-categories-page-svelte-1"
                         type="text"
                         bind:value={form.name}
                         required
@@ -393,10 +396,10 @@
                 </div>
                 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                    <label for="a11y-app-categories-page-svelte-2" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                         {t("common.description")}
                     </label>
-                    <textarea
+                    <textarea id="a11y-app-categories-page-svelte-2"
                         bind:value={form.description}
                         rows="2"
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent resize-none"
@@ -404,13 +407,14 @@
                 </div>
                 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                        ສີ
-                    </label>
+                    <p class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                        {t("common.color")}
+                    </p>
                     <div class="flex gap-2 flex-wrap">
                         {#each colors as color (color)}
                             <button
                                 type="button"
+                                aria-label={`Select ${color} color`}
                                 onclick={() => (form.color = color)}
                                 class={cn(
                                     "w-8 h-8 rounded-full transition-all",

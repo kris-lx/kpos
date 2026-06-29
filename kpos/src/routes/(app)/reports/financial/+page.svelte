@@ -87,7 +87,7 @@
         }
     }
 
-    let prevPeriod = $state(periodFilter);
+    let prevPeriod = $state("month");
 
     $effect(() => {
         auth.activeStoreId;
@@ -139,10 +139,12 @@
 <h2>ວິທີການຊຳລະ</h2><table><tr><th>ວິທີ</th><th>ຍອດ</th><th>ຈຳນວນ</th></tr>
 ${(financialData.paymentMethods || []).map((p: any) => `<tr><td>${p.methodName || ''}</td><td class="text-right">${formatCurrency(p.total || 0)}</td><td class="text-right">${p.count || 0}</td></tr>`).join('')}
 </table></body></html>`;
-        const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        const w = window.open(url, '_blank');
-        if (w) w.onload = () => w.print();
+        const w = window.open('', '_blank');
+        if (w) {
+            w.document.write(html);
+            w.document.close();
+            w.onload = () => w.print();
+        }
         toast.success(t("reports.exportSuccess"));
         exporting = false;
     }
@@ -174,7 +176,7 @@ ${(financialData.paymentMethods || []).map((p: any) => `<tr><td>${p.methodName |
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+        setTimeout(() => URL.revokeObjectURL(url), 0);
     }
 </script>
 

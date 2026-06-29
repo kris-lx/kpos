@@ -54,14 +54,6 @@
         status: "available",
     });
 
-    // Predefined zones for fallback
-    const defaultZones = [
-        { id: "main", name: "ຫ້ອງໃຫຍ່", color: "blue" },
-        { id: "vip", name: "ຫ້ອງ VIP", color: "purple" },
-        { id: "outdoor", name: "ນອກອາຄານ", color: "green" },
-        { id: "private", name: "ຫ້ອງສ່ວນຕົວ", color: "amber" },
-    ];
-
     async function loadData() {
         isLoading = true;
         try {
@@ -70,10 +62,10 @@
                 api.get("restaurant/zones").json<any>(),
             ]);
             tables = tableRes.data || [];
-            zones = zoneRes.data?.length ? zoneRes.data : defaultZones;
+            zones = zoneRes.data || [];
         } catch (e) {
             console.error("Failed to load data:", e);
-            zones = defaultZones;
+            zones = [];
         } finally {
             isLoading = false;
         }
@@ -86,7 +78,7 @@
                 capacity: Number(formData.capacity),
                 shape: formData.shape.toUpperCase(),
                 floor: String(formData.floor),
-                zone: formData.zoneId || 'main',
+                zone: formData.zoneId || null,
                 posX: Number(formData.positionX),
                 posY: Number(formData.positionY),
                 isActive: formData.isActive,
@@ -623,7 +615,7 @@
 {#if showModal}
     <div
         class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
-        onclick={() => (showModal = false)}
+        onclick={(e) => e.target === e.currentTarget && (showModal = false)}
         onkeydown={(e) => e.key === "Escape" && (showModal = false)}
         role="dialog"
         aria-modal="true"
@@ -631,7 +623,6 @@
     >
         <div
             class="w-full max-w-lg bg-white dark:bg-gray-800 rounded-2xl shadow-2xl overflow-hidden"
-            onclick={(e) => e.stopPropagation()}
             role="document"
         >
             <!-- Header -->
@@ -719,15 +710,16 @@
                 </div>
                 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                        ຮູບຮ່າງໂຕະ
-                    </label>
+                    <p class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                        {t("restaurant.tableShape")}
+                    </p>
                     <div class="flex gap-3">
                         {#each [
-                            { value: "square", label: "ສີ່ຫຼ່ຽມ", icon: Square },
-                            { value: "round", label: "ມົນ", icon: Circle },
-                            { value: "rectangle", label: "ແຄບຍາວ", icon: RectangleHorizontal },
+                            { value: "square", label: t("restaurant.tableShapeSquare"), icon: Square },
+                            { value: "round", label: t("restaurant.tableShapeRound"), icon: Circle },
+                            { value: "rectangle", label: t("restaurant.tableShapeRectangle"), icon: RectangleHorizontal },
                         ] as shape}
+                            {@const ShapeIcon = shape.icon}
                             <label
                                 class={cn(
                                     "flex-1 flex flex-col items-center gap-2 p-3 rounded-xl border-2 cursor-pointer transition-all",
@@ -742,8 +734,7 @@
                                     value={shape.value}
                                     class="sr-only"
                                 />
-                                <svelte:component
-                                    this={shape.icon}
+                                <ShapeIcon
                                     class={cn(
                                         "w-6 h-6",
                                         formData.shape === shape.value
@@ -766,9 +757,9 @@
 
                 {#if editingId}
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                        <p class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                             {t("restaurant.status")}
-                        </label>
+                        </p>
                         <div class="grid grid-cols-4 gap-2">
                             {#each ["available", "occupied", "reserved", "cleaning"] as status (status)}
                                 {@const config = getStatusConfig(status)}

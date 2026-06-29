@@ -585,11 +585,11 @@
             >
                 <!-- Code -->
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                    <label for="a11y-app-promotions-coupons-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                         ລະຫັດຄູປອງ *
                     </label>
                     <div class="flex gap-2">
-                        <input
+                        <input id="a11y-app-promotions-coupons-page-svelte-1"
                             type="text"
                             bind:value={formData.code}
                             required
@@ -607,10 +607,10 @@
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                    <label for="a11y-app-promotions-coupons-page-svelte-2" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                         ຊື່ຄູປອງ *
                     </label>
-                    <input
+                    <input id="a11y-app-promotions-coupons-page-svelte-2"
                         type="text"
                         bind:value={formData.name}
                         required
@@ -619,10 +619,10 @@
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                    <label for="a11y-app-promotions-coupons-page-svelte-3" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                         ລາຍລະອຽດ
                     </label>
-                    <textarea
+                    <textarea id="a11y-app-promotions-coupons-page-svelte-3"
                         bind:value={formData.description}
                         rows="2"
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent resize-none"
@@ -631,10 +631,10 @@
 
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                        <label for="a11y-app-promotions-coupons-page-svelte-4" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             ປະເພດສ່ວນຫຼຸດ
                         </label>
-                        <select
+                        <select id="a11y-app-promotions-coupons-page-svelte-4"
                             bind:value={formData.type}
                             class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent"
                         >
@@ -643,10 +643,10 @@
                         </select>
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                        <label for="a11y-app-promotions-coupons-page-svelte-5" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             ມູນຄ່າ *
                         </label>
-                        <input
+                        <input id="a11y-app-promotions-coupons-page-svelte-5"
                             type="number"
                             bind:value={formData.value}
                             required
@@ -658,10 +658,10 @@
 
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                        <label for="a11y-app-promotions-coupons-page-svelte-6" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             ຊື້ຂັ້ນຕ່ຳ
                         </label>
-                        <input
+                        <input id="a11y-app-promotions-coupons-page-svelte-6"
                             type="number"
                             bind:value={formData.minPurchase}
                             min="0"
@@ -669,10 +669,10 @@
                         />
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                        <label for="a11y-app-promotions-coupons-page-svelte-7" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             ສ່ວນຫຼຸດສູງສຸດ
                         </label>
-                        <input
+                        <input id="a11y-app-promotions-coupons-page-svelte-7"
                             type="number"
                             bind:value={formData.maxDiscount}
                             min="0"
@@ -683,10 +683,10 @@
 
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                        <label for="a11y-app-promotions-coupons-page-svelte-8" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             ວັນເລີ່ມຕົ້ນ *
                         </label>
-                        <input
+                        <input id="a11y-app-promotions-coupons-page-svelte-8"
                             type="date"
                             bind:value={formData.startDate}
                             required
@@ -694,10 +694,10 @@
                         />
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                        <label for="a11y-app-promotions-coupons-page-svelte-9" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             ວັນສິ້ນສຸດ
                         </label>
-                        <input
+                        <input id="a11y-app-promotions-coupons-page-svelte-9"
                             type="date"
                             bind:value={formData.endDate}
                             class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent"
@@ -706,10 +706,10 @@
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                    <label for="a11y-app-promotions-coupons-page-svelte-10" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                         ຈຳນວນໃຊ້ໄດ້ (0 = ບໍ່ຈຳກັດ)
                     </label>
-                    <input
+                    <input id="a11y-app-promotions-coupons-page-svelte-10"
                         type="number"
                         bind:value={formData.usageLimit}
                         min="0"

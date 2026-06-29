@@ -31,8 +31,9 @@
     let itemsPerPage = $state(20);
     let showExportMenu = $state(false);
     let exporting = $state(false);
-    let pageSizeOptions = [5, 10, 20, 50, 70, 80, 100];
+    let pageSizeOptions = [5, 10, 20, 50, 70, 100];
     let totalItems = $state(0);
+    let reportSummary = $state({ totalSales: 0, totalRevenue: 0, totalHours: 0, topPerformer: null as any });
     let searchTimeout: ReturnType<typeof setTimeout>;
 
     // Data
@@ -41,9 +42,9 @@
     // Stats
     let stats = $derived({
         totalStaff: totalItems,
-        totalSales: staffReports.reduce((sum, s) => sum + (s.totalSales || 0), 0),
-        totalRevenue: staffReports.reduce((sum, s) => sum + (s.revenue || 0), 0),
-        topPerformer: staffReports.length > 0 ? staffReports.reduce((a, b) => (a.revenue || 0) > (b.revenue || 0) ? a : b) : null,
+        totalSales: reportSummary.totalSales,
+        totalRevenue: reportSummary.totalRevenue,
+        topPerformer: reportSummary.topPerformer,
     });
 
     async function loadData() {
@@ -63,6 +64,12 @@
             if (res.pagination) {
                 totalItems = res.pagination.total || 0;
             }
+            reportSummary = res.summary || {
+                totalSales: staffReports.reduce((sum, s) => sum + (s.totalSales || 0), 0),
+                totalRevenue: staffReports.reduce((sum, s) => sum + (s.revenue || 0), 0),
+                totalHours: staffReports.reduce((sum, s) => sum + (s.hoursWorked || 0), 0),
+                topPerformer: staffReports[0] || null,
+            };
         } catch (e) {
             console.error("Failed to load:", e);
         } finally {
@@ -71,7 +78,9 @@
     }
 
     $effect(() => {
-        auth.activeStoreId;
+        void auth.activeStoreId;
+        void periodFilter;
+        currentPage = 1;
         loadData();
     });
 
@@ -105,21 +114,15 @@
 
     let totalPages = $derived(Math.ceil(totalItems / itemsPerPage) || 1);
 
-    $effect(() => {
-        periodFilter;
-        currentPage = 1;
-        loadData();
-    });
-
     // Export functions
     function exportToExcel() {
         exporting = true;
         showExportMenu = false;
         try {
             let csv = '\ufeff';
-            csv += 'ອັນດັບ,ຊື່,ຈຳນວນຂາຍ,ລາຍຮັບ,ຄ່າສະເລ່ຍ\n';
+            csv += `${t("common.rank")},${t("common.name")},${t("reports.salesCount")},${t("reports.revenue")},${t("reports.average")},${t("reports.hours")},${t("reports.revenuePerHour")}\n`;
             staffReports.forEach((s: any, i: number) => {
-                csv += `${i + 1},"${s.name || ''}",${s.totalSales || 0},"${formatCurrency(s.revenue || 0)}","${formatCurrency(s.avgOrderValue || 0)}"\n`;
+                csv += `${i + 1},"${s.name || ''}",${s.totalSales || 0},"${formatCurrency(s.revenue || 0)}","${formatCurrency(s.avgOrderValue || 0)}",${s.hoursWorked ?? 0},"${formatCurrency(s.revenuePerHour || 0)}"\n`;
             });
             downloadFile(csv, `staff-report-${periodFilter}.csv`, 'text/csv;charset=utf-8');
             toast.success(t("reports.exportSuccess"));
@@ -136,13 +139,15 @@
         const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${t("reports.staff")}</title>
 <style>body{font-family:'Noto Sans Lao','Phetsarath OT',sans-serif;padding:20px}h1{text-align:center}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ddd;padding:8px}th{background:#f5f5f5}.text-right{text-align:right}</style></head>
 <body><h1>${t("reports.staff")}</h1><p style="text-align:center">${new Date().toLocaleDateString('lo-LA')}</p>
-<table><tr><th>ອັນດັບ</th><th>ຊື່</th><th>ຈຳນວນຂາຍ</th><th>ລາຍຮັບ</th><th>ຄ່າສະເລ່ຍ</th></tr>
-${staffReports.map((s: any, i: number) => `<tr><td>${i + 1}</td><td>${s.name || ''}</td><td class="text-right">${s.totalSales || 0}</td><td class="text-right">${formatCurrency(s.revenue || 0)}</td><td class="text-right">${formatCurrency(s.avgOrderValue || 0)}</td></tr>`).join('')}
+<table><tr><th>${t("common.rank")}</th><th>${t("common.name")}</th><th>${t("reports.salesCount")}</th><th>${t("reports.revenue")}</th><th>${t("reports.average")}</th><th>${t("reports.hoursShort")}</th><th>${t("reports.revenuePerHour")}</th></tr>
+${staffReports.map((s: any, i: number) => `<tr><td>${i + 1}</td><td>${s.name || ''}</td><td class="text-right">${s.totalSales || 0}</td><td class="text-right">${formatCurrency(s.revenue || 0)}</td><td class="text-right">${formatCurrency(s.avgOrderValue || 0)}</td><td class="text-right">${s.hoursWorked ?? 0}</td><td class="text-right">${formatCurrency(s.revenuePerHour || 0)}</td></tr>`).join('')}
 </table></body></html>`;
-        const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        const w = window.open(url, '_blank');
-        if (w) w.onload = () => w.print();
+        const w = window.open('', '_blank');
+        if (w) {
+            w.document.write(html);
+            w.document.close();
+            w.onload = () => w.print();
+        }
         toast.success(t("reports.exportSuccess"));
         exporting = false;
     }
@@ -152,8 +157,8 @@ ${staffReports.map((s: any, i: number) => `<tr><td>${i + 1}</td><td>${s.name || 
         showExportMenu = false;
         const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office"><head><meta charset="utf-8"><style>table{width:100%;border-collapse:collapse}th,td{border:1px solid #000;padding:8px}th{background:#f0f0f0}</style></head>
 <body><h1 style="text-align:center">${t("reports.staff")}</h1><p style="text-align:center">${new Date().toLocaleDateString('lo-LA')}</p>
-<table><tr><th>ອັນດັບ</th><th>ຊື່</th><th>ຈຳນວນຂາຍ</th><th>ລາຍຮັບ</th><th>ຄ່າສະເລ່ຍ</th></tr>
-${staffReports.map((s: any, i: number) => `<tr><td>${i + 1}</td><td>${s.name || ''}</td><td>${s.totalSales || 0}</td><td>${formatCurrency(s.revenue || 0)}</td><td>${formatCurrency(s.avgOrderValue || 0)}</td></tr>`).join('')}
+<table><tr><th>${t("common.rank")}</th><th>${t("common.name")}</th><th>${t("reports.salesCount")}</th><th>${t("reports.revenue")}</th><th>${t("reports.average")}</th><th>${t("reports.hoursShort")}</th><th>${t("reports.revenuePerHour")}</th></tr>
+${staffReports.map((s: any, i: number) => `<tr><td>${i + 1}</td><td>${s.name || ''}</td><td>${s.totalSales || 0}</td><td>${formatCurrency(s.revenue || 0)}</td><td>${formatCurrency(s.avgOrderValue || 0)}</td><td>${s.hoursWorked ?? 0}</td><td>${formatCurrency(s.revenuePerHour || 0)}</td></tr>`).join('')}
 </table></body></html>`;
         downloadFile(html, `staff-report-${periodFilter}.doc`, 'application/msword');
         toast.success(t("reports.exportSuccess"));
@@ -169,7 +174,7 @@ ${staffReports.map((s: any, i: number) => `<tr><td>${i + 1}</td><td>${s.name || 
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+        setTimeout(() => URL.revokeObjectURL(url), 0);
     }
 </script>
 
@@ -243,7 +248,7 @@ ${staffReports.map((s: any, i: number) => `<tr><td>${i + 1}</td><td>${s.name || 
                 </div>
                 <span class="text-2xl font-bold text-violet-600 dark:text-violet-400">{stats.totalStaff}</span>
             </div>
-            <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">ພະນັກງານ</p>
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">{t("staff.title")}</p>
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
             <div class="flex items-center justify-between">
@@ -252,7 +257,7 @@ ${staffReports.map((s: any, i: number) => `<tr><td>${i + 1}</td><td>${s.name || 
                 </div>
                 <span class="text-2xl font-bold text-blue-600 dark:text-blue-400">{stats.totalSales}</span>
             </div>
-            <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">ການຂາຍລວມ</p>
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">{t("reports.totalSales")}</p>
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
             <div class="flex items-center justify-between">
@@ -261,7 +266,7 @@ ${staffReports.map((s: any, i: number) => `<tr><td>${i + 1}</td><td>${s.name || 
                 </div>
                 <span class="text-lg font-bold text-emerald-600 dark:text-emerald-400">{formatCurrency(stats.totalRevenue)}</span>
             </div>
-            <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">ລາຍຮັບລວມ</p>
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">{t("reports.totalRevenue")}</p>
         </div>
         <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm">
             <div class="flex items-center justify-between">
@@ -270,7 +275,7 @@ ${staffReports.map((s: any, i: number) => `<tr><td>${i + 1}</td><td>${s.name || 
                 </div>
                 <span class="text-sm font-bold text-amber-600 dark:text-amber-400 truncate max-w-20">{stats.topPerformer?.name || "-"}</span>
             </div>
-            <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">ດີເດັ່ນ</p>
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">{t("reports.topPerformer")}</p>
         </div>
     </div>
 
@@ -278,7 +283,7 @@ ${staffReports.map((s: any, i: number) => `<tr><td>${i + 1}</td><td>${s.name || 
     <div class="bg-white dark:bg-gray-800 rounded-2xl p-4 border border-gray-200 dark:border-gray-700 shadow-sm mb-6">
         <div class="relative">
             <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-            <input type="text" bind:value={searchQuery} oninput={() => handleSearch()} placeholder="ຄົ້ນຫາພະນັກງານ..." class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-violet-500" />
+            <input type="text" bind:value={searchQuery} oninput={() => handleSearch()} placeholder={t("staff.searchPlaceholder")} class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-violet-500" />
         </div>
     </div>
 
@@ -290,7 +295,7 @@ ${staffReports.map((s: any, i: number) => `<tr><td>${i + 1}</td><td>${s.name || 
     {:else if staffReports.length === 0}
         <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-16 text-center">
             <Users class="w-16 h-16 mx-auto text-gray-300 dark:text-gray-600" />
-            <h3 class="text-lg font-semibold text-gray-900 dark:text-white mt-4">ບໍ່ມີຂໍ້ມູນ</h3>
+            <h3 class="text-lg font-semibold text-gray-900 dark:text-white mt-4">{t("common.noData")}</h3>
         </div>
     {:else}
         <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden">
@@ -298,12 +303,12 @@ ${staffReports.map((s: any, i: number) => `<tr><td>${i + 1}</td><td>${s.name || 
                 <table class="w-full">
                     <thead>
                         <tr class="border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
-                            <th class="text-left px-6 py-4 text-xs font-semibold text-gray-500 uppercase">ອັນດັບ</th>
-                            <th class="text-left px-6 py-4 text-xs font-semibold text-gray-500 uppercase">ພະນັກງານ</th>
-                            <th class="text-right px-6 py-4 text-xs font-semibold text-gray-500 uppercase">ຈຳນວນຂາຍ</th>
-                            <th class="text-right px-6 py-4 text-xs font-semibold text-gray-500 uppercase">ລາຍຮັບ</th>
-                            <th class="text-right px-6 py-4 text-xs font-semibold text-gray-500 uppercase">ສະເລ່ຍ/ບິນ</th>
-                            <th class="text-right px-6 py-4 text-xs font-semibold text-gray-500 uppercase">ຊົ່ວໂມງ</th>
+                            <th class="text-left px-6 py-4 text-xs font-semibold text-gray-500 uppercase">{t("common.rank")}</th>
+                            <th class="text-left px-6 py-4 text-xs font-semibold text-gray-500 uppercase">{t("staff.title")}</th>
+                            <th class="text-right px-6 py-4 text-xs font-semibold text-gray-500 uppercase">{t("reports.salesCount")}</th>
+                            <th class="text-right px-6 py-4 text-xs font-semibold text-gray-500 uppercase">{t("reports.revenue")}</th>
+                            <th class="text-right px-6 py-4 text-xs font-semibold text-gray-500 uppercase">{t("reports.avgPerOrder")}</th>
+                            <th class="text-right px-6 py-4 text-xs font-semibold text-gray-500 uppercase">{t("reports.hours")}</th>
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-gray-200 dark:divide-gray-700">
@@ -313,8 +318,9 @@ ${staffReports.map((s: any, i: number) => `<tr><td>${i + 1}</td><td>${s.name || 
                             <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-all">
                                 <td class="px-6 py-4">
                                     {#if rank}
+                                        {@const RankIcon = rank.icon}
                                         <span class={cn("inline-flex items-center justify-center w-8 h-8 rounded-full", rank.bg, rank.text)}>
-                                            <svelte:component this={rank.icon} class="w-4 h-4" />
+                                            <RankIcon class="w-4 h-4" />
                                         </span>
                                     {:else}
                                         <span class="text-gray-500 dark:text-gray-400 ml-2">{(currentPage - 1) * itemsPerPage + i + 1}</span>
@@ -323,7 +329,7 @@ ${staffReports.map((s: any, i: number) => `<tr><td>${i + 1}</td><td>${s.name || 
                                 <td class="px-6 py-4">
                                     <div class="flex items-center gap-3">
                                         <div class="w-10 h-10 bg-gradient-to-br from-violet-500 to-purple-600 rounded-full flex items-center justify-center text-white font-bold">
-                                            {staff.name?.charAt(0) || "?"}
+                                            {staff.name?.charAt(0)}
                                         </div>
                                         <div>
                                             <p class="font-medium text-gray-900 dark:text-white">{staff.name}</p>
@@ -349,14 +355,14 @@ ${staffReports.map((s: any, i: number) => `<tr><td>${i + 1}</td><td>${s.name || 
                     </tbody>
                     <tfoot>
                         <tr class="bg-violet-50 dark:bg-violet-900/20 border-t-2 border-violet-200 dark:border-violet-700 font-bold">
-                            <td class="px-6 py-4 text-gray-900 dark:text-white" colspan="2">ລວມທັງໝົດ ({totalItems} ຄົນ)</td>
+                            <td class="px-6 py-4 text-gray-900 dark:text-white" colspan="2">{t("common.total")} ({totalItems} {t("staff.people")})</td>
                             <td class="px-6 py-4 text-right text-gray-900 dark:text-white">{stats.totalSales}</td>
                             <td class="px-6 py-4 text-right text-emerald-600 dark:text-emerald-400">{formatCurrency(stats.totalRevenue)}</td>
                             <td class="px-6 py-4 text-right text-gray-500 dark:text-gray-400">
                                 {stats.totalSales > 0 ? formatCurrency(stats.totalRevenue / stats.totalSales) : '-'}
                             </td>
                             <td class="px-6 py-4 text-right text-gray-500 dark:text-gray-400">
-                                {staffReports.reduce((s, r) => s + (r.hoursWorked || 0), 0)}h
+                                {Math.round(reportSummary.totalHours * 10) / 10}h
                             </td>
                         </tr>
                     </tfoot>
@@ -369,18 +375,18 @@ ${staffReports.map((s: any, i: number) => `<tr><td>${i + 1}</td><td>${s.name || 
     {#if totalItems > 0}
         <div class="flex flex-col sm:flex-row items-center justify-between gap-4 mt-6">
             <div class="flex items-center gap-2">
-                <span class="text-sm text-gray-500 dark:text-gray-400">ສະແດງ:</span>
+                <span class="text-sm text-gray-500 dark:text-gray-400">{t("common.show")}:</span>
                 <select 
                     bind:value={itemsPerPage} 
                     onchange={() => changePageSize(itemsPerPage)}
                     class="px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm"
                 >
                     {#each pageSizeOptions as size (size)}
-                        <option value={size}>{size} ລາຍການ</option>
+                        <option value={size}>{size} {t("common.items")}</option>
                     {/each}
                 </select>
                 <span class="text-sm text-gray-500 dark:text-gray-400">
-                    ({(currentPage - 1) * itemsPerPage + 1} - {Math.min(currentPage * itemsPerPage, totalItems)} ຈາກ {totalItems})
+                    ({(currentPage - 1) * itemsPerPage + 1} - {Math.min(currentPage * itemsPerPage, totalItems)} {t("common.from")} {totalItems})
                 </span>
             </div>
             <div class="flex items-center gap-2">

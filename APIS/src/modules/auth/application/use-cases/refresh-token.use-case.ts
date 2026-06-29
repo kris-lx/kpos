@@ -11,15 +11,15 @@ export interface RefreshTokenResult {
     accessToken: string;
 }
 
-export interface RefreshTokenInput {
+export interface RefreshTokenUseCaseInput {
     refreshToken: string;
     res?: Response;
 }
 
-export class RefreshTokenUseCase implements IUseCase<RefreshTokenInput, RefreshTokenResult> {
+export class RefreshTokenUseCase implements IUseCase<RefreshTokenUseCaseInput, RefreshTokenResult> {
     constructor(private readonly authService: AuthService) { }
 
-    async execute(input: RefreshTokenInput): Promise<Result<RefreshTokenResult>> {
+    async execute(input: RefreshTokenUseCaseInput): Promise<Result<RefreshTokenResult>> {
         try {
             const result = await this.authService.refreshToken(input.refreshToken, input.res);
             return Result.ok(result);

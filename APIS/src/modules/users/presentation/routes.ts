@@ -3,11 +3,12 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, branchFilter, ensureScopeAccess } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, branchFilter, ensureScopeAccess, getRoleLevel, invalidateUserStoreCache } from '@/infrastructure/http/middleware/auth.middleware';
 import { db } from '@/config/database.config';
 import { users, userStores, branches, transactions, menuPermissions, rules, roleRules, roles } from '@/db/schema/tables';
 import { eq, and, or, ilike, inArray, notInArray, desc, asc, count, isNull } from 'drizzle-orm';
 import argon2 from 'argon2';
+import { invalidateUserPermissions } from '@/infrastructure/services/permission.service';
 
 export const userRoutes = Router();
 
@@ -21,6 +22,25 @@ const USER_SAFE_COLUMNS = {
 function stripSensitive<T extends { password?: unknown; twoFASecret?: unknown }>(u: T) {
     const { password: _p, twoFASecret: _t, ...safe } = u;
     return safe;
+}
+
+function canManageUserRecord(req: any, target: { id: string; tenantId?: string | null; role?: string | null; isSuperAdmin?: boolean | null }): boolean {
+    const authUser = req.authUser;
+    if (!authUser) return false;
+    if (authUser.isSuperAdmin) return true;
+    if (target.tenantId !== authUser.tenantId) return false;
+    if (target.isSuperAdmin) return false;
+    return getRoleLevel(target.role || 'staff', false) > (authUser.roleLevel ?? 7);
+}
+
+function canViewUserRecord(req: any, target: { id: string; tenantId?: string | null; role?: string | null; isSuperAdmin?: boolean | null }): boolean {
+    if (req.authUser?.userId === target.id) return true;
+    return canManageUserRecord(req, target);
+}
+
+async function invalidateUserAuthCaches(userId: string, tenantId?: string | null): Promise<void> {
+    await invalidateUserStoreCache(userId);
+    if (tenantId) await invalidateUserPermissions(userId, tenantId);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -152,8 +172,12 @@ userRoutes.post('/', authenticate, authorize('users:create'), async (req, res) =
             });
         }
 
-        // Check if email exists
-        const existing = await db.query.users.findFirst({ where: eq(users.email, email) });
+        const tenantId = req.authUser?.tenantId || req.user?.tenantId;
+
+        // Check if email exists within the caller's tenant
+        const emailConds: any[] = [eq(users.email, email)];
+        if (tenantId && !req.authUser?.isSuperAdmin) emailConds.push(eq(users.tenantId, tenantId));
+        const existing = await db.query.users.findFirst({ where: and(...emailConds) });
         if (existing) {
             return res.status(400).json({
                 success: false,
@@ -161,24 +185,43 @@ userRoutes.post('/', authenticate, authorize('users:create'), async (req, res) =
             });
         }
 
-        // Check if branch exists
-        const branch = await db.query.branches.findFirst({ where: eq(branches.id, branchId) });
+        // Check if branch exists and belongs to the caller's tenant/scope
+        const branchConds: any[] = [eq(branches.id, branchId)];
+        if (tenantId && !req.authUser?.isSuperAdmin) branchConds.push(eq(branches.tenantId, tenantId));
+        const branch = await db.query.branches.findFirst({ where: and(...branchConds) });
         if (!branch) {
-            return res.status(400).json({
+            return res.status(403).json({
                 success: false,
-                error: { code: 'NOT_FOUND', message: 'Branch not found' }
+                error: { code: 'FORBIDDEN', message: 'Branch not found or no access' }
             });
         }
 
-        // Tenant isolation: verify branch belongs to caller's tenant
-        if (!req.authUser?.isSuperAdmin && req.authUser?.tenantId && branch.tenantId && branch.tenantId !== req.authUser.tenantId) {
-            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot create user in another tenant\'s branch' } });
+        if (!ensureScopeAccess({ tenantId: branch.tenantId, branchId: branch.id }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot create user in a branch outside your scope' } });
+        }
+
+        let finalRoleId = roleId || undefined;
+        let finalRole = role || 'staff';
+        if (finalRoleId) {
+            const roleConds: any[] = [eq(roles.id, finalRoleId)];
+            if (tenantId && !req.authUser?.isSuperAdmin) roleConds.push(or(eq(roles.tenantId, tenantId), isNull(roles.tenantId)));
+            const roleRow = await db.query.roles.findFirst({ where: and(...roleConds), columns: { id: true, name: true, tenantId: true } });
+            if (!roleRow) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Role not found or no access' } });
+            }
+            finalRole = roleRow.name;
+        }
+
+        if (!req.authUser?.isSuperAdmin) {
+            const targetRoleLevel = getRoleLevel(finalRole, false);
+            if (targetRoleLevel <= (req.authUser?.roleLevel ?? 7)) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot create a user with equal or higher privileges' } });
+            }
         }
 
         // Hash password
         const hashedPassword = await argon2.hash(password);
 
-        const tenantId = req.authUser?.tenantId || req.user?.tenantId;
         const [user] = await db.insert(users).values({
             tenantId,
             email,
@@ -186,8 +229,8 @@ userRoutes.post('/', authenticate, authorize('users:create'), async (req, res) =
             name,
             phone,
             avatar,
-            role: role || 'staff',
-            roleId,
+            role: finalRole,
+            roleId: finalRoleId,
             branchId,
             isActive,
         }).returning();
@@ -211,7 +254,10 @@ userRoutes.put('/:id', authenticate, authorize('users:update'), async (req, res)
         const { email, password, name, phone, avatar, role, roleId, branchId, isActive } = req.body;
 
         // Check if user exists
-        const existing = await db.query.users.findFirst({ where: eq(users.id, id) });
+        const tenantId = req.authUser?.tenantId;
+        const existingConds: any[] = [eq(users.id, id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) existingConds.push(eq(users.tenantId, tenantId));
+        const existing = await db.query.users.findFirst({ where: and(...existingConds) });
         if (!existing) {
             return res.status(404).json({
                 success: false,
@@ -219,14 +265,15 @@ userRoutes.put('/:id', authenticate, authorize('users:update'), async (req, res)
             });
         }
 
-        // Tenant isolation
-        if (!req.authUser?.isSuperAdmin && req.authUser?.tenantId && existing.tenantId && existing.tenantId !== req.authUser.tenantId) {
-            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot modify user from another tenant' } });
+        if (!canManageUserRecord(req, existing)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot modify this user' } });
         }
 
         // Check if new email conflicts
         if (email && email !== existing.email) {
-            const emailExists = await db.query.users.findFirst({ where: eq(users.email, email) });
+            const emailConds: any[] = [eq(users.email, email)];
+            if (existing.tenantId) emailConds.push(eq(users.tenantId, existing.tenantId));
+            const emailExists = await db.query.users.findFirst({ where: and(...emailConds) });
             if (emailExists) {
                 return res.status(400).json({
                     success: false,
@@ -241,10 +288,40 @@ userRoutes.put('/:id', authenticate, authorize('users:update'), async (req, res)
         if (name) updateData.name = name;
         if (phone !== undefined) updateData.phone = phone;
         if (avatar !== undefined) updateData.avatar = avatar;
-        if (role) updateData.role = role;
-        if (roleId !== undefined) updateData.roleId = roleId;
-        if (branchId) updateData.branchId = branchId;
+        if (roleId !== undefined) {
+            if (roleId) {
+                const roleConds: any[] = [eq(roles.id, roleId)];
+                if (existing.tenantId && !req.authUser?.isSuperAdmin) roleConds.push(or(eq(roles.tenantId, existing.tenantId), isNull(roles.tenantId)));
+                const roleRow = await db.query.roles.findFirst({ where: and(...roleConds), columns: { id: true, name: true } });
+                if (!roleRow) {
+                    return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Role not found or no access' } });
+                }
+                if (!req.authUser?.isSuperAdmin && getRoleLevel(roleRow.name, false) <= (req.authUser?.roleLevel ?? 7)) {
+                    return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot assign equal or higher role' } });
+                }
+                updateData.roleId = roleRow.id;
+                updateData.role = roleRow.name;
+            } else {
+                updateData.roleId = null;
+            }
+        } else if (role) {
+            if (!req.authUser?.isSuperAdmin && getRoleLevel(role, false) <= (req.authUser?.roleLevel ?? 7)) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot assign equal or higher role' } });
+            }
+            updateData.role = role;
+        }
+        if (branchId) {
+            const branchConds: any[] = [eq(branches.id, branchId)];
+            if (existing.tenantId && !req.authUser?.isSuperAdmin) branchConds.push(eq(branches.tenantId, existing.tenantId));
+            const branch = await db.query.branches.findFirst({ where: and(...branchConds), columns: { id: true, tenantId: true } });
+            if (!branch || !ensureScopeAccess({ tenantId: branch.tenantId, branchId: branch.id }, req)) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Branch not found or outside your scope' } });
+            }
+            updateData.branchId = branchId;
+        }
         if (isActive !== undefined) updateData.isActive = isActive;
+        delete updateData.tenantId;
+        delete updateData.isSuperAdmin;
 
         if (password) {
             updateData.password = await argon2.hash(password);
@@ -252,9 +329,10 @@ userRoutes.put('/:id', authenticate, authorize('users:update'), async (req, res)
 
         const [user] = await db.update(users)
             .set(updateData as any)
-            .where(eq(users.id, id))
+            .where(and(...existingConds))
             .returning();
 
+        await invalidateUserAuthCaches(id, existing.tenantId);
         res.json({ success: true, data: stripSensitive(user) });
     } catch (error) {
         console.error('Update user error:', error);
@@ -272,8 +350,10 @@ userRoutes.delete('/:id', authenticate, authorize('users:delete'), async (req, r
     try {
         const { id } = req.params;
 
-        // Check if user exists
-        const existing = await db.query.users.findFirst({ where: eq(users.id, id) });
+        const tenantId = req.authUser?.tenantId;
+        const existingConds: any[] = [eq(users.id, id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) existingConds.push(eq(users.tenantId, tenantId));
+        const existing = await db.query.users.findFirst({ where: and(...existingConds) });
         if (!existing) {
             return res.status(404).json({
                 success: false,
@@ -281,9 +361,8 @@ userRoutes.delete('/:id', authenticate, authorize('users:delete'), async (req, r
             });
         }
 
-        // Tenant isolation
-        if (!req.authUser?.isSuperAdmin && req.authUser?.tenantId && existing.tenantId && existing.tenantId !== req.authUser.tenantId) {
-            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot delete user from another tenant' } });
+        if (!canManageUserRecord(req, existing)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot delete this user' } });
         }
 
         // Prevent self-deletion
@@ -295,15 +374,19 @@ userRoutes.delete('/:id', authenticate, authorize('users:delete'), async (req, r
         }
 
         // Check for related transactions
-        const [{ value: transactionCount }] = await db.select({ value: count() }).from(transactions).where(eq(transactions.userId, id));
+        const txConds: any[] = [eq(transactions.userId, id)];
+        if (existing.tenantId) txConds.push(eq(transactions.tenantId, existing.tenantId));
+        const [{ value: transactionCount }] = await db.select({ value: count() }).from(transactions).where(and(...txConds));
 
         if (transactionCount > 0) {
-            await db.update(users).set({ isActive: false, updatedAt: new Date() }).where(eq(users.id, id));
+            await db.update(users).set({ isActive: false, updatedAt: new Date() }).where(and(...existingConds));
+            await invalidateUserAuthCaches(id, existing.tenantId);
             return res.json({ success: true, message: 'User deactivated (has related transactions)', deactivated: true });
         }
 
         // Hard delete if no transactions
-        await db.delete(users).where(eq(users.id, id));
+        await db.delete(users).where(and(...existingConds));
+        await invalidateUserAuthCaches(id, existing.tenantId);
 
         res.json({ success: true, message: 'User deleted successfully' });
     } catch (error) {
@@ -322,7 +405,10 @@ userRoutes.patch('/:id/toggle-active', authenticate, authorize('users:update'), 
     try {
         const { id } = req.params;
 
-        const existing = await db.query.users.findFirst({ where: eq(users.id, id) });
+        const tenantId = req.authUser?.tenantId;
+        const existingConds: any[] = [eq(users.id, id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) existingConds.push(eq(users.tenantId, tenantId));
+        const existing = await db.query.users.findFirst({ where: and(...existingConds) });
         if (!existing) {
             return res.status(404).json({
                 success: false,
@@ -330,11 +416,16 @@ userRoutes.patch('/:id/toggle-active', authenticate, authorize('users:update'), 
             });
         }
 
+        if (!canManageUserRecord(req, existing)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot update this user status' } });
+        }
+
         const [user] = await db.update(users)
             .set({ isActive: !existing.isActive, updatedAt: new Date() })
-            .where(eq(users.id, id))
+            .where(and(...existingConds))
             .returning();
 
+        await invalidateUserAuthCaches(id, existing.tenantId);
         res.json({ success: true, data: stripSensitive(user) });
     } catch (error) {
         console.error('Toggle user active error:', error);
@@ -350,8 +441,11 @@ userRoutes.patch('/:id/toggle-active', authenticate, authorize('users:update'), 
 // ═══════════════════════════════════════════════════════════════════════════
 userRoutes.get('/:id/permissions', authenticate, authorize('users:read'), async (req, res) => {
     try {
+        const tenantId = req.authUser?.tenantId;
+        const userConds: any[] = [eq(users.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) userConds.push(eq(users.tenantId, tenantId));
         const user = await db.query.users.findFirst({
-            where: eq(users.id, req.params.id),
+            where: and(...userConds),
             columns: USER_SAFE_COLUMNS,
             with: { roleRelation: true },
         });
@@ -361,6 +455,9 @@ userRoutes.get('/:id/permissions', authenticate, authorize('users:read'), async 
                 success: false,
                 error: { code: 'NOT_FOUND', message: 'User not found' }
             });
+        }
+        if (!canViewUserRecord(req, user)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot view this user permissions' } });
         }
 
         // Get all available permissions for reference
@@ -440,11 +537,26 @@ userRoutes.put('/:id/permissions', authenticate, authorize('users:update'), asyn
         // Validate that all permissions are strings
         const validPermissions = permissions.filter(p => typeof p === 'string');
 
+        const tenantId = req.authUser?.tenantId;
+        const targetConds: any[] = [eq(users.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) targetConds.push(eq(users.tenantId, tenantId));
+        const targetUser = await db.query.users.findFirst({ where: and(...targetConds), columns: { id: true, tenantId: true, role: true, isSuperAdmin: true } });
+        if (!targetUser || !canManageUserRecord(req, targetUser)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot modify this user permissions' } });
+        }
+
+        let scopedPermissions = validPermissions;
+        if (!req.authUser?.isSuperAdmin) {
+            const callerPerms = new Set(req.authUser?.permissions || []);
+            scopedPermissions = validPermissions.filter((p: string) => callerPerms.has(p));
+        }
+
         const [user] = await db.update(users)
-            .set({ permissions: validPermissions, updatedAt: new Date() })
-            .where(eq(users.id, req.params.id))
+            .set({ permissions: scopedPermissions, updatedAt: new Date() })
+            .where(and(...targetConds))
             .returning();
 
+        await invalidateUserAuthCaches(req.params.id, targetUser.tenantId);
         res.json({
             success: true,
             data: stripSensitive(user),
@@ -755,27 +867,22 @@ userRoutes.get('/me/rules', authenticate, async (req, res) => {
         });
 
         // Fallback: if this tenant-specific role has no rules, inherit from the global role of the same name
-        if (rrRows.length === 0) {
-            const userRole = await db.query.users.findFirst({
-                where: eq(users.id, authUser.userId),
-                columns: { role: true },
+        if (rrRows.length === 0 && authUser.role) {
+            // Fetch all global roles with this name in one query, then all their rules in one query
+            const globalRoles = await db.query.roles.findMany({
+                where: and(eq(roles.name, authUser.role), isNull(roles.tenantId)),
+                columns: { id: true },
             });
-            if (userRole?.role) {
-                // A tenant may have multiple global roles with the same name (nullable
-                // tenantId makes the unique index non-enforcing for NULLs). Pick the first
-                // global role that actually has role_rules assigned.
-                const globalRoles = await db.query.roles.findMany({
-                    where: and(eq(roles.name, userRole.role), isNull(roles.tenantId)),
+            if (globalRoles.length > 0) {
+                const globalRoleIds = globalRoles.map(r => r.id);
+                const allGlobalRows = await db.query.roleRules.findMany({
+                    where: inArray(roleRules.roleId, globalRoleIds),
+                    with: { rule: true },
                 });
-                for (const globalRole of globalRoles) {
-                    const rows = await db.query.roleRules.findMany({
-                        where: eq(roleRules.roleId, globalRole.id),
-                        with: { rule: true },
-                    });
-                    if (rows.length > 0) {
-                        rrRows = rows;
-                        break;
-                    }
+                // Pick the first roleId bucket that has rules
+                for (const gid of globalRoleIds) {
+                    const bucket = allGlobalRows.filter(r => r.roleId === gid);
+                    if (bucket.length > 0) { rrRows = bucket; break; }
                 }
             }
         }

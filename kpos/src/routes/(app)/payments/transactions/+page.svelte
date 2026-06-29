@@ -3,6 +3,7 @@
     import { t } from "$lib/i18n/index.svelte";
     import { cn, formatCurrency, formatDate } from "$utils";
     import { api } from "$api";
+    import { toast } from "svelte-sonner";
     import {
         Receipt,
         Search,
@@ -152,7 +153,7 @@
             csv += `"${formatDate(tx.createdAt)}","${tx.reference}","${tx.customerName}","${getMethodConfig(tx.paymentMethod).label}","${formatCurrency(tx.amount)}","${getStatusConfig(tx.status).label}"\n`;
         }
         downloadFile(csv, `transactions-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
-        toast.success('ສົ່ງອອກ CSV ສຳເລັດ');
+        toast.success(t('common.exportSuccess'));
     }
 
     function exportToPdf() {
@@ -167,7 +168,7 @@
         const url = URL.createObjectURL(blob);
         const w = window.open(url, '_blank');
         if (w) w.onload = () => w.print();
-        toast.success('ສົ່ງອອກ PDF ສຳເລັດ');
+        toast.success(t('common.exportSuccess'));
     }
 
     function exportToWord() {
@@ -178,7 +179,7 @@
 <body><h1 style="text-align:center">ລາຍການຊຳລະ</h1><p style="text-align:center">${new Date().toLocaleDateString('lo-LA')}</p>
 <table><tr><th>ວັນທີ</th><th>ລະຫັດ</th><th>ລູກຄ້າ</th><th>ວິທີຊຳລະ</th><th>ຍອດເງິນ</th><th>ສະຖານະ</th></tr>${rows}</table></body></html>`;
         downloadFile(html, `transactions-${new Date().toISOString().split('T')[0]}.doc`, 'application/msword');
-        toast.success('ສົ່ງອອກ Word ສຳເລັດ');
+        toast.success(t('common.exportSuccess'));
     }
 
     let showExportMenu = $state(false);
@@ -345,6 +346,8 @@
                         {#each filteredTransactions as tx (tx.id)}
                             {@const statusConfig = getStatusConfig(tx.status)}
                             {@const methodConfig = getMethodConfig(tx.paymentMethod)}
+                            {@const MethodIcon = methodConfig.icon}
+                            {@const StatusIcon = statusConfig.icon}
                             <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-all">
                                 <td class="px-6 py-4">
                                     <div class="flex items-center gap-2 text-gray-600 dark:text-gray-400">
@@ -358,7 +361,7 @@
                                 <td class="px-6 py-4 text-gray-600 dark:text-gray-400">{tx.customerName || "-"}</td>
                                 <td class="px-6 py-4">
                                     <div class="flex items-center justify-center gap-2">
-                                        <svelte:component this={methodConfig.icon} class={cn("w-4 h-4", methodConfig.color)} />
+                                        <MethodIcon class={cn("w-4 h-4", methodConfig.color)} />
                                         <span class={cn("text-sm", methodConfig.color)}>{methodConfig.label}</span>
                                     </div>
                                 </td>
@@ -367,7 +370,7 @@
                                 </td>
                                 <td class="px-6 py-4 text-center">
                                     <span class={cn("inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium", statusConfig.bg, statusConfig.text)}>
-                                        <svelte:component this={statusConfig.icon} class="w-3.5 h-3.5" />
+                                        <StatusIcon class="w-3.5 h-3.5" />
                                         {statusConfig.label}
                                     </span>
                                 </td>
