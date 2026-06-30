@@ -359,7 +359,7 @@ export async function authenticate(
 
             // Normalize: support both new (sub/tid/bid) and legacy (userId/tenantId/branchId) payloads
             const userId = raw.sub || raw.userId || '';
-            const tenantId = raw.tid || raw.tenantId || '';
+            const tenantId = (raw.tid || raw.tenantId) || null; // null not '' — empty string breaks UUID columns
             const branchId = raw.bid || raw.branchId || '';
             const jti = raw.jti;
 
@@ -409,13 +409,16 @@ export async function authenticate(
                 activeBranchId ? loadBranchPath(activeBranchId) : Promise.resolve(undefined),
             ]);
 
+            // Resolve final tenantId — prefer DB value, fall back to JWT claim, null for superadmin
+            const resolvedTenantId = user.tenantId || tenantId || null;
+
             // Build legacy JwtPayload for backward compat on req.user
             const legacyPayload: JwtPayload = {
                 userId,
                 email: user.email,
                 role: user.role,
                 branchId: activeBranchId,
-                tenantId: user.tenantId || tenantId,
+                tenantId: resolvedTenantId,
             };
 
             req.user = legacyPayload;
@@ -423,7 +426,7 @@ export async function authenticate(
                 ...legacyPayload,
                 permissions: mergedPermissions,
                 role: user.role,
-                tenantId: user.tenantId || tenantId,
+                tenantId: resolvedTenantId,
                 accessibleStores,
                 accessibleBranchIds,
                 accessibleBranchPaths,

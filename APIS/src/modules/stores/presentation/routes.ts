@@ -442,7 +442,7 @@ storeRoutes.post('/', authenticate, authorize('stores:create', 'branches:create'
             await db.update(stores).set({ isDefault: false, updatedAt: new Date() }).where(and(eq(stores.branchId, branchId), eq(stores.isDefault, true)));
         }
 
-        const tenantId = req.authUser?.tenantId || req.user?.tenantId;
+        const tenantId = (req.authUser?.tenantId || req.user?.tenantId) || null;
         const [store] = await db.insert(stores).values({
             tenantId,
             name, code, branchId, address, phone, email, description,

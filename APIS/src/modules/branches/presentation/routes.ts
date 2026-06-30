@@ -139,7 +139,7 @@ branchRoutes.get('/:id', authenticate, async (req, res, next) => {
 // Create branch (hq_admin or tenant_admin+)
 branchRoutes.post('/', authenticate, authorize('branches:create'), async (req, res, next) => {
     try {
-        const tenantId = req.authUser?.tenantId || req.user?.tenantId;
+        const tenantId = (req.authUser?.tenantId || req.user?.tenantId) || null;
         const { name, code, address, phone, email, taxId, logo, isMain, isActive, settings, parentBranchId } = req.body;
 
         if (!name || !code) {
