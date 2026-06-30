@@ -28,23 +28,20 @@ categoryRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => 
             }
             conditions.push(or(...scopeConds));
         } else if (filter?.tenantId && filter.branchIds && filter.branchIds.length > 0) {
-            // Branch-scoped user: find stores under accessible branches, then filter categories
+            // Branch-scoped user: show categories belonging to their branch's stores only
             const branchStores = await db.query.stores.findMany({
                 where: inArray(stores.branchId, filter.branchIds),
                 columns: { id: true },
             });
             const branchStoreIds = branchStores.map((s: any) => s.id);
+            conditions.push(eq(categories.tenantId, filter.tenantId));
             if (branchStoreIds.length > 0) {
-                // Show categories for these stores + global (storeId=NULL) within tenant
-                conditions.push(eq(categories.tenantId, filter.tenantId));
-                conditions.push(or(
-                    inArray(categories.storeId, branchStoreIds),
-                    isNull(categories.storeId)
-                ));
+                // Scope to this branch's stores only — do NOT include storeId=null (tenant-global)
+                // Tenant-global categories are for HQ/tenant_admin level, not branch level
+                conditions.push(inArray(categories.storeId, branchStoreIds));
             } else {
-                // No stores found — show only tenant-global categories (no storeId)
-                conditions.push(eq(categories.tenantId, filter.tenantId));
-                conditions.push(isNull(categories.storeId));
+                // Branch has no stores yet — show nothing (empty is safe)
+                conditions.push(eq(categories.id, 'no-match'));
             }
         } else if (filter?.tenantId) {
             // HQ/tenant admin: sees all tenant categories
@@ -113,13 +110,13 @@ categoryRoutes.get('/:id', authenticate, async (req, res, next) => {
 // Create category (auto-set storeId)
 categoryRoutes.post('/', authenticate, branchFilter(), authorize('categories:create'), async (req, res, next) => {
     try {
-        const { name, description, image, parentId, sortOrder } = req.body;
-        
+        const { name, description, image, parentId, sortOrder, storeId: bodyStoreId, branchId: bodyBranchId } = req.body;
+
         if (!name) {
             res.status(400).json({ success: false, error: { code: 'VAL_001', message: 'Name is required' } });
             return;
         }
-        
+
         // Auto-generate slug from name
         const slug = name
             .toLowerCase()
@@ -132,12 +129,25 @@ categoryRoutes.post('/', authenticate, branchFilter(), authorize('categories:cre
         if (parentId) data.parentId = parentId;
         if (sortOrder !== undefined) data.sortOrder = sortOrder;
 
-        // Auto-set tenantId and storeId from user context
+        // Resolve storeId: explicit body param > branchId lookup > active store from session
         const catTenantId = req.authUser?.tenantId || req.user?.tenantId;
         if (catTenantId) data.tenantId = catTenantId;
-        if (req.authUser?.activeStoreId) {
-            data.storeId = req.authUser.activeStoreId;
+
+        let resolvedStoreId: string | undefined = req.authUser?.activeStoreId ?? undefined;
+        if (bodyStoreId) {
+            resolvedStoreId = String(bodyStoreId);
+        } else if (bodyBranchId) {
+            // Find the primary (default) store for this branch
+            const branchStore = await db.query.stores.findFirst({
+                where: and(eq(stores.branchId, String(bodyBranchId)), eq(stores.isDefault, true)),
+                columns: { id: true },
+            }) ?? await db.query.stores.findFirst({
+                where: eq(stores.branchId, String(bodyBranchId)),
+                columns: { id: true },
+            });
+            if (branchStore) resolvedStoreId = branchStore.id;
         }
+        if (resolvedStoreId) data.storeId = resolvedStoreId;
 
         const [category] = await db.insert(categories).values(data).returning();
         await invalidateQueryCache('categories*');

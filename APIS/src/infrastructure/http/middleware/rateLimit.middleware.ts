@@ -27,7 +27,7 @@ export const rateLimiter = rateLimit({
 
 export const authRateLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 20, // limit each IP to 20 login attempts per windowMs
+    max: isDev ? 200 : 20, // dev: unlimited-ish for test runs; prod: 20/15min per IP
     message: {
         success: false,
         error: {

@@ -1152,7 +1152,10 @@ inventoryRoutes.get('/stock-in', authenticate, branchFilter(), async (req, res, 
         // BE-76: Tenant isolation
         const siTenantId = req.authUser?.tenantId;
         if (siTenantId && !req.authUser?.isSuperAdmin) siConds.push(eq(stockMovements.tenantId, siTenantId));
-        // Narrow to specific branch if requested and within user scope
+        // Hard-block out-of-scope branch requests (consistent with GET /inventory)
+        if (qBranchId && filter?.branchIds && filter.branchIds.length > 0 && !filter.branchIds.includes(String(qBranchId))) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+        }
         if (qBranchId && filter?.branchIds?.includes(String(qBranchId))) {
             siConds.push(eq(stockMovements.branchId, String(qBranchId)));
         } else if (filter?.branchIds?.length) {
@@ -1436,6 +1439,10 @@ inventoryRoutes.get('/adjustments', authenticate, branchFilter(), async (req, re
         // BE-76: Tenant isolation
         const adjTenantId = req.authUser?.tenantId;
         if (adjTenantId && !req.authUser?.isSuperAdmin) adjConds.push(eq(stockMovements.tenantId, adjTenantId));
+        // Hard-block out-of-scope branch requests
+        if (qBranchId && scopeFilter?.branchIds && scopeFilter.branchIds.length > 0 && !scopeFilter.branchIds.includes(String(qBranchId))) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+        }
         if (qBranchId && scopeFilter?.branchIds?.includes(String(qBranchId))) {
             adjConds.push(eq(stockMovements.branchId, String(qBranchId)));
         } else if (scopeFilter?.branchIds?.length) {
@@ -1519,10 +1526,18 @@ inventoryRoutes.get('/transfers', authenticate, branchFilter(), async (req, res,
 });
 
 // Create transfer
-inventoryRoutes.post('/transfers', authenticate, authorize('inventory:update'), async (req, res, next) => {
+inventoryRoutes.post('/transfers', authenticate, authorize('inventory:update'), branchFilter(), async (req, res, next) => {
     try {
         const { productId, quantity, fromBranchId, toBranchId, reference, notes, date } = req.body;
         const userId = req.user!.userId;
+        const filter = req.branchFilter;
+
+        // Access guard: user must own the source branch
+        if (filter && filter.branchIds.length > 0) {
+            if (!filter.branchIds.includes(String(fromBranchId))) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'ບໍ່ມີສິດໂອນສິນຄ້າຈາກສາຂານີ້' } });
+            }
+        }
 
         const product = await db.query.products.findFirst({ where: eq(products.id, productId), columns: { name: true } });
 
