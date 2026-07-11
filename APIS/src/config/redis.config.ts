@@ -100,13 +100,41 @@ export function getRedisClient(): Redis | null {
 
 export async function connectRedis(): Promise<void> {
     const client = getRedisClient();
-    if (client) {
+    if (!client) return;
+
+    // The client uses lazyConnect, but anything that issues a command before
+    // this runs (e.g. rateLimit.middleware.ts's RedisStore, constructed at
+    // module load time, sends SCRIPT LOAD as soon as it's built) triggers an
+    // implicit connect. ioredis throws "Redis is already connecting/connected"
+    // if .connect() is called again on a client that's already
+    // connecting/connected — that's not a real failure, just redundant.
+    if (client.status === 'ready') {
+        redisConnected = true;
+        console.log('✅ Redis already connected (connected implicitly before startup reached this point)');
+        return;
+    }
+    if (client.status === 'connecting' || client.status === 'connect') {
+        // Already in flight — wait for it to settle instead of calling
+        // .connect() again (which would throw) or assuming failure.
         try {
-            await client.connect();
-        } catch {
-            console.warn('⚠️  Redis not available - server will use in-memory fallback');
+            await new Promise<void>((resolve, reject) => {
+                client.once('ready', resolve);
+                client.once('error', reject);
+            });
+            redisConnected = true;
+            console.log('✅ Redis connected successfully (connection was already in flight)');
+        } catch (err) {
+            console.warn('⚠️  Redis not available - server will use in-memory fallback:', err instanceof Error ? err.message : err);
             redisConnected = false;
         }
+        return;
+    }
+
+    try {
+        await client.connect();
+    } catch (err) {
+        console.warn('⚠️  Redis not available - server will use in-memory fallback:', err instanceof Error ? err.message : err);
+        redisConnected = false;
     }
 }
 

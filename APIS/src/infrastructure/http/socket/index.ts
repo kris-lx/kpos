@@ -22,12 +22,17 @@ export function setupSocketHandlers(io: Server): void {
         }
 
         try {
+            // Identity-only JWT payload (BE-02, see auth.middleware.ts) — sub/bid,
+            // not the legacy userId/branchId this previously (incorrectly) read.
+            // With the legacy field names, decoded.userId/branchId were always
+            // undefined for any token issued by the current login flow, so
+            // sockets never actually joined their user:*/branch:* rooms at all.
             const decoded = jwt.verify(token, jwtConfig.secret) as {
-                userId: string;
-                branchId: string;
+                sub: string;
+                bid: string;
             };
-            socket.userId = decoded.userId;
-            socket.branchId = decoded.branchId;
+            socket.userId = decoded.sub;
+            socket.branchId = decoded.bid;
             next();
         } catch (err) {
             next(new Error('Invalid token'));
