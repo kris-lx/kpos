@@ -102,12 +102,17 @@ services:
     environment:
       NODE_ENV:                ${NODE_ENV:-production}
       PORT:                    5000
-      DATABASE_URL:            postgresql://${POSTGRES_USER:-kpos}:${POSTGRES_PASSWORD:-kpos_secret_change_me}@postgres:5432/${POSTGRES_DB:-kpos_db}
+      # Least-privilege role (no SUPERUSER/BYPASSRLS) so RLS policies actually
+      # apply to the running API. Migrations run separately as the superuser
+      # `kpos` role (see the `migrate` service above) — never as this one.
+      DATABASE_URL:            postgresql://kpos_app:${POSTGRES_APP_PASSWORD:-kpos_app_secret_change_me}@postgres:5432/${POSTGRES_DB:-kpos_db}
       REDIS_URL:               redis://redis:6379
       RABBITMQ_URL:            amqp://${RABBITMQ_USER:-kpos}:${RABBITMQ_PASS:-kpos_secret_change_me}@rabbitmq:5672
       JWT_SECRET:              ${JWT_SECRET:?JWT_SECRET must be set in .env}
-      JWT_EXPIRES_IN:          ${JWT_EXPIRES_IN:-24h}
-      JWT_REFRESH_EXPIRES_IN:  ${JWT_REFRESH_EXPIRES_IN:-7d}
+      JWT_EXPIRES_IN:          ${JWT_EXPIRES_IN:-20h}
+      JWT_REFRESH_EXPIRES_IN:  ${JWT_REFRESH_EXPIRES_IN:-20h}
+      SESSION_ABSOLUTE_HOURS:  ${SESSION_ABSOLUTE_HOURS:-20}
+      CONFIG_ENCRYPTION_KEY:   ${CONFIG_ENCRYPTION_KEY:?CONFIG_ENCRYPTION_KEY must be set in .env}
       CLOUDINARY_CLOUD_NAME:   ${CLOUDINARY_CLOUD_NAME:-}
       CLOUDINARY_API_KEY:      ${CLOUDINARY_API_KEY:-}
       CLOUDINARY_API_SECRET:   ${CLOUDINARY_API_SECRET:-}

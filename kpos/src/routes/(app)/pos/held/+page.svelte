@@ -202,9 +202,13 @@
                         <div class="space-y-2 mb-3">
                             {#each (order.items || []).slice(0, 3) as item (item.productName || item.name)}
                                 <div class="flex justify-between text-sm">
-                                    <span class="text-gray-600 dark:text-gray-300"
-                                        >{item.productName || item.name} x{item.quantity}</span
-                                    >
+                                    <span class="text-gray-600 dark:text-gray-300">
+                                        {item.productName || item.name}
+                                        {#if item.size || item.color}
+                                            <span class="text-gray-400">({[item.size, item.color].filter(Boolean).join(' / ')})</span>
+                                        {/if}
+                                        x{item.quantity}
+                                    </span>
                                     <span class="text-gray-900 dark:text-white"
                                         >{formatCurrency(item.total || (item.unitPrice * item.quantity))}</span
                                     >
@@ -307,7 +311,12 @@
                 {#each (selectedOrder.items || []) as item (item.productName || item.name)}
                     <div class="flex justify-between py-2 border-b border-gray-200 dark:border-gray-700">
                         <div>
-                            <p class="font-medium text-gray-900 dark:text-white">{item.productName || item.name}</p>
+                            <p class="font-medium text-gray-900 dark:text-white">
+                                {item.productName || item.name}
+                                {#if item.size || item.color}
+                                    <span class="text-gray-400 font-normal">({[item.size, item.color].filter(Boolean).join(' / ')})</span>
+                                {/if}
+                            </p>
                             <p class="text-sm text-gray-500 dark:text-gray-400">
                                 {formatCurrency(item.unitPrice || item.price)} x {item.quantity}
                             </p>

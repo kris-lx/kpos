@@ -29,6 +29,10 @@
             density: string;
             cutPaper: boolean;
             openCashDrawer: boolean;
+            protocol?: "escpos" | "tspl";
+            labelWidthMm?: number;
+            labelHeightMm?: number;
+            labelGapMm?: number;
         };
         status?: string;
     }
@@ -59,6 +63,10 @@
             density: "medium",
             cutPaper: true,
             openCashDrawer: false,
+            protocol: "tspl",
+            labelWidthMm: 58,
+            labelHeightMm: 30,
+            labelGapMm: 2,
         },
     });
 
@@ -143,6 +151,10 @@
                 density: p.settings?.density ?? "medium",
                 cutPaper: p.settings?.cutPaper ?? true,
                 openCashDrawer: p.settings?.openCashDrawer ?? false,
+                protocol: p.settings?.protocol ?? (p.type === "label" ? "tspl" : "escpos"),
+                labelWidthMm: p.settings?.labelWidthMm ?? (p.type === "label" ? (p.paperWidth ?? 58) : undefined),
+                labelHeightMm: p.settings?.labelHeightMm ?? (p.type === "label" ? 30 : undefined),
+                labelGapMm: p.settings?.labelGapMm ?? 2,
             },
         };
         showAdvanced = false;
@@ -154,7 +166,20 @@
         if (!form.name.trim()) return;
         saving = true;
         try {
-            const payload = { ...form };
+            const labelWidthMm = Number(form.settings.labelWidthMm || form.paperWidth || 58);
+            const labelHeightMm = Number(form.settings.labelHeightMm || 30);
+            const labelGapMm = Number(form.settings.labelGapMm ?? 2);
+            const payload = {
+                ...form,
+                paperWidth: form.type === "label" ? labelWidthMm : form.paperWidth,
+                settings: {
+                    ...form.settings,
+                    protocol: form.type === "label" ? (form.settings.protocol ?? "tspl") : "escpos",
+                    labelWidthMm: form.type === "label" ? labelWidthMm : undefined,
+                    labelHeightMm: form.type === "label" ? labelHeightMm : undefined,
+                    labelGapMm: form.type === "label" ? labelGapMm : undefined,
+                },
+            };
             if (editingId) {
                 await api.put(`settings/printers/${editingId}`, { json: payload }).json();
                 toast.success(t("printers.updateSuccess"));
@@ -206,36 +231,47 @@
             }
 
             if (p.connectionType === "usb" && "usb" in navigator) {
-                // Try Web USB API
+                // Try Web USB API — this is the deliberate one-time authorization
+                // step, so requestDevice() showing the picker here is expected.
+                let device: any;
                 try {
-                    const device = await (navigator as any).usb.requestDevice({ filters: [] });
+                    device = await (navigator as any).usb.requestDevice({ filters: [] });
                     await device.open();
                     const config = device.configuration || await device.selectConfiguration(1);
                     const iface = config?.interfaces?.[0];
-                    if (iface) {
-                        await device.claimInterface(iface.interfaceNumber);
-                        const ep = iface.alternate.endpoints.find((e: any) => e.direction === "out");
-                        if (ep) {
-                            const ESC = 0x1B; const GS = 0x1D;
-                            const data = new Uint8Array([
-                                ESC, 0x40,
-                                ESC, 0x61, 0x01,
-                                ...new TextEncoder().encode("** KPOS TEST **\nPRINTER OK\n\n\n"),
-                                GS, 0x56, 0x41, 0x03,
-                            ]);
-                            await device.transferOut(ep.endpointNumber, data);
-                        }
-                        await device.releaseInterface(iface.interfaceNumber);
-                    }
+                    if (!iface) throw new Error("No USB interface found");
+                    await device.claimInterface(iface.interfaceNumber);
+                    const ep = iface.alternate.endpoints.find((e: any) => e.direction === "out");
+                    if (!ep) throw new Error("No OUT endpoint found");
+                    const ESC = 0x1B; const GS = 0x1D;
+                    const data = new Uint8Array([
+                        ESC, 0x40,
+                        ESC, 0x61, 0x01,
+                        ...new TextEncoder().encode("** KPOS TEST **\nPRINTER OK\n\n\n"),
+                        GS, 0x56, 0x41, 0x03,
+                    ]);
+                    await device.transferOut(ep.endpointNumber, data);
+                    await device.releaseInterface(iface.interfaceNumber);
                     await device.close();
                     toast.success(t("printers.testSuccess"));
                     return;
                 } catch (usbErr: any) {
+                    if (device) {
+                        try { await device.close(); } catch { /* already closed */ }
+                    }
                     if (usbErr?.name === "NotFoundError") {
                         toast.error("No USB printer selected");
                         return;
                     }
-                    // Fall through to backend test
+                    if (usbErr?.name === "SecurityError") {
+                        // Windows has bound its own driver to this USB interface,
+                        // blocking raw WebUSB access — report this honestly
+                        // instead of silently claiming success below.
+                        toast.error(t("printers.usbAccessDenied"));
+                        return;
+                    }
+                    toast.error(`${t("printers.testFailed")}: ${usbErr?.message || usbErr}`);
+                    return;
                 }
             }
 
@@ -370,10 +406,18 @@
                         {#if printer.connectionType === "serial" && printer.serialPort}
                             <p class="pl-5">{printer.serialPort}</p>
                         {/if}
-                        <p class="flex items-center gap-1">
-                            <span>{t("printers.paperWidthLabel")}</span>
-                            <span>{paperLabel(printer.paperWidth ?? 80)}</span>
-                        </p>
+                        {#if printer.type === "label"}
+                            <p class="flex items-center gap-1">
+                                <span>Label:</span>
+                                <span>{printer.settings?.labelWidthMm ?? printer.paperWidth ?? 58}mm x {printer.settings?.labelHeightMm ?? 30}mm</span>
+                            </p>
+                            <p class="pl-5">Protocol: {(printer.settings?.protocol ?? "tspl").toUpperCase()}</p>
+                        {:else}
+                            <p class="flex items-center gap-1">
+                                <span>{t("printers.paperWidthLabel")}</span>
+                                <span>{paperLabel(printer.paperWidth ?? 80)}</span>
+                            </p>
+                        {/if}
                     </div>
 
                     <!-- Tags -->
@@ -539,6 +583,34 @@
                             </select>
                         </div>
                     </div>
+
+                    {#if form.type === "label"}
+                        <div class="grid grid-cols-3 gap-3 p-3 bg-amber-50 dark:bg-amber-900/20 rounded-xl border border-amber-100 dark:border-amber-800/50">
+                            <div class="col-span-3">
+                                <label for="pr-protocol" class="block text-xs font-medium text-amber-800 dark:text-amber-200 mb-1">Printer protocol</label>
+                                <select id="pr-protocol" bind:value={form.settings.protocol}
+                                    class="w-full px-3 py-2 border border-amber-200 dark:border-amber-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-amber-500 focus:outline-none text-sm">
+                                    <option value="tspl">TSPL / TSC / Deli label</option>
+                                    <option value="escpos">ESC/POS receipt-compatible</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label for="pr-label-width" class="block text-xs font-medium text-amber-800 dark:text-amber-200 mb-1">Label width (mm)</label>
+                                <input id="pr-label-width" type="number" min="10" max="120" step="0.1" bind:value={form.settings.labelWidthMm}
+                                    class="w-full px-3 py-2 border border-amber-200 dark:border-amber-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-amber-500 focus:outline-none text-sm" />
+                            </div>
+                            <div>
+                                <label for="pr-label-height" class="block text-xs font-medium text-amber-800 dark:text-amber-200 mb-1">Label height (mm)</label>
+                                <input id="pr-label-height" type="number" min="10" max="200" step="0.1" bind:value={form.settings.labelHeightMm}
+                                    class="w-full px-3 py-2 border border-amber-200 dark:border-amber-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-amber-500 focus:outline-none text-sm" />
+                            </div>
+                            <div>
+                                <label for="pr-label-gap" class="block text-xs font-medium text-amber-800 dark:text-amber-200 mb-1">Gap (mm)</label>
+                                <input id="pr-label-gap" type="number" min="0" max="10" step="0.1" bind:value={form.settings.labelGapMm}
+                                    class="w-full px-3 py-2 border border-amber-200 dark:border-amber-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-amber-500 focus:outline-none text-sm" />
+                            </div>
+                        </div>
+                    {/if}
 
                     <!-- Checkboxes -->
                     <div class="flex flex-wrap gap-4">

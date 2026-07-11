@@ -54,6 +54,7 @@
     // Data
     let members = $state<any[]>([]);
     let membershipTiers = $state<any[]>([]);
+    let priceLevels = $state<any[]>([]);
 
     // Form (matches Prisma Customer schema)
     let formData = $state({
@@ -66,6 +67,7 @@
         points: 0,
         totalSpent: 0,
         isActive: true,
+        priceLevelId: "",
     });
 
     function computeTier(points: number): string {
@@ -152,6 +154,15 @@
         }
     }
 
+    async function loadPriceLevels() {
+        try {
+            const res = await api.get("products/price-levels", { searchParams: { limit: 100 } }).json<any>();
+            priceLevels = res.data || [];
+        } catch {
+            priceLevels = [];
+        }
+    }
+
     async function handleSubmit() {
         try {
             const data = { ...formData };
@@ -195,6 +206,7 @@
             points: member.points || 0,
             totalSpent: member.totalSpent || 0,
             isActive: member.isActive ?? true,
+            priceLevelId: member.priceLevelId || "",
         };
         showModal = true;
     }
@@ -230,6 +242,7 @@
             points: 0,
             totalSpent: 0,
             isActive: true,
+            priceLevelId: "",
         };
     }
 
@@ -286,7 +299,7 @@
         URL.revokeObjectURL(url);
     }
 
-    onMount(() => { loadData(); loadMembershipTiers(); });
+    onMount(() => { loadData(); loadMembershipTiers(); loadPriceLevels(); });
 </script>
 
 <svelte:head>
@@ -645,6 +658,19 @@
                         rows="2"
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-emerald-500 focus:border-transparent resize-none"
                     ></textarea>
+                </div>
+
+                <div>
+                    <label for="a11y-app-customers-members-page-svelte-price-level" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ລະດັບລາຄາ</label>
+                    <select id="a11y-app-customers-members-page-svelte-price-level"
+                        bind:value={formData.priceLevelId}
+                        class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+                    >
+                        <option value="">-- ບໍ່ມີ (ລາຄາປົກກະຕິ) --</option>
+                        {#each priceLevels as level (level.id)}
+                            <option value={level.id}>{level.name}</option>
+                        {/each}
+                    </select>
                 </div>
 
                 <div class="grid grid-cols-2 gap-4">

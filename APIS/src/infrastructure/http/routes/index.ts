@@ -26,6 +26,8 @@ import { staffRoutes } from '@/modules/staff/presentation/routes';
 import { promotionRoutes } from '@/modules/promotions/presentation/routes';
 import { restaurantRoutes } from '@/modules/restaurant/presentation/routes';
 import { paymentRoutes } from '@/modules/payments/presentation/routes';
+import { paymentGatewayRoutes } from '@/modules/payment-gateways/presentation/routes';
+import { paymentGatewayWebhookRoutes } from '@/modules/payment-gateways/presentation/webhook-routes';
 import { adminRoutes } from '@/modules/admin/presentation/routes';
 import { documentRoutes } from '@/modules/documents/presentation/routes';
 import { rulesRoutes } from '@/modules/rules/presentation/routes';
@@ -39,6 +41,10 @@ export function setupRoutes(app: Application): void {
     // Infrastructure routes
     apiRouter.use('/upload', uploadRoutes);
     apiRouter.use('/notifications', notificationRoutes);
+
+    // Gateway webhooks: no bearer token / tenant header on inbound gateway callbacks —
+    // authenticity is the XML signature itself, verified inside the handler.
+    apiRouter.use('/webhooks/payment-gateways', paymentGatewayWebhookRoutes);
 
     // Auth routes (no tenant rate limit — uses IP-based authRateLimiter)
     apiRouter.use('/auth', authRoutes);
@@ -64,6 +70,7 @@ export function setupRoutes(app: Application): void {
     apiRouter.use('/promotions', promotionRoutes);
     apiRouter.use('/restaurant', restaurantRoutes);
     apiRouter.use('/payments', paymentRoutes);
+    apiRouter.use('/payment-gateways', paymentGatewayRoutes);
     apiRouter.use('/admin', adminRoutes);  // Super Admin routes
     apiRouter.use('/documents', documentRoutes);  // Invoices & Tax Invoices
     apiRouter.use('/rules', rulesRoutes);  // RBAC rules management

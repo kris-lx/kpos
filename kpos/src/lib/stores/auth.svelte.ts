@@ -4,7 +4,7 @@
 
 import { authClientApi } from '$api/auth-client';
 import { api } from '$api';
-import { setToken } from '$api/token';
+import { setToken, refreshAccessToken } from '$api/token';
 import { browser } from '$app/environment';
 import { LOCAL_STORAGE_KEYS } from '$lib/config';
 import { tenantSettings } from '$lib/stores/settings.svelte';
@@ -61,6 +61,7 @@ interface User {
     branchId: string;
     tenantId: string;
     phone?: string;
+    avatar?: string | null;
     isSuperAdmin?: boolean;
     permissions?: string[];
     /** Numeric role level 1-7. Computed client-side from role name. */
@@ -73,6 +74,7 @@ export interface StoreAccess {
     branchId: string;
     storeName: string;
     branchName: string;
+    storeLogo?: string | null;
     canRead: boolean;
     canWrite: boolean;
     canDelete: boolean;
@@ -337,33 +339,19 @@ function createAuthStore() {
         return accessibleBranchIds.includes(branchId) || user.branchId === branchId;
     }
 
-    // Deduplicates concurrent refresh calls so only one request fires at a time.
-    // This prevents race conditions on page load where the layout onMount and the
-    // auth store's own setTimeout(0) both trigger a refresh simultaneously —
-    // the second call would fail if the backend uses rotating refresh tokens.
-    let _refreshPromise: Promise<boolean> | null = null;
-
+    // Delegates to the app-wide deduplicated refresh in $api/token — shared
+    // with the API client's reactive 401 retry, so only one /auth/refresh
+    // call is ever in flight regardless of which caller triggers it. This
+    // matters because the backend rotates refresh tokens (single-use), so
+    // two independent concurrent calls would race and one would fail.
     async function refresh(): Promise<boolean> {
-        if (_refreshPromise) return _refreshPromise;
-        _refreshPromise = (async () => {
-            try {
-                // Browser sends HttpOnly refresh cookie automatically (NEW-01)
-                const response = await authClientApi.refresh();
-
-                if (response.success && response.data) {
-                    accessToken = response.data.accessToken;
-                    setToken(response.data.accessToken);
-                    scheduleRefresh(response.data.accessToken);
-                    return true;
-                }
-                return false;
-            } catch {
-                return false;
-            } finally {
-                _refreshPromise = null;
-            }
-        })();
-        return _refreshPromise;
+        const token = await refreshAccessToken();
+        if (token) {
+            accessToken = token;
+            scheduleRefresh(token);
+            return true;
+        }
+        return false;
     }
 
     // Refresh user profile + permissions from server (use when permissions may be stale)
@@ -372,7 +360,12 @@ function createAuthStore() {
         try {
             const res = await api.get('auth/me').json<{ success: boolean; data?: any }>();
             if (res.success && res.data && user) {
-                const updated = { ...user, permissions: res.data.permissions || [] };
+                const updated = {
+                    ...user,
+                    permissions: res.data.permissions || [],
+                    name: res.data.name ?? user.name,
+                    avatar: res.data.avatar ?? null,
+                };
                 user = updated;
                 if (browser) {
                     localStorage.setItem(USER_KEY, JSON.stringify(updated));

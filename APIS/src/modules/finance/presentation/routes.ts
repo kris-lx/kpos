@@ -10,7 +10,8 @@
 
 import { Router } from 'express';
 import { authenticate, authorize, branchFilter, buildScopeCondition } from '@/infrastructure/http/middleware/auth.middleware';
-import { db, dbRead } from '@/config/database.config';
+import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
+import { db as globalDb } from '@/config/database.config';
 import {
     transactions, transactionItems, transactionPayments,
     activityLogs, users, branches, stores,
@@ -31,8 +32,10 @@ function parseDateRange(from: any, to: any) {
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /finance/pl  — Profit & Loss by branch
 // ─────────────────────────────────────────────────────────────────────────────
-financeRoutes.get('/pl', authenticate, authorize('reports:financial'), branchFilter(), async (req, res, next) => {
+financeRoutes.get('/pl', authenticate, withTenantTx(), authorize('reports:financial'), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const filter = req.branchFilter;
         const tenantId = req.authUser?.tenantId;
         const isSuperAdmin = req.authUser?.isSuperAdmin;
@@ -178,8 +181,10 @@ financeRoutes.get('/pl', authenticate, authorize('reports:financial'), branchFil
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /finance/tax-summary  — VAT / Tax compliance summary
 // ─────────────────────────────────────────────────────────────────────────────
-financeRoutes.get('/tax-summary', authenticate, authorize('reports:financial'), branchFilter(), async (req, res, next) => {
+financeRoutes.get('/tax-summary', authenticate, withTenantTx(), authorize('reports:financial'), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const filter = req.branchFilter;
         const tenantId = req.authUser?.tenantId;
         const isSuperAdmin = req.authUser?.isSuperAdmin;
@@ -252,8 +257,10 @@ financeRoutes.get('/tax-summary', authenticate, authorize('reports:financial'), 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /finance/audit-trail  — Compliance audit log
 // ─────────────────────────────────────────────────────────────────────────────
-financeRoutes.get('/audit-trail', authenticate, authorize('reports:view'), branchFilter(), async (req, res, next) => {
+financeRoutes.get('/audit-trail', authenticate, withTenantTx(), authorize('reports:view'), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const tenantId = req.authUser?.tenantId;
         const isSuperAdmin = req.authUser?.isSuperAdmin;
         const { page = 1, limit = 50, action, entity, userId: qUserId, from, to, search } = req.query;
@@ -328,8 +335,10 @@ financeRoutes.get('/audit-trail', authenticate, authorize('reports:view'), branc
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /finance/cash-flow  — Cash in/out per shift summary
 // ─────────────────────────────────────────────────────────────────────────────
-financeRoutes.get('/cash-flow', authenticate, authorize('reports:financial'), branchFilter(), async (req, res, next) => {
+financeRoutes.get('/cash-flow', authenticate, withTenantTx(), authorize('reports:financial'), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const filter = req.branchFilter;
         const tenantId = req.authUser?.tenantId;
         const isSuperAdmin = req.authUser?.isSuperAdmin;

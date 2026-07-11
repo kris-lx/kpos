@@ -1,7 +1,7 @@
 // Service Worker for KPOS PWA
 // @ts-nocheck
 
-const CACHE_NAME = 'kpos-v2';
+const CACHE_NAME = 'kpos-v3';
 const STATIC_ASSETS = [
     '/',
     '/login',
@@ -30,11 +30,11 @@ self.addEventListener('activate', (event) => {
 
 // Push event — show browser notification
 self.addEventListener('push', (event) => {
-    let payload = { title: 'KPOS', body: 'New notification', tag: 'kpos', icon: '/favicon.png' };
+    let payload = { title: 'KPOS', body: 'New notification', tag: 'kpos', icon: '/favicon.svg' };
     if (event.data) {
         try {
             const data = event.data.json();
-            payload = { title: data.title || 'KPOS', body: data.body || '', tag: data.tag || 'kpos', icon: '/favicon.png', ...data };
+            payload = { title: data.title || 'KPOS', body: data.body || '', tag: data.tag || 'kpos', icon: '/favicon.svg', ...data };
         } catch {}
     }
     event.waitUntil(
@@ -42,7 +42,7 @@ self.addEventListener('push', (event) => {
             body: payload.body,
             tag: payload.tag,
             icon: payload.icon,
-            badge: '/favicon.png',
+            badge: '/favicon.svg',
             data: payload.data,
         })
     );
@@ -63,6 +63,8 @@ self.addEventListener('notificationclick', (event) => {
 // Fetch event — network first, offline.html fallback for navigation
 self.addEventListener('fetch', (event) => {
     if (event.request.method !== 'GET') return;
+    // Skip non-http(s) schemes (e.g. chrome-extension://)
+    if (!event.request.url.startsWith('http')) return;
     if (event.request.url.includes('/api/')) return;
 
     const isNavigation = event.request.mode === 'navigate';

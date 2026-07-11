@@ -8,6 +8,7 @@ export const ja = {
     'app.title': 'POSシステム',
     'common.loading': '読み込み中...',
     'common.save': '保存',
+    'common.readOnlyNoPermission': '編集権限がありません — 読み取り専用で表示しています',
     'common.cancel': 'キャンセル',
     'common.delete': '削除',
     'common.edit': '編集',
@@ -544,6 +545,7 @@ export const ja = {
     'printers.usb': 'USB',
     'printers.network': 'ネットワーク',
     'printers.bluetooth': 'Bluetooth',
+    'printers.usbAccessDenied': 'USBプリンターにアクセスできません(Windowsドライバーが許可していません)— 印刷ダイアログに切り替えます',
 
     // SKU Page
     'sku.title': 'SKU管理',
@@ -1770,6 +1772,12 @@ export const ja = {
     'notifications.lineTokenRequired': 'Line Token Required',
     'notifications.lineTokenSaveHint': 'Line Token Save Hint',
     'notifications.testingSound': 'Testing Sound',
+    'notifications.soundBell': 'ベル',
+    'notifications.soundChime': 'チャイム',
+    'notifications.soundDing': 'ディング',
+    'notifications.soundBeep': 'ビープ',
+    'notifications.pushNotConfigured': 'サーバーでプッシュ通知が設定されていません',
+    'notifications.pushUnsupported': 'このブラウザーはプッシュ通知に対応していません',
     'settings.saveFailed': 'Save Failed',
     'settings.saved': 'Saved',
 };

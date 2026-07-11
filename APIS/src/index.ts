@@ -3,6 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import './env';
+import './instrumentation'; // must run before express/http/ioredis/pino are first imported anywhere
 import { appServer } from './infrastructure/http/server';
 import { connectDatabase, disconnectDatabase } from './config/database.config';
 import { connectRedis, disconnectRedis } from './config/redis.config';
@@ -11,6 +12,7 @@ import { startWorkers, startScheduledJobs } from './infrastructure/workers';
 import { ensureSystemEnums } from './db/ensure-enums';
 import { ensureDefaultTenant } from './db/ensure-tenant';
 import { patchSystemRolePermissions } from './db/ensure-roles';
+import { ensureDefaultEmailTemplates } from './db/ensure-email-templates';
 
 async function main(): Promise<void> {
     try {
@@ -19,6 +21,7 @@ async function main(): Promise<void> {
 
         await ensureDefaultTenant();
         await ensureSystemEnums();
+        await ensureDefaultEmailTemplates();
 
         console.log('🔌 Connecting to Redis...');
         await connectRedis();

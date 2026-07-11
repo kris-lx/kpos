@@ -13,6 +13,8 @@ export interface CartItem {
     quantity: number;
     discount: number;
     notes?: string;
+    /** Price-level override for this line, set by setPriceLevel(); takes priority over product.price. */
+    overridePrice?: number;
 }
 
 function createCartStore() {
@@ -22,6 +24,8 @@ function createCartStore() {
     let discountValue = $state(0);
     let notes = $state('');
     let taxRate = $state(0); // loaded from settings API on first use
+    let priceLevelId = $state<string | null>(null);
+    let priceOverrides = $state<Map<string, number>>(new Map());
 
     async function loadTaxRate() {
         if (taxRate !== 0) return;
@@ -46,8 +50,8 @@ function createCartStore() {
 
     const subtotal = $derived(
         items.reduce((sum, item) => {
-            // Use price first, fallback to salePrice for backward compatibility
-            const unitPrice = item.product.price || item.product.salePrice || 0;
+            // Price-level override takes priority, else price, else salePrice for backward compatibility
+            const unitPrice = item.overridePrice ?? (item.product.price || item.product.salePrice || 0);
             const itemTotal = unitPrice * item.quantity;
             return sum + itemTotal - item.discount;
         }, 0)
@@ -92,9 +96,9 @@ function createCartStore() {
         if (existingIndex >= 0) {
             items[existingIndex].quantity = newQty;
         } else {
-            items = [...items, { product, quantity, discount: 0 }];
+            items = [...items, { product, quantity, discount: 0, overridePrice: priceOverrides.get(product.id) }];
         }
-        
+
         return { success: true };
     }
 
@@ -137,6 +141,13 @@ function createCartStore() {
         customer = c;
     }
 
+    /** Sets the active price level and re-prices every line already in the cart. */
+    function setPriceLevel(id: string | null, overrides: Map<string, number>): void {
+        priceLevelId = id;
+        priceOverrides = overrides;
+        items = items.map((item) => ({ ...item, overridePrice: overrides.get(item.product.id) }));
+    }
+
     function setDiscount(type: 'PERCENTAGE' | 'FIXED' | null, value: number): void {
         discountType = type;
         discountValue = value;
@@ -152,6 +163,8 @@ function createCartStore() {
         discountType = null;
         discountValue = 0;
         notes = '';
+        priceLevelId = null;
+        priceOverrides = new Map();
     }
 
     function toSaleInput() {
@@ -159,7 +172,7 @@ function createCartStore() {
             items: items.map((item) => ({
                 productId: item.product.id,
                 quantity: item.quantity,
-                price: item.product.price || item.product.salePrice || 0,
+                price: item.overridePrice ?? (item.product.price || item.product.salePrice || 0),
                 discount: item.discount,
             })),
             customerId: customer?.id,
@@ -181,11 +194,13 @@ function createCartStore() {
         get taxAmount() { return taxAmount; },
         get taxRate() { return taxRate; },
         get total() { return total; },
+        get priceLevelId() { return priceLevelId; },
         addItem,
         updateQuantity,
         removeItem,
         setItemDiscount,
         setCustomer,
+        setPriceLevel,
         setDiscount,
         setNotes,
         clear,

@@ -67,7 +67,7 @@
                 reader.readAsDataURL(file);
             });
             try {
-                const res = await api.post('upload/single', { json: { image: base64, folder: 'logos' } }).json<any>();
+                const res = await api.post('upload/single', { json: { image: base64, filename: file.name, folder: 'logos' } }).json<any>();
                 formData.logo = res.success && res.data?.url ? res.data.url : base64;
             } catch {
                 formData.logo = base64;

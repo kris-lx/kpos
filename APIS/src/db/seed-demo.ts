@@ -11,9 +11,11 @@ import argon2 from 'argon2';
 import { DEFAULT_ROLES, DEFAULT_RULES, DEFAULT_ROLE_RULES } from '../shared/defaultAccessControl';
 import { permissionsToMask } from '../infrastructure/permissions';
 
-const DATABASE_URL = process.env.DATABASE_URL;
+// Seeds write across all tenants — needs the superuser/migration connection,
+// not the restricted kpos_app role (DATABASE_URL, used by the running API).
+const DATABASE_URL = process.env.DATABASE_MIGRATE_URL || process.env.DATABASE_URL;
 if (!DATABASE_URL) {
-    console.error('DATABASE_URL is required');
+    console.error('DATABASE_MIGRATE_URL (or DATABASE_URL) is required');
     process.exit(1);
 }
 

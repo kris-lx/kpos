@@ -9,21 +9,17 @@
     let isSaving = $state(false);
 
     let docs = $state([
-        { key: "tx", labelKey: "documents.type.tx", prefix: "TX", separator: "-", padLength: 6, sample: "" },
-        { key: "inv", labelKey: "documents.type.inv", prefix: "INV", separator: "-", padLength: 6, sample: "" },
-        { key: "po", labelKey: "documents.type.po", prefix: "PO", separator: "-", padLength: 6, sample: "" },
-        { key: "rcp", labelKey: "documents.type.rcp", prefix: "RCP", separator: "-", padLength: 4, sample: "" },
-        { key: "ref", labelKey: "documents.type.ref", prefix: "REF", separator: "-", padLength: 6, sample: "" },
+        { key: "tx", labelKey: "documents.type.tx", prefix: "TX", separator: "-", padLength: 6 },
+        { key: "inv", labelKey: "documents.type.inv", prefix: "INV", separator: "-", padLength: 6 },
+        { key: "po", labelKey: "documents.type.po", prefix: "PO", separator: "-", padLength: 6 },
+        { key: "rcp", labelKey: "documents.type.rcp", prefix: "RCP", separator: "-", padLength: 4 },
+        { key: "ref", labelKey: "documents.type.ref", prefix: "REF", separator: "-", padLength: 6 },
     ]);
 
     function buildSample(doc: (typeof docs)[0]) {
         const num = "1".padStart(doc.padLength, "0");
         return `${doc.prefix}${doc.separator}YYYYMMDD${doc.separator}${num}`;
     }
-
-    $effect(() => {
-        docs = docs.map((d) => ({ ...d, sample: buildSample(d) }));
-    });
 
     async function load() {
         isLoading = true;
@@ -112,7 +108,7 @@
                         </div>
                     </div>
                     <div class="mt-3 text-xs text-gray-400 dark:text-gray-500 font-mono">
-                        {t("common.example")}: <span class="text-primary-600 dark:text-primary-400">{doc.sample}</span>
+                        {t("common.example")}: <span class="text-primary-600 dark:text-primary-400">{buildSample(doc)}</span>
                     </div>
                 </div>
             {/each}

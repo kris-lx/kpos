@@ -97,6 +97,7 @@ export const P = {
     BRANCH_MANAGE:      L(44),
     SETTINGS_MANAGE:    L(45),
     RECEIPT_MANAGE:     L(46),
+    SETTINGS_VIEW:      L(47),
 
     // ── BILLING (bits 48-55) ─────────────────────────────────────────────
     BILLING_VIEW:       L(48),
@@ -244,8 +245,11 @@ const LEGACY_PERM_MAP: Record<string, PermBit> = {
     'branches:update':    P.BRANCH_MANAGE,
     'branches:delete':    P.BRANCH_MANAGE,
     // ── Settings ─────────────────────────────────────────────────────────────
-    'settings:view':      P.SETTINGS_MANAGE,
-    'settings:read':      P.SETTINGS_MANAGE,
+    // NOTE: view/read and update are deliberately DIFFERENT bits (unlike the
+    // other collapsed-CRUD modules below) — a view-only settings role must not
+    // silently gain write access via the bitmask fast-path in authorize().
+    'settings:view':      P.SETTINGS_VIEW,
+    'settings:read':      P.SETTINGS_VIEW,
     'settings:update':    P.SETTINGS_MANAGE,
     // ── Customers ────────────────────────────────────────────────────────────
     'customers:view':     P.CUSTOMER_VIEW,

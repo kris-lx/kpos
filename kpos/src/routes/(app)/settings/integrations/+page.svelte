@@ -4,10 +4,189 @@
     import { onMount } from "svelte";
     import { toast } from "svelte-sonner";
     import { auth } from "$stores";
-    import { Loader2, Save, Puzzle, Link, Settings, X, Plus, Key, Eye, EyeOff, Copy, Trash2, Edit, RefreshCw, Shield } from "lucide-svelte";
+    import { Loader2, Save, Puzzle, Link, Settings, X, Plus, Key, Eye, EyeOff, Copy, Trash2, Edit, RefreshCw, Shield, Mail, Send, FileText, History, CheckCircle2, XCircle } from "lucide-svelte";
     const t = i18n.t;
 
-    let activeTab = $state<"services" | "apikeys">("services");
+    let activeTab = $state<"services" | "apikeys" | "email">("services");
+
+    // Email providers
+    type EmailProviderType = "smtp" | "brevo" | "sendgrid" | "mailgun";
+    let emailProviders = $state<any[]>([]);
+    let emailProvidersLoading = $state(false);
+    let showEmailModal = $state(false);
+    let editingEmailProvider = $state<any>(null);
+    let emailSaving = $state(false);
+    let emailForm = $state<{ name: string; type: EmailProviderType; isActive: boolean; isDefault: boolean; config: Record<string, any> }>({
+        name: "", type: "smtp", isActive: true, isDefault: false, config: {},
+    });
+    let testingProviderId = $state<string | null>(null);
+    let testEmailAddress = $state("");
+
+    // Email templates
+    let emailTemplates = $state<any[]>([]);
+    let emailTemplatesLoading = $state(false);
+    let editingTemplate = $state<any>(null);
+    let templateForm = $state({ subject: "", htmlBody: "" });
+    let templateSaving = $state(false);
+
+    // Email logs
+    let emailLogs = $state<any[]>([]);
+    let emailLogsLoading = $state(false);
+    let emailSubTab = $state<"providers" | "templates" | "logs">("providers");
+
+    const EMAIL_FIELD_DEFS: Record<EmailProviderType, { key: string; label: string; type?: string; placeholder?: string }[]> = {
+        smtp: [
+            { key: "host", label: "SMTP Host", placeholder: "smtp.example.com" },
+            { key: "port", label: "Port", type: "number", placeholder: "587" },
+            { key: "user", label: "Username" },
+            { key: "pass", label: "Password", type: "password" },
+            { key: "from", label: "From Email", placeholder: "noreply@yourstore.com" },
+            { key: "fromName", label: "From Name", placeholder: "KPOS" },
+        ],
+        brevo: [
+            { key: "apiKey", label: "Brevo API Key", type: "password" },
+            { key: "from", label: "From Email" },
+            { key: "fromName", label: "From Name", placeholder: "KPOS" },
+        ],
+        sendgrid: [
+            { key: "apiKey", label: "SendGrid API Key", type: "password" },
+            { key: "from", label: "From Email" },
+            { key: "fromName", label: "From Name", placeholder: "KPOS" },
+        ],
+        mailgun: [
+            { key: "apiKey", label: "Mailgun API Key", type: "password" },
+            { key: "domain", label: "Domain", placeholder: "mg.yourstore.com" },
+            { key: "from", label: "From Email" },
+            { key: "fromName", label: "From Name", placeholder: "KPOS" },
+        ],
+    };
+
+    async function loadEmailProviders() {
+        emailProvidersLoading = true;
+        try {
+            const res = await api.get("settings/email").json<any>();
+            emailProviders = res.data || [];
+        } catch (e) {
+            console.error("Failed to load email providers:", e);
+            emailProviders = [];
+        } finally {
+            emailProvidersLoading = false;
+        }
+    }
+
+    async function loadEmailTemplates() {
+        emailTemplatesLoading = true;
+        try {
+            const res = await api.get("settings/email/templates").json<any>();
+            emailTemplates = res.data || [];
+        } catch (e) {
+            console.error("Failed to load email templates:", e);
+            emailTemplates = [];
+        } finally {
+            emailTemplatesLoading = false;
+        }
+    }
+
+    async function loadEmailLogs() {
+        emailLogsLoading = true;
+        try {
+            const res = await api.get("settings/email/logs").json<any>();
+            emailLogs = res.data || [];
+        } catch (e) {
+            console.error("Failed to load email logs:", e);
+            emailLogs = [];
+        } finally {
+            emailLogsLoading = false;
+        }
+    }
+
+    function openEmailModal(provider?: any) {
+        if (provider) {
+            editingEmailProvider = provider;
+            emailForm = { name: provider.name, type: provider.type, isActive: provider.isActive, isDefault: provider.isDefault, config: {} };
+        } else {
+            editingEmailProvider = null;
+            emailForm = { name: "", type: "smtp", isActive: true, isDefault: false, config: {} };
+        }
+        showEmailModal = true;
+    }
+
+    async function saveEmailProvider() {
+        if (!emailForm.name) {
+            toast.error("ກະລຸນາປ້ອນຊື່");
+            return;
+        }
+        emailSaving = true;
+        try {
+            const payload = { name: emailForm.name, type: emailForm.type, isActive: emailForm.isActive, isDefault: emailForm.isDefault, config: emailForm.config };
+            if (editingEmailProvider) {
+                await api.put(`settings/email/${editingEmailProvider.id}`, { json: payload }).json();
+            } else {
+                await api.post("settings/email", { json: payload }).json();
+            }
+            toast.success("ບັນທຶກແລ້ວ");
+            showEmailModal = false;
+            loadEmailProviders();
+        } catch (e) {
+            console.error("Failed to save email provider:", e);
+            toast.error("ບັນທຶກບໍ່ສຳເລັດ");
+        } finally {
+            emailSaving = false;
+        }
+    }
+
+    async function deleteEmailProvider(provider: any) {
+        if (!confirm("ຕ້ອງການລຶບ email provider ນີ້ບໍ?")) return;
+        try {
+            await api.delete(`settings/email/${provider.id}`).json();
+            toast.success("ລຶບແລ້ວ");
+            loadEmailProviders();
+        } catch (e) {
+            toast.error("ລຶບບໍ່ສຳເລັດ");
+        }
+    }
+
+    async function testEmailProvider(provider: any) {
+        testingProviderId = provider.id;
+        try {
+            const body = testEmailAddress ? { testEmail: testEmailAddress } : {};
+            await api.post(`settings/email/${provider.id}/test`, { json: body }).json();
+            toast.success(testEmailAddress ? "ເຊື່ອມຕໍ່ສຳເລັດ ແລະ ສົ່ງອີເມວທົດສອບແລ້ວ" : "ເຊື່ອມຕໍ່ສຳເລັດ");
+        } catch (e: any) {
+            console.error("Email test failed:", e);
+            toast.error("ການທົດສອບບໍ່ສຳເລັດ — ກວດສອບ credentials");
+        } finally {
+            testingProviderId = null;
+        }
+    }
+
+    function openTemplateEditor(template: any) {
+        editingTemplate = template;
+        templateForm = { subject: template.subject, htmlBody: template.htmlBody };
+    }
+
+    async function saveTemplate() {
+        if (!editingTemplate) return;
+        templateSaving = true;
+        try {
+            await api.put(`settings/email/templates/${editingTemplate.key}`, { json: templateForm }).json();
+            toast.success("ບັນທຶກແມ່ແບບແລ້ວ");
+            editingTemplate = null;
+            loadEmailTemplates();
+        } catch (e) {
+            toast.error("ບັນທຶກບໍ່ສຳເລັດ");
+        } finally {
+            templateSaving = false;
+        }
+    }
+
+    $effect(() => {
+        if (activeTab === "email") {
+            if (emailSubTab === "providers") loadEmailProviders();
+            else if (emailSubTab === "templates") loadEmailTemplates();
+            else if (emailSubTab === "logs") loadEmailLogs();
+        }
+    });
 
     // Services
     let integrations = $state<any[]>([]);
@@ -287,6 +466,13 @@
                 <span class="px-1.5 py-0.5 text-xs bg-primary-100 dark:bg-primary-900/50 text-primary-700 dark:text-primary-400 rounded-full">{apiKeys.length}</span>
             {/if}
         </button>
+        <button
+            onclick={() => (activeTab = "email")}
+            class="flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all {activeTab === 'email' ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm' : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
+        >
+            <Mail class="w-4 h-4" />
+            Email
+        </button>
     </div>
 
     <!-- API Keys Tab -->
@@ -367,6 +553,141 @@
                     </tbody>
                 </table>
             </div>
+        {/if}
+
+    <!-- Email Tab -->
+    {:else if activeTab === "email"}
+        <div class="flex gap-1 mb-6 bg-gray-50 dark:bg-gray-800/50 p-1 rounded-lg w-fit border border-gray-200 dark:border-gray-700">
+            <button onclick={() => (emailSubTab = "providers")} class="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all {emailSubTab === 'providers' ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm' : 'text-gray-500 dark:text-gray-400'}">
+                <Send class="w-3.5 h-3.5" /> Providers
+            </button>
+            <button onclick={() => (emailSubTab = "templates")} class="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all {emailSubTab === 'templates' ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm' : 'text-gray-500 dark:text-gray-400'}">
+                <FileText class="w-3.5 h-3.5" /> Templates
+            </button>
+            <button onclick={() => (emailSubTab = "logs")} class="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all {emailSubTab === 'logs' ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm' : 'text-gray-500 dark:text-gray-400'}">
+                <History class="w-3.5 h-3.5" /> Log
+            </button>
+        </div>
+
+        {#if emailSubTab === "providers"}
+            <div class="mb-4 flex justify-end">
+                <button onclick={() => openEmailModal()} class="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 text-sm font-medium">
+                    <Plus class="w-4 h-4" /> Add Provider
+                </button>
+            </div>
+            {#if emailProvidersLoading}
+                <div class="flex justify-center py-12"><Loader2 class="h-8 w-8 animate-spin text-primary-600" /></div>
+            {:else if emailProviders.length === 0}
+                <div class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-16 text-center">
+                    <Mail class="w-16 h-16 mx-auto text-gray-300 dark:text-gray-600 mb-4" />
+                    <h3 class="text-lg font-semibold text-gray-900 dark:text-white">No email provider configured</h3>
+                    <p class="text-gray-500 dark:text-gray-400 mt-2 mb-6">Add SMTP, Brevo, SendGrid, or Mailgun to send password resets, receipts, and alerts from your own address.</p>
+                    <button onclick={() => openEmailModal()} class="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 text-sm font-medium mx-auto">
+                        <Plus class="w-4 h-4" /> Add Provider
+                    </button>
+                </div>
+            {:else}
+                <div class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
+                    <table class="w-full">
+                        <thead class="bg-gray-50 dark:bg-gray-700/50">
+                            <tr class="text-left text-xs text-gray-500 dark:text-gray-400 uppercase">
+                                <th class="px-4 py-3">Name</th>
+                                <th class="px-4 py-3">Type</th>
+                                <th class="px-4 py-3">Status</th>
+                                <th class="px-4 py-3 text-center">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-100 dark:divide-gray-700">
+                            {#each emailProviders as provider (provider.id)}
+                                <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50">
+                                    <td class="px-4 py-3">
+                                        <div class="flex items-center gap-2">
+                                            <span class="font-medium text-gray-900 dark:text-white">{provider.name}</span>
+                                            {#if provider.isDefault}<span class="px-1.5 py-0.5 text-xs bg-primary-100 dark:bg-primary-900/50 text-primary-700 dark:text-primary-400 rounded-full">default</span>{/if}
+                                        </div>
+                                    </td>
+                                    <td class="px-4 py-3 text-gray-600 dark:text-gray-400 uppercase text-xs font-mono">{provider.type}</td>
+                                    <td class="px-4 py-3">
+                                        <span class="px-2 py-1 text-xs rounded-full {provider.isActive ? 'bg-success-100 dark:bg-success-900/50 text-success-700 dark:text-success-400' : 'bg-gray-100 dark:bg-gray-700 text-gray-500'}">
+                                            {provider.isActive ? "Active" : "Inactive"}
+                                        </span>
+                                    </td>
+                                    <td class="px-4 py-3">
+                                        <div class="flex items-center justify-center gap-1">
+                                            <button onclick={() => testEmailProvider(provider)} disabled={testingProviderId === provider.id} class="p-1.5 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg disabled:opacity-50" title="Test Connection">
+                                                {#if testingProviderId === provider.id}<Loader2 class="w-4 h-4 animate-spin" />{:else}<RefreshCw class="w-4 h-4" />{/if}
+                                            </button>
+                                            <button onclick={() => openEmailModal(provider)} class="p-1.5 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg" title="Edit">
+                                                <Edit class="w-4 h-4" />
+                                            </button>
+                                            <button onclick={() => deleteEmailProvider(provider)} class="p-1.5 text-danger-500 hover:bg-danger-100 dark:hover:bg-danger-900/30 rounded-lg" title="Delete">
+                                                <Trash2 class="w-4 h-4" />
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            {/each}
+                        </tbody>
+                    </table>
+                </div>
+                <div class="mt-4 flex items-center gap-2 max-w-sm">
+                    <input type="email" bind:value={testEmailAddress} placeholder="test@example.com (optional, for test send)"
+                        class="flex-1 px-3 py-2 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white" />
+                </div>
+            {/if}
+        {:else if emailSubTab === "templates"}
+            {#if emailTemplatesLoading}
+                <div class="flex justify-center py-12"><Loader2 class="h-8 w-8 animate-spin text-primary-600" /></div>
+            {:else}
+                <div class="grid gap-4 md:grid-cols-2">
+                    {#each emailTemplates as template (template.key)}
+                        <button onclick={() => openTemplateEditor(template)} class="text-left bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 hover:shadow-md transition-shadow">
+                            <div class="flex items-center gap-2 mb-1">
+                                <FileText class="w-4 h-4 text-gray-400" />
+                                <span class="font-medium text-gray-900 dark:text-white font-mono text-sm">{template.key}</span>
+                                {#if !template.tenantId}<span class="px-1.5 py-0.5 text-xs bg-gray-100 dark:bg-gray-700 text-gray-500 rounded-full">system default</span>{/if}
+                            </div>
+                            <p class="text-sm text-gray-500 dark:text-gray-400 truncate">{template.subject}</p>
+                        </button>
+                    {/each}
+                </div>
+            {/if}
+        {:else if emailSubTab === "logs"}
+            {#if emailLogsLoading}
+                <div class="flex justify-center py-12"><Loader2 class="h-8 w-8 animate-spin text-primary-600" /></div>
+            {:else if emailLogs.length === 0}
+                <div class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-16 text-center text-gray-500 dark:text-gray-400">
+                    No email activity yet.
+                </div>
+            {:else}
+                <div class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
+                    <table class="w-full">
+                        <thead class="bg-gray-50 dark:bg-gray-700/50">
+                            <tr class="text-left text-xs text-gray-500 dark:text-gray-400 uppercase">
+                                <th class="px-4 py-3">To</th>
+                                <th class="px-4 py-3">Template</th>
+                                <th class="px-4 py-3">Status</th>
+                                <th class="px-4 py-3">Sent</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-100 dark:divide-gray-700">
+                            {#each emailLogs as log (log.id)}
+                                <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50">
+                                    <td class="px-4 py-3 text-gray-700 dark:text-gray-300">{log.toEmail}</td>
+                                    <td class="px-4 py-3 text-gray-500 dark:text-gray-400 font-mono text-xs">{log.templateKey || "-"}</td>
+                                    <td class="px-4 py-3">
+                                        <span class="flex items-center gap-1 text-xs {log.status === 'sent' ? 'text-success-600 dark:text-success-400' : log.status === 'failed' ? 'text-danger-600 dark:text-danger-400' : 'text-gray-500'}">
+                                            {#if log.status === "sent"}<CheckCircle2 class="w-3.5 h-3.5" />{:else if log.status === "failed"}<XCircle class="w-3.5 h-3.5" />{/if}
+                                            {log.status}
+                                        </span>
+                                    </td>
+                                    <td class="px-4 py-3 text-gray-500 dark:text-gray-400 text-xs">{new Date(log.sentAt).toLocaleString()}</td>
+                                </tr>
+                            {/each}
+                        </tbody>
+                    </table>
+                </div>
+            {/if}
         {/if}
 
     <!-- Services Tab -->
@@ -599,6 +920,127 @@
                 <button onclick={saveKey} disabled={keySaving || !keyForm.name || !keyForm.apiKey}
                     class="flex items-center gap-2 px-5 py-2 bg-primary-600 text-white rounded-xl hover:bg-primary-700 text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm">
                     {#if keySaving}<Loader2 class="w-4 h-4 animate-spin" />{:else}<Save class="w-4 h-4" />{/if}
+                    {t("common.save")}
+                </button>
+            </div>
+        </div>
+    </div>
+{/if}
+
+{#if showEmailModal}
+    <div class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+        <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-lg border border-gray-200 dark:border-gray-700 max-h-[90vh] overflow-y-auto">
+            <div class="flex items-center justify-between px-6 py-5 border-b border-gray-200 dark:border-gray-700">
+                <div class="flex items-center gap-3">
+                    <div class="p-2 bg-primary-100 dark:bg-primary-900/50 rounded-xl">
+                        <Mail class="w-5 h-5 text-primary-600 dark:text-primary-400" />
+                    </div>
+                    <h2 class="text-base font-bold text-gray-900 dark:text-white">
+                        {editingEmailProvider ? "Edit Email Provider" : "Add Email Provider"}
+                    </h2>
+                </div>
+                <button onclick={() => (showEmailModal = false)} class="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl transition-colors">
+                    <X class="w-4 h-4 text-gray-500" />
+                </button>
+            </div>
+
+            <div class="px-6 py-5 space-y-4">
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label for="email-provider-name" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">Name</label>
+                        <input id="email-provider-name" type="text" bind:value={emailForm.name} placeholder="Production SMTP"
+                            class="w-full px-3 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary-500 outline-none" />
+                    </div>
+                    <div>
+                        <label for="email-provider-type" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">Type</label>
+                        <select id="email-provider-type" bind:value={emailForm.type} disabled={!!editingEmailProvider}
+                            class="w-full px-3 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary-500 outline-none disabled:opacity-60">
+                            <option value="smtp">SMTP</option>
+                            <option value="brevo">Brevo</option>
+                            <option value="sendgrid">SendGrid</option>
+                            <option value="mailgun">Mailgun</option>
+                        </select>
+                    </div>
+                </div>
+
+                {#if editingEmailProvider}
+                    <div class="flex items-start gap-2 px-3 py-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl text-xs text-amber-700 dark:text-amber-300">
+                        <Shield class="w-4 h-4 mt-0.5 shrink-0" />
+                        Stored credentials are never sent back to the browser. Leave fields blank to keep the current value, or fill them in to replace it.
+                    </div>
+                {/if}
+
+                {#each EMAIL_FIELD_DEFS[emailForm.type] as field (field.key)}
+                    <div>
+                        <label for="email-field-{field.key}" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{field.label}</label>
+                        <input id="email-field-{field.key}" type={field.type || "text"} placeholder={field.placeholder}
+                            value={emailForm.config[field.key] ?? ""}
+                            oninput={(e) => (emailForm.config[field.key] = (e.target as HTMLInputElement).value)}
+                            class="w-full px-3 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white text-sm font-mono focus:ring-2 focus:ring-primary-500 outline-none" />
+                    </div>
+                {/each}
+
+                <div class="flex items-center justify-between px-4 py-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
+                    <p class="text-sm font-medium text-gray-700 dark:text-gray-300">{t("common.enabled")}</p>
+                    <button aria-label="toggle active" onclick={() => (emailForm.isActive = !emailForm.isActive)}
+                        class="relative w-11 h-6 rounded-full transition-colors {emailForm.isActive ? 'bg-primary-600' : 'bg-gray-300 dark:bg-gray-600'}">
+                        <span class="absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform {emailForm.isActive ? 'translate-x-6' : 'translate-x-1'}"></span>
+                    </button>
+                </div>
+                <div class="flex items-center justify-between px-4 py-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
+                    <p class="text-sm font-medium text-gray-700 dark:text-gray-300">Default provider</p>
+                    <button aria-label="toggle default" onclick={() => (emailForm.isDefault = !emailForm.isDefault)}
+                        class="relative w-11 h-6 rounded-full transition-colors {emailForm.isDefault ? 'bg-primary-600' : 'bg-gray-300 dark:bg-gray-600'}">
+                        <span class="absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform {emailForm.isDefault ? 'translate-x-6' : 'translate-x-1'}"></span>
+                    </button>
+                </div>
+            </div>
+
+            <div class="flex justify-end gap-3 px-6 py-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 rounded-b-2xl">
+                <button onclick={() => (showEmailModal = false)} class="px-4 py-2 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-xl text-sm font-medium">
+                    {t("common.cancel")}
+                </button>
+                <button onclick={saveEmailProvider} disabled={emailSaving || !emailForm.name}
+                    class="flex items-center gap-2 px-5 py-2 bg-primary-600 text-white rounded-xl hover:bg-primary-700 text-sm font-semibold disabled:opacity-50">
+                    {#if emailSaving}<Loader2 class="w-4 h-4 animate-spin" />{:else}<Save class="w-4 h-4" />{/if}
+                    {t("common.save")}
+                </button>
+            </div>
+        </div>
+    </div>
+{/if}
+
+{#if editingTemplate}
+    <div class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+        <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-2xl border border-gray-200 dark:border-gray-700 max-h-[90vh] overflow-y-auto">
+            <div class="flex items-center justify-between px-6 py-5 border-b border-gray-200 dark:border-gray-700">
+                <h2 class="text-base font-bold text-gray-900 dark:text-white font-mono">{editingTemplate.key}</h2>
+                <button onclick={() => (editingTemplate = null)} class="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl">
+                    <X class="w-4 h-4 text-gray-500" />
+                </button>
+            </div>
+            <div class="px-6 py-5 space-y-4">
+                <div>
+                    <label for="template-subject" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">Subject</label>
+                    <input id="template-subject" type="text" bind:value={templateForm.subject}
+                        class="w-full px-3 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary-500 outline-none" />
+                </div>
+                <div>
+                    <label for="template-body" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                        HTML Body
+                        <span class="ml-1 text-xs text-gray-400 font-normal">Use {"{{"}variableName{"}}"} for placeholders, e.g. {"{{"}name{"}}"}, {"{{"}resetUrl{"}}"}</span>
+                    </label>
+                    <textarea id="template-body" bind:value={templateForm.htmlBody} rows="12"
+                        class="w-full px-3 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white text-xs font-mono focus:ring-2 focus:ring-primary-500 outline-none"></textarea>
+                </div>
+            </div>
+            <div class="flex justify-end gap-3 px-6 py-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 rounded-b-2xl">
+                <button onclick={() => (editingTemplate = null)} class="px-4 py-2 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-xl text-sm font-medium">
+                    {t("common.cancel")}
+                </button>
+                <button onclick={saveTemplate} disabled={templateSaving}
+                    class="flex items-center gap-2 px-5 py-2 bg-primary-600 text-white rounded-xl hover:bg-primary-700 text-sm font-semibold disabled:opacity-50">
+                    {#if templateSaving}<Loader2 class="w-4 h-4 animate-spin" />{:else}<Save class="w-4 h-4" />{/if}
                     {t("common.save")}
                 </button>
             </div>

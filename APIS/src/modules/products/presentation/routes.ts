@@ -6,7 +6,8 @@ import { Router } from 'express';
 import multer from 'multer';
 import * as XLSX from 'xlsx';
 import { authenticate, authorize, branchFilter, applyScopeFilter, ensureScopeAccess, buildScopeCondition, buildBranchIdScope, invalidateQueryCache, isAdmin, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
-import { db, dbRead } from '@/config/database.config';
+import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
+import { db as globalDb } from '@/config/database.config';
 import { products, categories, priceLevels, productPriceLevels, skuVariants, inventory, productStores } from '@/db/schema/tables';
 import { eq, and, or, ne, ilike, inArray, isNotNull, isNull, desc, asc, count, sql } from 'drizzle-orm';
 
@@ -19,8 +20,9 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all price levels
-productRoutes.get('/price-levels', authenticate, branchFilter(), async (req, res, next) => {
+productRoutes.get('/price-levels', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { search, page = 1, limit = 20 } = req.query;
         const safePage = Math.max(1, Number(page) || 1);
         const safeLimit = Math.min(100, Math.max(5, Number(limit) || 20));
@@ -59,8 +61,9 @@ productRoutes.get('/price-levels', authenticate, branchFilter(), async (req, res
 });
 
 // Get price level by ID
-productRoutes.get('/price-levels/:id', authenticate, async (req, res, next) => {
+productRoutes.get('/price-levels/:id', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const tenantId = req.authUser?.tenantId;
         const priceLevel = await db.query.priceLevels.findFirst({
             where: tenantId
@@ -85,8 +88,9 @@ productRoutes.get('/price-levels/:id', authenticate, async (req, res, next) => {
 });
 
 // Create price level
-productRoutes.post('/price-levels', authenticate, authorize('products:create'), async (req, res, next) => {
+productRoutes.post('/price-levels', authenticate, withTenantTx(), authorize('products:create'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { name, description, isDefault } = req.body;
 
         const plTenantId = req.authUser?.tenantId || req.user?.tenantId;
@@ -111,8 +115,9 @@ productRoutes.post('/price-levels', authenticate, authorize('products:create'), 
 });
 
 // Update price level
-productRoutes.put('/price-levels/:id', authenticate, authorize('products:update'), async (req, res, next) => {
+productRoutes.put('/price-levels/:id', authenticate, withTenantTx(), authorize('products:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { name, description, isDefault } = req.body;
 
         // If setting as default, unset current default first
@@ -137,8 +142,9 @@ productRoutes.put('/price-levels/:id', authenticate, authorize('products:update'
 });
 
 // Set price level as default
-productRoutes.put('/price-levels/:id/set-default', authenticate, authorize('products:update'), async (req, res, next) => {
+productRoutes.put('/price-levels/:id/set-default', authenticate, withTenantTx(), authorize('products:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const tenantId = req.authUser?.tenantId;
         const tenantConds: any[] = [eq(priceLevels.isDefault, true)];
         if (tenantId) tenantConds.push(eq(priceLevels.tenantId, tenantId));
@@ -155,8 +161,9 @@ productRoutes.put('/price-levels/:id/set-default', authenticate, authorize('prod
 });
 
 // Delete price level
-productRoutes.delete('/price-levels/:id', authenticate, authorize('products:delete'), async (req, res, next) => {
+productRoutes.delete('/price-levels/:id', authenticate, withTenantTx(), authorize('products:delete'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // Check if it's the default (tenant-scoped)
         const tenantId = req.authUser?.tenantId;
         const priceLevel = await db.query.priceLevels.findFirst({
@@ -180,8 +187,9 @@ productRoutes.delete('/price-levels/:id', authenticate, authorize('products:dele
 });
 
 // Add product price to a level
-productRoutes.post('/price-levels/prices', authenticate, authorize('products:create'), async (req, res, next) => {
+productRoutes.post('/price-levels/prices', authenticate, withTenantTx(), authorize('products:create'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { productId, priceLevelId, price } = req.body;
 
         // Check if already exists
@@ -204,8 +212,9 @@ productRoutes.post('/price-levels/prices', authenticate, authorize('products:cre
 });
 
 // Update product price in a level
-productRoutes.put('/price-levels/prices/:id', authenticate, authorize('products:update'), async (req, res, next) => {
+productRoutes.put('/price-levels/prices/:id', authenticate, withTenantTx(), authorize('products:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { price } = req.body;
 
         const [ppl] = await db.update(productPriceLevels).set({ price }).where(eq(productPriceLevels.id, req.params.id)).returning();
@@ -217,8 +226,9 @@ productRoutes.put('/price-levels/prices/:id', authenticate, authorize('products:
 });
 
 // Delete product price from a level
-productRoutes.delete('/price-levels/prices/:id', authenticate, authorize('products:delete'), async (req, res, next) => {
+productRoutes.delete('/price-levels/prices/:id', authenticate, withTenantTx(), authorize('products:delete'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         await db.delete(productPriceLevels).where(eq(productPriceLevels.id, req.params.id));
 
         res.json({ success: true, data: { message: 'Product price deleted' } });
@@ -232,8 +242,9 @@ productRoutes.delete('/price-levels/prices/:id', authenticate, authorize('produc
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all SKU variants with pagination (scoped to user's branches)
-productRoutes.get('/skus', authenticate, branchFilter(), async (req, res, next) => {
+productRoutes.get('/skus', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { productId, search, status, page = '1', limit = '20' } = req.query;
         const pageNum = Math.max(1, parseInt(String(page), 10) || 1);
         const limitNum = Math.min(100, Math.max(1, parseInt(String(limit), 10) || 20));
@@ -340,8 +351,9 @@ productRoutes.get('/skus', authenticate, branchFilter(), async (req, res, next) 
 });
 
 // Get SKU variant by ID
-productRoutes.get('/skus/:id', authenticate, async (req, res, next) => {
+productRoutes.get('/skus/:id', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const skuVariant = await db.query.skuVariants.findFirst({
             where: eq(skuVariants.id, req.params.id),
             with: { product: true },
@@ -363,8 +375,9 @@ productRoutes.get('/skus/:id', authenticate, async (req, res, next) => {
 });
 
 // Create SKU variant
-productRoutes.post('/skus', authenticate, authorize('products:create'), async (req, res, next) => {
+productRoutes.post('/skus', authenticate, withTenantTx(), authorize('products:create'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { productId, productName, variant, sku, barcode, unitCost, sellingPrice, isActive, attributes } = req.body;
 
         // Validate required fields
@@ -412,8 +425,9 @@ productRoutes.post('/skus', authenticate, authorize('products:create'), async (r
 });
 
 // Update SKU variant
-productRoutes.put('/skus/:id', authenticate, authorize('products:update'), async (req, res, next) => {
+productRoutes.put('/skus/:id', authenticate, withTenantTx(), authorize('products:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { productName, variant, sku, barcode, unitCost, sellingPrice, isActive, attributes } = req.body;
 
         const [skuVariant] = await db.update(skuVariants).set({
@@ -433,8 +447,9 @@ productRoutes.put('/skus/:id', authenticate, authorize('products:update'), async
 });
 
 // Delete SKU variant
-productRoutes.delete('/skus/:id', authenticate, authorize('products:delete'), async (req, res, next) => {
+productRoutes.delete('/skus/:id', authenticate, withTenantTx(), authorize('products:delete'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         await db.update(skuVariants).set({ isActive: false }).where(eq(skuVariants.id, req.params.id));
 
         res.json({ success: true, data: { message: 'SKU variant deleted' } });
@@ -448,8 +463,9 @@ productRoutes.delete('/skus/:id', authenticate, authorize('products:delete'), as
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Generate SKU
-productRoutes.get('/generate/sku', authenticate, async (req, res, next) => {
+productRoutes.get('/generate/sku', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { categoryId, prefix } = req.query;
         
         // Get category prefix if categoryId provided
@@ -499,8 +515,9 @@ productRoutes.get('/generate/sku', authenticate, async (req, res, next) => {
 });
 
 // Generate Barcode (14-digit format - GTIN-14)
-productRoutes.get('/generate/barcode', authenticate, async (req, res, next) => {
+productRoutes.get('/generate/barcode', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // Generate unique 14-digit barcode
         const prefix = '0885'; // Packaging indicator (0) + Laos country code (885)
         
@@ -558,8 +575,9 @@ productRoutes.get('/generate/barcode', authenticate, async (req, res, next) => {
 });
 
 // Get all available barcodes (for dropdown)
-productRoutes.get('/barcodes', authenticate, async (req, res, next) => {
+productRoutes.get('/barcodes', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const [productBarcodes, skuBarcodes] = await Promise.all([
             db.query.products.findMany({ where: isNotNull(products.barcode), columns: { barcode: true }, orderBy: asc(products.barcode) }),
             db.query.skuVariants.findMany({ where: isNotNull(skuVariants.barcode), columns: { barcode: true }, orderBy: asc(skuVariants.barcode) }),
@@ -581,8 +599,9 @@ productRoutes.get('/barcodes', authenticate, async (req, res, next) => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get product by barcode/SKU (scope-filtered)
-productRoutes.get('/lookup/:code', authenticate, async (req, res, next) => {
+productRoutes.get('/lookup/:code', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const lookupConds: any[] = [or(eq(products.barcode, req.params.code), eq(products.sku, req.params.code)), eq(products.isActive, true)];
         // BE-32: Tenant isolation on lookup
         const tenantId = req.authUser?.tenantId;
@@ -615,8 +634,9 @@ productRoutes.get('/lookup/:code', authenticate, async (req, res, next) => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all products (with branch/store filtering)
-productRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
+productRoutes.get('/', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { page = 1, limit = 20, search, categoryId, branchId, storeId, all } = req.query;
         const returnAll = all === 'true';
         const skip = (Number(page) - 1) * Number(limit);
@@ -699,8 +719,9 @@ productRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
 });
 
 // Create product
-productRoutes.post('/', authenticate, branchFilter(), authorize('products:create'), async (req, res, next) => {
+productRoutes.post('/', authenticate, withTenantTx(), branchFilter(), authorize('products:create'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { stock, minStock, ...productData } = req.body;
         
         // Ensure tenant scoping
@@ -809,8 +830,9 @@ productRoutes.post('/', authenticate, branchFilter(), authorize('products:create
 });
 
 // Get product by ID (MUST BE AFTER ALL SPECIFIC ROUTES)
-productRoutes.get('/:id', authenticate, async (req, res, next) => {
+productRoutes.get('/:id', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-32: Tenant-scoped lookup — prevents cross-tenant ID guessing
         const tenantId = req.authUser?.tenantId;
         const getConds: any[] = [eq(products.id, req.params.id)];
@@ -843,8 +865,9 @@ productRoutes.get('/:id', authenticate, async (req, res, next) => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all products with barcodes (for barcode page listing)
-productRoutes.get('/barcodes', authenticate, branchFilter(), async (req, res, next) => {
+productRoutes.get('/barcodes', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const filter = req.branchFilter;
         const conds: any[] = [isNotNull(products.barcode)];
         
@@ -879,8 +902,9 @@ productRoutes.get('/barcodes', authenticate, branchFilter(), async (req, res, ne
 });
 
 // Generate a unique barcode
-productRoutes.get('/generate/barcode', authenticate, async (req, res, next) => {
+productRoutes.get('/generate/barcode', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const timestamp = Date.now().toString();
         const random = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
         const barcode = `${timestamp.slice(-9)}${random}`;
@@ -891,8 +915,9 @@ productRoutes.get('/generate/barcode', authenticate, async (req, res, next) => {
 });
 
 // Generate a unique SKU
-productRoutes.get('/generate/sku', authenticate, async (req, res, next) => {
+productRoutes.get('/generate/sku', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { productId } = req.query;
         let prefix = 'SKU';
         if (productId) {
@@ -913,8 +938,9 @@ productRoutes.get('/generate/sku', authenticate, async (req, res, next) => {
 });
 
 // Update product (scope-checked)
-productRoutes.put('/:id', authenticate, authorize('products:update'), async (req, res, next) => {
+productRoutes.put('/:id', authenticate, withTenantTx(), authorize('products:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-34: Tenant-scoped update
         const tenantId = req.authUser?.tenantId;
         const updateConds: any[] = [eq(products.id, req.params.id)];
@@ -950,8 +976,9 @@ productRoutes.put('/:id', authenticate, authorize('products:update'), async (req
 });
 
 // Delete product (soft delete, scope-checked)
-productRoutes.delete('/:id', authenticate, authorize('products:delete'), async (req, res, next) => {
+productRoutes.delete('/:id', authenticate, withTenantTx(), authorize('products:delete'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-35: Tenant-scoped delete
         const tenantId = req.authUser?.tenantId;
         const delConds: any[] = [eq(products.id, req.params.id)];
@@ -976,8 +1003,9 @@ productRoutes.delete('/:id', authenticate, authorize('products:delete'), async (
 // ═══════════════════════════════════════════════════════════════════════════
 // IMPORT PRODUCTS FROM EXCEL
 // ═══════════════════════════════════════════════════════════════════════════
-productRoutes.post('/import/excel', authenticate, authorize('products:import'), upload.single('file'), async (req, res, next) => {
+productRoutes.post('/import/excel', authenticate, withTenantTx(), authorize('products:import'), upload.single('file'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         if (!req.file) return res.status(400).json({ success: false, error: { code: 'BAD_REQUEST', message: 'No file uploaded' } });
 
         // Magic byte validation: XLSX/XLS/CSV are ZIP-based (PK\x03\x04) or plaintext

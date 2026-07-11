@@ -26,12 +26,17 @@
         TrendingUp,
         Users,
         ChevronRight,
+        ChevronDown,
         Sparkles,
         Target,
         Zap,
         Star,
         Settings,
         Save,
+        Package,
+        Printer,
+        QrCode,
+        RefreshCw,
     } from "lucide-svelte";
 
     // Rule-based CRUD — also requires write access to active store
@@ -67,6 +72,21 @@
     let loyaltyLoading = $state(false);
     let loyaltySaving = $state(false);
 
+    // Products list for selection
+    let products = $state<any[]>([]);
+    let productSearchQuery = $state("");
+    let showTimePeriod = $state(true);
+
+    const DAY_KEYS = ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'];
+
+    let filteredProductList = $derived(
+        productSearchQuery.trim()
+            ? products.filter(p =>
+                p.name?.toLowerCase().includes(productSearchQuery.toLowerCase()) ||
+                p.code?.toLowerCase().includes(productSearchQuery.toLowerCase()))
+            : products.slice(0, 60)
+    );
+
     // Form
     let formData = $state({
         name: "",
@@ -79,7 +99,13 @@
         endDate: "",
         isActive: true,
         usageLimit: 0,
+        usageLimitType: "unlimited" as "unlimited" | "limited",
         code: "",
+        barcode: "",
+        productIds: [] as string[],
+        daysOfWeek: [true,true,true,true,true,true,true],
+        startTime: "00:00",
+        endTime: "23:59",
     });
 
     // API-fetched enum types
@@ -185,6 +211,15 @@
         }
     }
 
+    async function loadProducts() {
+        try {
+            const res = await api.get("products?limit=500").json<any>();
+            products = res.data || [];
+        } catch(e) {
+            console.error("Failed to load products:", e);
+        }
+    }
+
     async function loadData() {
         isLoading = true;
         try {
@@ -233,10 +268,9 @@
 
     async function handleSubmit() {
         try {
-            const endpoint = activeTab === "coupons" ? "promotions/coupons" : 
+            const endpoint = activeTab === "coupons" ? "promotions/coupons" :
                              activeTab === "discounts" ? "promotions/discounts" : "promotions";
-            
-            // Build payload with only relevant fields per tab
+
             let payload: Record<string, any> = {
                 name: formData.name,
                 description: formData.description || null,
@@ -245,18 +279,26 @@
                 startDate: formData.startDate || undefined,
                 endDate: formData.endDate || null,
                 isActive: formData.isActive,
+                conditions: {
+                    daysOfWeek: formData.daysOfWeek,
+                    startTime: formData.startTime,
+                    endTime: formData.endTime,
+                },
             };
 
             if (activeTab === "coupons") {
                 payload.code = formData.code;
                 payload.minPurchase = Number(formData.minPurchase) || 0;
                 payload.maxDiscount = Number(formData.maxDiscount) || 0;
-                payload.usageLimit = Number(formData.usageLimit) || null;
+                payload.usageLimit = formData.usageLimitType === "unlimited" ? null : (Number(formData.usageLimit) || null);
+                if (formData.barcode) payload.barcode = formData.barcode;
             } else if (activeTab === "discounts") {
                 payload.minPurchase = Number(formData.minPurchase) || 0;
                 payload.maxDiscount = Number(formData.maxDiscount) || 0;
+                if (formData.productIds.length > 0) payload.productIds = formData.productIds;
             } else {
                 payload.usageLimit = Number(formData.usageLimit) || null;
+                if (formData.productIds.length > 0) payload.productIds = formData.productIds;
             }
 
             if (editingItem) {
@@ -306,6 +348,7 @@
 
     function openEdit(item: any) {
         editingItem = item;
+        const cond = item.conditions || {};
         formData = {
             name: item.name || "",
             description: item.description || "",
@@ -317,8 +360,15 @@
             endDate: item.endDate ? new Date(item.endDate).toISOString().split("T")[0] : "",
             isActive: item.isActive !== undefined ? item.isActive : true,
             usageLimit: item.usageLimit || 0,
+            usageLimitType: item.usageLimit ? "limited" : "unlimited",
             code: item.code || "",
+            barcode: item.barcode || "",
+            productIds: item.productIds || [],
+            daysOfWeek: cond.daysOfWeek || [true,true,true,true,true,true,true],
+            startTime: cond.startTime || "00:00",
+            endTime: cond.endTime || "23:59",
         };
+        productSearchQuery = "";
         showModal = true;
     }
 
@@ -335,8 +385,15 @@
             endDate: "",
             isActive: true,
             usageLimit: 0,
+            usageLimitType: "unlimited",
             code: "",
+            barcode: "",
+            productIds: [],
+            daysOfWeek: [true,true,true,true,true,true,true],
+            startTime: "00:00",
+            endTime: "23:59",
         };
+        productSearchQuery = "";
     }
 
     function copyCode(code: string) {
@@ -368,6 +425,7 @@
     onMount(() => {
         loadEnums();
         loadLoyaltySettings();
+        loadProducts();
     });
 </script>
 
@@ -767,6 +825,16 @@
                             {/if}
                         </button>
                         <div class="flex gap-1">
+                            {#if activeTab === "coupons" && item.code}
+                                <a
+                                    href="/barcode?couponCode={encodeURIComponent(item.code)}&name={encodeURIComponent(item.name)}"
+                                    target="_blank"
+                                    class="p-2 text-blue-500 hover:bg-blue-100 dark:hover:bg-blue-900/30 rounded-lg transition-all"
+                                    title={t("promotions.printBarcode")}
+                                >
+                                    <Printer class="w-4 h-4" />
+                                </a>
+                            {/if}
                             {#if canUpdatePromo}
                             <button
                                 onclick={() => openEdit(item)}
@@ -795,182 +863,306 @@
 <!-- Modal -->
 {#if showModal}
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-        <div class="w-full max-w-lg bg-white dark:bg-gray-800 rounded-2xl shadow-2xl overflow-hidden">
-            <!-- Modal Header -->
-            <div class="px-6 py-4 bg-gradient-to-r from-pink-500 to-rose-600 flex items-center justify-between">
+        <div class="w-full max-w-2xl bg-white dark:bg-gray-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[92vh]">
+            <!-- Header -->
+            <div class="px-6 py-4 bg-gradient-to-r from-pink-500 to-rose-600 flex items-center justify-between shrink-0">
                 <h2 class="text-xl font-bold text-white">
-                    {editingItem ? t("common.edit") : t("common.add")} {activeTab === "coupons" ? t("promotions.coupon") : activeTab === "discounts" ? t("promotions.discount") : t("promotions.promotion")}
+                    {editingItem ? t("common.edit") : t("common.add")}
+                    {activeTab === "coupons" ? t("promotions.coupon") : activeTab === "discounts" ? t("promotions.discount") : t("promotions.promotion")}
                 </h2>
-                <button
-                    onclick={() => (showModal = false)}
-                    class="p-1.5 hover:bg-white/20 rounded-lg transition-all"
-                >
+                <button onclick={() => (showModal = false)} class="p-1.5 hover:bg-white/20 rounded-lg transition-all">
                     <X class="w-5 h-5 text-white" />
                 </button>
             </div>
 
-            <!-- Modal Content -->
-            <form
-                onsubmit={(e) => {
-                    e.preventDefault();
-                    handleSubmit();
-                }}
-                class="p-6 space-y-4 max-h-[70vh] overflow-y-auto"
-            >
-                {#if activeTab === "coupons"}
-                    <div>
-                        <label for="a11y-app-promotions-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                            {t("promotions.couponCode")} *
-                        </label>
-                        <input id="a11y-app-promotions-page-svelte-1"
-                            type="text"
-                            bind:value={formData.code}
-                            required
-                            placeholder="SAVE20"
-                            class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white uppercase focus:ring-2 focus:ring-pink-500 focus:border-transparent"
-                        />
-                    </div>
-                {/if}
+            <form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }} class="flex flex-col flex-1 min-h-0">
+                <!-- Scrollable body -->
+                <div class="flex-1 overflow-y-auto p-6 space-y-5">
 
-                <div>
-                    <label for="a11y-app-promotions-page-svelte-2" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                        {t("common.name")} *
-                    </label>
-                    <input id="a11y-app-promotions-page-svelte-2"
-                        type="text"
-                        bind:value={formData.name}
-                        required
-                        class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500 focus:border-transparent"
-                    />
+                    <!-- Row 1: Code + Name -->
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("common.code")}</label>
+                            <input type="text" value={editingItem?.code ?? editingItem?.id?.slice(0,8) ?? ''} disabled
+                                placeholder={t("common.auto")}
+                                class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50 text-gray-400 dark:text-gray-500" />
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                                {t("common.name")} <span class="text-danger-500">*{t("promotions.required")}</span>
+                            </label>
+                            <input type="text" bind:value={formData.name} required
+                                placeholder={t("common.name")}
+                                class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500 focus:border-transparent" />
+                        </div>
+                    </div>
+
+                    {#if activeTab === "coupons"}
+                        <!-- Coupon Code -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("promotions.couponCode")} *</label>
+                            <input type="text" bind:value={formData.code} required placeholder="SAVE20"
+                                class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white uppercase focus:ring-2 focus:ring-pink-500 focus:border-transparent" />
+                        </div>
+
+                        <!-- Usage Limit -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">{t("promotions.usageLimit")}</label>
+                            <div class="space-y-2.5">
+                                <label class="flex items-center gap-3 cursor-pointer">
+                                    <input type="radio" bind:group={formData.usageLimitType} value="unlimited"
+                                        class="w-4 h-4 text-pink-600 border-gray-300 focus:ring-pink-500" />
+                                    <span class="text-sm text-gray-700 dark:text-gray-300">{t("promotions.unlimitedUsage")}</span>
+                                </label>
+                                <label class="flex items-center gap-3 cursor-pointer">
+                                    <input type="radio" bind:group={formData.usageLimitType} value="limited"
+                                        class="w-4 h-4 text-pink-600 border-gray-300 focus:ring-pink-500" />
+                                    <span class="text-sm text-gray-700 dark:text-gray-300">{t("promotions.limitedUsage")}</span>
+                                    {#if formData.usageLimitType === "limited"}
+                                        <input type="number" bind:value={formData.usageLimit} min="1"
+                                            class="w-24 px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-pink-500" />
+                                        <span class="text-sm text-gray-500">{t("promotions.couponUnit")}</span>
+                                    {/if}
+                                </label>
+                            </div>
+                        </div>
+
+                        <!-- Discount Type + Value -->
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("promotions.type")}</label>
+                                <select bind:value={formData.type}
+                                    class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500">
+                                    {#each (couponTypes.length ? couponTypes : [{value:'FIXED',label:'Fixed Amount'}]) as pt (pt.value)}
+                                        <option value={pt.value}>{pt.labelLao || pt.label}</option>
+                                    {/each}
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                                    {t("common.value")} ({formData.type === "PERCENTAGE" ? "%" : t("common.currency")}) *
+                                </label>
+                                <input type="number" bind:value={formData.value} required min="0"
+                                    class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500" />
+                            </div>
+                        </div>
+
+                        <!-- Min purchase + Max discount -->
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("promotions.minimumPurchase")}</label>
+                                <input type="number" bind:value={formData.minPurchase} min="0"
+                                    class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500" />
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("promotions.maxDiscount")}</label>
+                                <input type="number" bind:value={formData.maxDiscount} min="0"
+                                    class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500" />
+                            </div>
+                        </div>
+
+                        <!-- Barcode field -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("promotions.couponBarcode")}</label>
+                            <div class="flex gap-2">
+                                <input type="text" bind:value={formData.barcode} placeholder={t("promotions.barcodePlaceholder")}
+                                    class="flex-1 px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500" />
+                                {#if formData.barcode || formData.code}
+                                    <a href="/barcode?couponCode={encodeURIComponent(formData.barcode || formData.code)}&name={encodeURIComponent(formData.name)}"
+                                        target="_blank"
+                                        class="flex items-center gap-1.5 px-4 py-2.5 bg-blue-500 text-white rounded-xl text-sm font-medium hover:bg-blue-600 transition-colors shrink-0">
+                                        <Printer class="w-4 h-4" />
+                                        {t("promotions.printBarcode")}
+                                    </a>
+                                {/if}
+                            </div>
+                        </div>
+
+                    {:else}
+                        <!-- Products Section (Promotions & Discounts) -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("promotions.applicableProducts")}</label>
+                            <div class="border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden">
+                                <!-- Search -->
+                                <div class="relative border-b border-gray-200 dark:border-gray-700">
+                                    <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                                    <input type="text" bind:value={productSearchQuery}
+                                        placeholder={t("promotions.searchProduct")}
+                                        class="w-full pl-10 pr-4 py-2.5 bg-gray-50 dark:bg-gray-900/50 text-gray-900 dark:text-white text-sm outline-none" />
+                                </div>
+                                <!-- All products option -->
+                                <label class="flex items-center gap-3 px-3 py-2 border-b border-gray-100 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer">
+                                    <input type="checkbox"
+                                        checked={formData.productIds.length === 0}
+                                        onchange={() => { formData.productIds = []; }}
+                                        class="w-4 h-4 rounded text-pink-500 border-gray-300" />
+                                    <Package class="w-4 h-4 text-gray-400" />
+                                    <span class="text-sm font-medium text-gray-700 dark:text-gray-300">{t("promotions.allProducts")}</span>
+                                </label>
+                                <!-- Product list -->
+                                <div class="max-h-40 overflow-y-auto">
+                                    {#if products.length === 0}
+                                        <div class="flex items-center gap-2 px-3 py-3 text-sm text-gray-400">
+                                            <RefreshCw class="w-4 h-4 animate-spin" />
+                                            {t("common.loading")}...
+                                        </div>
+                                    {:else}
+                                        {#each filteredProductList as product (product.id)}
+                                            <label class="flex items-center gap-3 px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer">
+                                                <input type="checkbox"
+                                                    checked={formData.productIds.includes(product.id)}
+                                                    onchange={(e) => {
+                                                        if ((e.target as HTMLInputElement).checked) {
+                                                            formData.productIds = [...formData.productIds, product.id];
+                                                        } else {
+                                                            formData.productIds = formData.productIds.filter(id => id !== product.id);
+                                                        }
+                                                    }}
+                                                    class="w-4 h-4 rounded text-pink-500 border-gray-300" />
+                                                <span class="text-sm text-gray-700 dark:text-gray-300 flex-1 truncate">{product.name}</span>
+                                                {#if product.price}
+                                                    <span class="text-xs text-gray-400 shrink-0">{product.price?.toLocaleString()}</span>
+                                                {/if}
+                                            </label>
+                                        {/each}
+                                    {/if}
+                                </div>
+                                {#if formData.productIds.length > 0}
+                                    <div class="px-3 py-2 bg-pink-50 dark:bg-pink-900/20 border-t border-pink-100 dark:border-pink-800 text-xs text-pink-600 dark:text-pink-400">
+                                        {formData.productIds.length} {t("promotions.productsSelected")}
+                                    </div>
+                                {/if}
+                            </div>
+                        </div>
+
+                        <!-- Type + Value -->
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("promotions.type")}</label>
+                                <select bind:value={formData.type}
+                                    class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500">
+                                    {#each activeTypes as pt (pt.value)}
+                                        <option value={pt.value}>{pt.labelLao || pt.label}</option>
+                                    {/each}
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                                    {t("common.value")} ({formData.type === "PERCENTAGE" ? "%" : t("common.currency")}) *
+                                </label>
+                                <input type="number" bind:value={formData.value} required min="0"
+                                    class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500" />
+                            </div>
+                        </div>
+
+                        {#if activeTab === "discounts"}
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("promotions.minimumPurchase")}</label>
+                                    <input type="number" bind:value={formData.minPurchase} min="0"
+                                        class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500" />
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("promotions.maxDiscount")}</label>
+                                    <input type="number" bind:value={formData.maxDiscount} min="0"
+                                        class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500" />
+                                </div>
+                            </div>
+                        {:else}
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("promotions.usageLimit")}</label>
+                                <input type="number" bind:value={formData.usageLimit} min="0"
+                                    placeholder={t("promotions.unlimitedPlaceholder")}
+                                    class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500" />
+                            </div>
+                        {/if}
+                    {/if}
+
+                    <!-- Time Period (collapsible) -->
+                    <div class="border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden">
+                        <button type="button"
+                            onclick={() => showTimePeriod = !showTimePeriod}
+                            class="w-full flex items-center justify-between px-4 py-3 bg-gray-50 dark:bg-gray-800/80 hover:bg-gray-100 dark:hover:bg-gray-700/50 transition-colors">
+                            <div class="flex items-center gap-2">
+                                <Clock class="w-4 h-4 text-pink-500" />
+                                <span class="text-sm font-semibold text-gray-700 dark:text-gray-300">{t("promotions.timePeriod")}</span>
+                            </div>
+                            <ChevronDown class={cn("w-4 h-4 text-gray-400 transition-transform duration-200", showTimePeriod && "rotate-180")} />
+                        </button>
+                        {#if showTimePeriod}
+                            <div class="p-4 space-y-4 border-t border-gray-200 dark:border-gray-700">
+                                <!-- Date range -->
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("promotions.dateRange")}</label>
+                                    <div class="grid grid-cols-2 gap-3">
+                                        <input type="date" bind:value={formData.startDate} required
+                                            class="w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-pink-500" />
+                                        <input type="date" bind:value={formData.endDate}
+                                            class="w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-pink-500" />
+                                    </div>
+                                </div>
+
+                                <!-- Days of week -->
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">{t("promotions.daysOfWeek")}</label>
+                                    <div class="flex flex-wrap gap-2">
+                                        {#each DAY_KEYS as day, i}
+                                            <label class="flex items-center gap-1.5 cursor-pointer select-none">
+                                                <input type="checkbox" bind:checked={formData.daysOfWeek[i]}
+                                                    class="w-4 h-4 rounded text-pink-500 border-gray-300 focus:ring-pink-500" />
+                                                <span class="text-sm text-gray-700 dark:text-gray-300">{t(`promotions.${day}`)}</span>
+                                            </label>
+                                        {/each}
+                                    </div>
+                                </div>
+
+                                <!-- Time range -->
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">{t("promotions.timeRange")}</label>
+                                    <div class="flex items-center gap-3">
+                                        <span class="text-sm text-gray-600 dark:text-gray-400 shrink-0">{t("promotions.startTime")} :</span>
+                                        <input type="time" bind:value={formData.startTime}
+                                            class="flex-1 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-pink-500" />
+                                        <span class="text-sm text-gray-600 dark:text-gray-400 shrink-0">{t("promotions.endTime")} :</span>
+                                        <input type="time" bind:value={formData.endTime}
+                                            class="flex-1 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-pink-500" />
+                                    </div>
+                                    {#if formData.startTime !== "00:00" || formData.endTime !== "23:59"}
+                                        <p class="mt-2 text-xs text-danger-500 dark:text-danger-400">
+                                            *{t("promotions.timeRangeWarning")}
+                                        </p>
+                                    {/if}
+                                </div>
+                            </div>
+                        {/if}
+                    </div>
+
+                    <!-- Notes -->
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("common.description")}</label>
+                        <textarea bind:value={formData.description} rows="2"
+                            class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500 focus:border-transparent resize-none text-sm"></textarea>
+                    </div>
+
+                    <!-- Active toggle -->
+                    <div class="flex items-center gap-3">
+                        <label class="relative inline-flex items-center cursor-pointer">
+                            <input type="checkbox" bind:checked={formData.isActive} class="sr-only peer" />
+                            <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-pink-300 dark:peer-focus:ring-pink-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-pink-600"></div>
+                        </label>
+                        <span class="text-sm font-medium text-gray-700 dark:text-gray-300">{t("common.active")}</span>
+                    </div>
                 </div>
 
-                <div>
-                    <label for="a11y-app-promotions-page-svelte-3" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                        {t("common.description")}
-                    </label>
-                    <textarea id="a11y-app-promotions-page-svelte-3"
-                        bind:value={formData.description}
-                        rows="2"
-                        class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500 focus:border-transparent resize-none"
-                    ></textarea>
-                </div>
-
-                <div class="grid grid-cols-2 gap-4">
-                    <div>
-                        <label for="a11y-app-promotions-page-svelte-4" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                            {t("promotions.type")}
-                        </label>
-                        <select id="a11y-app-promotions-page-svelte-4"
-                            bind:value={formData.type}
-                            class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500 focus:border-transparent"
-                        >
-                            {#if activeTypes.length > 0}
-                                {#each activeTypes as pt (pt.value)}
-                                    <option value={pt.value}>{pt.labelLao || pt.label}</option>
-                                {/each}
-                            {:else}
-                                <option value="" disabled>{t("common.noData")}</option>
-                            {/if}
-                        </select>
-                    </div>
-                    <div>
-                        <label for="a11y-app-promotions-page-svelte-5" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                            {t("common.value")} *
-                        </label>
-                        <input id="a11y-app-promotions-page-svelte-5"
-                            type="number"
-                            bind:value={formData.value}
-                            required
-                            min="0"
-                            class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500 focus:border-transparent"
-                        />
-                    </div>
-                </div>
-
-                <div class="grid grid-cols-2 gap-4">
-                    <div>
-                        <label for="a11y-app-promotions-page-svelte-6" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                            {t("promotions.minimumPurchase")}
-                        </label>
-                        <input id="a11y-app-promotions-page-svelte-6"
-                            type="number"
-                            bind:value={formData.minPurchase}
-                            min="0"
-                            class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500 focus:border-transparent"
-                        />
-                    </div>
-                    <div>
-                        <label for="a11y-app-promotions-page-svelte-7" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                            {t("promotions.maxDiscount")}
-                        </label>
-                        <input id="a11y-app-promotions-page-svelte-7"
-                            type="number"
-                            bind:value={formData.maxDiscount}
-                            min="0"
-                            class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500 focus:border-transparent"
-                        />
-                    </div>
-                </div>
-
-                <div class="grid grid-cols-2 gap-4">
-                    <div>
-                        <label for="a11y-app-promotions-page-svelte-8" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                            {t("common.startDate")} *
-                        </label>
-                        <input id="a11y-app-promotions-page-svelte-8"
-                            type="date"
-                            bind:value={formData.startDate}
-                            required
-                            class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500 focus:border-transparent"
-                        />
-                    </div>
-                    <div>
-                        <label for="a11y-app-promotions-page-svelte-9" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                            {t("common.endDate")}
-                        </label>
-                        <input id="a11y-app-promotions-page-svelte-9"
-                            type="date"
-                            bind:value={formData.endDate}
-                            class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500 focus:border-transparent"
-                        />
-                    </div>
-                </div>
-
-                {#if activeTab === "coupons"}
-                    <div>
-                        <label for="a11y-app-promotions-page-svelte-10" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                            {t("promotions.usageLimit")}
-                        </label>
-                        <input id="a11y-app-promotions-page-svelte-10"
-                            type="number"
-                            bind:value={formData.usageLimit}
-                            min="0"
-                            placeholder={t("promotions.unlimitedPlaceholder")}
-                            class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500 focus:border-transparent"
-                        />
-                    </div>
-                {/if}
-
-                <div class="flex items-center gap-3">
-                    <label class="relative inline-flex items-center cursor-pointer">
-                        <input type="checkbox" bind:checked={formData.isActive} class="sr-only peer" />
-                        <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-pink-300 dark:peer-focus:ring-pink-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-pink-600"></div>
-                    </label>
-                    <span class="text-sm font-medium text-gray-700 dark:text-gray-300">{t("common.active")}</span>
-                </div>
-
-                <div class="flex justify-end gap-3 pt-4">
-                    <button
-                        type="button"
-                        onclick={() => (showModal = false)}
-                        class="px-5 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 font-medium hover:bg-gray-50 dark:hover:bg-gray-700 transition-all"
-                    >
+                <!-- Footer -->
+                <div class="shrink-0 px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex justify-end gap-3">
+                    <button type="button" onclick={() => (showModal = false)}
+                        class="px-5 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 font-medium hover:bg-gray-50 dark:hover:bg-gray-700 transition-all">
                         {t("common.cancel")}
                     </button>
-                    <button
-                        type="submit"
-                        class="px-5 py-2.5 bg-gradient-to-r from-pink-500 to-rose-600 text-white rounded-xl font-medium hover:from-pink-600 hover:to-rose-700 transition-all shadow-lg"
-                    >
+                    <button type="submit"
+                        class="px-5 py-2.5 bg-gradient-to-r from-pink-500 to-rose-600 text-white rounded-xl font-medium hover:from-pink-600 hover:to-rose-700 transition-all shadow-lg flex items-center gap-2">
+                        <Save class="w-4 h-4" />
                         {t("common.save")}
                     </button>
                 </div>

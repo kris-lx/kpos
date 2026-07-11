@@ -4,6 +4,7 @@
     import { api } from "$api";
     import { toast } from "svelte-sonner";
     import { onMount } from "svelte";
+    import { auth } from "$stores";
     import {
         User,
         Mail,
@@ -147,7 +148,7 @@
             });
 
             const uploadRes = await api.post("upload/single", {
-                json: { image: base64, folder: "avatars" },
+                json: { image: base64, filename: file.name, folder: "avatars" },
             }).json<any>();
 
             if (!uploadRes.success) throw new Error(uploadRes.error?.message || "Upload failed");
@@ -157,6 +158,7 @@
             await api.post("users/me/avatar", { json: { url } }).json<any>();
 
             profileData.avatar = url;
+            await auth.refreshProfile();
             toast.success(t("profile.avatarUpdated"));
         } catch (error) {
             console.error("Failed to upload avatar:", error);

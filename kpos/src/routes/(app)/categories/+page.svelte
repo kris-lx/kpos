@@ -6,7 +6,6 @@
         QueryClient,
         QueryClientProvider,
     } from "@tanstack/svelte-query";
-    import { get } from "svelte/store";
     import { api } from "$api";
     import { auth } from "$stores";
     import { cn } from "$utils";
@@ -75,39 +74,49 @@
     });
 
     const createMutate = createMutation({
-        mutationFn: (data: any) =>
-            api.post("categories", { json: data }).json(),
+        mutationFn: async (data: any) => {
+            const response = await api.post("categories", { json: data }).json<any>();
+            if (!response.success) throw new Error(response.error?.message || t("common.saveFailed"));
+            return response.data;
+        },
         onSuccess: () => {
             toast.success(t("common.saveSuccess"));
-            get(categoriesQuery).refetch();
+            queryClient.invalidateQueries({ queryKey: ["categories"] });
             closeModal();
         },
-        onError: () => {
-            toast.error(t("common.saveFailed"));
+        onError: (error: any) => {
+            toast.error(error?.message || t("common.saveFailed"));
         },
     });
 
     const updateMutate = createMutation({
-        mutationFn: ({ id, data }: { id: string; data: any }) =>
-            api.put(`categories/${id}`, { json: data }).json(),
+        mutationFn: async ({ id, data }: { id: string; data: any }) => {
+            const response = await api.put(`categories/${id}`, { json: data }).json<any>();
+            if (!response.success) throw new Error(response.error?.message || t("common.updateFailed"));
+            return response.data;
+        },
         onSuccess: () => {
             toast.success(t("common.updateSuccess"));
-            get(categoriesQuery).refetch();
+            queryClient.invalidateQueries({ queryKey: ["categories"] });
             closeModal();
         },
-        onError: () => {
-            toast.error(t("common.updateFailed"));
+        onError: (error: any) => {
+            toast.error(error?.message || t("common.updateFailed"));
         },
     });
 
     const deleteMutate = createMutation({
-        mutationFn: (id: string) => api.delete(`categories/${id}`).json(),
+        mutationFn: async (id: string) => {
+            const response = await api.delete(`categories/${id}`).json<any>();
+            if (!response.success) throw new Error(response.error?.message || t("common.deleteFailed"));
+            return response.data;
+        },
         onSuccess: () => {
             toast.success(t("common.deleteSuccess"));
-            get(categoriesQuery).refetch();
+            queryClient.invalidateQueries({ queryKey: ["categories"] });
         },
-        onError: () => {
-            toast.error(t("common.deleteFailed"));
+        onError: (error: any) => {
+            toast.error(error?.message || t("common.deleteFailed"));
         },
     });
 

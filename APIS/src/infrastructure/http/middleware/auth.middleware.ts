@@ -5,6 +5,7 @@
 import type { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { jwtConfig } from '@/config/app.config';
+import { isSessionExpired } from '@/shared/session-cap';
 import { ApiError } from './error.middleware';
 import { db } from '@/config/database.config';
 import { cache } from '@/config/redis.config';
@@ -21,7 +22,7 @@ export interface JwtPayload {
     email: string;
     role: string;
     branchId: string;
-    tenantId: string;
+    tenantId: string | null;
 }
 
 /**
@@ -92,6 +93,7 @@ interface IdentityJwtPayload {
     bid: string;
     scope: string;
     jti: string;
+    sst?: number; // session start (epoch seconds of original login) — absolute session cap
     iat: number;
     exp: number;
     // Legacy fields (backward compat during migration)
@@ -108,6 +110,7 @@ export interface UserStoreAccess {
     branchId: string;
     storeName: string;
     branchName: string;
+    storeLogo: string | null;
     canRead: boolean;
     canWrite: boolean;
     canDelete: boolean;
@@ -125,7 +128,7 @@ export interface AuthenticatedUser extends JwtPayload {
     activeBranchId: string;
     activeBranchPath?: string;
     isSuperAdmin: boolean;
-    tenantId: string;
+    tenantId: string | null;
     /** Numeric role level (1=system_admin … 7=staff). Lower = broader access. */
     roleLevel: number;
     /** Bitmask low 64 bits (decimal string) for O(1) permission checks via requirePerm() */
@@ -238,6 +241,7 @@ async function loadUserStoreAccess(userId: string): Promise<UserStoreAccess[]> {
             branchId: us.branchId,
             storeName: us.store.name,
             branchName: us.branch.name,
+            storeLogo: us.store.logo ?? null,
             canRead: us.canRead,
             canWrite: us.canWrite,
             canDelete: us.canDelete,
@@ -340,9 +344,15 @@ async function loadCachedAuthUser(userId: string): Promise<CachedAuthUser | null
     return result;
 }
 
+// Untyped `Request`/`Response` here would pin this middleware's type params to the
+// library defaults (P = ParamsDictionary) — since Express 5's ParamsDictionary widened
+// to `string | string[]`, mixing that into a route's handler array (authenticate, authorize(...),
+// handler) forces every handler's req.params in that route to the widened type too.
+// `Request<any, ...>` keeps this middleware inert for inference, letting each route's own
+// literal path type req.params correctly.
 export async function authenticate(
-    req: Request,
-    res: Response,
+    req: Request<any, any, any, any>,
+    res: Response<any>,
     next: NextFunction
 ): Promise<void> {
     try {
@@ -362,6 +372,15 @@ export async function authenticate(
             const tenantId = (raw.tid || raw.tenantId) || null; // null not '' — empty string breaks UUID columns
             const branchId = raw.bid || raw.branchId || '';
             const jti = raw.jti;
+
+            // Absolute session cap (defense-in-depth): even a still-unexpired
+            // access token is rejected once 20h have passed since original login.
+            // Forces the client's refresh-then-logout path even if the access
+            // token's own TTL hasn't run out yet.
+            const sessionStart = raw.sst ?? raw.iat;
+            if (sessionStart && isSessionExpired(sessionStart, jwtConfig.sessionAbsoluteMs)) {
+                throw ApiError.unauthorized('Session expired');
+            }
 
             // BE-10 Step 2: Check jti revocation in Redis
             if (jti) {
@@ -577,8 +596,8 @@ export function platformScopeGuard() {
 
 export function authorize(...permStrings: string[]) {
     return (
-        req: Request,
-        res: Response,
+        req: Request<any, any, any, any>,
+        res: Response<any>,
         next: NextFunction
     ): void => {
         try {
@@ -664,7 +683,7 @@ export function requireStoreAccess(accessType: 'read' | 'write' | 'delete' | 'ma
 
 // Scope filter type for route handlers
 export interface ScopeFilter {
-    tenantId: string;
+    tenantId: string | null;
     branchIds: string[];
     storeIds: string[];
     activeBranchId: string;

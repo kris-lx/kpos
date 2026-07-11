@@ -4,15 +4,17 @@
 
 import { Router } from 'express';
 import { authenticate, authorize, branchFilter, ensureScopeAccess, isAdmin, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
-import { db } from '@/config/database.config';
+import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
+import { db as globalDb } from '@/config/database.config';
 import { branches, stores, users } from '@/db/schema/tables';
 import { eq, and, inArray, ne, asc, count, sql, or } from 'drizzle-orm';
 
 export const branchRoutes = Router();
 
 // Get all branches — scoped by role level
-branchRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
+branchRoutes.get('/', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const authUser = req.authUser!;
         const filter = req.branchFilter;
         const conditions: any[] = [eq(branches.isActive, true)];
@@ -65,8 +67,9 @@ branchRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
 });
 
 // Get accessible branches for the current user (used by frontend selectors)
-branchRoutes.get('/accessible', authenticate, branchFilter(), async (req, res, next) => {
+branchRoutes.get('/accessible', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const authUser = req.authUser!;
         const filter = req.branchFilter;
         const conditions: any[] = [eq(branches.isActive, true)];
@@ -108,8 +111,9 @@ branchRoutes.get('/accessible', authenticate, branchFilter(), async (req, res, n
 });
 
 // Get branch by ID
-branchRoutes.get('/:id', authenticate, async (req, res, next) => {
+branchRoutes.get('/:id', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-72: Tenant-scoped branch lookup
         const tenantId = req.authUser?.tenantId;
         const getConds: any[] = [eq(branches.id, req.params.id)];
@@ -137,8 +141,9 @@ branchRoutes.get('/:id', authenticate, async (req, res, next) => {
 });
 
 // Create branch (hq_admin or tenant_admin+)
-branchRoutes.post('/', authenticate, authorize('branches:create'), async (req, res, next) => {
+branchRoutes.post('/', authenticate, withTenantTx(), authorize('branches:create'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const tenantId = (req.authUser?.tenantId || req.user?.tenantId) || null;
         const { name, code, address, phone, email, taxId, logo, isMain, isActive, settings, parentBranchId } = req.body;
 
@@ -188,8 +193,9 @@ branchRoutes.post('/', authenticate, authorize('branches:create'), async (req, r
 });
 
 // Update branch
-branchRoutes.put('/:id', authenticate, authorize('branches:update'), async (req, res, next) => {
+branchRoutes.put('/:id', authenticate, withTenantTx(), authorize('branches:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-72: Tenant-scoped update
         const tenantId = req.authUser?.tenantId;
         const updConds: any[] = [eq(branches.id, req.params.id)];
@@ -232,8 +238,9 @@ branchRoutes.put('/:id', authenticate, authorize('branches:update'), async (req,
 });
 
 // Delete branch (soft delete) - check if no stores are assigned
-branchRoutes.delete('/:id', authenticate, authorize('branches:delete'), async (req, res, next) => {
+branchRoutes.delete('/:id', authenticate, withTenantTx(), authorize('branches:delete'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { id } = req.params;
 
         // BE-72: Tenant-scoped delete
@@ -290,8 +297,9 @@ branchRoutes.delete('/:id', authenticate, authorize('branches:delete'), async (r
 // ═══════════════════════════════════════════════════════════════════════════
 
 // GET /branches/:id/identity — return owner/branding identity fields
-branchRoutes.get('/:id/identity', authenticate, async (req, res, next) => {
+branchRoutes.get('/:id/identity', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const tenantId = req.authUser?.tenantId;
         const conds: any[] = [eq(branches.id, req.params.id)];
         if (tenantId && !req.authUser?.isSuperAdmin) conds.push(eq(branches.tenantId, tenantId));
@@ -321,8 +329,9 @@ branchRoutes.get('/:id/identity', authenticate, async (req, res, next) => {
 });
 
 // PUT /branches/:id/identity — update owner/branding identity fields
-branchRoutes.put('/:id/identity', authenticate, authorize('branches:update'), async (req, res, next) => {
+branchRoutes.put('/:id/identity', authenticate, withTenantTx(), authorize('branches:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const tenantId = req.authUser?.tenantId;
         const authUser = req.authUser!;
 

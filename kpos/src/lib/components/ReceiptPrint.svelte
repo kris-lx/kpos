@@ -4,6 +4,7 @@
     import { t } from "$lib/i18n/index.svelte";
     import { formatCurrency, formatDateTime } from "$lib/utils";
     import { Banknote, CreditCard, QrCode, Image } from "lucide-svelte";
+    import { isUsbPrintUnavailable, markUsbPrintUnavailable } from "$lib/utils/usbPrint";
 
     interface ReceiptItem {
         productId: string;
@@ -11,6 +12,8 @@
         quantity: number;
         unitPrice: number;
         total: number;
+        size?: string;
+        color?: string;
     }
 
     interface ReceiptData {
@@ -40,7 +43,7 @@
         showTaxDetails?: boolean;
         showQrCode?: boolean;
         primaryColor?: string;
-        paperSize?: '58mm' | '80mm';
+        paperSize?: '58mm' | '80mm' | 'A4';
     }
 
     interface DesignElement {
@@ -93,16 +96,205 @@
         settingsLoaded = true;
     });
 
+    function bytesToBase64(bytes: Uint8Array): string {
+        let binary = "";
+        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+        return btoa(binary);
+    }
+
+    // ── Direct network printing (bypasses the OS print dialog entirely) ────────
+    // Only for thermal 58mm/80mm receipts — A4 output doesn't suit raw ESC/POS.
+    async function findConfiguredNetworkReceiptPrinter(): Promise<any | null> {
+        if (receiptSettings.paperSize === "A4") return null;
+        try {
+            const res = await api.get("settings/printers").json<any>();
+            const printers: any[] = res?.data || [];
+            const candidates = printers.filter((p) => p.connectionType === "network" && p.isActive !== false);
+            if (candidates.length === 0) return null;
+            return (
+                candidates.find((p) => p.type === "receipt" && p.isDefault) ||
+                candidates.find((p) => p.type === "receipt") ||
+                candidates.find((p) => p.isDefault) ||
+                candidates[0] ||
+                null
+            );
+        } catch {
+            return null;
+        }
+    }
+
+    async function printReceiptViaNetwork(receipt: ReceiptData): Promise<boolean> {
+        const printer = await findConfiguredNetworkReceiptPrinter();
+        if (!printer) return false;
+        try {
+            const payload = buildEscPosReceipt(receipt, receiptSettings);
+            const res = await api.post(`settings/printers/${printer.id}/print-receipt`, {
+                json: { dataBase64: bytesToBase64(payload) },
+            }).json<any>();
+            return !!res?.success;
+        } catch (err) {
+            console.warn("Direct network receipt print failed, falling back:", err);
+            return false;
+        }
+    }
+
+    // ── Direct USB printing (bypasses the OS print dialog entirely) ────────────
+    // Only for thermal 58mm/80mm receipts — A4 output doesn't suit raw ESC/POS.
+    async function findConfiguredUsbReceiptPrinter(): Promise<boolean> {
+        if (!("usb" in navigator)) return false;
+        if (receiptSettings.paperSize === "A4") return false;
+        try {
+            const res = await api.get("settings/printers").json<any>();
+            const printers: any[] = res?.data || [];
+            const candidates = printers.filter((p) => p.connectionType === "usb" && p.isActive !== false);
+            if (candidates.length === 0) return false;
+            return !!(
+                candidates.find((p) => p.type === "receipt" && p.isDefault) ||
+                candidates.find((p) => p.type === "receipt") ||
+                candidates.find((p) => p.isDefault) ||
+                candidates[0]
+            );
+        } catch {
+            return false;
+        }
+    }
+
+    function padRight(text: string, width: number): string {
+        if (text.length >= width) return text.slice(0, width);
+        return text + " ".repeat(width - text.length);
+    }
+    function padLeft(text: string, width: number): string {
+        if (text.length >= width) return text.slice(0, width);
+        return " ".repeat(width - text.length) + text;
+    }
+    function twoColumn(left: string, right: string, width: number): string {
+        const rightPart = right.length >= width ? right.slice(0, width) : right;
+        const leftWidth = Math.max(0, width - rightPart.length);
+        return padRight(left, leftWidth).slice(0, leftWidth) + rightPart;
+    }
+    function centerLine(text: string, width: number): string {
+        if (text.length >= width) return text.slice(0, width);
+        const padTotal = width - text.length;
+        const padStart = Math.floor(padTotal / 2);
+        return " ".repeat(padStart) + text;
+    }
+
+    function buildEscPosReceipt(receipt: ReceiptData, settings: ReceiptSettings): Uint8Array {
+        const width = settings.paperSize === "58mm" ? 32 : 42; // font-A columns
+        const ESC = 0x1b, GS = 0x1d;
+        const lines: string[] = [];
+        const divider = "-".repeat(width);
+
+        if (settings.branchName) lines.push(centerLine(settings.branchName, width));
+        if (settings.branchAddress) lines.push(centerLine(settings.branchAddress, width));
+        if (settings.branchPhone) lines.push(centerLine(settings.branchPhone, width));
+        if (settings.showTaxDetails && settings.branchTaxId) lines.push(centerLine(`Tax ID: ${settings.branchTaxId}`, width));
+        lines.push(divider);
+
+        const date = new Date(receipt.createdAt);
+        lines.push(`${date.toLocaleDateString("lo-LA")} ${date.toLocaleTimeString("lo-LA", { hour: "2-digit", minute: "2-digit" })}`);
+        lines.push(`${t("documents.receiptNo")}: ${receipt.transactionNo}`);
+        if (receipt.cashierName) lines.push(`ພະນັກງານຂາຍ: ${receipt.cashierName}`);
+        if (receipt.customerName) lines.push(`${t("documents.customer")}: ${receipt.customerName}`);
+        lines.push(divider);
+
+        for (const item of receipt.items) {
+            const variant = [item.size, item.color].filter(Boolean).join(' / ');
+            lines.push(padRight(variant ? `${item.productName} (${variant})` : item.productName, width));
+            lines.push(twoColumn(`  x${item.quantity} @ ${formatCurrency(item.unitPrice)}`, formatCurrency(item.total), width));
+        }
+        lines.push(divider);
+
+        lines.push(twoColumn(t("documents.subtotal"), formatCurrency(receipt.subtotal), width));
+        if (receipt.discountAmount) lines.push(twoColumn(t("documents.discount"), `-${formatCurrency(receipt.discountAmount)}`, width));
+        if (receipt.taxAmount) lines.push(twoColumn(t("documents.tax"), formatCurrency(receipt.taxAmount), width));
+        lines.push(twoColumn(t("documents.total"), formatCurrency(receipt.total), width));
+        lines.push(divider);
+
+        lines.push(twoColumn(t("documents.paymentMethod"), getPaymentMethodLabel(receipt.paymentMethod), width));
+        if (receipt.paymentMethod?.toUpperCase() === "CASH") {
+            lines.push(twoColumn(t("documents.received"), formatCurrency(receipt.received), width));
+            lines.push(twoColumn(t("documents.change"), formatCurrency(receipt.change), width));
+        }
+
+        if (settings.footerText) {
+            lines.push(divider);
+            lines.push(centerLine(settings.footerText, width));
+        }
+
+        const textBytes = Array.from(new TextEncoder().encode(lines.join("\n") + "\n\n\n"));
+        return new Uint8Array([
+            ESC, 0x40, // initialize
+            ESC, 0x61, 0x00, // left align
+            ...textBytes,
+            GS, 0x56, 0x41, 0x03, // partial cut with feed
+        ]);
+    }
+
+    async function printReceiptViaUsb(receipt: ReceiptData): Promise<boolean> {
+        if (isUsbPrintUnavailable()) return false;
+        if (!(await findConfiguredUsbReceiptPrinter())) return false;
+
+        // Auto-print must never show the browser's USB device picker — that
+        // "connection" prompt is only for the one-time setup step (Settings →
+        // Printers → Test Print). Here we only silently reconnect to a device
+        // the user already authorized in that step; if none exists yet, skip
+        // straight to the print dialog instead of interrupting checkout.
+        const authorizedDevices = await (navigator as any).usb.getDevices();
+        if (authorizedDevices.length === 0) return false;
+
+        let device: any = authorizedDevices[0];
+        try {
+            await device.open();
+            const config = device.configuration || (await device.selectConfiguration(1));
+            const iface = config?.interfaces?.[0];
+            if (!iface) throw new Error("No USB interface found");
+            await device.claimInterface(iface.interfaceNumber);
+            const ep = iface.alternate.endpoints.find((e: any) => e.direction === "out");
+            if (!ep) throw new Error("No OUT endpoint found");
+
+            await device.transferOut(ep.endpointNumber, buildEscPosReceipt(receipt, receiptSettings));
+
+            await device.releaseInterface(iface.interfaceNumber);
+            await device.close();
+            return true;
+        } catch (err: any) {
+            if (device) {
+                try { await device.close(); } catch { /* already closed */ }
+            }
+            if (err?.name === "SecurityError") {
+                // Same OS/driver conflict as the barcode-label printer — stop
+                // retrying WebUSB for the rest of the session.
+                markUsbPrintUnavailable();
+                console.warn("USB receipt printer access denied by the OS/driver, falling back to print dialog:", err);
+            } else {
+                console.warn("Direct USB receipt print failed, falling back to print dialog:", err);
+            }
+            return false;
+        }
+    }
+
+    async function printReceipt(): Promise<void> {
+        if (!data) return;
+        // Always fall back to the OS print dialog if no direct printer is
+        // configured/reachable — never abort silently with nothing shown.
+        const networkPrinted = await printReceiptViaNetwork(data).catch(() => false);
+        if (networkPrinted) return;
+        const usbPrinted = await printReceiptViaUsb(data).catch(() => false);
+        if (usbPrinted) return;
+        window.print();
+    }
+
     $effect(() => {
         if (show && data && autoPrint && settingsLoaded && !printTriggered) {
             printTriggered = true;
-            setTimeout(() => window.print(), 300);
+            setTimeout(() => printReceipt(), 300);
         }
         if (!show) printTriggered = false;
     });
 
     function handlePrint() {
-        window.print();
+        printReceipt();
     }
 
     function getPaymentMethodLabel(method: string) {
@@ -144,37 +336,89 @@
 
 <svelte:head>
     {#if show}
-        <style>
+        {@html `<style>
             @media print {
                 @page {
-                    size: {receiptSettings.paperSize === '58mm' ? '58mm' : receiptSettings.paperSize === 'A4' ? 'A4' : '80mm'};
-                    margin: 4mm;
+                    size: ${ receiptSettings.paperSize === '58mm' ? '58mm auto'
+                            : receiptSettings.paperSize === 'A4'  ? 'A4 portrait'
+                            : '80mm auto' };
+                    margin: ${ receiptSettings.paperSize === 'A4' ? '10mm' : '0mm' };
                 }
+                /* Hide all other UI — position:fixed breaks out of modal overflow:hidden */
                 body * { visibility: hidden !important; }
                 #pos-receipt, #pos-receipt * { visibility: visible !important; }
+
                 #pos-receipt {
-                    position: absolute !important;
+                    position: fixed !important;
                     left: 0 !important;
                     top: 0 !important;
-                    width: {receiptSettings.paperSize === '58mm' ? '58mm' : receiptSettings.paperSize === 'A4' ? '210mm' : '80mm'} !important;
+                    right: auto !important;
+                    bottom: auto !important;
+                    width: ${ receiptSettings.paperSize === '58mm' ? '58mm'
+                             : receiptSettings.paperSize === 'A4'  ? '210mm'
+                             : '80mm' } !important;
+                    max-width: none !important;
+                    max-height: none !important;
+                    height: auto !important;
+                    overflow: visible !important;
                     background: white !important;
-                    color: black !important;
-                    padding: 4mm !important;
+                    padding: 0 !important;
                     margin: 0 !important;
                     box-shadow: none !important;
-                    font-size: {receiptSettings.paperSize === 'A4' ? '14px' : '12px'} !important;
-                    font-family: 'Noto Sans Lao', 'Phetsarath OT', sans-serif !important;
+                    border: none !important;
+                    border-radius: 0 !important;
+                    font-size: ${ receiptSettings.paperSize === 'A4'  ? '11pt'
+                                : receiptSettings.paperSize === '58mm' ? '7pt'
+                                : '8pt' } !important;
+                    font-family: 'Courier New', 'Noto Sans Lao', monospace !important;
+                    line-height: 1.5 !important;
                 }
-                #pos-receipt .no-print { display: none !important; }
-                #pos-receipt .print-text { color: black !important; }
-                #pos-receipt .print-border { border-color: black !important; }
+
+                /* Force ALL text to black — thermal printers only do black */
+                #pos-receipt, #pos-receipt * { color: black !important; }
+
+                /* Dark header → white background with bottom border */
+                #pos-receipt .bg-gray-900,
+                #pos-receipt .bg-gray-800,
+                #pos-receipt .bg-gray-700 {
+                    background-color: white !important;
+                    border-bottom: 2px solid black !important;
+                }
+
+                /* Strip all other colored backgrounds */
+                #pos-receipt [class*="bg-primary"],
+                #pos-receipt [class*="bg-green"],
+                #pos-receipt [class*="bg-red"],
+                #pos-receipt [class*="bg-blue"] {
+                    background-color: transparent !important;
+                }
+
+                /* Borders */
+                #pos-receipt .border-dashed { border-color: #888 !important; }
+                #pos-receipt .border-gray-200,
+                #pos-receipt .border-gray-300 { border-color: #aaa !important; }
+                #pos-receipt .border-gray-900,
+                #pos-receipt .border-t-2 { border-color: black !important; }
+
+                /* Remove decorative radius */
+                #pos-receipt * { border-radius: 0 !important; }
+
+                /* Icons: keep them small & black */
+                #pos-receipt svg { width: 10px !important; height: 10px !important; stroke: black !important; }
+
+                /* No page-break mid-content */
+                #pos-receipt { page-break-after: avoid; break-after: avoid; }
+                #pos-receipt * { page-break-inside: avoid; break-inside: avoid; }
+
+                /* Hide screen-only elements */
+                .no-print { display: none !important; }
             }
-        </style>
+        </style>`}
     {/if}
 </svelte:head>
 
 {#if show && data}
-    <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 no-print" role="dialog" aria-modal="true">
+    <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" role="dialog" aria-modal="true">
         <div class="bg-white dark:bg-gray-800 rounded-xl shadow-2xl max-w-md w-full mx-4 max-h-[90vh] overflow-hidden flex flex-col">
             <!-- Modal Header -->
             <div class="p-4 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center no-print">
@@ -187,7 +431,9 @@
 
             <!-- Receipt Content -->
             <div class="p-4 overflow-y-auto flex-1">
-                <div id="pos-receipt" class="bg-white rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden font-mono text-sm text-gray-900">
+                <div id="pos-receipt"
+                    class="bg-white border border-gray-300 font-mono text-gray-900 mx-auto"
+                    style="width:{receiptSettings.paperSize === '58mm' ? '220px' : receiptSettings.paperSize === 'A4' ? '100%' : '302px'}; font-size:{receiptSettings.paperSize === '58mm' ? '8px' : receiptSettings.paperSize === 'A4' ? '13px' : '10px'}; line-height:1.5;">
 
                     {#if designElements && designElements.length > 0}
                         <!-- Render using saved design -->
@@ -197,6 +443,12 @@
                                     {#if receiptSettings.showLogo !== false && receiptSettings.branchLogo}
                                         <div class="text-center py-2">
                                             <img src={receiptSettings.branchLogo} alt="Logo" class="mx-auto max-h-16 max-w-24 object-contain" />
+                                        </div>
+                                    {/if}
+                                {:else if el.type === 'image'}
+                                    {#if el.content}
+                                        <div class="text-center py-2">
+                                            <img src={el.content} alt="" class="mx-auto max-h-20 max-w-[70%] object-contain" />
                                         </div>
                                     {/if}
                                 {:else if el.type === 'storeName'}
@@ -229,7 +481,13 @@
                                     <div style="font-size:{el.fontSize}px">
                                         {#each data.items as item (item.productId)}
                                             <div class="flex justify-between py-0.5">
-                                                <span class="flex-1 print-text">{item.productName} x{item.quantity}</span>
+                                                <span class="flex-1 print-text">
+                                                    {item.productName}
+                                                    {#if item.size || item.color}
+                                                        <span class="text-gray-500">({[item.size, item.color].filter(Boolean).join(' / ')})</span>
+                                                    {/if}
+                                                    x{item.quantity}
+                                                </span>
                                                 <span class="print-text">{formatCurrency(item.total)}</span>
                                             </div>
                                         {/each}
@@ -263,21 +521,21 @@
                         </div>
 
                     {:else}
-                        <!-- Default receipt layout (no saved design) -->
-                        <div class="bg-gray-900 text-white p-4 text-center">
+                        <!-- Default receipt layout — thermal style (white bg so on-screen matches print) -->
+                        <div class="bg-white text-gray-900 p-3 text-center border-b-2 border-gray-900">
                             {#if receiptSettings.showLogo !== false && receiptSettings.branchLogo}
-                                <img src={receiptSettings.branchLogo} alt="Logo" class="mx-auto mb-2 max-h-16 max-w-24 object-contain" />
+                                <img src={receiptSettings.branchLogo} alt="Logo" class="mx-auto mb-2 max-h-14 max-w-20 object-contain" />
                             {/if}
-                            <h3 class="font-bold text-lg">{receiptSettings.branchName ?? t("documents.storeName")}</h3>
+                            <h3 class="font-bold">{receiptSettings.branchName ?? t("documents.storeName")}</h3>
                             {#if receiptSettings.branchAddress}
-                                <p class="text-xs opacity-80 mt-0.5">{receiptSettings.branchAddress}</p>
+                                <p class="text-xs text-gray-600 mt-0.5">{receiptSettings.branchAddress}</p>
                             {/if}
                             {#if receiptSettings.branchPhone}
-                                <p class="text-xs opacity-80">{t("common.phone")}: {receiptSettings.branchPhone}</p>
+                                <p class="text-xs text-gray-600">{t("common.phone")}: {receiptSettings.branchPhone}</p>
                             {/if}
                         </div>
 
-                        <div class="p-4 space-y-4">
+                        <div class="p-3 space-y-3">
                             <!-- Info -->
                             <div class="grid grid-cols-2 gap-2 text-sm">
                                 <div class="print-text text-gray-500">{t("documents.receiptNo")}:</div>
@@ -297,7 +555,12 @@
                                 {#each data.items as item (item.productId)}
                                     <div class="flex justify-between text-sm">
                                         <div class="flex-1">
-                                            <p class="print-text font-medium">{item.productName}</p>
+                                            <p class="print-text font-medium">
+                                                {item.productName}
+                                                {#if item.size || item.color}
+                                                    <span class="text-gray-500 font-normal">({[item.size, item.color].filter(Boolean).join(' / ')})</span>
+                                                {/if}
+                                            </p>
                                             <p class="print-text text-xs text-gray-500">
                                                 {formatCurrency(item.unitPrice)} x {item.quantity}
                                             </p>
@@ -329,10 +592,10 @@
                                 {/if}
                             </div>
 
-                            <div class="print-border border-t-2 border-gray-900 pt-2">
-                                <div class="flex justify-between text-lg font-bold">
+                            <div class="print-border border-t-2 border-gray-900 pt-1.5">
+                                <div class="flex justify-between font-bold" style="font-size:1.1em;">
                                     <span class="print-text">{t("documents.grandTotal")}</span>
-                                    <span class="print-text text-primary-600">{formatCurrency(data.total)}</span>
+                                    <span class="print-text">{formatCurrency(data.total)}</span>
                                 </div>
                             </div>
 

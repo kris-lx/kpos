@@ -5,12 +5,16 @@
 import { Router } from 'express';
 import { authenticate, authorize, ensureScopeAccess, isAdmin } from '@/infrastructure/http/middleware/auth.middleware';
 import { DEFAULT_SETTINGS } from '@/shared/constants';
-import { db } from '@/config/database.config';
-import { settings, documents, documentTemplates, notifications, systemEnums, branches } from '@/db/schema/tables';
+import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
+import { db as globalDb } from '@/config/database.config';
+import { settings, documents, documentTemplates, notifications, systemEnums, branches, emailProviders, emailTemplates, emailLogs } from '@/db/schema/tables';
 import { eq, and, or, isNull, inArray, desc, asc, count, sql } from 'drizzle-orm';
+import { encryptJson, decryptJson } from '@/shared/crypto';
+import { invalidateProviderCache, testProviderConnection, sendTestEmail } from '@/infrastructure/services/email/email.service';
 
 export const settingRoutes = Router();
 
+/* eslint-disable no-restricted-syntax -- these 3 helpers take tenantId as an explicit parameter, already used in the WHERE/VALUES clause below */
 // Helper: find or create a setting
 async function upsertSetting(category: string, key: string, value: any, branchId: string | null | undefined, tenantId?: string | null) {
     const bid = branchId || null; // normalize '' to null — PostgreSQL UUID column rejects empty string
@@ -18,12 +22,12 @@ async function upsertSetting(category: string, key: string, value: any, branchId
     const conditions = [eq(settings.category, category), eq(settings.key, key)];
     conditions.push(bid ? eq(settings.branchId, bid) : isNull(settings.branchId));
     if (tid) conditions.push(eq(settings.tenantId, tid));
-    const existing = await db.query.settings.findFirst({ where: and(...conditions) });
+    const existing = await globalDb.query.settings.findFirst({ where: and(...conditions) });
     if (existing) {
-        const [updated] = await db.update(settings).set({ value, updatedAt: new Date() }).where(eq(settings.id, existing.id)).returning();
+        const [updated] = await globalDb.update(settings).set({ value, updatedAt: new Date() }).where(eq(settings.id, existing.id)).returning();
         return updated;
     }
-    const [created] = await db.insert(settings).values({ category, key, value, branchId: bid, tenantId: tid }).returning();
+    const [created] = await globalDb.insert(settings).values({ category, key, value, branchId: bid, tenantId: tid }).returning();
     return created;
 }
 
@@ -34,7 +38,7 @@ async function getSettingsForBranch(category: string, branchId: string | undefin
         : isNull(settings.branchId);
     const conds: any[] = [eq(settings.category, category), branchFilter];
     if (tenantId) conds.push(or(isNull(settings.tenantId), eq(settings.tenantId, tenantId)));
-    return db.query.settings.findMany({ where: and(...conds) });
+    return globalDb.query.settings.findMany({ where: and(...conds) });
 }
 
 // Helper: get settings for multiple categories with branch fallback
@@ -44,8 +48,9 @@ async function getSettingsForBranchMultiCategory(categories: string[], branchId:
         : isNull(settings.branchId);
     const conds: any[] = [inArray(settings.category, categories), branchFilter];
     if (tenantId) conds.push(or(isNull(settings.tenantId), eq(settings.tenantId, tenantId)));
-    return db.query.settings.findMany({ where: and(...conds) });
+    return globalDb.query.settings.findMany({ where: and(...conds) });
 }
+/* eslint-enable no-restricted-syntax */
 
 // ═══════════════════════════════════════════════════════════════════════════
 // GET ENUMS (dropdown values for UI) - reads from DB only.
@@ -142,12 +147,14 @@ export const ENUM_SEED_DATA: Record<string, { value: string; label: string; labe
     ],
 };
 
-settingRoutes.get('/enums', authenticate, async (req, res, next) => {
+settingRoutes.get('/enums', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { type } = req.query;
         const typeList = type ? String(type).split(',').map(t => t.trim()).filter(Boolean) : [];
 
-        const rows = await db.query.systemEnums.findMany({
+        // eslint-disable-next-line no-restricted-syntax -- system_enums is a global reference table (no tenantId column)
+        const rows = await globalDb.query.systemEnums.findMany({
             where: typeList.length > 0 ? inArray(systemEnums.type, typeList) : undefined,
             orderBy: [asc(systemEnums.type), asc(systemEnums.order), asc(systemEnums.label)],
         });
@@ -177,7 +184,8 @@ settingRoutes.get('/enums/public', async (req, res, next) => {
         const { type } = req.query;
         const typeList = type ? String(type).split(',').map((t: string) => t.trim()).filter(Boolean) : [];
 
-        const rows = await db.query.systemEnums.findMany({
+        // eslint-disable-next-line no-restricted-syntax -- system_enums is a global reference table (no tenantId column)
+        const rows = await globalDb.query.systemEnums.findMany({
             where: typeList.length > 0 ? inArray(systemEnums.type, typeList) : undefined,
             orderBy: [asc(systemEnums.type), asc(systemEnums.order), asc(systemEnums.label)],
         });
@@ -209,8 +217,9 @@ settingRoutes.get('/enums/public', async (req, res, next) => {
 // ═══════════════════════════════════════════════════════════════════════════
 // GET ALL SETTINGS
 // ═══════════════════════════════════════════════════════════════════════════
-settingRoutes.get('/', authenticate, async (req, res, next) => {
+settingRoutes.get('/', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { category, branchId } = req.query;
         const targetBranchId = branchId ? String(branchId) : req.user!.branchId;
 
@@ -246,8 +255,9 @@ settingRoutes.get('/', authenticate, async (req, res, next) => {
 // ═══════════════════════════════════════════════════════════════════════════
 // GET SETTINGS BY CATEGORY
 // ═══════════════════════════════════════════════════════════════════════════
-settingRoutes.get('/category/:category', authenticate, async (req, res, next) => {
+settingRoutes.get('/category/:category', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { category } = req.params;
         const branchId = req.query.branchId ? String(req.query.branchId) : req.user!.branchId;
 
@@ -269,8 +279,9 @@ settingRoutes.get('/category/:category', authenticate, async (req, res, next) =>
 // ═══════════════════════════════════════════════════════════════════════════
 // RECEIPT DESIGN — must be before /:category/:key wildcard
 // ═══════════════════════════════════════════════════════════════════════════
-settingRoutes.get('/receipt/design', authenticate, async (req, res, next) => {
+settingRoutes.get('/receipt/design', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const branchId = req.query.branchId ? String(req.query.branchId) : (req.authUser?.activeBranchId || req.user!.branchId);
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
 
@@ -288,8 +299,9 @@ settingRoutes.get('/receipt/design', authenticate, async (req, res, next) => {
     }
 });
 
-settingRoutes.put('/receipt/design', authenticate, authorize('settings:update'), async (req, res, next) => {
+settingRoutes.put('/receipt/design', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const branchId = req.body.branchId || req.authUser?.activeBranchId || req.user!.branchId;
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         const { value } = req.body;
@@ -302,64 +314,11 @@ settingRoutes.put('/receipt/design', authenticate, authorize('settings:update'),
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// GET SINGLE SETTING
-// ═══════════════════════════════════════════════════════════════════════════
-settingRoutes.get('/:category/:key', authenticate, async (req, res, next) => {
-    try {
-        const { category, key } = req.params;
-        const branchId = req.query.branchId ? String(req.query.branchId) : req.user!.branchId;
-
-        // First try branch-specific (only when branchId is defined), then fallback to global
-        let setting = branchId ? await db.query.settings.findFirst({
-            where: and(eq(settings.category, category), eq(settings.key, key), eq(settings.branchId, branchId)),
-        }) : undefined;
-
-        if (!setting) {
-            setting = await db.query.settings.findFirst({
-                where: and(eq(settings.category, category), eq(settings.key, key), isNull(settings.branchId)),
-            });
-        }
-
-        if (!setting) {
-            return res.status(404).json({
-                success: false,
-                error: { code: 'NOT_FOUND', message: 'Setting not found' }
-            });
-        }
-
-        res.json({ success: true, data: setting });
-    } catch (error) {
-        next(error);
-    }
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
-// UPDATE SETTING
-// ═══════════════════════════════════════════════════════════════════════════
-settingRoutes.put('/:category/:key', authenticate, authorize('settings:update'), async (req, res, next) => {
-    try {
-        const { category, key } = req.params;
-        const { value, isGlobal = false } = req.body;
-        const isSuperOrAdmin = isAdmin(req);
-        
-        // Only super admins and admins can set global settings or modify other branches
-        const effectiveGlobal = isGlobal && isSuperOrAdmin;
-        const branchId = effectiveGlobal ? null : (isSuperOrAdmin && req.body.branchId ? req.body.branchId : req.user!.branchId);
-
-        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
-        const setting = await upsertSetting(category, key, value, branchId, tenantId);
-
-        res.json({ success: true, data: setting });
-    } catch (error) {
-        next(error);
-    }
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
 // BULK UPDATE SETTINGS
 // ═══════════════════════════════════════════════════════════════════════════
-settingRoutes.post('/bulk', authenticate, authorize('settings:update'), async (req, res, next) => {
+settingRoutes.post('/bulk', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { settings, isGlobal = false } = req.body;
         const isSuperOrAdmin = isAdmin(req);
         
@@ -384,37 +343,9 @@ settingRoutes.post('/bulk', authenticate, authorize('settings:update'), async (r
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// DELETE SETTING
-// ═══════════════════════════════════════════════════════════════════════════
-settingRoutes.delete('/:category/:key', authenticate, authorize('settings:update'), async (req, res, next) => {
-    try {
-        const { category, key } = req.params;
-        const branchId = req.query.branchId ? String(req.query.branchId) : req.user!.branchId;
-
-        const branchCond2 = branchId ? eq(settings.branchId, branchId) : isNull(settings.branchId);
-        const existing = await db.query.settings.findFirst({
-            where: and(eq(settings.category, category), eq(settings.key, key), branchCond2),
-        });
-
-        if (!existing) {
-            return res.status(404).json({
-                success: false,
-                error: { code: 'NOT_FOUND', message: 'Setting not found' }
-            });
-        }
-
-        await db.delete(settings).where(eq(settings.id, existing.id));
-
-        res.json({ success: true, message: 'Setting deleted successfully' });
-    } catch (error) {
-        next(error);
-    }
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
 // GET DEFAULT SETTINGS TEMPLATE
 // ═══════════════════════════════════════════════════════════════════════════
-settingRoutes.get('/template/default', authenticate, authorize('settings:read'), async (_req, res) => {
+settingRoutes.get('/template/default', authenticate, withTenantTx(), authorize('settings:read'), async (_req, res) => {
     const defaultSettings = {
         store: {
             name: 'My Store',
@@ -469,8 +400,9 @@ settingRoutes.get('/template/default', authenticate, authorize('settings:read'),
 // ═══════════════════════════════════════════════════════════════════════════
 // INITIALIZE DEFAULT SETTINGS
 // ═══════════════════════════════════════════════════════════════════════════
-settingRoutes.post('/initialize', authenticate, authorize('settings:update'), async (req, res, next) => {
+settingRoutes.post('/initialize', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const branchId = req.body.branchId || req.user!.branchId;
 
         const defaultSettings: Record<string, Record<string, unknown>> = {
@@ -531,8 +463,9 @@ settingRoutes.post('/initialize', authenticate, authorize('settings:update'), as
 // ═══════════════════════════════════════════════════════════════════════════
 // STORE LOGO UPLOAD (Cloudinary)
 // ═══════════════════════════════════════════════════════════════════════════
-settingRoutes.post('/store/logo', authenticate, authorize('settings:update'), async (req, res, next) => {
+settingRoutes.post('/store/logo', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { image } = req.body; // base64 data URI
         if (!image) {
             return res.status(400).json({ success: false, error: { code: 'VALIDATION_001', message: 'Image data is required' } });
@@ -561,8 +494,9 @@ settingRoutes.post('/store/logo', authenticate, authorize('settings:update'), as
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get integrations settings
-settingRoutes.get('/integrations', authenticate, async (req, res, next) => {
+settingRoutes.get('/integrations', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const branchId = req.query.branchId ? String(req.query.branchId) : req.user!.branchId;
         
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
@@ -581,8 +515,9 @@ settingRoutes.get('/integrations', authenticate, async (req, res, next) => {
 });
 
 // Update integration settings
-settingRoutes.put('/integrations/:integrationId', authenticate, authorize('settings:update'), async (req, res, next) => {
+settingRoutes.put('/integrations/:integrationId', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { integrationId } = req.params;
         const { enabled, config } = req.body;
         const branchId = req.body.branchId || req.user!.branchId;
@@ -602,8 +537,9 @@ settingRoutes.put('/integrations/:integrationId', authenticate, authorize('setti
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get receipt settings — merged with branch identity fields
-settingRoutes.get('/receipt', authenticate, async (req, res, next) => {
+settingRoutes.get('/receipt', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const branchId = req.query.branchId ? String(req.query.branchId) : (req.authUser?.activeBranchId || req.user!.branchId);
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
 
@@ -647,8 +583,9 @@ settingRoutes.get('/receipt', authenticate, async (req, res, next) => {
 });
 
 // Update receipt settings (key-value pairs + receiptSettings JSONB on branch)
-settingRoutes.put('/receipt', authenticate, authorize('settings:update'), async (req, res, next) => {
+settingRoutes.put('/receipt', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const branchId = req.body.branchId || req.authUser?.activeBranchId || req.user!.branchId;
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         const {
@@ -706,8 +643,9 @@ settingRoutes.put('/receipt', authenticate, authorize('settings:update'), async 
 });
 
 // Preview receipt HTML — returns a rendered HTML snippet for the receipt template
-settingRoutes.get('/receipt/preview', authenticate, async (req, res, next) => {
+settingRoutes.get('/receipt/preview', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const branchId = req.query.branchId ? String(req.query.branchId) : (req.authUser?.activeBranchId || req.user!.branchId);
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
 
@@ -773,8 +711,9 @@ settingRoutes.get('/receipt/preview', authenticate, async (req, res, next) => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all taxes
-settingRoutes.get('/taxes', authenticate, async (req, res, next) => {
+settingRoutes.get('/taxes', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const branchId = req.query.branchId ? String(req.query.branchId) : req.user!.branchId;
         
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
@@ -792,8 +731,9 @@ settingRoutes.get('/taxes', authenticate, async (req, res, next) => {
 });
 
 // Create tax
-settingRoutes.post('/taxes', authenticate, authorize('settings:update'), async (req, res, next) => {
+settingRoutes.post('/taxes', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const branchId = (req.body.branchId || req.user!.branchId) || null;
         const { name, rate, isActive = true, isDefault = false } = req.body;
 
@@ -814,8 +754,9 @@ settingRoutes.post('/taxes', authenticate, authorize('settings:update'), async (
 });
 
 // Update tax
-settingRoutes.put('/taxes/:id', authenticate, authorize('settings:update'), async (req, res, next) => {
+settingRoutes.put('/taxes/:id', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { name, rate, isActive, isDefault } = req.body;
         
         // BE-76: Tenant-scoped tax update
@@ -845,8 +786,9 @@ settingRoutes.put('/taxes/:id', authenticate, authorize('settings:update'), asyn
 });
 
 // Delete tax
-settingRoutes.delete('/taxes/:id', authenticate, authorize('settings:update'), async (req, res, next) => {
+settingRoutes.delete('/taxes/:id', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-76: Tenant-scoped tax delete
         const tenantId = req.authUser?.tenantId;
         const delConds: any[] = [eq(settings.id, req.params.id)];
@@ -863,8 +805,9 @@ settingRoutes.delete('/taxes/:id', authenticate, authorize('settings:update'), a
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all printers
-settingRoutes.get('/printers', authenticate, async (req, res, next) => {
+settingRoutes.get('/printers', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const branchId = req.query.branchId ? String(req.query.branchId) : req.user!.branchId;
         
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
@@ -881,8 +824,9 @@ settingRoutes.get('/printers', authenticate, async (req, res, next) => {
 });
 
 // Create printer
-settingRoutes.post('/printers', authenticate, authorize('settings:update'), async (req, res, next) => {
+settingRoutes.post('/printers', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const branchId = req.body.branchId || req.user!.branchId;
         const {
             name, type, connectionType,
@@ -905,6 +849,10 @@ settingRoutes.post('/printers', authenticate, authorize('settings:update'), asyn
                 density: printerSettings.density ?? 'medium',
                 cutPaper: printerSettings.cutPaper ?? true,
                 openCashDrawer: printerSettings.openCashDrawer ?? false,
+                protocol: printerSettings.protocol ?? (type === 'label' ? 'tspl' : 'escpos'),
+                labelWidthMm: printerSettings.labelWidthMm ?? (type === 'label' ? paperWidth : undefined),
+                labelHeightMm: printerSettings.labelHeightMm ?? (type === 'label' ? 30 : undefined),
+                labelGapMm: printerSettings.labelGapMm ?? (type === 'label' ? 2 : undefined),
             },
         };
 
@@ -919,8 +867,9 @@ settingRoutes.post('/printers', authenticate, authorize('settings:update'), asyn
 });
 
 // Update printer
-settingRoutes.put('/printers/:id', authenticate, authorize('settings:update'), async (req, res, next) => {
+settingRoutes.put('/printers/:id', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-76: Tenant-scoped printer update
         const tenantId = req.authUser?.tenantId;
         const pConds: any[] = [eq(settings.id, req.params.id)];
@@ -970,9 +919,190 @@ async function sendEscPosTestPage(ip: string, port: number): Promise<void> {
     });
 }
 
+async function sendTsplTestPage(ip: string, port: number, printer: any): Promise<void> {
+    const payload = buildTsplLabelPayload({
+        type: 'barcode',
+        labelWidthMm: printer?.settings?.labelWidthMm ?? printer?.paperWidth ?? 58,
+        labelHeightMm: printer?.settings?.labelHeightMm ?? 30,
+        labelGapMm: printer?.settings?.labelGapMm ?? 2,
+        showText: true,
+        showProductName: true,
+        showPrice: false,
+        labels: [{ barcode: 'KPOS-TEST', name: 'KPOS TEST PRINT' }],
+    });
+    await sendEscPosPayload(ip, port, payload);
+}
+
+const ESC_POS_BARCODE_TYPE: Record<string, number> = {
+    UPC: 65,
+    EAN13: 67,
+    EAN8: 68,
+    CODE39: 69,
+    ITF14: 70,
+    CODE128: 73,
+};
+
+function formatKip(value: unknown): string {
+    const amount = Number(value ?? 0);
+    return `LAK ${new Intl.NumberFormat('lo-LA', { minimumFractionDigits: 0 }).format(Number.isFinite(amount) ? amount : 0)}`;
+}
+
+function escposText(text: string): number[] {
+    return Array.from(Buffer.from(text, 'utf8'));
+}
+
+// Renders as a GS v 0 raster image instead of text bytes — most clone ESC/POS
+// firmware only ships Latin/CP437-family codepages, so Lao product names sent
+// as UTF-8 text print as blank/garbage. The browser can render Lao correctly
+// (via canvas), so the client sends a pre-rendered 1-bit bitmap and we just
+// blit it, sidestepping the printer's codepage entirely.
+function rasterBitmapCommand(bitmap: { width?: number; height?: number; data?: string } | undefined): number[] | null {
+    const width = Number(bitmap?.width) || 0;
+    const height = Number(bitmap?.height) || 0;
+    if (!bitmap?.data || width <= 0 || height <= 0) return null;
+    const widthBytes = Math.ceil(width / 8);
+    const buf = Buffer.from(bitmap.data, 'base64');
+    const expected = widthBytes * height;
+    if (buf.length < expected) return null;
+    const GS = 0x1D;
+    return [
+        GS, 0x76, 0x30, 0x00,
+        widthBytes & 0xff, (widthBytes >> 8) & 0xff,
+        height & 0xff, (height >> 8) & 0xff,
+        ...Array.from(buf.subarray(0, expected)),
+    ];
+}
+
+function buildEscPosLabelPayload(body: any): Buffer {
+    const ESC = 0x1B;
+    const GS = 0x1D;
+    const chunks: number[][] = [];
+    const labels = Array.isArray(body?.labels) ? body.labels : [];
+    const barcodeFormat = String(body?.barcodeFormat || 'CODE128');
+    const barcodeType = ESC_POS_BARCODE_TYPE[barcodeFormat] ?? ESC_POS_BARCODE_TYPE.CODE128;
+    // Floor raised from 40 to 80 dots (~10mm at 203dpi) — shorter than that
+    // reads as a squashed, non-standard barcode and hurts scan reliability.
+    const barcodeHeight = Math.max(80, Math.min(255, Number(body?.barcodeHeight) || 80));
+    const barcodeWidth = Math.max(2, Math.min(6, Number(body?.barcodeWidth) || 2));
+    const showText = body?.showText !== false;
+    const showProductName = body?.showProductName !== false;
+    const showPrice = body?.showPrice !== false;
+    const namePosition = body?.namePosition === 'bottom' ? 'bottom' : 'top';
+
+    for (const label of labels) {
+        const barcode = String(label?.barcode || label?.sku || label?.id || '').trim();
+        chunks.push([ESC, 0x40]);
+        chunks.push([ESC, 0x61, 0x01]);
+
+        const nameRaster = showProductName ? rasterBitmapCommand(label?.nameBitmap) : null;
+        const printName = () => {
+            if (nameRaster) chunks.push(nameRaster);
+            else chunks.push([...escposText(String(label?.name || '-')), 0x0a]);
+        };
+        if (showProductName && namePosition === 'top') printName();
+
+        if (String(body?.type || 'barcode') === 'qrcode') {
+            const data = escposText(barcode);
+            const storeLen = data.length + 3;
+            chunks.push([GS, 0x28, 0x6b, 0x04, 0x00, 0x31, 0x41, 0x32, 0x00]);
+            chunks.push([GS, 0x28, 0x6b, 0x03, 0x00, 0x31, 0x43, 0x06]);
+            chunks.push([GS, 0x28, 0x6b, 0x03, 0x00, 0x31, 0x45, 0x31]);
+            chunks.push([GS, 0x28, 0x6b, storeLen & 0xff, (storeLen >> 8) & 0xff, 0x31, 0x50, 0x30, ...data]);
+            chunks.push([GS, 0x28, 0x6b, 0x03, 0x00, 0x31, 0x51, 0x30]);
+        } else if (barcode) {
+            const data = escposText(barcode);
+            chunks.push([GS, 0x68, barcodeHeight]);
+            chunks.push([GS, 0x77, barcodeWidth]);
+            // Native HRI (GS H / GS f) is unreliable across clone firmware —
+            // some units simply never render it even though the barcode bars
+            // print fine. Disable it and print the code ourselves below with
+            // plain text, which is the one thing confirmed to always work.
+            chunks.push([GS, 0x48, 0x00]);
+            chunks.push([GS, 0x6b, barcodeType, data.length, ...data]);
+        }
+
+        chunks.push([0x0a]);
+        if (String(body?.type || 'barcode') !== 'qrcode' && showText && barcode) {
+            chunks.push([...escposText(barcode), 0x0a]);
+        }
+        if (showProductName && namePosition === 'bottom') printName();
+        if (showPrice) chunks.push([...escposText(formatKip(label?.price)), 0x0a]);
+        // Feed well past the print head before cutting — cutting too soon
+        // slices through content that hasn't cleared the head yet, which is
+        // why the name/barcode-number lines were silently missing.
+        chunks.push([0x0a, 0x0a, 0x0a, 0x0a, 0x0a]);
+        if (body?.cutPaper !== false) chunks.push([GS, 0x56, 0x41, 0x40]);
+    }
+
+    return Buffer.from(chunks.flat());
+}
+
+function tsplText(value: unknown, maxLength = 48): string {
+    return String(value ?? '').replace(/"/g, "'").slice(0, maxLength);
+}
+
+function buildTsplLabelPayload(body: any): Buffer {
+    const labels = Array.isArray(body?.labels) ? body.labels : [];
+    const width = Math.max(10, Number(body?.labelWidthMm) || 58);
+    const height = Math.max(10, Number(body?.labelHeightMm) || 30);
+    const gap = Math.max(0, Number(body?.labelGapMm) || 0);
+    // Floor raised from 40 to 80 dots — shorter reads as a squashed,
+    // non-standard barcode and hurts scan reliability.
+    const barcodeHeight = Math.max(80, Math.min(180, Number(body?.barcodeHeight) || 80));
+    const showText = body?.showText !== false;
+    const showProductName = body?.showProductName !== false;
+    const showPrice = body?.showPrice !== false;
+    const namePosition = body?.namePosition === 'bottom' ? 'bottom' : 'top';
+    const chunks: string[] = [];
+
+    for (const label of labels) {
+        const code = tsplText(label?.barcode || label?.sku || label?.id || '', 80);
+        const name = tsplText(label?.name || '-', 36);
+        const price = tsplText(formatKip(label?.price), 32);
+        chunks.push(`SIZE ${width} mm,${height} mm`);
+        chunks.push(`GAP ${gap} mm,0 mm`);
+        chunks.push('DIRECTION 1');
+        chunks.push('REFERENCE 0,0');
+        chunks.push('CLS');
+
+        let codeY = String(body?.type || 'barcode') === 'qrcode' ? 20 : 16;
+        if (showProductName && namePosition === 'top') {
+            chunks.push(`TEXT 20,20,"0",0,1,1,"${name}"`);
+            codeY += 24;
+        }
+
+        if (String(body?.type || 'barcode') === 'qrcode') {
+            chunks.push(`QRCODE 20,${codeY},L,4,A,0,"${code}"`);
+        } else if (code) {
+            chunks.push(`BARCODE 20,${codeY},"128",${barcodeHeight},${showText ? 1 : 0},0,2,2,"${code}"`);
+        }
+
+        let textY = codeY + (String(body?.type || 'barcode') === 'qrcode' ? 90 : Math.min(160, 12 + barcodeHeight));
+        if (showProductName && namePosition === 'bottom') {
+            chunks.push(`TEXT 20,${textY},"0",0,1,1,"${name}"`);
+            textY += 24;
+        }
+        if (showPrice) chunks.push(`TEXT 20,${textY},"0",0,1,1,"${price}"`);
+        chunks.push('PRINT 1,1');
+    }
+
+    return Buffer.from(`${chunks.join('\r\n')}\r\n`, 'utf8');
+}
+
+async function sendEscPosPayload(ip: string, port: number, payload: Buffer): Promise<void> {
+    const { createConnection } = await import('net');
+    return new Promise((resolve, reject) => {
+        const client = createConnection({ host: ip, port, timeout: 5000 });
+        client.on('connect', () => { client.write(payload, () => { client.end(); resolve(); }); });
+        client.on('timeout', () => { client.destroy(); reject(new Error('Connection timeout (5s)')); });
+        client.on('error', (err) => { client.destroy(); reject(err); });
+    });
+}
+
 // Test printer
-settingRoutes.post('/printers/:id/test', authenticate, authorize('settings:update'), async (req, res, next) => {
+settingRoutes.post('/printers/:id/test', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const tenantId = req.authUser?.tenantId;
         const tConds: any[] = [eq(settings.id, req.params.id)];
         if (tenantId && !req.authUser?.isSuperAdmin) tConds.push(eq(settings.tenantId, tenantId));
@@ -986,9 +1116,11 @@ settingRoutes.post('/printers/:id/test', authenticate, authorize('settings:updat
         // For network printers: attempt real ESC/POS TCP connection
         if (printer?.connectionType === 'network' && printer?.ipAddress) {
             const port = Number(printer.port) || 9100;
+            const protocol = printer?.settings?.protocol === 'tspl' ? 'tspl' : 'escpos';
             try {
-                await sendEscPosTestPage(printer.ipAddress, port);
-                return res.json({ success: true, data: { message: 'Test print sent via network', method: 'escpos_tcp' } });
+                if (protocol === 'tspl') await sendTsplTestPage(printer.ipAddress, port, printer);
+                else await sendEscPosTestPage(printer.ipAddress, port);
+                return res.json({ success: true, data: { message: 'Test print sent via network', method: `${protocol}_tcp` } });
             } catch (tcpErr: any) {
                 return res.status(502).json({ success: false, error: { code: 'PRINTER_UNREACHABLE', message: tcpErr.message || 'Cannot reach printer' } });
             }
@@ -1001,9 +1133,84 @@ settingRoutes.post('/printers/:id/test', authenticate, authorize('settings:updat
     }
 });
 
-// Delete printer
-settingRoutes.delete('/printers/:id', authenticate, authorize('settings:update'), async (req, res, next) => {
+// Print barcode/QR labels through a configured network ESC/POS printer
+settingRoutes.post('/printers/:id/print-labels', authenticate, withTenantTx(), authorize('products:view'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const tenantId = req.authUser?.tenantId;
+        const pConds: any[] = [eq(settings.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) pConds.push(eq(settings.tenantId, tenantId));
+        const existing = await db.query.settings.findFirst({ where: and(...pConds) });
+        if (!existing) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Printer not found or no access' } });
+        }
+
+        const printer = existing.value as any;
+        if (printer?.isActive === false || printer?.type !== 'label') {
+            return res.status(400).json({ success: false, error: { code: 'INVALID_PRINTER', message: 'Configured printer is not an active label printer' } });
+        }
+        if (printer?.connectionType !== 'network' || !printer?.ipAddress) {
+            return res.status(400).json({ success: false, error: { code: 'UNSUPPORTED_PRINTER', message: 'Only network label printers can be printed from the server' } });
+        }
+        if (!Array.isArray(req.body?.labels) || req.body.labels.length === 0) {
+            return res.status(400).json({ success: false, error: { code: 'VALIDATION_001', message: 'No labels provided' } });
+        }
+
+        const protocol = printer?.settings?.protocol === 'escpos' ? 'escpos' : 'tspl';
+        const payload = protocol === 'tspl' ? buildTsplLabelPayload(req.body) : buildEscPosLabelPayload(req.body);
+        await sendEscPosPayload(printer.ipAddress, Number(printer.port) || 9100, payload);
+        return res.json({ success: true, data: { message: 'Labels sent to printer', count: req.body.labels.length, protocol } });
+    } catch (error: any) {
+        if (error?.message) {
+            return res.status(502).json({ success: false, error: { code: 'PRINTER_UNREACHABLE', message: error.message } });
+        }
+        next(error);
+    }
+});
+
+// Print a POS receipt/slip through a configured network ESC/POS printer.
+// The client builds the exact same ESC/POS byte stream used for direct USB
+// printing (padding, i18n labels, formatting all live there already) and
+// just hands it over base64-encoded — the server's only job is relaying
+// those bytes over TCP, since browsers can't open raw sockets themselves.
+settingRoutes.post('/printers/:id/print-receipt', authenticate, withTenantTx(), authorize('sales:create'), async (req, res, next) => {
+    try {
+        const db = req.tx ?? globalDb;
+        const tenantId = req.authUser?.tenantId;
+        const pConds: any[] = [eq(settings.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) pConds.push(eq(settings.tenantId, tenantId));
+        const existing = await db.query.settings.findFirst({ where: and(...pConds) });
+        if (!existing) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Printer not found or no access' } });
+        }
+
+        const printer = existing.value as any;
+        if (printer?.isActive === false || printer?.type !== 'receipt') {
+            return res.status(400).json({ success: false, error: { code: 'INVALID_PRINTER', message: 'Configured printer is not an active receipt printer' } });
+        }
+        if (printer?.connectionType !== 'network' || !printer?.ipAddress) {
+            return res.status(400).json({ success: false, error: { code: 'UNSUPPORTED_PRINTER', message: 'Only network receipt printers can be printed from the server' } });
+        }
+        const dataBase64 = String(req.body?.dataBase64 || '');
+        if (!dataBase64) {
+            return res.status(400).json({ success: false, error: { code: 'VALIDATION_001', message: 'No receipt data provided' } });
+        }
+
+        const payload = Buffer.from(dataBase64, 'base64');
+        await sendEscPosPayload(printer.ipAddress, Number(printer.port) || 9100, payload);
+        return res.json({ success: true, data: { message: 'Receipt sent to printer' } });
+    } catch (error: any) {
+        if (error?.message) {
+            return res.status(502).json({ success: false, error: { code: 'PRINTER_UNREACHABLE', message: error.message } });
+        }
+        next(error);
+    }
+});
+
+// Delete printer
+settingRoutes.delete('/printers/:id', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
+    try {
+        const db = req.tx ?? globalDb;
         const tenantId = req.authUser?.tenantId;
         const dConds: any[] = [eq(settings.id, req.params.id)];
         if (tenantId && !req.authUser?.isSuperAdmin) dConds.push(eq(settings.tenantId, tenantId));
@@ -1019,8 +1226,9 @@ settingRoutes.delete('/printers/:id', authenticate, authorize('settings:update')
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get notification settings
-settingRoutes.get('/notifications', authenticate, async (req, res, next) => {
+settingRoutes.get('/notifications', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const branchId = req.query.branchId ? String(req.query.branchId) : req.user!.branchId;
         
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
@@ -1047,8 +1255,9 @@ settingRoutes.get('/notifications', authenticate, async (req, res, next) => {
 });
 
 // Update notification settings
-settingRoutes.put('/notifications', authenticate, authorize('settings:update'), async (req, res, next) => {
+settingRoutes.put('/notifications', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const branchId = req.body.branchId || req.user!.branchId;
         const notifSettings = req.body;
         
@@ -1072,8 +1281,9 @@ settingRoutes.put('/notifications', authenticate, authorize('settings:update'), 
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all documents
-settingRoutes.get('/documents', authenticate, authorize('documents:view', 'documents:read'), async (req, res, next) => {
+settingRoutes.get('/documents', authenticate, withTenantTx(), authorize('documents:view', 'documents:read'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { type, status, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
 
@@ -1114,8 +1324,9 @@ settingRoutes.get('/documents', authenticate, authorize('documents:view', 'docum
 });
 
 // Get document by ID
-settingRoutes.get('/documents/:id', authenticate, authorize('documents:view', 'documents:read'), async (req, res, next) => {
+settingRoutes.get('/documents/:id', authenticate, withTenantTx(), authorize('documents:view', 'documents:read'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-76: Tenant-scoped document lookup
         const tenantId = req.authUser?.tenantId;
         const dConds: any[] = [eq(documents.id, req.params.id)];
@@ -1140,8 +1351,9 @@ settingRoutes.get('/documents/:id', authenticate, authorize('documents:view', 'd
 });
 
 // Create document
-settingRoutes.post('/documents', authenticate, authorize('documents:create'), async (req, res, next) => {
+settingRoutes.post('/documents', authenticate, withTenantTx(), authorize('documents:create'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { type, referenceId, referenceType, data } = req.body;
 
         // Generate document number
@@ -1168,8 +1380,9 @@ settingRoutes.post('/documents', authenticate, authorize('documents:create'), as
 });
 
 // Update document status
-settingRoutes.patch('/documents/:id/status', authenticate, authorize('documents:update'), async (req, res, next) => {
+settingRoutes.patch('/documents/:id/status', authenticate, withTenantTx(), authorize('documents:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { status } = req.body;
 
         const setData: any = { status, updatedAt: new Date() };
@@ -1199,8 +1412,9 @@ settingRoutes.patch('/documents/:id/status', authenticate, authorize('documents:
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all document templates
-settingRoutes.get('/document-templates', authenticate, async (req, res, next) => {
+settingRoutes.get('/document-templates', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const tenantId = req.authUser?.tenantId;
         const templateConds: any[] = [];
         if (tenantId && !req.authUser?.isSuperAdmin) {
@@ -1219,8 +1433,9 @@ settingRoutes.get('/document-templates', authenticate, async (req, res, next) =>
 });
 
 // Get template by type
-settingRoutes.get('/document-templates/:type', authenticate, async (req, res, next) => {
+settingRoutes.get('/document-templates/:type', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const tenantId = req.authUser?.tenantId;
         const templateConds: any[] = [eq(documentTemplates.type, req.params.type)];
         if (tenantId && !req.authUser?.isSuperAdmin) {
@@ -1244,8 +1459,9 @@ settingRoutes.get('/document-templates/:type', authenticate, async (req, res, ne
 });
 
 // Create/Update document template
-settingRoutes.put('/document-templates/:type', authenticate, authorize('settings:update'), async (req, res, next) => {
+settingRoutes.put('/document-templates/:type', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { type } = req.params;
         const { name, template, settings } = req.body;
         const tenantId = req.authUser?.tenantId;
@@ -1277,8 +1493,9 @@ settingRoutes.put('/document-templates/:type', authenticate, authorize('settings
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get current user's notifications
-settingRoutes.get('/user-notifications', authenticate, async (req, res, next) => {
+settingRoutes.get('/user-notifications', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const userId = req.user!.userId;
         const { page = 1, limit = 20, unreadOnly } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
@@ -1310,8 +1527,9 @@ settingRoutes.get('/user-notifications', authenticate, async (req, res, next) =>
 });
 
 // Mark all notifications as read (MUST be before :id/read to avoid matching 'mark-all-read' as :id)
-settingRoutes.put('/user-notifications/mark-all-read', authenticate, async (req, res, next) => {
+settingRoutes.put('/user-notifications/mark-all-read', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const userId = req.user!.userId;
         await db.update(notifications)
             .set({ isRead: true, readAt: new Date() })
@@ -1324,8 +1542,9 @@ settingRoutes.put('/user-notifications/mark-all-read', authenticate, async (req,
 });
 
 // Mark notification as read
-settingRoutes.put('/user-notifications/:id/read', authenticate, async (req, res, next) => {
+settingRoutes.put('/user-notifications/:id/read', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const userId = req.user!.userId;
         const notification = await db.query.notifications.findFirst({
             where: and(eq(notifications.id, req.params.id), eq(notifications.userId, userId)),
@@ -1347,8 +1566,9 @@ settingRoutes.put('/user-notifications/:id/read', authenticate, async (req, res,
 });
 
 // Delete a notification
-settingRoutes.delete('/user-notifications/:id', authenticate, async (req, res, next) => {
+settingRoutes.delete('/user-notifications/:id', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const userId = req.user!.userId;
         const notification = await db.query.notifications.findFirst({
             where: and(eq(notifications.id, req.params.id), eq(notifications.userId, userId)),
@@ -1366,12 +1586,232 @@ settingRoutes.delete('/user-notifications/:id', authenticate, async (req, res, n
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// EMAIL PROVIDERS (Phase 11)
+// ═══════════════════════════════════════════════════════════════════════════
+
+function maskEmailProvider(row: typeof emailProviders.$inferSelect) {
+    return {
+        id: row.id,
+        name: row.name,
+        type: row.type,
+        isActive: row.isActive,
+        isDefault: row.isDefault,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+    };
+}
+
+// List providers (config fields masked — never sent to the client)
+settingRoutes.get('/email', authenticate, withTenantTx(), authorize('settings:read'), async (req, res, next) => {
+    try {
+        const db = req.tx ?? globalDb;
+        const tenantId = req.authUser?.tenantId;
+        if (!tenantId) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Tenant context required' } });
+
+        const rows = await db.query.emailProviders.findMany({
+            where: eq(emailProviders.tenantId, tenantId),
+            orderBy: [desc(emailProviders.isDefault), desc(emailProviders.createdAt)],
+        });
+        res.json({ success: true, data: rows.map(maskEmailProvider) });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Create/save a provider config
+settingRoutes.post('/email', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
+    try {
+        const db = req.tx ?? globalDb;
+        const tenantId = req.authUser?.tenantId;
+        if (!tenantId) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Tenant context required' } });
+
+        const { name, type, config, isActive = false, isDefault = false } = req.body;
+        if (!name || !type || !config) {
+            return res.status(400).json({ success: false, error: { code: 'VALIDATION_001', message: 'name, type and config are required' } });
+        }
+        if (!['smtp', 'brevo', 'sendgrid', 'mailgun'].includes(type)) {
+            return res.status(400).json({ success: false, error: { code: 'VALIDATION_002', message: 'Invalid provider type' } });
+        }
+
+        if (isDefault) {
+            await db.update(emailProviders).set({ isDefault: false }).where(eq(emailProviders.tenantId, tenantId));
+        }
+
+        const [row] = await db.insert(emailProviders).values({
+            tenantId,
+            name,
+            type,
+            config: encryptJson(config),
+            isActive,
+            isDefault,
+        }).returning();
+
+        await invalidateProviderCache(tenantId);
+        res.status(201).json({ success: true, data: maskEmailProvider(row) });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Update a provider config
+settingRoutes.put('/email/:id', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
+    try {
+        const db = req.tx ?? globalDb;
+        const tenantId = req.authUser?.tenantId;
+        if (!tenantId) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Tenant context required' } });
+
+        const existing = await db.query.emailProviders.findFirst({
+            where: and(eq(emailProviders.id, req.params.id), eq(emailProviders.tenantId, tenantId)),
+        });
+        if (!existing) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Provider not found or no access' } });
+
+        const { name, type, config, isActive, isDefault } = req.body;
+
+        if (isDefault === true) {
+            await db.update(emailProviders).set({ isDefault: false }).where(eq(emailProviders.tenantId, tenantId));
+        }
+
+        const [row] = await db.update(emailProviders).set({
+            name: name ?? existing.name,
+            type: type ?? existing.type,
+            config: config ? encryptJson(config) : existing.config,
+            isActive: isActive ?? existing.isActive,
+            isDefault: isDefault ?? existing.isDefault,
+            updatedAt: new Date(),
+        }).where(eq(emailProviders.id, req.params.id)).returning();
+
+        await invalidateProviderCache(tenantId);
+        res.json({ success: true, data: maskEmailProvider(row) });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Delete a provider config
+settingRoutes.delete('/email/:id', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
+    try {
+        const db = req.tx ?? globalDb;
+        const tenantId = req.authUser?.tenantId;
+        if (!tenantId) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Tenant context required' } });
+
+        const existing = await db.query.emailProviders.findFirst({
+            where: and(eq(emailProviders.id, req.params.id), eq(emailProviders.tenantId, tenantId)),
+        });
+        if (!existing) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Provider not found or no access' } });
+
+        await db.delete(emailProviders).where(eq(emailProviders.id, req.params.id));
+        await invalidateProviderCache(tenantId);
+        res.json({ success: true, data: { message: 'Deleted' } });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Test connection — verifies adapter.verify() and optionally sends a test email
+settingRoutes.post('/email/:id/test', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
+    try {
+        const db = req.tx ?? globalDb;
+        const tenantId = req.authUser?.tenantId;
+        if (!tenantId) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Tenant context required' } });
+
+        const existing = await db.query.emailProviders.findFirst({
+            where: and(eq(emailProviders.id, req.params.id), eq(emailProviders.tenantId, tenantId)),
+        });
+        if (!existing) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Provider not found or no access' } });
+
+        const config = decryptJson(existing.config as unknown as string);
+        const verified = await testProviderConnection(existing.type as any, config as any);
+        if (!verified) {
+            return res.status(502).json({ success: false, error: { code: 'PROVIDER_UNREACHABLE', message: 'Could not verify provider credentials' } });
+        }
+
+        const { testEmail } = req.body;
+        if (testEmail) {
+            await sendTestEmail(existing.type as any, config as any, testEmail);
+        }
+
+        res.json({ success: true, data: { message: 'Connection verified', testEmailSent: Boolean(testEmail) } });
+    } catch (error: any) {
+        res.status(502).json({ success: false, error: { code: 'PROVIDER_TEST_FAILED', message: error?.message || 'Test failed' } });
+    }
+});
+
+// List templates
+settingRoutes.get('/email/templates', authenticate, withTenantTx(), authorize('settings:read'), async (req, res, next) => {
+    try {
+        const db = req.tx ?? globalDb;
+        const tenantId = req.authUser?.tenantId;
+        const rows = await db.query.emailTemplates.findMany({
+            where: tenantId ? or(eq(emailTemplates.tenantId, tenantId), isNull(emailTemplates.tenantId)) : isNull(emailTemplates.tenantId),
+            orderBy: asc(emailTemplates.key),
+        });
+        // Prefer tenant override over system default when both exist for the same key
+        const byKey = new Map<string, typeof rows[number]>();
+        for (const row of rows) {
+            const existing = byKey.get(row.key);
+            if (!existing || (row.tenantId && !existing.tenantId)) byKey.set(row.key, row);
+        }
+        res.json({ success: true, data: Array.from(byKey.values()) });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Update (or create tenant override of) a template
+settingRoutes.put('/email/templates/:key', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
+    try {
+        const db = req.tx ?? globalDb;
+        const tenantId = req.authUser?.tenantId;
+        if (!tenantId) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Tenant context required' } });
+
+        const { subject, htmlBody } = req.body;
+        if (!subject || !htmlBody) {
+            return res.status(400).json({ success: false, error: { code: 'VALIDATION_001', message: 'subject and htmlBody are required' } });
+        }
+
+        const existing = await db.query.emailTemplates.findFirst({
+            where: and(eq(emailTemplates.key, req.params.key), eq(emailTemplates.tenantId, tenantId)),
+        });
+
+        let row;
+        if (existing) {
+            [row] = await db.update(emailTemplates).set({ subject, htmlBody, updatedAt: new Date() }).where(eq(emailTemplates.id, existing.id)).returning();
+        } else {
+            [row] = await db.insert(emailTemplates).values({ tenantId, key: req.params.key, subject, htmlBody }).returning();
+        }
+
+        res.json({ success: true, data: row });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Email send log history (last 50)
+settingRoutes.get('/email/logs', authenticate, withTenantTx(), authorize('settings:read'), async (req, res, next) => {
+    try {
+        const db = req.tx ?? globalDb;
+        const tenantId = req.authUser?.tenantId;
+        if (!tenantId) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Tenant context required' } });
+
+        const rows = await db.query.emailLogs.findMany({
+            where: eq(emailLogs.tenantId, tenantId),
+            orderBy: desc(emailLogs.sentAt),
+            limit: 50,
+        });
+        res.json({ success: true, data: rows });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // API KEY MANAGEMENT
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all API keys (stored as settings with category 'api_key')
-settingRoutes.get('/api-keys', authenticate, authorize('settings:read'), async (req, res, next) => {
+settingRoutes.get('/api-keys', authenticate, withTenantTx(), authorize('settings:read'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const branchId = req.user!.branchId;
         // BE-76: Tenant isolation
         const tenantId = req.authUser?.tenantId;
@@ -1404,8 +1844,9 @@ settingRoutes.get('/api-keys', authenticate, authorize('settings:read'), async (
 });
 
 // Create API key
-settingRoutes.post('/api-keys', authenticate, authorize('settings:update'), async (req, res, next) => {
+settingRoutes.post('/api-keys', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { name, service, apiKey, secretKey } = req.body;
         const branchId = req.user!.branchId || null;
 
@@ -1436,8 +1877,9 @@ settingRoutes.post('/api-keys', authenticate, authorize('settings:update'), asyn
 });
 
 // Update API key
-settingRoutes.put('/api-keys/:id', authenticate, authorize('settings:update'), async (req, res, next) => {
+settingRoutes.put('/api-keys/:id', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { name, service, apiKey, secretKey, isActive } = req.body;
         // BE-76: Tenant-scoped API key update
         const tenantId = req.authUser?.tenantId;
@@ -1471,8 +1913,9 @@ settingRoutes.put('/api-keys/:id', authenticate, authorize('settings:update'), a
 });
 
 // Delete API key
-settingRoutes.delete('/api-keys/:id', authenticate, authorize('settings:update'), async (req, res, next) => {
+settingRoutes.delete('/api-keys/:id', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-76: Tenant-scoped API key delete
         const tenantId = req.authUser?.tenantId;
         const akDelConds: any[] = [eq(settings.id, req.params.id)];
@@ -1492,8 +1935,9 @@ settingRoutes.delete('/api-keys/:id', authenticate, authorize('settings:update')
 // INTEGRATIONS (connect/disconnect)
 // ═══════════════════════════════════════════════════════════════════════════
 
-settingRoutes.post('/integrations/:id/connect', authenticate, authorize('settings:update'), async (req, res, next) => {
+settingRoutes.post('/integrations/:id/connect', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const branchId = req.user!.branchId;
         const intTenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         const data = { connected: true, lastSync: new Date().toISOString(), ...req.body };
@@ -1504,8 +1948,9 @@ settingRoutes.post('/integrations/:id/connect', authenticate, authorize('setting
     }
 });
 
-settingRoutes.post('/integrations/:id/disconnect', authenticate, authorize('settings:update'), async (req, res, next) => {
+settingRoutes.post('/integrations/:id/disconnect', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const branchId = req.user!.branchId;
         const disTenantId = req.authUser?.tenantId;
         const disBranchCond = branchId ? eq(settings.branchId, branchId) : isNull(settings.branchId);
@@ -1523,8 +1968,9 @@ settingRoutes.post('/integrations/:id/disconnect', authenticate, authorize('sett
 });
 
 // ─── LINE Notify test ─────────────────────────────────────────────────────────
-settingRoutes.post('/notifications/test-line', authenticate, authorize('settings:update'), async (req, res, next) => {
+settingRoutes.post('/notifications/test-line', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { token } = req.body;
         if (!token) return res.status(400).json({ success: false, error: { message: 'token required' } });
         const storeName = 'KPOS';
@@ -1545,8 +1991,9 @@ settingRoutes.post('/notifications/test-line', authenticate, authorize('settings
 });
 
 // ─── Settings Export ───────────────────────────────────────────────────────────
-settingRoutes.get('/export', authenticate, authorize('settings:view'), async (req, res, next) => {
+settingRoutes.get('/export', authenticate, withTenantTx(), authorize('settings:view'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const tenantId = req.authUser?.tenantId;
         const branchId = req.user!.branchId;
         const conds: any[] = [];
@@ -1560,8 +2007,9 @@ settingRoutes.get('/export', authenticate, authorize('settings:view'), async (re
 });
 
 // ─── Settings Import ───────────────────────────────────────────────────────────
-settingRoutes.post('/import', authenticate, authorize('settings:update'), async (req, res, next) => {
+settingRoutes.post('/import', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const tenantId = req.authUser?.tenantId;
         const branchId = req.user!.branchId;
         const rows: any[] = Array.isArray(req.body?.data) ? req.body.data : [];
@@ -1579,8 +2027,9 @@ settingRoutes.post('/import', authenticate, authorize('settings:update'), async 
 });
 
 // ─── Backup Schedule GET/SET ───────────────────────────────────────────────
-settingRoutes.get('/backup/schedule', authenticate, authorize('settings:view'), async (req, res, next) => {
+settingRoutes.get('/backup/schedule', authenticate, withTenantTx(), authorize('settings:view'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const row = await db.query.settings.findFirst({
             where: and(eq(settings.category, 'backup'), eq(settings.key, 'schedule')),
         });
@@ -1589,8 +2038,9 @@ settingRoutes.get('/backup/schedule', authenticate, authorize('settings:view'), 
     } catch (error) { next(error); }
 });
 
-settingRoutes.put('/backup/schedule', authenticate, authorize('settings:update'), async (req, res, next) => {
+settingRoutes.put('/backup/schedule', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { schedule } = req.body;
         const branchId = req.user!.branchId;
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
@@ -1603,10 +2053,98 @@ settingRoutes.put('/backup/schedule', authenticate, authorize('settings:update')
 });
 
 // ─── Manual Backup Trigger ────────────────────────────────────────────────
-settingRoutes.post('/backup/run', authenticate, authorize('settings:update'), async (req, res, next) => {
+settingRoutes.post('/backup/run', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { runBackup } = await import('@/infrastructure/workers/backup.worker');
         const filepath = await runBackup(req.authUser?.tenantId ?? undefined);
         res.json({ success: true, data: { filepath, runAt: new Date().toISOString() } });
     } catch (error) { next(error); }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GENERIC CATEGORY/KEY SETTING ROUTES
+// Registered last: these two-segment patterns (/:category/:key) would
+// otherwise shadow every specific two-segment route above (e.g. /printers/:id,
+// /taxes/:id, /document-templates/:type) since Express matches by
+// registration order, not specificity.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// GET SINGLE SETTING
+settingRoutes.get('/:category/:key', authenticate, withTenantTx(), async (req, res, next) => {
+    try {
+        const db = req.tx ?? globalDb;
+        const { category, key } = req.params;
+        const branchId = req.query.branchId ? String(req.query.branchId) : req.user!.branchId;
+
+        // First try branch-specific (only when branchId is defined), then fallback to global
+        let setting = branchId ? await db.query.settings.findFirst({
+            where: and(eq(settings.category, category), eq(settings.key, key), eq(settings.branchId, branchId)),
+        }) : undefined;
+
+        if (!setting) {
+            setting = await db.query.settings.findFirst({
+                where: and(eq(settings.category, category), eq(settings.key, key), isNull(settings.branchId)),
+            });
+        }
+
+        if (!setting) {
+            return res.status(404).json({
+                success: false,
+                error: { code: 'NOT_FOUND', message: 'Setting not found' }
+            });
+        }
+
+        res.json({ success: true, data: setting });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// UPDATE SETTING
+settingRoutes.put('/:category/:key', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
+    try {
+        const db = req.tx ?? globalDb;
+        const { category, key } = req.params;
+        const { value, isGlobal = false } = req.body;
+        const isSuperOrAdmin = isAdmin(req);
+
+        // Only super admins and admins can set global settings or modify other branches
+        const effectiveGlobal = isGlobal && isSuperOrAdmin;
+        const branchId = effectiveGlobal ? null : (isSuperOrAdmin && req.body.branchId ? req.body.branchId : req.user!.branchId);
+
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        const setting = await upsertSetting(category, key, value, branchId, tenantId);
+
+        res.json({ success: true, data: setting });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// DELETE SETTING
+settingRoutes.delete('/:category/:key', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
+    try {
+        const db = req.tx ?? globalDb;
+        const { category, key } = req.params;
+        const branchId = req.query.branchId ? String(req.query.branchId) : req.user!.branchId;
+
+        const branchCond2 = branchId ? eq(settings.branchId, branchId) : isNull(settings.branchId);
+        const existing = await db.query.settings.findFirst({
+            where: and(eq(settings.category, category), eq(settings.key, key), branchCond2),
+        });
+
+        if (!existing) {
+            return res.status(404).json({
+                success: false,
+                error: { code: 'NOT_FOUND', message: 'Setting not found' }
+            });
+        }
+
+        await db.delete(settings).where(eq(settings.id, existing.id));
+
+        res.json({ success: true, message: 'Setting deleted successfully' });
+    } catch (error) {
+        next(error);
+    }
 });

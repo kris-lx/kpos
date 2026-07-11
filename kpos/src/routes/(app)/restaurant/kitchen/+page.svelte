@@ -5,6 +5,7 @@
     import { api } from "$api";
     import { auth } from "$stores";
     import { formatDateTime } from "$lib/utils";
+    import { playNotificationSound } from "$lib/utils/notificationSound";
     import { toast } from "svelte-sonner";
     import {
         RefreshCw,
@@ -31,6 +32,22 @@
     let lastRefresh = $state(new Date());
     let isFullscreen = $state(false);
     let soundEnabled = $state(true);
+    let soundName = $state('bell');
+    let soundVolume = $state(70);
+
+    async function loadNotificationSoundSettings() {
+        try {
+            const response = await api.get('settings/notifications').json<any>();
+            const sound = response.data?.sound;
+            if (response.success && sound) {
+                soundEnabled = sound.enabled !== false;
+                soundName = sound.newOrderSound || sound.alertSound || 'bell';
+                soundVolume = Number(sound.volume) || 70;
+            }
+        } catch {
+            // Keep local defaults if settings are unavailable.
+        }
+    }
 
     async function loadData() {
         isLoading = true;
@@ -65,11 +82,7 @@
             }).json();
             toast.success(t("common.success"));
             if (soundEnabled) {
-                // Play sound notification
-                try {
-                    const audio = new Audio('/sounds/order-ready.mp3');
-                    audio.play().catch(() => {});
-                } catch {}
+                playNotificationSound(soundName, soundVolume).catch(() => {});
             }
             loadData();
         } catch (e) {
@@ -144,6 +157,7 @@
     $effect(() => {
         auth.activeStoreId;
         loadData();
+        loadNotificationSoundSettings();
     });
 
     onMount(() => {

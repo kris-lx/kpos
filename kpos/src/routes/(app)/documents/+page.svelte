@@ -4,6 +4,7 @@
     import { api } from "$lib/api";
     import { cn, formatCurrency, formatDateTime } from "$utils";
     import { toast } from "svelte-sonner";
+    import ReceiptPrint from "$lib/components/ReceiptPrint.svelte";
     import {
         FileText,
         Printer,
@@ -19,7 +20,6 @@
         AlertCircle,
         X,
         CreditCard,
-        Banknote,
     } from "lucide-svelte";
 
     // State
@@ -38,6 +38,34 @@
     let showPreview = $state(false);
     let previewDoc = $state<any>(null);
     let loadingPreview = $state(false);
+    let autoPrintReceipt = $state(false);
+
+    // Maps the raw `GET sales/:id` transaction shape into what ReceiptPrint expects,
+    // so this preview uses the exact same store logo/name + design-page layout as
+    // the POS checkout receipt (settings/receipt + settings/receipt/design).
+    let receiptData = $derived.by(() => {
+        if (!previewDoc) return null;
+        return {
+            transactionNo: previewDoc.transactionNo,
+            items: (previewDoc.items || []).map((item: any) => ({
+                productId: item.productId,
+                productName: item.productName,
+                quantity: item.quantity,
+                unitPrice: item.unitPrice,
+                total: item.total,
+            })),
+            subtotal: previewDoc.subtotal,
+            discountAmount: previewDoc.discountAmount,
+            taxAmount: previewDoc.taxAmount,
+            total: previewDoc.total,
+            received: previewDoc.received,
+            change: previewDoc.change,
+            paymentMethod: previewDoc.payments?.[0]?.methodName || "CASH",
+            customerName: previewDoc.customer?.name,
+            cashierName: previewDoc.user?.name,
+            createdAt: previewDoc.createdAt,
+        };
+    });
 
     // Paper sizes
     let paperSizes = $derived([
@@ -105,8 +133,9 @@
         totalVoided: documents.filter(d => d.status === "VOIDED").length,
     });
 
-    async function openPreview(doc: any) {
+    async function openPreview(doc: any, autoPrint = false) {
         loadingPreview = true;
+        autoPrintReceipt = autoPrint;
         try {
             const response = await api.get(`sales/${doc.id}`).json<any>();
             if (response.success) {
@@ -121,20 +150,6 @@
         } finally {
             loadingPreview = false;
         }
-    }
-
-    function printDocument(doc: any) {
-        // Open preview first if not already open
-        if (!showPreview || previewDoc?.id !== doc.id) {
-            openPreview(doc).then(() => {
-                setTimeout(() => {
-                    window.print();
-                }, 300);
-            });
-        } else {
-            window.print();
-        }
-        toast.success(`${t("documents.printing")} ${doc.transactionNo}`);
     }
 
     function downloadDocument(doc: any) {
@@ -174,41 +189,6 @@
 
 <svelte:head>
     <title>{t("documents.title")} - KPOS</title>
-    <style>
-        @media print {
-            body * {
-                visibility: hidden !important;
-            }
-            #print-receipt, #print-receipt * {
-                visibility: visible !important;
-            }
-            #print-receipt {
-                position: absolute !important;
-                left: 0 !important;
-                top: 0 !important;
-                width: 80mm !important;
-                background: white !important;
-                color: black !important;
-                padding: 10px !important;
-                margin: 0 !important;
-                box-shadow: none !important;
-            }
-            #print-receipt .no-print {
-                display: none !important;
-            }
-            #print-receipt .print-header {
-                background: white !important;
-                color: black !important;
-                border-bottom: 2px solid black !important;
-            }
-            #print-receipt .print-text {
-                color: black !important;
-            }
-            #print-receipt .print-border {
-                border-color: black !important;
-            }
-        }
-    </style>
 </svelte:head>
 
 <div class="min-h-screen bg-gray-50 dark:bg-gray-900 p-4 md:p-6">
@@ -347,7 +327,7 @@
                                                 <Eye class="w-4 h-4" />
                                             </button>
                                             <button
-                                                onclick={() => printDocument(doc)}
+                                                onclick={() => openPreview(doc, true)}
                                                 class="p-2 text-gray-500 hover:text-primary-600 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
                                                 title={t("documents.print")}
                                             >
@@ -482,132 +462,9 @@
 </div>
 
 <!-- Bill Preview Modal -->
-{#if showPreview && previewDoc}
-    <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 no-print" role="dialog" aria-modal="true">
-        <div class="bg-white dark:bg-gray-800 rounded-xl shadow-2xl max-w-md w-full mx-4 max-h-[90vh] overflow-hidden flex flex-col">
-            <!-- Header -->
-            <div class="p-4 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center no-print">
-                <div>
-                    <h2 class="text-lg font-bold text-gray-900 dark:text-white">{t("documents.receiptTitle")}</h2>
-                    <p class="text-sm text-gray-500 dark:text-gray-400 font-mono">{previewDoc.transactionNo}</p>
-                </div>
-                <button onclick={() => showPreview = false} class="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">
-                    <X class="w-5 h-5" />
-                </button>
-            </div>
-
-            <!-- Bill Content - Printable Area -->
-            <div class="p-4 overflow-y-auto flex-1">
-                <div id="print-receipt" class="bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
-                    <!-- Store Header -->
-                    <div class="print-header bg-gradient-to-r from-primary-600 to-primary-700 dark:from-primary-700 dark:to-primary-800 text-white p-4 text-center">
-                        <h3 class="font-bold text-lg">{t("documents.storeName")}</h3>
-                        <p class="text-xs opacity-90">{t("documents.storeDesc")}</p>
-                    </div>
-
-                    <div class="p-4 space-y-4 bg-white dark:bg-gray-900">
-                        <!-- Info -->
-                        <div class="grid grid-cols-2 gap-2 text-sm">
-                            <div class="print-text text-gray-500 dark:text-gray-400">{t("documents.receiptNo")}:</div>
-                            <div class="print-text font-mono font-medium text-gray-900 dark:text-white text-right">{previewDoc.transactionNo}</div>
-                            <div class="print-text text-gray-500 dark:text-gray-400">{t("documents.date")}:</div>
-                            <div class="print-text text-gray-900 dark:text-white text-right">{formatDateTime(previewDoc.createdAt)}</div>
-                            <div class="print-text text-gray-500 dark:text-gray-400">{t("documents.customer")}:</div>
-                            <div class="print-text text-gray-900 dark:text-white text-right">{previewDoc.customer?.name || t("documents.walkInCustomer")}</div>
-                        </div>
-
-                        <div class="print-border border-t border-dashed border-gray-300 dark:border-gray-600"></div>
-
-                        <!-- Items -->
-                        <div class="space-y-2">
-                            {#each previewDoc.items || [] as item (item.productName)}
-                                <div class="flex justify-between text-sm">
-                                    <div>
-                                        <p class="print-text font-medium text-gray-900 dark:text-white">{item.productName}</p>
-                                        <p class="print-text text-xs text-gray-500 dark:text-gray-400">{formatCurrency(item.unitPrice)} x {item.quantity}</p>
-                                    </div>
-                                    <span class="print-text font-medium text-gray-900 dark:text-white">{formatCurrency(item.total)}</span>
-                                </div>
-                            {/each}
-                        </div>
-
-                        <div class="print-border border-t border-dashed border-gray-300 dark:border-gray-600"></div>
-
-                        <!-- Totals -->
-                        <div class="space-y-1 text-sm">
-                            <div class="flex justify-between">
-                                <span class="print-text text-gray-500 dark:text-gray-400">{t("documents.subtotal")}</span>
-                                <span class="print-text text-gray-900 dark:text-white">{formatCurrency(previewDoc.subtotal)}</span>
-                            </div>
-                            {#if previewDoc.discountAmount > 0}
-                                <div class="flex justify-between text-danger-600 dark:text-danger-400">
-                                    <span class="print-text">{t("documents.discount")}</span>
-                                    <span class="print-text">-{formatCurrency(previewDoc.discountAmount)}</span>
-                                </div>
-                            {/if}
-                        </div>
-
-                        <div class="print-border border-t-2 border-gray-900 dark:border-white pt-2">
-                            <div class="flex justify-between text-lg font-bold">
-                                <span class="print-text text-gray-900 dark:text-white">{t("documents.grandTotal")}</span>
-                                <span class="print-text text-primary-600 dark:text-primary-400">{formatCurrency(previewDoc.total)}</span>
-                            </div>
-                        </div>
-
-                        {#if previewDoc.received > 0}
-                            <div class="space-y-1 text-sm">
-                                <div class="flex justify-between">
-                                    <span class="print-text text-gray-500 dark:text-gray-400">{t("documents.received")}</span>
-                                    <span class="print-text text-gray-900 dark:text-white">{formatCurrency(previewDoc.received)}</span>
-                                </div>
-                                <div class="flex justify-between">
-                                    <span class="print-text text-gray-500 dark:text-gray-400">{t("documents.change")}</span>
-                                    <span class="print-text text-success-600 dark:text-success-400 font-medium">{formatCurrency(previewDoc.change)}</span>
-                                </div>
-                            </div>
-                        {/if}
-
-                        <!-- Payment Method -->
-                        {#if previewDoc.paymentMethod}
-                            <div class="print-border border-t border-dashed border-gray-300 dark:border-gray-600 pt-2">
-                                <div class="flex justify-between text-sm">
-                                    <span class="print-text text-gray-500 dark:text-gray-400">{t("documents.paymentMethod")}:</span>
-                                    <span class="print-text text-gray-900 dark:text-white flex items-center gap-1">
-                                        {#if previewDoc.paymentMethod === 'CASH'}
-                                            <Banknote class="w-4 h-4" />
-                                            {t("documents.cash")}
-                                        {:else if previewDoc.paymentMethod === 'CARD'}
-                                            <CreditCard class="w-4 h-4" />
-                                            {t("documents.card")}
-                                        {:else}
-                                            {previewDoc.paymentMethod}
-                                        {/if}
-                                    </span>
-                                </div>
-                            </div>
-                        {/if}
-
-                        <!-- Footer -->
-                        <div class="text-center pt-4 print-border border-t border-gray-200 dark:border-gray-700">
-                            <p class="print-text text-sm text-gray-500 dark:text-gray-400">{t("documents.thankYou")}</p>
-                            <p class="print-text text-xs text-gray-400 dark:text-gray-500 mt-1">Powered by KPOS</p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Actions -->
-            <div class="border-t border-gray-200 dark:border-gray-700 p-4 flex gap-2 no-print">
-                <button onclick={() => printDocument(previewDoc)} class="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700">
-                    <Printer class="w-4 h-4" />
-                    {t("documents.print")}
-                </button>
-                <button onclick={() => downloadDocument(previewDoc)} class="flex-1 flex items-center justify-center gap-2 px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700">
-                    <Download class="w-4 h-4" />
-                    {t("documents.download")}
-                </button>
-                <button onclick={() => showPreview = false} class="px-4 py-2 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">{t("common.close")}</button>
-            </div>
-        </div>
-    </div>
-{/if}
+<ReceiptPrint
+    data={receiptData}
+    show={showPreview}
+    onClose={() => (showPreview = false)}
+    autoPrint={autoPrintReceipt}
+/>

@@ -14,7 +14,7 @@ import { ZodSchema, ZodError } from 'zod';
  *   router.post('/products', authenticate, validateBody(insertProductSchema), async (req, res) => { ... })
  */
 export function validateBody(schema: ZodSchema) {
-    return (req: Request, _res: Response, next: NextFunction): void => {
+    return (req: Request<any, any, any, any>, _res: Response<any>, next: NextFunction): void => {
         const result = schema.safeParse(req.body);
         if (!result.success) {
             next(result.error); // ZodError is handled by the global errorHandler
@@ -27,16 +27,20 @@ export function validateBody(schema: ZodSchema) {
 
 /**
  * Validate request query parameters against a Zod schema.
- * On success, replaces req.query with the parsed data.
+ * On success, replaces req.query's contents with the parsed data.
+ *
+ * Express 5 made `req.query` a read-only getter (no more `req.query = x`),
+ * so this mutates the existing query object in place instead of reassigning it.
  */
 export function validateQuery(schema: ZodSchema) {
-    return (req: Request, _res: Response, next: NextFunction): void => {
+    return (req: Request<any, any, any, any>, _res: Response<any>, next: NextFunction): void => {
         const result = schema.safeParse(req.query);
         if (!result.success) {
             next(result.error);
             return;
         }
-        req.query = result.data;
+        for (const key of Object.keys(req.query)) delete (req.query as Record<string, unknown>)[key];
+        Object.assign(req.query as object, result.data);
         next();
     };
 }
@@ -46,7 +50,7 @@ export function validateQuery(schema: ZodSchema) {
  * On success, replaces req.params with the parsed data.
  */
 export function validateParams(schema: ZodSchema) {
-    return (req: Request, _res: Response, next: NextFunction): void => {
+    return (req: Request<any, any, any, any>, _res: Response<any>, next: NextFunction): void => {
         const result = schema.safeParse(req.params);
         if (!result.success) {
             next(result.error);

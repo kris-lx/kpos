@@ -9,6 +9,7 @@
     import Sidebar from "$lib/components/layout/Sidebar.svelte";
     import StoreSelector from "$lib/components/layout/StoreSelector.svelte";
     import { api } from "$lib/api";
+    import { getRealtimeSocket, disconnectRealtimeSocket } from "$lib/realtime/socket";
     import {
         Menu,
         Bell,
@@ -19,7 +20,6 @@
         LogOut,
         User,
         Settings,
-        Search,
         Maximize,
         Minimize,
         Monitor,
@@ -30,13 +30,28 @@
 
     let { children } = $props();
 
+    // Child pages must not mount (and fire their own authenticated API calls
+    // in onMount) until the access token has actually been restored below —
+    // otherwise every hard page load races the token refresh and 401s.
+    let authReady = $state(false);
+
     let isSidebarOpen = $state(true);
     let isMobileSidebarOpen = $state(false);
+
+    // Collapse sidebar by default on tablet (md) so content has room
+    function initSidebarState() {
+        if (typeof window !== 'undefined') {
+            isSidebarOpen = window.innerWidth >= 1024;
+        }
+    }
     let isUserMenuOpen = $state(false);
     let isLangMenuOpen = $state(false);
     let isNotificationOpen = $state(false);
     let isFullscreen = $state(false);
-    let searchQuery = $state("");
+    // Driven by the actual settings:view permission (which super admin controls
+    // via Roles & Permissions) instead of a hardcoded role-name list — otherwise
+    // granting/revoking settings access through that UI has no effect here.
+    const canAccessSettingsMenu = $derived(auth.hasPermission('settings:view'));
 
     // Inactivity auto-logout — 15 minutes of no user interaction
     const INACTIVITY_MS = 15 * 60 * 1000;
@@ -44,6 +59,7 @@
     let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
     let notifInterval: ReturnType<typeof setInterval> | null = null;
     let heldInterval: ReturnType<typeof setInterval> | null = null;
+    let socketInitialized = false;
 
     function resetInactivityTimer() {
         if (inactivityTimer) clearTimeout(inactivityTimer);
@@ -182,6 +198,41 @@
         }
     }
 
+    function upsertRealtimeNotification(payload: any) {
+        const notification = {
+            id: payload.id || `realtime-${Date.now()}`,
+            title: payload.title || t("notifications.title"),
+            message: payload.message || payload.body || "",
+            time: payload.createdAt || new Date().toISOString(),
+            read: false,
+            type: payload.type || "info",
+        };
+        notifications = [
+            notification,
+            ...notifications.filter((n) => n.id !== notification.id),
+        ].slice(0, 10);
+        unreadCount += 1;
+    }
+
+    function connectRealtimeNotifications() {
+        if (socketInitialized) return;
+        const socket = getRealtimeSocket();
+        if (!socket) return;
+        socketInitialized = true;
+
+        socket.on('notification:new', upsertRealtimeNotification);
+        socket.on('notification:broadcast', upsertRealtimeNotification);
+        socket.on('connect', () => {
+            layoutPollFailures = 0;
+            loadNotifications();
+            loadPendingRequests();
+            loadHeldSalesCount();
+        });
+        socket.on('connect_error', () => {
+            socketInitialized = false;
+        });
+    }
+
     const languages = [
         { code: "th", name: "ภาษาไทย", flag: "🇹🇭" },
         { code: "en", name: "English", flag: "🇺🇸" },
@@ -191,6 +242,8 @@
     ];
 
     onMount(async () => {
+        initSidebarState();
+
         if (!auth.isAuthenticated) {
             const restored = auth.user ? await auth.refresh() : false;
             if (!restored) {
@@ -198,6 +251,7 @@
                 return;
             }
         }
+        authReady = true;
 
         // If user has no store access and is not admin/super admin, send to store-request
         const user = auth.user;
@@ -233,6 +287,7 @@
         loadNotifications();
         loadPendingRequests();
         loadHeldSalesCount();
+        connectRealtimeNotifications();
         // Auto-refresh notifications every 60 seconds, held sales every 30s
         notifInterval = setInterval(() => { loadNotifications(); loadPendingRequests(); }, 60 * 1000);
         heldInterval = setInterval(loadHeldSalesCount, 30 * 1000);
@@ -275,6 +330,7 @@
         if (heldInterval) clearInterval(heldInterval);
         if (inactivityTimer) clearTimeout(inactivityTimer);
         ACTIVITY_EVENTS.forEach(ev => document.removeEventListener(ev, resetInactivityTimer));
+        disconnectRealtimeSocket();
     });
 
     // Re-run route guard reactively when rules load after initial mount or when page changes
@@ -353,9 +409,9 @@
     <title>KPOS - Enterprise POS System</title>
 </svelte:head>
 
-<div class="min-h-screen bg-gray-100 dark:bg-gray-950 flex">
-    <!-- Desktop Sidebar -->
-    <div class="hidden lg:block fixed inset-y-0 left-0 z-50">
+<div class="app-shell h-screen h-dvh overflow-hidden bg-gray-100 dark:bg-gray-950 flex">
+    <!-- Desktop Sidebar: visible at tablet (768px) and above -->
+    <div class="app-sidebar-fixed hidden md:block fixed z-50">
         <Sidebar
             isOpen={isSidebarOpen}
             onToggle={() => (isSidebarOpen = !isSidebarOpen)}
@@ -367,7 +423,7 @@
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
-            class="fixed inset-0 z-40 bg-black/50 lg:hidden backdrop-blur-sm"
+            class="fixed inset-0 z-40 bg-black/50 md:hidden backdrop-blur-sm"
             onclick={() => (isMobileSidebarOpen = false)}
         ></div>
     {/if}
@@ -375,7 +431,7 @@
     <!-- Mobile Sidebar -->
     <div
         class={cn(
-            "fixed inset-y-0 left-0 z-50 lg:hidden",
+            "app-sidebar-fixed fixed z-50 md:hidden",
             "transition-transform duration-300 ease-out",
             isMobileSidebarOpen ? "translate-x-0" : "-translate-x-full",
         )}
@@ -384,6 +440,7 @@
             <Sidebar isOpen={true} />
             <button
                 onclick={() => (isMobileSidebarOpen = false)}
+                aria-label={t("common.close")}
                 class="absolute top-4 right-4 p-2 rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-500"
             >
                 <X class="w-5 h-5" />
@@ -394,41 +451,30 @@
     <!-- Main Content -->
     <div
         class={cn(
-            "flex-1 flex flex-col min-h-screen transition-all duration-300",
-            isSidebarOpen ? "lg:ml-64" : "lg:ml-20",
+            "flex-1 flex flex-col min-h-0 h-full transition-all duration-300",
+            isSidebarOpen ? "main-offset-open" : "main-offset-closed",
         )}
     >
         <!-- Top Header -->
         <header
-            class="sticky top-0 z-30 h-16 bg-white/95 dark:bg-gray-900/95 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between px-4 backdrop-blur-lg"
+            class="app-header sticky top-0 z-30 bg-white/95 dark:bg-gray-900/95 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between px-4 header-padding backdrop-blur-lg"
         >
             <!-- Left -->
             <div class="flex items-center gap-4">
                 <button
                     onclick={() => (isMobileSidebarOpen = true)}
-                    class="lg:hidden p-2 rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                    aria-label={t("nav.openMenu")}
+                    class="md:hidden p-2 rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
                 >
                     <Menu class="w-5 h-5" />
                 </button>
                 <button
                     onclick={() => (isSidebarOpen = !isSidebarOpen)}
-                    class="hidden lg:flex p-2 rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                    aria-label={isSidebarOpen ? t("nav.collapseSidebar") : t("nav.expandSidebar")}
+                    class="hidden md:flex p-2 rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
                 >
                     <Menu class="w-5 h-5" />
                 </button>
-
-                <!-- Search -->
-                <div class="relative hidden sm:block">
-                    <Search
-                        class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"
-                    />
-                    <input
-                        type="text"
-                        bind:value={searchQuery}
-                        placeholder={t("common.search")}
-                        class="w-64 pl-10 pr-4 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition-all"
-                    />
-                </div>
 
                 <!-- Store Selector -->
                 {#if auth.accessibleStores.length > 0}
@@ -482,8 +528,8 @@
                 <!-- Fullscreen Toggle -->
                 <button
                     onclick={toggleFullscreen}
+                    aria-label={isFullscreen ? t("common.exitFullscreen") : t("common.fullscreen")}
                     class="p-2 rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-                    title={isFullscreen ? "Exit Fullscreen" : "Fullscreen"}
                 >
                     {#if isFullscreen}
                         <Minimize class="w-5 h-5" />
@@ -496,8 +542,8 @@
                 <a
                     href="/display/customer"
                     target="_blank"
+                    aria-label={t("nav.customerDisplay")}
                     class="hidden md:flex p-2 rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-                    title="Customer Display"
                 >
                     <Monitor class="w-5 h-5" />
                 </a>
@@ -505,8 +551,8 @@
                 <!-- Theme Toggle -->
                 <button
                     onclick={toggleTheme}
+                    aria-label={themeStore.isDark ? t("common.lightMode") : t("common.darkMode")}
                     class="p-2 rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-                    title="Toggle Theme"
                 >
                     {#if themeStore.isDark}
                         <Sun class="w-5 h-5" />
@@ -519,6 +565,7 @@
                 <div class="relative" data-lang-menu>
                     <button
                         onclick={() => (isLangMenuOpen = !isLangMenuOpen)}
+                        aria-label={t("common.language")}
                         class="flex items-center gap-1 p-2 rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
                     >
                         <Languages class="w-5 h-5" />
@@ -552,8 +599,8 @@
                 <!-- Notifications -->
                 <div class="relative" data-notification-menu>
                     <button
-                        onclick={() =>
-                            (isNotificationOpen = !isNotificationOpen)}
+                        onclick={() => (isNotificationOpen = !isNotificationOpen)}
+                        aria-label={t("notifications.title")}
                         class="relative p-2 rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
                     >
                         <Bell class="w-5 h-5" />
@@ -675,9 +722,13 @@
                         class="flex items-center gap-2 p-1.5 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
                     >
                         <div
-                            class="w-8 h-8 rounded-full bg-linear-to-br from-primary-400 to-primary-600 flex items-center justify-center text-white font-medium shadow-sm"
+                            class="w-8 h-8 rounded-full bg-linear-to-br from-primary-400 to-primary-600 flex items-center justify-center text-white font-medium shadow-sm overflow-hidden shrink-0"
                         >
-                            {auth.user?.name?.charAt(0)}
+                            {#if auth.user?.avatar}
+                                <img src={auth.user.avatar} alt="" class="w-full h-full object-cover" />
+                            {:else}
+                                {auth.user?.name?.charAt(0)}
+                            {/if}
                         </div>
                         <div class="hidden sm:block text-left">
                             <p
@@ -699,18 +750,27 @@
                             class="absolute right-0 mt-2 w-56 bg-white dark:bg-gray-900 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-50"
                         >
                             <div
-                                class="px-4 py-3 border-b border-gray-200 dark:border-gray-700"
+                                class="px-4 py-3 border-b border-gray-200 dark:border-gray-700 flex items-center gap-3"
                             >
-                                <p
-                                    class="text-sm font-medium text-gray-900 dark:text-white"
-                                >
-                                    {auth.user?.name || "User"}
-                                </p>
-                                <p
-                                    class="text-xs text-gray-500 dark:text-gray-400"
-                                >
-                                    {auth.user?.email || ""}
-                                </p>
+                                <div class="w-10 h-10 rounded-full bg-linear-to-br from-primary-400 to-primary-600 flex items-center justify-center text-white font-medium shadow-sm overflow-hidden shrink-0">
+                                    {#if auth.user?.avatar}
+                                        <img src={auth.user.avatar} alt="" class="w-full h-full object-cover" />
+                                    {:else}
+                                        {auth.user?.name?.charAt(0)}
+                                    {/if}
+                                </div>
+                                <div class="min-w-0">
+                                    <p
+                                        class="text-sm font-medium text-gray-900 dark:text-white truncate"
+                                    >
+                                        {auth.user?.name || "User"}
+                                    </p>
+                                    <p
+                                        class="text-xs text-gray-500 dark:text-gray-400 truncate"
+                                    >
+                                        {auth.user?.email || ""}
+                                    </p>
+                                </div>
                             </div>
                             <a
                                 href="/settings/profile"
@@ -719,13 +779,15 @@
                                 <User class="w-4 h-4" />
                                 <span>{t("settings.profile")}</span>
                             </a>
-                            <a
-                                href="/settings"
-                                class="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-                            >
-                                <Settings class="w-4 h-4" />
-                                <span>{t("settings.title")}</span>
-                            </a>
+                            {#if canAccessSettingsMenu}
+                                <a
+                                    href="/settings"
+                                    class="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                                >
+                                    <Settings class="w-4 h-4" />
+                                    <span>{t("settings.title")}</span>
+                                </a>
+                            {/if}
                             <hr
                                 class="my-1 border-gray-200 dark:border-gray-700"
                             />
@@ -770,8 +832,14 @@
         {/if}
 
         <!-- Page Content -->
-        <main class="flex-1 overflow-auto">
-            {@render children()}
+        <main class="flex-1 min-h-0 overflow-auto overscroll-contain">
+            {#if authReady}
+                {@render children()}
+            {:else}
+                <div class="flex items-center justify-center h-full">
+                    <div class="w-8 h-8 border-2 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
+                </div>
+            {/if}
         </main>
     </div>
 </div>

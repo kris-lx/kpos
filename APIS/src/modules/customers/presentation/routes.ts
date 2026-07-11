@@ -4,15 +4,32 @@
 
 import { Router } from 'express';
 import { authenticate, authorize, branchFilter, buildScopeCondition, ensureScopeAccess, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
-import { db, dbRead } from '@/config/database.config';
+import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
+import { setRequestContext } from '@/db/set-tenant-context';
+import { db as globalDb } from '@/config/database.config';
 import { customers, membershipTiers, settings, pointsHistory, transactions } from '@/db/schema/tables';
 import { eq, and, or, ilike, desc, asc, count, sql } from 'drizzle-orm';
 
 export const customerRoutes = Router();
 
+// req.tx (a reserved connection) doesn't support .transaction() — see
+// tenant-tx.middleware.ts. Handlers that need real atomicity go through the
+// pooled globalDb instead, setting the RLS context with SET LOCAL inside.
+async function scopedTransaction(req, callback) {
+    return globalDb.transaction(async (tx) => {
+        const { tenantId, isSuperAdmin, activeBranchPath } = req.authUser ?? {};
+        if (tenantId && !isSuperAdmin) {
+            await setRequestContext(tx, { tenantId, branchPath: activeBranchPath }, { local: true });
+        }
+        return callback(tx);
+    });
+}
+
 // Get all customers
-customerRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
+customerRoutes.get('/', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { page = 1, limit = 50, search, branchId, storeId } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
         const filter = req.branchFilter;
@@ -60,6 +77,7 @@ customerRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => 
                 offset: skip,
                 limit: Number(limit),
                 orderBy: desc(customers.createdAt),
+                with: { priceLevel: { columns: { id: true, name: true } } },
             }),
             db.select({ value: count() }).from(customers).where(whereClause),
         ]);
@@ -79,8 +97,10 @@ customerRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => 
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get loyalty program (tiers + settings)
-customerRoutes.get('/loyalty', authenticate, async (req, res, next) => {
+customerRoutes.get('/loyalty', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { page = '1', limit = '20' } = req.query;
         const pageNum = Math.max(1, parseInt(String(page), 10) || 1);
         const limitNum = Math.min(100, Math.max(1, parseInt(String(limit), 10) || 20));
@@ -151,8 +171,10 @@ customerRoutes.get('/loyalty', authenticate, async (req, res, next) => {
 });
 
 // Create loyalty tier
-customerRoutes.post('/loyalty/tiers', authenticate, authorize('customers:create'), async (req, res, next) => {
+customerRoutes.post('/loyalty/tiers', authenticate, withTenantTx(), authorize('customers:create'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { name, minPoints, discountPercent, pointsMultiplier, benefits, color } = req.body;
 
         // Get max sort order scoped to this tenant
@@ -194,8 +216,10 @@ customerRoutes.post('/loyalty/tiers', authenticate, authorize('customers:create'
 });
 
 // Update loyalty tier
-customerRoutes.put('/loyalty/tiers/:id', authenticate, authorize('customers:update'), async (req, res, next) => {
+customerRoutes.put('/loyalty/tiers/:id', authenticate, withTenantTx(), authorize('customers:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { name, minPoints, discountPercent, pointsMultiplier, benefits, color, sortOrder } = req.body;
 
         const updateData: Record<string, unknown> = { updatedAt: new Date() };
@@ -235,8 +259,10 @@ customerRoutes.put('/loyalty/tiers/:id', authenticate, authorize('customers:upda
 });
 
 // Delete loyalty tier (soft delete)
-customerRoutes.delete('/loyalty/tiers/:id', authenticate, authorize('customers:delete'), async (req, res, next) => {
+customerRoutes.delete('/loyalty/tiers/:id', authenticate, withTenantTx(), authorize('customers:delete'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const tierDelTenantId = req.authUser?.tenantId;
         const tierDelConds: any[] = [eq(membershipTiers.id, req.params.id)];
         if (tierDelTenantId && !req.authUser?.isSuperAdmin) tierDelConds.push(eq(membershipTiers.tenantId, tierDelTenantId));
@@ -251,8 +277,10 @@ customerRoutes.delete('/loyalty/tiers/:id', authenticate, authorize('customers:d
 });
 
 // Get loyalty settings
-customerRoutes.get('/loyalty/settings', authenticate, async (req, res, next) => {
+customerRoutes.get('/loyalty/settings', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const loyaltyTenantId = req.authUser?.tenantId;
         const loyaltyGetConds: any[] = [eq(settings.category, 'loyalty'), eq(settings.key, 'program_settings')];
         if (loyaltyTenantId && !req.authUser?.isSuperAdmin) {
@@ -281,8 +309,10 @@ customerRoutes.get('/loyalty/settings', authenticate, async (req, res, next) => 
 });
 
 // Save loyalty settings
-customerRoutes.put('/loyalty/settings', authenticate, authorize('settings:update'), async (req, res, next) => {
+customerRoutes.put('/loyalty/settings', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const loyaltyPutTenantId = req.authUser?.tenantId;
         const loyaltyPutConds: any[] = [eq(settings.category, 'loyalty'), eq(settings.key, 'program_settings')];
         if (loyaltyPutTenantId && !req.authUser?.isSuperAdmin) {
@@ -315,8 +345,10 @@ customerRoutes.put('/loyalty/settings', authenticate, authorize('settings:update
 
 // Lookup customer by phone/member code
 // MUST be before /:id to prevent Express matching 'lookup' as :id
-customerRoutes.get('/lookup/:code', authenticate, async (req, res, next) => {
+customerRoutes.get('/lookup/:code', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         // BE-70: Tenant-scoped lookup
         const tenantId = req.authUser?.tenantId;
         const lookupConds: any[] = [
@@ -356,8 +388,10 @@ customerRoutes.get('/lookup/:code', authenticate, async (req, res, next) => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get customer by ID (scope-checked)
-customerRoutes.get('/:id', authenticate, async (req, res, next) => {
+customerRoutes.get('/:id', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         // BE-70: Tenant-scoped customer lookup
         const tenantId = req.authUser?.tenantId;
         const getConds: any[] = [eq(customers.id, req.params.id)];
@@ -369,6 +403,7 @@ customerRoutes.get('/:id', authenticate, async (req, res, next) => {
             where: and(...getConds),
             with: {
                 transactions: { limit: 10, orderBy: (t: any, { desc: d }: any) => [d(t.createdAt)] },
+                priceLevel: { columns: { id: true, name: true } },
             },
         });
 
@@ -388,11 +423,13 @@ customerRoutes.get('/:id', authenticate, async (req, res, next) => {
 });
 
 // Create customer
-customerRoutes.post('/', authenticate, authorize('customers:create'), async (req, res, next) => {
+customerRoutes.post('/', authenticate, withTenantTx(), authorize('customers:create'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const branchId = req.user!.branchId;
         const authUser = req.authUser!;
-        const { name, email, phone, address, taxId, birthDate, gender, notes, points, storeId } = req.body;
+        const { name, email, phone, address, taxId, birthDate, gender, notes, points, storeId, priceLevelId } = req.body;
 
         if (!name || !name.trim()) {
             return res.status(400).json({
@@ -425,6 +462,7 @@ customerRoutes.post('/', authenticate, authorize('customers:create'), async (req
             points: points || 0,
             branchId,
             storeId: finalStoreId,
+            priceLevelId: priceLevelId || null,
             memberCode,
         }).returning();
 
@@ -436,10 +474,12 @@ customerRoutes.post('/', authenticate, authorize('customers:create'), async (req
 });
 
 // Update customer
-customerRoutes.put('/:id', authenticate, authorize('customers:update'), async (req, res, next) => {
+customerRoutes.put('/:id', authenticate, withTenantTx(), authorize('customers:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const authUser = req.authUser!;
-        const { name, email, phone, address, taxId, birthDate, gender, notes, points, totalSpent, isActive, storeId } = req.body;
+        const { name, email, phone, address, taxId, birthDate, gender, notes, points, totalSpent, isActive, storeId, priceLevelId } = req.body;
 
         // BE-70: Tenant-scoped update
         const tenantId = authUser.tenantId;
@@ -475,6 +515,7 @@ customerRoutes.put('/:id', authenticate, authorize('customers:update'), async (r
         if (points !== undefined) updateData.points = Number(points) || 0;
         if (totalSpent !== undefined) updateData.totalSpent = Number(totalSpent) || 0;
         if (isActive !== undefined) updateData.isActive = Boolean(isActive);
+        if (priceLevelId !== undefined) updateData.priceLevelId = priceLevelId || null;
 
         // Never allow changing tenantId
         delete updateData.tenantId;
@@ -494,8 +535,10 @@ customerRoutes.put('/:id', authenticate, authorize('customers:update'), async (r
 });
 
 // Delete customer (soft delete)
-customerRoutes.delete('/:id', authenticate, authorize('customers:delete'), async (req, res, next) => {
+customerRoutes.delete('/:id', authenticate, withTenantTx(), authorize('customers:delete'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const authUser = req.authUser!;
 
         // BE-70: Tenant-scoped delete
@@ -524,8 +567,10 @@ customerRoutes.delete('/:id', authenticate, authorize('customers:delete'), async
 });
 
 // Add points to customer
-customerRoutes.post('/:id/points', authenticate, authorize('customers:update'), async (req, res, next) => {
+customerRoutes.post('/:id/points', authenticate, withTenantTx(), authorize('customers:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { points, reason } = req.body;
 
         const existing = await db.query.customers.findFirst({ where: eq(customers.id, req.params.id) });
@@ -535,7 +580,7 @@ customerRoutes.post('/:id/points', authenticate, authorize('customers:update'), 
         const adjustTenantId = req.authUser?.tenantId;
         const adjustUserId = req.authUser?.userId;
 
-        const customer = await db.transaction(async (tx) => {
+        const customer = await scopedTransaction(req, async (tx) => {
             const [updated] = await tx.update(customers)
                 .set({ points: sql`${customers.points} + ${points}`, updatedAt: new Date() })
                 .where(eq(customers.id, req.params.id))
@@ -558,8 +603,10 @@ customerRoutes.post('/:id/points', authenticate, authorize('customers:update'), 
 });
 
 // Get points history for a customer
-customerRoutes.get('/:id/points/history', authenticate, async (req, res, next) => {
+customerRoutes.get('/:id/points/history', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const customer = await db.query.customers.findFirst({ where: eq(customers.id, req.params.id) });
         if (!customer) return res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Customer not found' } });
         if (!ensureScopeAccess(customer, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
@@ -589,8 +636,10 @@ customerRoutes.get('/:id/points/history', authenticate, async (req, res, next) =
 });
 
 // Get purchase/sales history for a customer
-customerRoutes.get('/:id/sales', authenticate, async (req, res, next) => {
+customerRoutes.get('/:id/sales', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const customer = await db.query.customers.findFirst({ where: eq(customers.id, req.params.id) });
         if (!customer) return res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Customer not found' } });
         if (!ensureScopeAccess(customer, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
@@ -621,8 +670,10 @@ customerRoutes.get('/:id/sales', authenticate, async (req, res, next) => {
 });
 
 // Adjust points for a customer (add/deduct)
-customerRoutes.post('/:id/points/adjust', authenticate, authorize('customers:update'), async (req, res, next) => {
+customerRoutes.post('/:id/points/adjust', authenticate, withTenantTx(), authorize('customers:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { points, reason } = req.body;
         const customerId = req.params.id;
         const userId = req.authUser!.userId;
@@ -643,7 +694,7 @@ customerRoutes.post('/:id/points/adjust', authenticate, authorize('customers:upd
 
         // Update customer points and create history record in a transaction
         const adjustTenantId = req.authUser?.tenantId;
-        const { updatedCustomer, historyRecord } = await db.transaction(async (tx) => {
+        const { updatedCustomer, historyRecord } = await scopedTransaction(req, async (tx) => {
             const [updatedCustomer] = await tx.update(customers)
                 .set({ points: sql`${customers.points} + ${points}`, updatedAt: new Date() })
                 .where(eq(customers.id, customerId))

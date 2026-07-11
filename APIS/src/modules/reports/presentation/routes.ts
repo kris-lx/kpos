@@ -4,7 +4,8 @@
 
 import { Router } from 'express';
 import { authenticate, authorize, branchFilter, applyScopeFilter, buildScopeCondition, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
-import { db, dbRead } from '@/config/database.config';
+import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
+import { db as globalDb } from '@/config/database.config';
 import { transactions, transactionItems, transactionPayments, products, customers, inventory, users, promotions, coupons, pointsHistory, members, membershipTiers, branches, shifts } from '@/db/schema/tables';
 import { eq, and, or, not, ilike, inArray, isNotNull, gte, lte, lt, desc, asc, count, sum, sql } from 'drizzle-orm';
 import { computeDerivedFields, sortByTotalSales, summarise } from '../domain/branch-compare.js';
@@ -14,8 +15,10 @@ export const reportRoutes = Router();
 // ═══════════════════════════════════════════════════════════════════════════
 // DASHBOARD SUMMARY
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/summary', authenticate, branchFilter(), async (req, res, next) => {
+reportRoutes.get('/summary', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const filter = req.branchFilter;
         const branchId = filter?.branchIds?.[0] || req.user!.branchId;
         const today = new Date();
@@ -94,8 +97,10 @@ reportRoutes.get('/summary', authenticate, branchFilter(), async (req, res, next
 // ═══════════════════════════════════════════════════════════════════════════
 // SALES REPORT
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/sales', authenticate, branchFilter(), async (req, res, next) => {
+reportRoutes.get('/sales', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { startDate, endDate, groupBy = 'day' } = req.query;
         const filter = req.branchFilter;
         const branchId = filter?.branchIds?.[0] || req.user!.branchId;
@@ -164,8 +169,10 @@ reportRoutes.get('/sales', authenticate, branchFilter(), async (req, res, next) 
 // ═══════════════════════════════════════════════════════════════════════════
 // TOP PRODUCTS REPORT
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/top-products', authenticate, branchFilter(), async (req, res, next) => {
+reportRoutes.get('/top-products', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { startDate, endDate, limit = 10 } = req.query;
         const filter = req.branchFilter;
         const branchId = filter?.branchIds?.[0] || req.user!.branchId;
@@ -219,8 +226,10 @@ reportRoutes.get('/top-products', authenticate, branchFilter(), async (req, res,
 // ═══════════════════════════════════════════════════════════════════════════
 // INVENTORY REPORT
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/inventory', authenticate, branchFilter(), async (req, res, next) => {
+reportRoutes.get('/inventory', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { lowStockOnly, page = '1', limit = '20', search, stockFilter } = req.query;
         const filter = req.branchFilter;
         const branchId = filter?.branchIds?.[0] || req.user!.branchId;
@@ -307,8 +316,10 @@ reportRoutes.get('/inventory', authenticate, branchFilter(), async (req, res, ne
 // ═══════════════════════════════════════════════════════════════════════════
 // PAYMENT METHODS REPORT
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/payments', authenticate, branchFilter(), async (req, res, next) => {
+reportRoutes.get('/payments', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { startDate, endDate } = req.query;
         const filter = req.branchFilter;
         const branchId = filter?.branchIds?.[0] || req.user!.branchId;
@@ -354,8 +365,10 @@ reportRoutes.get('/payments', authenticate, branchFilter(), async (req, res, nex
 // ═══════════════════════════════════════════════════════════════════════════
 // CUSTOMER REPORT
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/customers', authenticate, branchFilter(), async (req, res, next) => {
+reportRoutes.get('/customers', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { from, to, limit = 20, page = '1', search, branchId: qBranchId } = req.query;
         const filter = req.branchFilter;
         const requestedBranchId = qBranchId ? String(qBranchId) : undefined;
@@ -503,8 +516,10 @@ reportRoutes.get('/customers', authenticate, branchFilter(), async (req, res, ne
 // ═══════════════════════════════════════════════════════════════════════════
 // PRODUCTS REPORT (with sales data)
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/products', authenticate, branchFilter(), async (req, res, next) => {
+reportRoutes.get('/products', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { period = 'month', page = '1', limit = '20', search } = req.query;
         const filter = req.branchFilter;
         const branchId = filter?.branchIds?.[0] || req.user!.branchId;
@@ -595,8 +610,10 @@ reportRoutes.get('/products', authenticate, branchFilter(), async (req, res, nex
 // ═══════════════════════════════════════════════════════════════════════════
 // FINANCIAL REPORT
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/financial', authenticate, authorize('reports:financial'), branchFilter(), async (req, res, next) => {
+reportRoutes.get('/financial', authenticate, withTenantTx(), authorize('reports:financial'), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { period = 'month' } = req.query;
         const filter = req.branchFilter;
         const branchId = filter?.branchIds?.[0] || req.user!.branchId;
@@ -734,8 +751,10 @@ reportRoutes.get('/financial', authenticate, authorize('reports:financial'), bra
 // ═══════════════════════════════════════════════════════════════════════════
 // STAFF REPORT
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/staff', authenticate, branchFilter(), async (req, res, next) => {
+reportRoutes.get('/staff', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { period = 'month', page = '1', limit = '20', search, branchId: qBranchId } = req.query;
         const filter = req.branchFilter;
         // If branchId query param provided and in accessible branches, use it as a drill-down filter
@@ -885,8 +904,10 @@ reportRoutes.get('/staff', authenticate, branchFilter(), async (req, res, next) 
 // ═══════════════════════════════════════════════════════════════════════════
 // R-01  PERIOD COMPARE
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/period-compare', authenticate, branchFilter(), async (req, res, next) => {
+reportRoutes.get('/period-compare', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { from1, to1, from2, to2, branchId: qBranchId } = req.query;
         const filter = req.branchFilter;
         const tenantId = req.authUser?.tenantId;
@@ -927,8 +948,10 @@ reportRoutes.get('/period-compare', authenticate, branchFilter(), async (req, re
 // ═══════════════════════════════════════════════════════════════════════════
 // R-03  STAFF PERFORMANCE (enhanced: voidCount + discountTotal)
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/staff-performance', authenticate, branchFilter(), async (req, res, next) => {
+reportRoutes.get('/staff-performance', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { from, to, branchId: qBranchId, limit: qLimit = '20' } = req.query;
         const filter = req.branchFilter;
         const tenantId = req.authUser?.tenantId;
@@ -965,8 +988,10 @@ reportRoutes.get('/staff-performance', authenticate, branchFilter(), async (req,
 // ═══════════════════════════════════════════════════════════════════════════
 // R-04  BEST-SELLING PRODUCTS (with cost + gross profit)
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/products/best-selling', authenticate, branchFilter(), async (req, res, next) => {
+reportRoutes.get('/products/best-selling', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { from, to, limit: qLimit = '20', branchId: qBranchId } = req.query;
         const filter = req.branchFilter;
         const tenantId = req.authUser?.tenantId;
@@ -996,8 +1021,10 @@ reportRoutes.get('/products/best-selling', authenticate, branchFilter(), async (
 // ═══════════════════════════════════════════════════════════════════════════
 // R-05  PROMOTIONS PERFORMANCE
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/promotions', authenticate, branchFilter(), async (req, res, next) => {
+reportRoutes.get('/promotions', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const page = Math.max(1, Number(req.query.page) || 1);
         const limit = Math.min(100, Math.max(5, Number(req.query.limit) || 10));
         const offset = (page - 1) * limit;
@@ -1027,8 +1054,10 @@ reportRoutes.get('/promotions', authenticate, branchFilter(), async (req, res, n
 // ═══════════════════════════════════════════════════════════════════════════
 // R-06  LOYALTY STATS
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/loyalty', authenticate, branchFilter(), async (req, res, next) => {
+reportRoutes.get('/loyalty', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { from, to } = req.query;
         const tenantId = req.authUser?.tenantId;
         const isSuperAdmin = req.authUser?.isSuperAdmin;
@@ -1057,8 +1086,10 @@ reportRoutes.get('/loyalty', authenticate, branchFilter(), async (req, res, next
 // ═══════════════════════════════════════════════════════════════════════════
 // R-02  BRANCH COMPARE
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/branch-compare', authenticate, branchFilter(), async (req, res, next) => {
+reportRoutes.get('/branch-compare', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { from, to } = req.query;
         const page = Math.max(1, Number(req.query.page) || 1);
         const limit = Math.min(100, Math.max(5, Number(req.query.limit) || 10));

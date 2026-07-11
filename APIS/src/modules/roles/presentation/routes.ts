@@ -6,14 +6,17 @@ import { Router } from 'express';
 import { authenticate, authorize, ROLE_LEVELS, invalidateUserStoreCache } from '@/infrastructure/http/middleware/auth.middleware';
 import { permissionsToMask, maskToStrings } from '@/infrastructure/permissions';
 import { invalidateAllTenantPermissions, invalidateUserPermissions } from '@/infrastructure/services/permission.service';
-import { db } from '@/config/database.config';
+import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
+import { db as globalDb } from '@/config/database.config';
 import { roles, users, permissionGroups, permissions, branches } from '@/db/schema/tables';
 import { eq, and, or, ilike, notInArray, isNull, desc, count, asc } from 'drizzle-orm';
 
 export const roleRoutes = Router();
 
 async function loadActivePermissionKeys(): Promise<Set<string>> {
-    const rows = await db.query.permissions.findMany({
+    // permissions is a global system catalog (no tenantId column) — not tenant-scoped.
+    // eslint-disable-next-line no-restricted-syntax -- permissions is a global system catalog (no tenantId column)
+    const rows = await globalDb.query.permissions.findMany({
         where: eq(permissions.isActive, true),
         columns: { key: true },
     });
@@ -26,8 +29,9 @@ async function loadActivePermissionKeys(): Promise<Set<string>> {
 // ═══════════════════════════════════════════════════════════════════════════
 // GET ALL AVAILABLE PERMISSIONS — DB-driven, falls back to hardcoded list
 // ═══════════════════════════════════════════════════════════════════════════
-roleRoutes.get('/permissions', authenticate, authorize('roles:read'), async (_req, res) => {
+roleRoutes.get('/permissions', authenticate, withTenantTx(), authorize('roles:read'), async (req, res) => {
     try {
+        const db = req.tx ?? globalDb;
         // Try to load from DB (permission_groups + permissions tables)
         const groups = await db.query.permissionGroups.findMany({
             where: eq(permissionGroups.isActive, true),
@@ -67,7 +71,7 @@ roleRoutes.get('/permissions', authenticate, authorize('roles:read'), async (_re
 // ═══════════════════════════════════════════════════════════════════════════
 // GET ROLE LEVELS — returns the 7-level hierarchy for UI dropdowns
 // ═══════════════════════════════════════════════════════════════════════════
-roleRoutes.get('/levels', authenticate, async (req, res) => {
+roleRoutes.get('/levels', authenticate, withTenantTx(), async (req, res) => {
     const authUser = req.authUser!;
     const userLevel = authUser.isSuperAdmin ? 1 : (ROLE_LEVELS[authUser.role] ?? 7);
 
@@ -87,8 +91,9 @@ roleRoutes.get('/levels', authenticate, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 // GET ALL ROLES
 // ═══════════════════════════════════════════════════════════════════════════
-roleRoutes.get('/', authenticate, authorize('roles:read'), async (req, res) => {
+roleRoutes.get('/', authenticate, withTenantTx(), authorize('roles:read'), async (req, res) => {
     try {
+        const db = req.tx ?? globalDb;
         const { page = '1', limit = '50', search } = req.query;
         const skip = (parseInt(page as string) - 1) * parseInt(limit as string);
         const authUser = req.authUser!;
@@ -166,8 +171,9 @@ roleRoutes.get('/', authenticate, authorize('roles:read'), async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 // GET ROLE BY ID
 // ═══════════════════════════════════════════════════════════════════════════
-roleRoutes.get('/:id', authenticate, authorize('roles:read'), async (req, res) => {
+roleRoutes.get('/:id', authenticate, withTenantTx(), authorize('roles:read'), async (req, res) => {
     try {
+        const db = req.tx ?? globalDb;
         const role = await db.query.roles.findFirst({
             where: eq(roles.id, req.params.id),
             with: { users: true },
@@ -193,8 +199,9 @@ roleRoutes.get('/:id', authenticate, authorize('roles:read'), async (req, res) =
 // ═══════════════════════════════════════════════════════════════════════════
 // CREATE ROLE
 // ═══════════════════════════════════════════════════════════════════════════
-roleRoutes.post('/', authenticate, authorize('roles:create'), async (req, res) => {
+roleRoutes.post('/', authenticate, withTenantTx(), authorize('roles:create'), async (req, res) => {
     try {
+        const db = req.tx ?? globalDb;
         const { name, displayName, description, permissions = [] } = req.body;
 
         // Validate required fields - only name is required now
@@ -309,8 +316,9 @@ roleRoutes.post('/', authenticate, authorize('roles:create'), async (req, res) =
 // ═══════════════════════════════════════════════════════════════════════════
 // UPDATE ROLE
 // ═══════════════════════════════════════════════════════════════════════════
-roleRoutes.put('/:id', authenticate, authorize('roles:update'), async (req, res) => {
+roleRoutes.put('/:id', authenticate, withTenantTx(), authorize('roles:update'), async (req, res) => {
     try {
+        const db = req.tx ?? globalDb;
         const { id } = req.params;
         const { name, displayName, description, permissions } = req.body;
 
@@ -417,8 +425,9 @@ roleRoutes.put('/:id', authenticate, authorize('roles:update'), async (req, res)
 // ═══════════════════════════════════════════════════════════════════════════
 // DELETE ROLE
 // ═══════════════════════════════════════════════════════════════════════════
-roleRoutes.delete('/:id', authenticate, authorize('roles:delete'), async (req, res) => {
+roleRoutes.delete('/:id', authenticate, withTenantTx(), authorize('roles:delete'), async (req, res) => {
     try {
+        const db = req.tx ?? globalDb;
         const { id } = req.params;
 
         // BE-60: Tenant-scoped role delete
@@ -476,8 +485,9 @@ roleRoutes.delete('/:id', authenticate, authorize('roles:delete'), async (req, r
 // ═══════════════════════════════════════════════════════════════════════════
 // ASSIGN ROLE TO USER
 // ═══════════════════════════════════════════════════════════════════════════
-roleRoutes.post('/:id/assign', authenticate, authorize('roles:update'), async (req, res) => {
+roleRoutes.post('/:id/assign', authenticate, withTenantTx(), authorize('roles:update'), async (req, res) => {
     try {
+        const db = req.tx ?? globalDb;
         const { id } = req.params;
         const { userId } = req.body;
 

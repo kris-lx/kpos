@@ -4,12 +4,14 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { createHmac } from 'crypto';
-import { consume, subscribeCacheInvalidation, QUEUES, isRabbitMQConnected } from '@/config/rabbitmq.config';
+import { consume, subscribeCacheInvalidation, publish, QUEUES, isRabbitMQConnected } from '@/config/rabbitmq.config';
 import { cache } from '@/config/redis.config';
 import { db } from '@/config/database.config';
 import { inventory, stockMovements, activityLogs, notifications, sessions } from '@/db/schema/tables';
 import { eq, and, lt, isNotNull } from 'drizzle-orm';
 import { SocketEventEmitter } from '@/infrastructure/http/socket';
+import { webPushService } from '@/infrastructure/services/webpush.service';
+import { sendEmail, logEmailResult, type SendEmailParams } from '@/infrastructure/services/email/email.service';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Stock Movement Worker
@@ -138,6 +140,7 @@ function handleCacheInvalidation(pattern: string): void {
 // ═══════════════════════════════════════════════════════════════════════════
 async function processNotification(data: {
     userId: string;
+    tenantId?: string | null;
     type: string;
     title: string;
     message: string;
@@ -159,6 +162,37 @@ async function processNotification(data: {
         data: data.data,
         createdAt: notification.createdAt,
     });
+
+    webPushService.sendToUser(data.userId, {
+        title: data.title,
+        body: data.message,
+        tag: data.type,
+        data: data.data,
+    }).catch(() => {});
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Email Worker — sends via the tenant's configured provider, retries with
+// backoff (1m, 5m, 30m) by republishing rather than relying on RabbitMQ's
+// own immediate-requeue nack (which would hot-loop on a permanent failure
+// like bad credentials).
+// ═══════════════════════════════════════════════════════════════════════════
+const EMAIL_RETRY_DELAYS_MS = [60_000, 5 * 60_000, 30 * 60_000];
+
+async function processEmail(data: SendEmailParams & { attempt: number }): Promise<void> {
+    const { attempt, ...params } = data;
+    try {
+        await sendEmail(params);
+        await logEmailResult({ tenantId: params.tenantId, toEmail: params.to.join(','), templateKey: params.templateKey, status: 'sent' });
+    } catch (err: any) {
+        if (attempt < EMAIL_RETRY_DELAYS_MS.length) {
+            setTimeout(() => {
+                publish(QUEUES.EMAIL, { ...params, attempt: attempt + 1 });
+            }, EMAIL_RETRY_DELAYS_MS[attempt]);
+        } else {
+            await logEmailResult({ tenantId: params.tenantId, toEmail: params.to.join(','), templateKey: params.templateKey, status: 'failed', error: err?.message || String(err) });
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -229,9 +263,10 @@ export function startWorkers(): void {
     consume(QUEUES.ACTIVITY_LOG, processActivityLog);
     consume(QUEUES.NOTIFICATION, processNotification);
     consume(QUEUES.ASSET_CLEANUP, processAssetCleanup);
+    consume(QUEUES.EMAIL, processEmail);
     subscribeCacheInvalidation(handleCacheInvalidation);
 
-    console.log('✅ Queue workers started: stock-movement, activity-log, notification, asset-cleanup, cache-invalidation');
+    console.log('✅ Queue workers started: stock-movement, activity-log, notification, asset-cleanup, email, cache-invalidation');
 }
 
 export async function startScheduledJobs(): Promise<void> {

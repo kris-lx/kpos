@@ -64,8 +64,32 @@
         phone: "",
         email: "",
         description: "",
+        logo: "",
         isDefault: false,
     });
+    let isUploadingLogo = $state(false);
+
+    async function handleStoreLogoUpload(event: Event) {
+        const input = event.target as HTMLInputElement;
+        const file = input.files?.[0];
+        if (!file) return;
+        isUploadingLogo = true;
+        try {
+            const base64 = await new Promise<string>((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = (e) => resolve(e.target?.result as string);
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+            const res = await api.post("upload/single", { json: { image: base64, filename: file.name, folder: "logos" } }).json<any>();
+            formData.logo = res.success && res.data?.url ? res.data.url : base64;
+        } catch {
+            toast.error(t("common.error"));
+        } finally {
+            isUploadingLogo = false;
+            input.value = "";
+        }
+    }
 
     // Fetch branches scoped to admin's store
     const branchesQuery = createQuery({
@@ -91,8 +115,13 @@
     // Refetch stores when search/filter changes
     $effect(() => { void debouncedSearch; void selectedBranchId; get(storesQuery).refetch(); });
 
-    // Refetch stores after mutations
-    function invalidateStores() { get(storesQuery).refetch(); }
+    // Refetch stores after mutations. Also refresh the global auth store's
+    // accessibleStores list — otherwise store dropdowns elsewhere in the app
+    // (e.g. Staff assignment, StoreSelector) stay stale until re-login.
+    function invalidateStores() {
+        get(storesQuery).refetch();
+        void auth.refreshStores();
+    }
 
     // Create store mutation
     const createStoreMutation = createMutation({
@@ -153,6 +182,7 @@
             phone: "",
             email: "",
             description: "",
+            logo: "",
             isDefault: false,
         };
     }
@@ -168,6 +198,7 @@
                 phone: store.phone || "",
                 email: store.email || "",
                 description: store.description || "",
+                logo: store.logo || "",
                 isDefault: store.isDefault || false,
             };
         } else {
@@ -453,6 +484,31 @@
 
             <!-- Modal Body -->
             <form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }} class="p-6 space-y-4">
+                <!-- Logo -->
+                <div class="flex items-center gap-4">
+                    <div class="w-16 h-16 rounded-2xl bg-gray-100 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 flex items-center justify-center overflow-hidden shrink-0">
+                        {#if formData.logo}
+                            <img src={formData.logo} alt="" class="w-full h-full object-cover" />
+                        {:else}
+                            <Store class="w-6 h-6 text-gray-400" />
+                        {/if}
+                    </div>
+                    <div class="flex-1">
+                        <label class="inline-flex items-center gap-2 px-3.5 py-2 bg-gray-100 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-700 text-sm text-gray-700 dark:text-gray-300 transition-colors">
+                            {#if isUploadingLogo}
+                                <Loader2 class="w-4 h-4 animate-spin" />
+                                {t("common.loading")}
+                            {:else}
+                                {formData.logo ? t("settings.changeLogo") : t("settings.uploadLogo")}
+                            {/if}
+                            <input type="file" accept="image/*" class="hidden" disabled={isUploadingLogo} onchange={handleStoreLogoUpload} />
+                        </label>
+                        {#if formData.logo}
+                            <button type="button" onclick={() => (formData.logo = "")} class="ml-2 text-xs text-danger-500 hover:underline">{t("settings.removeLogo")}</button>
+                        {/if}
+                    </div>
+                </div>
+
                 <div class="grid grid-cols-2 gap-4">
                     <div>
                         <label for="a11y-app-management-stores-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("stores.name")} *</label>

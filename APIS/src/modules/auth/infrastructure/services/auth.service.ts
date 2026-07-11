@@ -8,6 +8,7 @@ import argon2 from 'argon2';
 import { db } from '@/config/database.config';
 import { jwtConfig, appConfig } from '@/config/app.config';
 import { cache } from '@/config/redis.config';
+import { isSessionExpired } from '@/shared/session-cap';
 import { DatabaseConnectionError } from '@/shared/domain/errors';
 import { users, storeRequests, roles, branches, sessions } from '@/db/schema/tables';
 import { eq, and } from 'drizzle-orm';
@@ -25,6 +26,7 @@ export interface IdentityJwtPayload {
     bid: string;   // branchId
     scope: string; // 'tenant' | 'platform'
     jti: string;   // unique token id for revocation
+    sst: number;   // session start (epoch seconds of original login) — fixed across refresh rotations
     iat: number;
     exp: number;
 }
@@ -46,6 +48,7 @@ export interface LoginResponse {
         branchId: string;
         tenantId: string;
         isSuperAdmin: boolean;
+        avatar: string | null;
     };
 }
 
@@ -59,7 +62,9 @@ export interface RegisterResponse {
 // ─── Cookie helpers ──────────────────────────────────────────────────────
 
 const REFRESH_COOKIE_NAME = 'kpos_refresh_token';
-const REFRESH_COOKIE_MAX_AGE = 7 * 24 * 60 * 60 * 1000; // 7 days in ms
+// Cookie must not outlive the absolute session cap — otherwise a stale cookie
+// would sit in the browser past the point the server will ever honor it.
+const REFRESH_COOKIE_MAX_AGE = jwtConfig.sessionAbsoluteMs;
 
 /** Set refresh token as HttpOnly cookie (BE-04) */
 function setRefreshCookie(res: Response, refreshToken: string): void {
@@ -197,6 +202,7 @@ export class AuthService {
                 branchId: user.branchId || '',
                 tenantId: user.tenantId || '',
                 isSuperAdmin: user.isSuperAdmin || false,
+                avatar: user.avatar || null,
             },
         };
     }
@@ -275,11 +281,20 @@ export class AuthService {
                 throw new Error('Invalid refresh token');
             }
 
+            // Absolute session cap: refresh-token rotation can keep a token pair
+            // alive indefinitely, so the hard 20h-from-login limit has to be
+            // enforced here, not just via token TTL. Once hit, force re-login.
+            const sessionStart = decoded.sst ?? decoded.iat;
+            if (isSessionExpired(sessionStart, jwtConfig.sessionAbsoluteMs)) {
+                await cache.del(`refresh_jti:${decoded.jti}`);
+                throw new Error('Session expired, please log in again');
+            }
+
             // Revoke old jti
             await cache.del(`refresh_jti:${decoded.jti}`);
 
-            // Issue new pair with new jti
-            const tokens = this.generateTokens(decoded.sub, decoded.bid, decoded.tid, decoded.scope);
+            // Issue new pair with new jti, preserving the original session start
+            const tokens = this.generateTokens(decoded.sub, decoded.bid, decoded.tid, decoded.scope, sessionStart);
 
             // Store new refresh jti
             await this.storeRefreshJti(tokens.jti, decoded.sub);
@@ -350,10 +365,12 @@ export class AuthService {
         branchId: string,
         tenantId: string,
         scope: string,
+        sessionStart?: number,
     ): TokenPair {
         const jti = crypto.randomUUID();
+        const sst = sessionStart ?? Math.floor(Date.now() / 1000);
 
-        const payload = { sub: userId, tid: tenantId, bid: branchId, scope, jti };
+        const payload = { sub: userId, tid: tenantId, bid: branchId, scope, jti, sst };
 
         const accessToken = jwt.sign(payload, jwtConfig.secret, {
             expiresIn: jwtConfig.expiresIn as jwt.SignOptions['expiresIn'],
@@ -368,8 +385,8 @@ export class AuthService {
 
     /** Store refresh jti → userId mapping in Redis (BE-05) */
     private async storeRefreshJti(jti: string, userId: string): Promise<void> {
-        // Store for 7 days (matching refresh token expiry)
-        await cache.set(`refresh_jti:${jti}`, userId, 7 * 24 * 60 * 60);
+        // TTL matches the absolute session cap — no point outliving it
+        await cache.set(`refresh_jti:${jti}`, userId, jwtConfig.sessionAbsoluteMs / 1000);
     }
 }
 

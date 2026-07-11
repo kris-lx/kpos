@@ -80,7 +80,7 @@
         </button>
     </div>
 
-    <div class="w-full max-w-md">
+    <div class="auth-card">
         <!-- Logo & Title -->
         <div class="text-center mb-8">
             <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-white dark:bg-gray-800 shadow-lg mb-4">

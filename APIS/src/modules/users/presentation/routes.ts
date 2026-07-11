@@ -4,7 +4,8 @@
 
 import { Router } from 'express';
 import { authenticate, authorize, branchFilter, ensureScopeAccess, getRoleLevel, invalidateUserStoreCache } from '@/infrastructure/http/middleware/auth.middleware';
-import { db } from '@/config/database.config';
+import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
+import { db as globalDb } from '@/config/database.config';
 import { users, userStores, branches, transactions, menuPermissions, rules, roleRules, roles } from '@/db/schema/tables';
 import { eq, and, or, ilike, inArray, notInArray, desc, asc, count, isNull } from 'drizzle-orm';
 import argon2 from 'argon2';
@@ -46,8 +47,9 @@ async function invalidateUserAuthCaches(userId: string, tenantId?: string | null
 // ═══════════════════════════════════════════════════════════════════════════
 // GET ALL USERS
 // ═══════════════════════════════════════════════════════════════════════════
-userRoutes.get('/', authenticate, authorize('users:read'), branchFilter(), async (req, res) => {
+userRoutes.get('/', authenticate, withTenantTx(), authorize('users:read'), branchFilter(), async (req, res) => {
     try {
+        const db = req.tx ?? globalDb;
         const { page = '1', limit = '50', search, branchId, role, isActive } = req.query;
         const skip = (parseInt(page as string) - 1) * parseInt(limit as string);
         const authUser = req.authUser;
@@ -127,8 +129,9 @@ userRoutes.get('/', authenticate, authorize('users:read'), branchFilter(), async
 // ═══════════════════════════════════════════════════════════════════════════
 // GET USER BY ID
 // ═══════════════════════════════════════════════════════════════════════════
-userRoutes.get('/:id', authenticate, authorize('users:read'), async (req, res) => {
+userRoutes.get('/:id', authenticate, withTenantTx(), authorize('users:read'), async (req, res) => {
     try {
+        const db = req.tx ?? globalDb;
         const user = await db.query.users.findFirst({
             where: eq(users.id, req.params.id),
             columns: USER_SAFE_COLUMNS,
@@ -160,8 +163,9 @@ userRoutes.get('/:id', authenticate, authorize('users:read'), async (req, res) =
 // ═══════════════════════════════════════════════════════════════════════════
 // CREATE USER
 // ═══════════════════════════════════════════════════════════════════════════
-userRoutes.post('/', authenticate, authorize('users:create'), async (req, res) => {
+userRoutes.post('/', authenticate, withTenantTx(), authorize('users:create'), async (req, res) => {
     try {
+        const db = req.tx ?? globalDb;
         const { email, password, name, phone, avatar, role, roleId, branchId, isActive = true } = req.body;
 
         // Validate required fields
@@ -248,8 +252,9 @@ userRoutes.post('/', authenticate, authorize('users:create'), async (req, res) =
 // ═══════════════════════════════════════════════════════════════════════════
 // UPDATE USER
 // ═══════════════════════════════════════════════════════════════════════════
-userRoutes.put('/:id', authenticate, authorize('users:update'), async (req, res) => {
+userRoutes.put('/:id', authenticate, withTenantTx(), authorize('users:update'), async (req, res) => {
     try {
+        const db = req.tx ?? globalDb;
         const { id } = req.params;
         const { email, password, name, phone, avatar, role, roleId, branchId, isActive } = req.body;
 
@@ -346,8 +351,9 @@ userRoutes.put('/:id', authenticate, authorize('users:update'), async (req, res)
 // ═══════════════════════════════════════════════════════════════════════════
 // DELETE USER
 // ═══════════════════════════════════════════════════════════════════════════
-userRoutes.delete('/:id', authenticate, authorize('users:delete'), async (req, res) => {
+userRoutes.delete('/:id', authenticate, withTenantTx(), authorize('users:delete'), async (req, res) => {
     try {
+        const db = req.tx ?? globalDb;
         const { id } = req.params;
 
         const tenantId = req.authUser?.tenantId;
@@ -401,8 +407,9 @@ userRoutes.delete('/:id', authenticate, authorize('users:delete'), async (req, r
 // ═══════════════════════════════════════════════════════════════════════════
 // TOGGLE USER ACTIVE STATUS
 // ═══════════════════════════════════════════════════════════════════════════
-userRoutes.patch('/:id/toggle-active', authenticate, authorize('users:update'), async (req, res) => {
+userRoutes.patch('/:id/toggle-active', authenticate, withTenantTx(), authorize('users:update'), async (req, res) => {
     try {
+        const db = req.tx ?? globalDb;
         const { id } = req.params;
 
         const tenantId = req.authUser?.tenantId;
@@ -439,8 +446,9 @@ userRoutes.patch('/:id/toggle-active', authenticate, authorize('users:update'), 
 // ═══════════════════════════════════════════════════════════════════════════
 // GET USER PERMISSIONS (Combined: Role + User-specific)
 // ═══════════════════════════════════════════════════════════════════════════
-userRoutes.get('/:id/permissions', authenticate, authorize('users:read'), async (req, res) => {
+userRoutes.get('/:id/permissions', authenticate, withTenantTx(), authorize('users:read'), async (req, res) => {
     try {
+        const db = req.tx ?? globalDb;
         const tenantId = req.authUser?.tenantId;
         const userConds: any[] = [eq(users.id, req.params.id)];
         if (tenantId && !req.authUser?.isSuperAdmin) userConds.push(eq(users.tenantId, tenantId));
@@ -523,8 +531,9 @@ userRoutes.get('/:id/permissions', authenticate, authorize('users:read'), async 
 // ═══════════════════════════════════════════════════════════════════════════
 // UPDATE USER PERMISSIONS
 // ═══════════════════════════════════════════════════════════════════════════
-userRoutes.put('/:id/permissions', authenticate, authorize('users:update'), async (req, res) => {
+userRoutes.put('/:id/permissions', authenticate, withTenantTx(), authorize('users:update'), async (req, res) => {
     try {
+        const db = req.tx ?? globalDb;
         const { permissions } = req.body;
 
         if (!Array.isArray(permissions)) {
@@ -574,7 +583,7 @@ userRoutes.put('/:id/permissions', authenticate, authorize('users:update'), asyn
 // ═══════════════════════════════════════════════════════════════════════════
 // GET ALL AVAILABLE PERMISSIONS
 // ═══════════════════════════════════════════════════════════════════════════
-userRoutes.get('/permissions/all', authenticate, authorize('users:read'), async (_req, res) => {
+userRoutes.get('/permissions/all', authenticate, withTenantTx(), authorize('users:read'), async (_req, res) => {
     try {
         const allPermissions = [
             { module: 'dashboard', label: 'ແຜງຄວບຄຸມ', permissions: [
@@ -732,8 +741,9 @@ userRoutes.get('/permissions/all', authenticate, authorize('users:read'), async 
 // ═══════════════════════════════════════════════════════════════════════════
 // GET CURRENT USER'S MENU (filtered by roleRules.canRead — Level 2 of permission model)
 // ═══════════════════════════════════════════════════════════════════════════
-userRoutes.get('/me/menu', authenticate, async (req, res) => {
+userRoutes.get('/me/menu', authenticate, withTenantTx(), async (req, res) => {
     try {
+        const db = req.tx ?? globalDb;
         const authUser = req.authUser!;
         const isSuperAdmin = authUser.isSuperAdmin === true;
 
@@ -828,8 +838,9 @@ userRoutes.get('/me/menu', authenticate, async (req, res) => {
 // GET CURRENT USER'S RULES (Rule-Based RBAC)
 // Returns: { rules: [{ name, module, routes[], crud: {read,create,update,delete} }] }
 // ═══════════════════════════════════════════════════════════════════════════
-userRoutes.get('/me/rules', authenticate, async (req, res) => {
+userRoutes.get('/me/rules', authenticate, withTenantTx(), async (req, res) => {
     try {
+        const db = req.tx ?? globalDb;
         const authUser = req.authUser!;
 
         // Super Admin gets all rules with full CRUD
@@ -915,8 +926,9 @@ userRoutes.get('/me/rules', authenticate, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 // GET CURRENT USER PROFILE
 // ═══════════════════════════════════════════════════════════════════════════
-userRoutes.get('/me/profile', authenticate, async (req, res) => {
+userRoutes.get('/me/profile', authenticate, withTenantTx(), async (req, res) => {
     try {
+        const db = req.tx ?? globalDb;
         const currentUser = req.authUser!;
 
         const user = await db.query.users.findFirst({
@@ -944,8 +956,9 @@ userRoutes.get('/me/profile', authenticate, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 // UPDATE CURRENT USER PROFILE
 // ═══════════════════════════════════════════════════════════════════════════
-userRoutes.put('/me/profile', authenticate, async (req, res) => {
+userRoutes.put('/me/profile', authenticate, withTenantTx(), async (req, res) => {
     try {
+        const db = req.tx ?? globalDb;
         const currentUser = req.authUser!;
         const { name, phone, avatar } = req.body;
 
@@ -972,8 +985,9 @@ userRoutes.put('/me/profile', authenticate, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 // CHANGE PASSWORD
 // ═══════════════════════════════════════════════════════════════════════════
-userRoutes.put('/me/password', authenticate, async (req, res) => {
+userRoutes.put('/me/password', authenticate, withTenantTx(), async (req, res) => {
     try {
+        const db = req.tx ?? globalDb;
         const currentUser = req.authUser!;
         const { currentPassword, newPassword } = req.body;
 
@@ -1029,8 +1043,9 @@ userRoutes.put('/me/password', authenticate, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 // UPDATE AVATAR
 // ═══════════════════════════════════════════════════════════════════════════
-userRoutes.post('/me/avatar', authenticate, async (req, res) => {
+userRoutes.post('/me/avatar', authenticate, withTenantTx(), async (req, res) => {
     try {
+        const db = req.tx ?? globalDb;
         const currentUser = req.authUser!;
         const { url } = req.body;
 

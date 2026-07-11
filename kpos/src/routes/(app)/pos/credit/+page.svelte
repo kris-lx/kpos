@@ -54,11 +54,9 @@
             const response = await api.get("sales/credit").json<any>();
             if (response.success) {
                 creditSales = response.data || [];
-                toast.success(t('common.success'));
             } else {
                 error = t('common.loadError');
                 creditSales = [];
-                toast.error(t('common.loadError'));
             }
         } catch (err) {
             if (isAuthError(err)) return;

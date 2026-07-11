@@ -76,6 +76,12 @@ notificationRoutes.put('/read-all', authenticate, async (req, res, next) => {
 
 // Get VAPID public key (needed by browser to subscribe)
 notificationRoutes.get('/push/key', authenticate, (_req, res) => {
+    if (!webPushService.isEnabled()) {
+        return res.status(503).json({
+            success: false,
+            error: { message: 'Web push is not configured. Set VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY.' },
+        });
+    }
     res.json({ success: true, data: { publicKey: webPushService.getPublicKey() } });
 });
 

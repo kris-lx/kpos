@@ -71,6 +71,62 @@
       "when": 1780392151423,
       "tag": "0009_messy_clea",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1783343468662,
+      "tag": "0010_pink_wolfpack",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1783697045834,
+      "tag": "0011_elite_electro",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1783699858485,
+      "tag": "0012_new_daredevil",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1783742400000,
+      "tag": "0013_create_app_role",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1783742460000,
+      "tag": "0014_rls_policies_consolidated",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1783742520000,
+      "tag": "0015_users_rls_bootstrap_exception",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1783742580000,
+      "tag": "0016_pause_rls_enforcement",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1783742640000,
+      "tag": "0017_reenable_rls_enforcement",
+      "breakpoints": true
     }
   ]
 }

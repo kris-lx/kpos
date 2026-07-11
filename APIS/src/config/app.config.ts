@@ -17,8 +17,11 @@ const envSchema = z.object({
 
     // JWT
     JWT_SECRET: z.string().min(32),
-    JWT_EXPIRES_IN: z.string().default('24h'),
-    JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
+    JWT_EXPIRES_IN: z.string().default('20h'),
+    JWT_REFRESH_EXPIRES_IN: z.string().default('20h'),
+    // Absolute session lifetime from first login — refresh-token rotation cannot
+    // extend a session past this, regardless of how active the user stays.
+    SESSION_ABSOLUTE_HOURS: z.coerce.number().default(20),
 
     // External Services
     LINE_NOTIFY_TOKEN: z.string().optional(),
@@ -68,6 +71,7 @@ export const jwtConfig = {
     expiresIn: config.JWT_EXPIRES_IN,
     refreshSecret: config.JWT_SECRET + '_refresh',
     refreshExpiresIn: config.JWT_REFRESH_EXPIRES_IN,
+    sessionAbsoluteMs: config.SESSION_ABSOLUTE_HOURS * 60 * 60 * 1000,
 };
 
 export const emailConfig = {

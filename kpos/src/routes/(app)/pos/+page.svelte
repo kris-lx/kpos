@@ -9,6 +9,7 @@
     import { goto } from "$app/navigation";
     import { enqueueSale, getPendingSales, removePendingSale, pendingSaleCount } from "$lib/offlineQueue";
     import ReceiptPrint from "$lib/components/ReceiptPrint.svelte";
+    import QRCode from "qrcode";
     import {
         Search,
         Plus,
@@ -30,6 +31,9 @@
         Calendar,
         Gift,
         Barcode,
+        ChevronLeft,
+        ChevronRight,
+        AlertCircle,
     } from "lucide-svelte";
 
     const queryClient = useQueryClient();
@@ -37,12 +41,116 @@
     // State
     let searchQuery = $state("");
     let selectedCategory = $state<string | null>(null);
+    let searchInputEl = $state<HTMLInputElement | null>(null);
+    let tagScrollEl = $state<HTMLDivElement | null>(null);
+
+    function focusSearch() {
+        searchInputEl?.focus();
+        searchInputEl?.select();
+    }
+
+    function scrollTags(dir: -1 | 1) {
+        if (!tagScrollEl) return;
+        tagScrollEl.scrollBy({ left: dir * 200, behavior: 'smooth' });
+    }
     let showPaymentModal = $state(false);
     let showCustomerModal = $state(false);
     let showDiscountModal = $state(false);
     let showHeldBillsModal = $state(false);
     let paymentMethod = $state<"cash" | "card" | "qr" | "credit">("cash");
     let cashReceived = $state(0);
+
+    // Price levels — a customer's assigned level auto-applies on selection, and the
+    // cashier can still override it manually via the selector for this one sale.
+    let priceLevelOptions = $state<Array<{ id: string; name: string }>>([]);
+    let priceLevelMaps = new Map<string, Map<string, number>>();
+
+    async function loadPriceLevels() {
+        try {
+            const res = await api.get("products/price-levels", { searchParams: { limit: 100 } }).json<any>();
+            const levels = res.data || [];
+            priceLevelOptions = levels.map((l: any) => ({ id: l.id, name: l.name }));
+            priceLevelMaps = new Map(levels.map((l: any) => [
+                l.id,
+                new Map((l.products || []).map((p: any) => [p.productId, p.price])),
+            ]));
+        } catch {
+            priceLevelOptions = [];
+        }
+    }
+
+    // Dynamic QR gateway payment (SwiftPass Alipay/WeChat, JDB Yes Pay) — the
+    // checkout button stays disabled until the gateway confirms payment via
+    // qrPaymentStatus === 'paid' (polled, see canCheckout below).
+    let qrProviders = $state<Array<{ provider: string; isActive: boolean }>>([]);
+    let selectedQrProvider = $state<string | null>(null);
+    let qrPaymentId = $state<string | null>(null);
+    let qrPaymentStatus = $state<"idle" | "generating" | "pending" | "paid" | "expired" | "failed">("idle");
+    let qrImageDataUrl = $state("");
+    let qrPollTimer: ReturnType<typeof setInterval> | null = null;
+
+    const qrProviderLabels: Record<string, string> = {
+        swiftpass_alipay: "Alipay",
+        swiftpass_wechat: "WeChat Pay",
+        jdb_yespay: "JDB Yes Pay",
+    };
+
+    function resetQrPayment() {
+        if (qrPollTimer) { clearInterval(qrPollTimer); qrPollTimer = null; }
+        qrPaymentId = null;
+        qrPaymentStatus = "idle";
+        qrImageDataUrl = "";
+        selectedQrProvider = qrProviders[0]?.provider || null;
+    }
+
+    async function loadQrProviders() {
+        try {
+            const res = await api.get("payment-gateways/configs").json<any>();
+            qrProviders = (res.data || []).filter((c: any) => c.isActive);
+            selectedQrProvider = qrProviders[0]?.provider || null;
+        } catch {
+            qrProviders = [];
+            selectedQrProvider = null;
+        }
+    }
+
+    async function generateQrPayment() {
+        if (!selectedQrProvider) return;
+        qrPaymentStatus = "generating";
+        try {
+            const res = await api.post("payment-gateways/qr/create", {
+                json: { provider: selectedQrProvider, amount: effectiveTotal, branchId: auth.activeBranchId },
+            }).json<any>();
+            qrPaymentId = res.data.id;
+            qrImageDataUrl = await QRCode.toDataURL(res.data.qrPayload, { width: 220, margin: 1 });
+            qrPaymentStatus = "pending";
+            startQrPolling();
+        } catch (e: any) {
+            qrPaymentStatus = "failed";
+            toast.error(e?.message || t('pos.qrGenerateFailed'));
+        }
+    }
+
+    function startQrPolling() {
+        if (qrPollTimer) clearInterval(qrPollTimer);
+        qrPollTimer = setInterval(async () => {
+            if (!qrPaymentId) return;
+            try {
+                const res = await api.get(`payment-gateways/qr/${qrPaymentId}/status`).json<any>();
+                qrPaymentStatus = res.data.status;
+                if (res.data.status !== "pending" && qrPollTimer) {
+                    clearInterval(qrPollTimer);
+                    qrPollTimer = null;
+                }
+            } catch { /* keep polling — transient network error */ }
+        }, 3000);
+    }
+
+    function openPaymentModal() {
+        showPaymentModal = true;
+        resetQrPayment();
+        loadQrProviders();
+    }
     let isProcessing = $state(false);
     let isOnline = $state(typeof navigator !== 'undefined' ? navigator.onLine : true);
     let pendingOfflineSales = $state(0);
@@ -56,6 +164,39 @@
     // Coupon state
     let couponCode = $state('');
     let couponApplied = $state(false);
+    let couponValidating = $state(false);
+    let couponError = $state('');
+
+    async function applyCoupon() {
+        const code = couponCode.trim().toUpperCase();
+        if (!code) return;
+        couponCode = code;
+        couponError = '';
+        couponValidating = true;
+        try {
+            const res = await api.post('promotions/coupons/validate', {
+                json: { code, subtotal: cart.subtotal, memberId: cart.customer?.id },
+            }).json<any>();
+            if (res.success) {
+                couponApplied = true;
+            } else {
+                couponApplied = false;
+                couponError = res.error?.message || t('pos.invalidCoupon');
+                toast.error(couponError);
+            }
+        } catch (err: any) {
+            couponApplied = false;
+            let msg = t('pos.invalidCoupon');
+            try {
+                const errData = await err?.response?.json();
+                if (errData?.error?.message) msg = errData.error.message;
+            } catch {}
+            couponError = msg;
+            toast.error(msg);
+        } finally {
+            couponValidating = false;
+        }
+    }
 
     // Split payment state
     let splitMode = $state(false);
@@ -67,6 +208,10 @@
 
     // BroadcastChannel for customer display sync
     let displayChannel: BroadcastChannel | null = null;
+
+    // Hoist event handlers so onDestroy can remove the same references
+    const onOnline = () => { isOnline = true; retryOfflineSales(); };
+    const onOffline = () => { isOnline = false; };
 
     async function retryOfflineSales() {
         const pending = await getPendingSales();
@@ -87,11 +232,10 @@
 
     onMount(async () => {
         // Track online/offline state
-        const onOnline = () => { isOnline = true; retryOfflineSales(); };
-        const onOffline = () => { isOnline = false; };
         window.addEventListener('online', onOnline);
         window.addEventListener('offline', onOffline);
         pendingOfflineSales = await pendingSaleCount();
+        loadPriceLevels();
 
         // Initialize BroadcastChannel for customer display
         if (typeof BroadcastChannel !== "undefined") {
@@ -117,8 +261,9 @@
                             salePrice: item.unitPrice,
                             costPrice: 0,
                             unit: '',
-                            stock: 0, // Don't limit stock for resumed orders
-                            isActive: true
+                            stock: Infinity, // Don't limit stock for resumed orders
+                            isActive: true,
+                            attributes: (item.size || item.color) ? { size: item.size, color: item.color } : undefined,
                         } as Product;
                         // Add with full quantity at once
                         cart.addItem(product, item.quantity);
@@ -134,8 +279,9 @@
 
     onDestroy(() => {
         if (displayChannel) displayChannel.close();
-        window.removeEventListener('online', () => {});
-        window.removeEventListener('offline', () => {});
+        window.removeEventListener('online', onOnline);
+        window.removeEventListener('offline', onOffline);
+        if (qrPollTimer) clearInterval(qrPollTimer);
     });
 
     // Sync cart to customer display
@@ -169,19 +315,21 @@
 
     // Active store context — queries re-run when store switches
     const activeStoreId = $derived(auth.activeStoreId);
+    const activeBranchId = $derived(auth.activeBranchId);
 
     // Queries - Using any type to avoid TypeScript complexity with TanStack Query
     const productsQuery = createQuery<Product[], Error>({
         queryKey: ["products"],
         queryFn: async () => {
             const params = new URLSearchParams();
-            params.append("limit", "100");
+            params.append("limit", "200");
+            if (activeStoreId) params.append("storeId", activeStoreId);
+            if (selectedCategory) params.append("categoryId", selectedCategory);
             const response = await api.get(`products?${params}`).json<{ data: any[] }>();
-            // Transform data to include convenience fields
             return (response.data || []).map((p: any) => ({
                 ...p,
                 price: p.salePrice || p.price || 0,
-                stock: p.inventory?.quantity ?? p.stock ?? 0,
+                stock: p.inventory?.reduce((s: number, i: any) => s + (i.quantity ?? 0), 0) ?? p.stock ?? 0,
                 image: p.images?.[0] || p.image,
             })) as Product[];
         },
@@ -254,6 +402,7 @@
         },
     });
 
+
     // Customers query — scoped to active store
     const customersQuery = createQuery({
         queryKey: ["members"],
@@ -297,12 +446,27 @@
     const splitTotal = $derived(splitPayments.reduce((s, p) => s + (p.amount || 0), 0));
     const splitChange = $derived(Math.max(0, splitTotal - effectiveTotal));
 
-    // Refetch store-scoped queries when active store changes
+    // Refetch products when store or category changes. Skip the very first
+    // run — createQuery() already fires its own initial fetch on mount, so
+    // refetching again here just doubles the network round-trip before the
+    // page's first data (including the member list) is ready.
+    let productsEffectRan = false;
     $effect(() => {
         void activeStoreId;
-        $productsQuery.refetch();
-        $categoriesQuery.refetch();
-        $customersQuery.refetch();
+        void selectedCategory;
+        if (productsEffectRan) $productsQuery.refetch();
+        productsEffectRan = true;
+    });
+
+    // Refetch other store-scoped queries when active store changes.
+    let storeScopedEffectRan = false;
+    $effect(() => {
+        void activeStoreId;
+        if (storeScopedEffectRan) {
+            $categoriesQuery.refetch();
+            $customersQuery.refetch();
+        }
+        storeScopedEffectRan = true;
     });
 
     // Filtered customers based on search
@@ -337,7 +501,8 @@
             (!showPaymentModal ||
                 (splitMode ? splitTotal >= effectiveTotal :
                  paymentMethod === "cash" ? cashReceived >= effectiveTotal :
-                 paymentMethod === "credit" ? cart.customer !== null : true)),
+                 paymentMethod === "credit" ? cart.customer !== null :
+                 paymentMethod === "qr" ? qrPaymentStatus === "paid" : true)),
     );
 
     // Hold Bill function
@@ -355,7 +520,9 @@
                     productName: item.product.name,
                     quantity: item.quantity,
                     unitPrice: item.product.price || item.product.salePrice || 0,
-                    total: (item.product.price || item.product.salePrice || 0) * item.quantity
+                    total: (item.product.price || item.product.salePrice || 0) * item.quantity,
+                    size: item.product.attributes?.size,
+                    color: item.product.attributes?.color,
                 })),
                 subtotal: cart.subtotal,
                 discount: cart.discountAmount,
@@ -417,6 +584,25 @@
     // Track product ids that are in the "skeleton flash" state after being added
     let skeletonStockIds = $state<Set<string>>(new Set());
 
+    // Cart line quantity pulse — the only feedback barcode-scanner adds get (no
+    // click event, so no fly animation). Keyed by an incrementing token rather
+    // than a plain boolean so a rapid re-scan of the same product mid-pulse
+    // restarts the animation cleanly instead of being cut short by the first
+    // scan's cleanup timeout firing after the second one started.
+    let pulseTokens = $state<Map<string, number>>(new Map());
+    let pulseCounter = 0;
+
+    function triggerCartPulse(productId: string): void {
+        const token = ++pulseCounter;
+        pulseTokens = new Map(pulseTokens).set(productId, token);
+        setTimeout(() => {
+            if (pulseTokens.get(productId) !== token) return; // superseded by a newer pulse
+            const next = new Map(pulseTokens);
+            next.delete(productId);
+            pulseTokens = next;
+        }, 400);
+    }
+
     function addToCart(product: any, event?: MouseEvent) {
         const result = cart.addItem(product);
         if (!result.success) {
@@ -429,6 +615,12 @@
         setTimeout(() => {
             skeletonStockIds = new Set([...skeletonStockIds].filter(id => id !== product.id));
         }, 350);
+
+        // Click adds get the fly-to-cart ghost (0.55s) — delay the pulse so it
+        // lands right as the ghost arrives, instead of firing two disconnected
+        // animations at once. Barcode/keyboard adds have no fly animation, so
+        // the pulse is immediate — it's the only confirmation those get.
+        setTimeout(() => triggerCartPulse(product.id), event ? 500 : 0);
 
         // Trigger fly animation from product card to cart
         if (event) {
@@ -477,9 +669,12 @@
                 quantity: item.quantity,
                 unitPrice: item.product.price || item.product.salePrice || 0,
                 total: (item.product.price || item.product.salePrice || 0) * item.quantity,
+                size: item.product.attributes?.size,
+                color: item.product.attributes?.color,
             }));
             const receiptSubtotal = cart.subtotal;
             const receiptDiscount = cart.discountAmount;
+            const receiptTax = cart.taxAmount;
             const receiptTotal = cart.total;
             const receiptCustomerName = cart.customer?.name;
             const splitCashEntry = splitMode ? splitPayments.find(p => p.method === 'cash') : null;
@@ -546,19 +741,25 @@
                     pointsToRedeem = 0;
                     couponCode = '';
                     couponApplied = false;
+                    couponError = '';
                     splitMode = false;
                     splitPayments = [{ method: 'cash', amount: 0 }];
+                    resetQrPayment();
                     isProcessing = false;
                     return;
                 }
                 response = await api.post("sales", { json: saleData }).json<any>();
             }
 
-            // Invalidate queries to refresh stock (store-scoped)
-            queryClient.invalidateQueries({ queryKey: ["products", activeStoreId] });
-            queryClient.invalidateQueries({ queryKey: ["inventory", activeStoreId] });
-            queryClient.invalidateQueries({ queryKey: ["inventory-stats", activeStoreId] });
-            queryClient.invalidateQueries({ queryKey: ["dashboard", activeStoreId] });
+            if (paymentMethod === "qr" && qrPaymentId && response?.data?.id) {
+                api.post(`payment-gateways/qr/${qrPaymentId}/link`, { json: { transactionId: response.data.id } }).json().catch(() => {});
+            }
+
+            // Invalidate queries to refresh stock
+            queryClient.invalidateQueries({ queryKey: ["products"] });
+            queryClient.invalidateQueries({ queryKey: ["inventory"] });
+            queryClient.invalidateQueries({ queryKey: ["inventory-stats"] });
+            queryClient.invalidateQueries({ queryKey: ["dashboard"] });
 
             // Broadcast complete status
             if (displayChannel) {
@@ -582,6 +783,7 @@
                 items: receiptItems,
                 subtotal: receiptSubtotal,
                 discountAmount: receiptDiscount,
+                taxAmount: receiptTax,
                 total: receiptTotal,
                 received: receiptCashReceived,
                 change: receiptChange,
@@ -605,7 +807,8 @@
             couponApplied = false;
             splitMode = false;
             splitPayments = [{ method: 'cash', amount: 0 }];
-            
+            resetQrPayment();
+
             // Show receipt modal for printing
             showReceiptModal = true;
         } catch (error: any) {
@@ -635,6 +838,11 @@
             numpadInput = '';
         } else if (key === '.' && numpadInput.includes('.')) {
             return;
+        } else if (key === '00') {
+            // '00' appends two zeros but never leads with zeros
+            if (numpadInput === '' || numpadInput === '0') return;
+            if (numpadInput.length >= 9) return;
+            numpadInput += '00';
         } else if (numpadInput === '0' && key !== '.') {
             numpadInput = key;
         } else {
@@ -647,6 +855,65 @@
         // keep numpadInput in sync if cashReceived is set externally (quick buttons)
         if (cashReceived === 0) numpadInput = '';
     });
+
+    // Svelte action: contain wheel + drag scroll strictly to this node only
+    function categoryScroll(node: HTMLElement) {
+        function onWheel(e: WheelEvent) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            // Prefer vertical delta (mouse wheel); fall back to horizontal (trackpad swipe)
+            const delta = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+            node.scrollLeft += delta;
+        }
+
+        let startX = 0;
+        let scrollStart = 0;
+        let hasDragged = false;
+
+        function onMouseDown(e: MouseEvent) {
+            startX = e.clientX;
+            scrollStart = node.scrollLeft;
+            hasDragged = false;
+            node.addEventListener('mousemove', onMouseMove);
+            node.addEventListener('mouseup', onMouseUp);
+            node.addEventListener('mouseleave', onMouseUp);
+        }
+
+        function onMouseMove(e: MouseEvent) {
+            const dx = e.clientX - startX;
+            if (!hasDragged && Math.abs(dx) < 5) return;
+            hasDragged = true;
+            e.preventDefault();
+            e.stopPropagation();
+            node.scrollLeft = scrollStart - dx;
+        }
+
+        function onMouseUp() {
+            node.removeEventListener('mousemove', onMouseMove);
+            node.removeEventListener('mouseup', onMouseUp);
+            node.removeEventListener('mouseleave', onMouseUp);
+        }
+
+        function onClickCapture(e: MouseEvent) {
+            if (hasDragged) {
+                e.stopPropagation();
+                e.preventDefault();
+                hasDragged = false;
+            }
+        }
+
+        node.addEventListener('wheel', onWheel, { passive: false, capture: true });
+        node.addEventListener('mousedown', onMouseDown);
+        node.addEventListener('click', onClickCapture, true);
+
+        return {
+            destroy() {
+                node.removeEventListener('wheel', onWheel, { capture: true } as any);
+                node.removeEventListener('mousedown', onMouseDown);
+                node.removeEventListener('click', onClickCapture, true);
+            }
+        };
+    }
 
     function quickCashAmounts(total: number): number[] {
         const amounts = [20, 50, 100, 500, 1000];
@@ -665,26 +932,27 @@
     <title>{t('pos.title')} - KPOS</title>
 </svelte:head>
 
+<!-- POS root owns the viewport slice from the app shell; inner product/cart panes handle scrolling. -->
+<div class="h-full min-h-0 w-full flex flex-col overflow-hidden overscroll-none">
+
 {#if !isOnline || pendingOfflineSales > 0}
-<div class="flex items-center gap-2 px-4 py-2 text-sm font-medium {isOnline ? 'bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' : 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300'}">
+<div class="shrink-0 flex items-center gap-2 px-4 py-2 text-sm font-medium {isOnline ? 'bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' : 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300'}">
     <span class="w-2 h-2 rounded-full {isOnline ? 'bg-amber-500' : 'bg-red-500'}"></span>
     {#if !isOnline}
-        {t('pos.offlineBanner', { count: pendingOfflineSales })}
+        {t('pos.offline')} {pendingOfflineSales > 0 ? `· ${t('pos.offlineBanner', { count: pendingOfflineSales })}` : ''}
     {:else}
-        {t('pos.offlineBanner', { count: pendingOfflineSales })}
+        {t('pos.offlineSyncing', { count: pendingOfflineSales })}
     {/if}
 </div>
 {/if}
 
-<div class="h-[calc(100vh-4rem)] flex">
+<div class="flex-1 min-h-0 w-full min-w-0 overflow-hidden flex flex-col lg:flex-row">
     <!-- Products Section -->
-    <div class="flex-1 flex flex-col bg-gray-50 dark:bg-gray-950">
+    <div class="min-w-0 flex-1 flex flex-col bg-gray-50 dark:bg-gray-950">
         <!-- Search & Categories -->
-        <div
-            class="p-4 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800"
-        >
+        <div class="shrink-0 p-4 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800">
             <!-- Search / Barcode scan -->
-            <div class="relative mb-4">
+            <div class="relative z-10 mb-3">
                 {#if barcodeScanning}
                     <div class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 animate-spin rounded-full border-2 border-primary-500 border-t-transparent"></div>
                 {:else if searchQuery}
@@ -696,6 +964,7 @@
                     type="text"
                     placeholder={t('pos.searchProduct')}
                     bind:value={searchQuery}
+                    bind:this={searchInputEl}
                     onkeydown={handleSearchKey}
                     class="w-full pl-10 pr-4 py-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                 />
@@ -710,71 +979,94 @@
                 {/if}
             </div>
 
-            <!-- Categories -->
-            <div class="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
+            <!-- Categories: < [tags] > -->
+            <div class="flex items-center gap-1 min-w-0">
+                <!-- Left arrow -->
                 <button
-                    onclick={() => (selectedCategory = null)}
-                    class={cn(
-                        "px-4 py-2 rounded-full text-sm font-medium whitespace-nowrap transition-colors",
-                        !selectedCategory
-                            ? "bg-primary-500 text-white"
-                            : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700",
-                    )}
+                    onclick={() => scrollTags(-1)}
+                    class="shrink-0 w-7 h-7 flex items-center justify-center rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+                    tabindex="-1"
+                    aria-label="scroll left"
                 >
-                    {t('common.all')}
+                    <ChevronLeft class="w-4 h-4" />
                 </button>
-                {#if $categoriesQuery.data}
-                    {#each $categoriesQuery.data as category (category.id)}
+
+                <!-- Scrollable tag row — scroll stays inside this div only -->
+                <div
+                    bind:this={tagScrollEl}
+                    use:categoryScroll
+                    class="flex-1 min-w-0 overflow-x-auto overflow-y-hidden overscroll-x-contain scrollbar-hide select-none"
+                >
+                    <div class="flex gap-2 py-0.5 w-max">
                         <button
-                            onclick={() => (selectedCategory = category.id)}
+                            onclick={() => (selectedCategory = null)}
                             class={cn(
-                                "px-4 py-2 rounded-full text-sm font-medium whitespace-nowrap transition-colors",
-                                selectedCategory === category.id
+                                "shrink-0 px-4 py-1.5 rounded-full text-sm font-medium whitespace-nowrap transition-colors",
+                                !selectedCategory
                                     ? "bg-primary-500 text-white"
                                     : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700",
                             )}
                         >
-                            {category.name}
+                            {t('common.all')}
                         </button>
-                    {/each}
-                {/if}
+                        {#if $categoriesQuery.data}
+                            {#each $categoriesQuery.data as category (category.id)}
+                                <button
+                                    onclick={() => (selectedCategory = category.id)}
+                                    class={cn(
+                                        "shrink-0 px-4 py-1.5 rounded-full text-sm font-medium whitespace-nowrap transition-colors",
+                                        selectedCategory === category.id
+                                            ? "bg-primary-500 text-white"
+                                            : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700",
+                                    )}
+                                >
+                                    {category.name}
+                                </button>
+                            {/each}
+                        {/if}
+                    </div>
+                </div>
+
+                <!-- Right arrow -->
+                <button
+                    onclick={() => scrollTags(1)}
+                    class="shrink-0 w-7 h-7 flex items-center justify-center rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+                    tabindex="-1"
+                    aria-label="scroll right"
+                >
+                    <ChevronRight class="w-4 h-4" />
+                </button>
             </div>
         </div>
 
         <!-- Product Grid -->
-        <div class="flex-1 overflow-auto p-4">
-            {#if $productsQuery.isLoading}
-                <div
-                    class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4"
-                >
+        <div class="min-w-0 flex-1 overflow-auto p-4">
+            {#if $productsQuery.isError}
+                <div class="flex flex-col items-center justify-center h-full text-gray-500 gap-3">
+                    <Package class="w-16 h-16 text-gray-300" />
+                    <p class="text-lg">{t('common.loadError')}</p>
+                    <button onclick={() => $productsQuery.refetch()} class="px-4 py-2 rounded-lg bg-primary-500 text-white text-sm hover:bg-primary-600">
+                        {t('common.retry')}
+                    </button>
+                </div>
+            {:else if $productsQuery.isLoading}
+                <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
                     {#each Array(12) as _, i (i)}
-                        <div
-                            class="bg-white dark:bg-gray-800 rounded-xl p-4 animate-pulse"
-                        >
-                            <div
-                                class="aspect-square bg-gray-200 dark:bg-gray-700 rounded-lg mb-3"
-                            ></div>
-                            <div
-                                class="h-4 bg-gray-200 dark:bg-gray-700 rounded mb-2"
-                            ></div>
-                            <div
-                                class="h-4 bg-gray-200 dark:bg-gray-700 rounded w-2/3"
-                            ></div>
+                        <div class="bg-white dark:bg-gray-800 rounded-xl p-4 animate-pulse">
+                            <div class="aspect-square bg-gray-200 dark:bg-gray-700 rounded-lg mb-3"></div>
+                            <div class="h-4 bg-gray-200 dark:bg-gray-700 rounded mb-2"></div>
+                            <div class="h-4 bg-gray-200 dark:bg-gray-700 rounded w-2/3"></div>
                         </div>
                     {/each}
                 </div>
             {:else if filteredProducts.length === 0}
-                <div
-                    class="flex flex-col items-center justify-center h-full text-gray-500"
-                >
+                <div class="flex flex-col items-center justify-center h-full text-gray-500">
                     <Package class="w-16 h-16 mb-4 text-gray-300" />
                     <p class="text-lg">{t('pos.noProducts')}</p>
                     <p class="text-sm">{t('pos.tryAnotherSearch')}</p>
                 </div>
             {:else}
-                <div
-                    class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4"
-                >
+                <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
                     {#each filteredProducts as product (product.id)}
                         {@const cartItem = cart.items.find(item => item.product.id === product.id)}
                         {@const isInCart = !!cartItem}
@@ -789,8 +1081,7 @@
                                 isInCart
                                     ? "border-primary-500 ring-2 ring-primary-200 dark:ring-primary-800"
                                     : "border-gray-200 dark:border-gray-700",
-                                displayStock <= 0 &&
-                                    "opacity-50 cursor-not-allowed",
+                                displayStock <= 0 && "opacity-50 cursor-not-allowed",
                             )}
                             disabled={displayStock <= 0}
                         >
@@ -800,54 +1091,46 @@
                                     {cartItem.quantity}
                                 </div>
                             {/if}
-                            
+
                             <!-- Image -->
-                            <div
-                                class={cn(
-                                    "aspect-square rounded-lg mb-3 flex items-center justify-center overflow-hidden",
-                                    isInCart ? "bg-primary-50 dark:bg-primary-900/30" : "bg-gray-100 dark:bg-gray-700"
-                                )}
-                            >
+                            <div class={cn(
+                                "aspect-square rounded-lg mb-3 flex items-center justify-center overflow-hidden",
+                                isInCart ? "bg-primary-50 dark:bg-primary-900/30" : "bg-gray-100 dark:bg-gray-700"
+                            )}>
                                 {#if product.image}
-                                    <img
-                                        src={product.image}
-                                        alt={product.name}
-                                        class="w-full h-full object-cover"
-                                    />
+                                    <img src={product.image} alt={product.name} class="w-full h-full object-cover" />
                                 {:else}
                                     <Package class="w-8 h-8 text-gray-400" />
                                 {/if}
                             </div>
 
                             <!-- Info -->
-                            <h3
-                                class="font-medium text-gray-900 dark:text-white text-sm line-clamp-2 mb-1"
-                            >
+                            <h3 class="font-medium text-gray-900 dark:text-white text-sm line-clamp-2 mb-1">
                                 {product.name}
                             </h3>
                             <p class="text-xs text-gray-500 mb-2">
                                 {product.sku}
+                                {#if product.attributes?.size || product.attributes?.color}
+                                    <span class="text-gray-400">
+                                        {#if product.sku}·{/if}
+                                        {[product.attributes?.size, product.attributes?.color].filter(Boolean).join(' / ')}
+                                    </span>
+                                {/if}
                             </p>
                             <div class="flex items-center justify-between">
-                                <span class="font-bold text-primary-600"
-                                    >{formatCurrency(product.price)}</span
-                                >
+                                <span class="font-bold text-primary-600">{formatCurrency(product.price)}</span>
                                 {#if isSkeletonStock}
                                     <span class="h-5 w-12 bg-gray-200 dark:bg-gray-600 rounded-full animate-pulse inline-block"></span>
                                 {:else}
-                                    <span
-                                        class={cn(
-                                            "text-xs px-2 py-0.5 rounded-full transition-all duration-200",
-                                            displayStock > 10
-                                                ? "bg-success-100 text-success-700"
-                                                : displayStock > 0
-                                                  ? "bg-warning-100 text-warning-700"
-                                                  : "bg-danger-100 text-danger-700",
-                                        )}
-                                    >
-                                        {displayStock > 0
-                                            ? `${displayStock} ${t('pos.unit')}`
-                                            : t('pos.outOfStock')}
+                                    <span class={cn(
+                                        "text-xs px-2 py-0.5 rounded-full transition-all duration-200",
+                                        displayStock > 10
+                                            ? "bg-success-100 text-success-700"
+                                            : displayStock > 0
+                                              ? "bg-warning-100 text-warning-700"
+                                              : "bg-danger-100 text-danger-700",
+                                    )}>
+                                        {displayStock > 0 ? `${displayStock} ${t('pos.unit')}` : t('pos.outOfStock')}
                                     </span>
                                 {/if}
                             </div>
@@ -860,7 +1143,7 @@
 
     <!-- Cart Section -->
     <div
-        class="w-96 bg-white dark:bg-gray-900 border-l border-gray-200 dark:border-gray-800 flex flex-col"
+        class="w-full lg:w-96 h-80 lg:h-auto shrink-0 bg-white dark:bg-gray-900 border-t lg:border-t-0 lg:border-l border-gray-200 dark:border-gray-800 flex flex-col"
     >
         <!-- Cart Header -->
         <div class="p-4 border-b border-gray-200 dark:border-gray-800">
@@ -935,6 +1218,22 @@
                     <span class="text-gray-500">{t('pos.selectCustomer')}</span>
                 {/if}
             </button>
+
+            {#if priceLevelOptions.length > 0}
+                <select
+                    value={cart.priceLevelId || ''}
+                    onchange={(e) => {
+                        const id = e.currentTarget.value || null;
+                        cart.setPriceLevel(id, id ? (priceLevelMaps.get(id) ?? new Map()) : new Map());
+                    }}
+                    class="w-full mt-2 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm"
+                >
+                    <option value="">{t('pos.basePricing')}</option>
+                    {#each priceLevelOptions as lvl (lvl.id)}
+                        <option value={lvl.id}>{lvl.name}</option>
+                    {/each}
+                </select>
+            {/if}
         </div>
 
         <!-- Cart Items -->
@@ -973,12 +1272,20 @@
                                     </h4>
                                     <p class="text-xs text-gray-500">
                                         {item.product.sku}
+                                        {#if item.product.attributes?.size || item.product.attributes?.color}
+                                            <span class="text-gray-400">
+                                                {#if item.product.sku}·{/if}
+                                                {[item.product.attributes?.size, item.product.attributes?.color].filter(Boolean).join(' / ')}
+                                            </span>
+                                        {/if}
                                     </p>
                                     <div class="flex items-center gap-2 mt-1">
                                         <span class="text-sm text-primary-600 font-medium">
                                             {formatCurrency(item.product.price || item.product.salePrice || 0)}
                                         </span>
-                                        <span class="text-xs text-gray-400">x{item.quantity}</span>
+                                        {#key pulseTokens.get(item.product.id)}
+                                            <span class={cn("text-xs font-medium", pulseTokens.has(item.product.id) ? "qty-pulse text-primary-600" : "text-gray-400")}>x{item.quantity}</span>
+                                        {/key}
                                     </div>
                                 </div>
                                 <button
@@ -1104,7 +1411,7 @@
 
             <!-- Checkout Button -->
             <button
-                onclick={() => (showPaymentModal = true)}
+                onclick={openPaymentModal}
                 disabled={cart.itemCount === 0}
                 class={cn(
                     "w-full py-4 rounded-xl font-semibold text-lg transition-colors",
@@ -1116,7 +1423,8 @@
             </button>
         </div>
     </div>
-</div>
+</div><!-- /pos-inner flex row -->
+</div><!-- /pos-root h-full flex-col -->
 
 <!-- Payment Modal -->
 {#if showPaymentModal}
@@ -1246,12 +1554,12 @@
                                 type="text"
                                 bind:value={couponCode}
                                 placeholder="ໃສ່ລະຫັດຄູປ໋ອງ"
-                                oninput={() => { couponApplied = false; }}
+                                oninput={() => { couponApplied = false; couponError = ''; }}
                                 class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm uppercase tracking-wider focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500 outline-none transition-colors"
                             />
                             {#if couponApplied && couponCode}
                                 <button
-                                    onclick={() => { couponCode = ''; couponApplied = false; }}
+                                    onclick={() => { couponCode = ''; couponApplied = false; couponError = ''; }}
                                     class="px-3 py-2 bg-danger-100 dark:bg-danger-900/30 text-danger-700 dark:text-danger-400 hover:bg-danger-200 rounded-lg transition-colors"
                                     title="ລຶບລະຫັດ"
                                 >
@@ -1259,11 +1567,11 @@
                                 </button>
                             {:else}
                                 <button
-                                    onclick={() => { if (couponCode.trim()) { couponCode = couponCode.trim().toUpperCase(); couponApplied = true; } }}
-                                    disabled={!couponCode.trim()}
+                                    onclick={applyCoupon}
+                                    disabled={!couponCode.trim() || couponValidating}
                                     class="px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                                 >
-                                    ນຳໃຊ້
+                                    {couponValidating ? 'ກຳລັງກວດສອບ...' : 'ນຳໃຊ້'}
                                 </button>
                             {/if}
                         </div>
@@ -1271,6 +1579,11 @@
                             <p class="text-xs text-success-600 dark:text-success-400 flex items-center gap-1">
                                 <span class="inline-block w-2 h-2 rounded-full bg-success-500 shrink-0"></span>
                                 ຄູປ໋ອງ <strong>{couponCode}</strong> ຈະຖືກນຳໃຊ້ໃນການຊຳລະ
+                            </p>
+                        {:else if couponError}
+                            <p class="text-xs text-danger-600 dark:text-danger-400 flex items-center gap-1">
+                                <AlertCircle class="w-3.5 h-3.5 shrink-0" />
+                                {couponError}
                             </p>
                         {/if}
                     </div>
@@ -1375,7 +1688,7 @@
                         <div>
                             <span class="text-sm font-medium text-gray-700 dark:text-gray-300">{t('pos.cashReceived')}</span>
                             <div class="mt-1 w-full px-4 py-3 rounded-xl border-2 border-primary-400 bg-gray-50 dark:bg-gray-900 text-right text-2xl font-bold text-gray-900 dark:text-white min-h-[3.25rem]">
-                                {numpadInput || '0'}
+                                {formatCurrency(cashReceived)}
                             </div>
                         </div>
 
@@ -1434,15 +1747,69 @@
                         {/if}
                     </div>
                 {:else if !splitMode && paymentMethod === "qr"}
-                    <div class="text-center py-8">
-                        <div
-                            class="w-48 h-48 mx-auto bg-gray-100 rounded-xl flex items-center justify-center mb-4"
-                        >
-                            <QrCode class="w-32 h-32 text-gray-400" />
-                        </div>
-                        <p class="text-sm text-gray-500">
-                            {t('pos.scanQrToPay')}
-                        </p>
+                    <div class="text-center py-6">
+                        {#if qrProviders.length === 0}
+                            <div class="w-48 h-48 mx-auto bg-gray-100 dark:bg-gray-800 rounded-xl flex items-center justify-center mb-4">
+                                <QrCode class="w-32 h-32 text-gray-400" />
+                            </div>
+                            <p class="text-sm text-gray-500">{t('pos.qrGatewayNotConfigured')}</p>
+                        {:else}
+                            {#if qrProviders.length > 1 && qrPaymentStatus === "idle"}
+                                <div class="flex justify-center gap-2 mb-4">
+                                    {#each qrProviders as p (p.provider)}
+                                        <button
+                                            onclick={() => (selectedQrProvider = p.provider)}
+                                            class={cn(
+                                                "px-3 py-1.5 rounded-lg text-sm font-medium border",
+                                                selectedQrProvider === p.provider
+                                                    ? "border-primary-500 bg-primary-50 dark:bg-primary-900/20 text-primary-700"
+                                                    : "border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400",
+                                            )}
+                                        >
+                                            {qrProviderLabels[p.provider] || p.provider}
+                                        </button>
+                                    {/each}
+                                </div>
+                            {/if}
+
+                            {#if qrPaymentStatus === "idle"}
+                                <button
+                                    onclick={generateQrPayment}
+                                    class="w-full py-3 rounded-xl bg-primary-600 hover:bg-primary-700 text-white font-medium"
+                                >
+                                    {t('pos.generateQr')} — {qrProviderLabels[selectedQrProvider || ''] || selectedQrProvider}
+                                </button>
+                            {:else if qrPaymentStatus === "generating"}
+                                <div class="w-48 h-48 mx-auto bg-gray-100 dark:bg-gray-800 rounded-xl flex items-center justify-center mb-4">
+                                    <div class="animate-spin rounded-full h-10 w-10 border-2 border-primary-500 border-t-transparent"></div>
+                                </div>
+                                <p class="text-sm text-gray-500">{t('common.processing')}</p>
+                            {:else if qrPaymentStatus === "pending"}
+                                <img src={qrImageDataUrl} alt="QR payment code" class="w-48 h-48 mx-auto rounded-xl border border-gray-200 dark:border-gray-700 mb-4" />
+                                <p class="text-sm text-gray-500 flex items-center justify-center gap-2">
+                                    <span class="inline-block w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+                                    {t('pos.scanQrToPay')}
+                                </p>
+                            {:else if qrPaymentStatus === "paid"}
+                                <div class="w-48 h-48 mx-auto bg-success-50 dark:bg-success-900/20 rounded-xl flex items-center justify-center mb-4">
+                                    <QrCode class="w-24 h-24 text-success-500" />
+                                </div>
+                                <p class="text-sm font-medium text-success-600">{t('pos.qrPaymentConfirmed')}</p>
+                            {:else if qrPaymentStatus === "expired" || qrPaymentStatus === "failed"}
+                                <div class="w-48 h-48 mx-auto bg-danger-50 dark:bg-danger-900/20 rounded-xl flex items-center justify-center mb-4">
+                                    <AlertCircle class="w-16 h-16 text-danger-500" />
+                                </div>
+                                <p class="text-sm text-danger-600 mb-3">
+                                    {qrPaymentStatus === "expired" ? t('pos.qrExpired') : t('pos.qrGenerateFailed')}
+                                </p>
+                                <button
+                                    onclick={() => { resetQrPayment(); }}
+                                    class="px-4 py-2 rounded-lg border border-gray-200 dark:border-gray-700 text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800"
+                                >
+                                    {t('common.retry')}
+                                </button>
+                            {/if}
+                        {/if}
                     </div>
                 {:else if !splitMode && paymentMethod === "credit"}
                     <div class="space-y-4">
@@ -1538,7 +1905,7 @@
                 class="p-4 border-t border-gray-200 dark:border-gray-800 flex gap-3"
             >
                 <button
-                    onclick={() => { showPaymentModal = false; couponCode = ''; couponApplied = false; splitMode = false; splitPayments = [{ method: 'cash', amount: 0 }]; }}
+                    onclick={() => { showPaymentModal = false; couponCode = ''; couponApplied = false; couponError = ''; splitMode = false; splitPayments = [{ method: 'cash', amount: 0 }]; resetQrPayment(); }}
                     class="flex-1 py-3 rounded-xl border border-gray-200 dark:border-gray-700 font-medium hover:bg-gray-50"
                 >
                     {t('common.cancel')}
@@ -1807,6 +2174,7 @@
                 <button
                     onclick={() => {
                         cart.setCustomer(null);
+                        cart.setPriceLevel(null, new Map());
                         showCustomerModal = false;
                     }}
                     class={cn(
@@ -1841,6 +2209,8 @@
                             <button
                                 onclick={() => {
                                     cart.setCustomer(customer);
+                                    const lvl = customer.priceLevelId || null;
+                                    cart.setPriceLevel(lvl, lvl ? (priceLevelMaps.get(lvl) ?? new Map()) : new Map());
                                     showCustomerModal = false;
                                 }}
                                 class={cn(
@@ -2024,6 +2394,25 @@
         100% {
             transform: translate(calc(100vw - 26rem - 50%), 0px) scale(0.2);
             opacity: 0;
+        }
+    }
+
+    /* Cart line quantity pulse — scale-only (no color keyframe) so it stays
+       correct across light/dark theme without duplicating theme tokens in CSS. */
+    .qty-pulse {
+        display: inline-block;
+        animation: qtyPulse 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+
+    @keyframes qtyPulse {
+        0% { transform: scale(1); }
+        40% { transform: scale(1.4); }
+        100% { transform: scale(1); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        .qty-pulse {
+            animation: none;
         }
     }
 </style>

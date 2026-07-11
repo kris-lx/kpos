@@ -13,6 +13,35 @@ let redisErrorLogged = false;
 // In-memory fallback when Redis is unavailable
 const memoryStore = new Map<string, { value: string; expiry?: number }>();
 
+// Scaling audit (2026-07-11): this fallback is fine for query/permission
+// caching (worst case is an extra cache miss), but JWT revocation
+// (`revoked:*`), refresh-token tracking (`refresh_jti:*`), and tenant rate
+// limiting (`ratelimit:*`) all go through this same `cache` object — falling
+// back to per-process memory for THOSE keys means a token revoked or a rate
+// limit hit on one horizontally-scaled instance is invisible to the others
+// for as long as the fallback is active. Not changed here (that's a
+// fail-open/fail-closed security tradeoff that needs a product decision, not
+// a unilateral engineering one) — but it was previously completely silent in
+// production. Now it logs loudly (throttled, so a sustained Redis outage
+// doesn't spam the log for every request) whenever the fallback path is
+// actually hit for one of those key prefixes, so an outage stops being
+// invisible to whoever's watching production logs/alerts.
+const SECURITY_CRITICAL_PREFIXES = ['revoked:', 'refresh_jti:', 'ratelimit:'];
+let lastFallbackWarningAt = 0;
+const FALLBACK_WARNING_THROTTLE_MS = 30_000;
+
+function warnIfSecurityCriticalFallback(key: string): void {
+    if (!SECURITY_CRITICAL_PREFIXES.some((p) => key.startsWith(p))) return;
+    const now = Date.now();
+    if (now - lastFallbackWarningAt < FALLBACK_WARNING_THROTTLE_MS) return;
+    lastFallbackWarningAt = now;
+    console.warn(
+        `⚠️  SECURITY: Redis unavailable — "${key}" served from per-process memory fallback. ` +
+        'JWT revocation / refresh-token / tenant-rate-limit state is NOT shared across instances ' +
+        'while this is active. (This warning is throttled to once per 30s.)'
+    );
+}
+
 export function isRedisAvailable(): boolean {
     return redis !== null && redisConnected;
 }
@@ -106,6 +135,7 @@ export const cache = {
             }
         }
         // In-memory fallback
+        warnIfSecurityCriticalFallback(key);
         const entry = memoryStore.get(key);
         if (!entry) return null;
         if (entry.expiry && Date.now() > entry.expiry) {
@@ -130,6 +160,7 @@ export const cache = {
             }
         }
         // In-memory fallback
+        warnIfSecurityCriticalFallback(key);
         memoryStore.set(key, {
             value: serialized,
             expiry: ttlSeconds ? Date.now() + ttlSeconds * 1000 : undefined,
@@ -145,6 +176,7 @@ export const cache = {
                 // Fall through
             }
         }
+        warnIfSecurityCriticalFallback(key);
         memoryStore.delete(key);
     },
 

@@ -15,6 +15,8 @@ import { cache } from '@/config/redis.config';
 import { users } from '@/db/schema/tables';
 import { eq } from 'drizzle-orm';
 import { sendPasswordResetEmail } from '@/infrastructure/services/email.service';
+import { getActiveAdapter, sendEmailWithRetry } from '@/infrastructure/services/email/email.service';
+import { emailConfig } from '@/config/app.config';
 
 export const authRoutes = Router();
 
@@ -58,7 +60,7 @@ authRoutes.post('/forgot-password', authRateLimiter, async (req, res, next) => {
 
         const user = await db.query.users.findFirst({
             where: eq(users.email, email.toLowerCase().trim()),
-            columns: { id: true, name: true, email: true, isActive: true },
+            columns: { id: true, name: true, email: true, isActive: true, tenantId: true },
         });
 
         // Always respond with success to prevent user enumeration
@@ -73,7 +75,20 @@ authRoutes.post('/forgot-password', authRateLimiter, async (req, res, next) => {
         await cache.set(`reset_token:${token}`, user.id, 60 * 60);
 
         try {
-            await sendPasswordResetEmail(user.email, user.name, token);
+            // Prefer the tenant's own configured provider (Phase 11); fall back to the
+            // platform default Brevo key so tenants that haven't set one up still get email.
+            const tenantAdapter = user.tenantId ? await getActiveAdapter(user.tenantId) : null;
+            if (tenantAdapter) {
+                const resetUrl = `${emailConfig.appUrl}/reset-password?token=${token}`;
+                await sendEmailWithRetry({
+                    tenantId: user.tenantId!,
+                    templateKey: 'password_reset',
+                    data: { name: user.name, resetUrl },
+                    to: [user.email],
+                });
+            } else {
+                await sendPasswordResetEmail(user.email, user.name, token);
+            }
         } catch {
             // Log but still return success — token is stored, user can retry
             console.error('[Auth] Email send failed for forgot-password');

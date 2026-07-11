@@ -4,8 +4,10 @@
 
 import { Router } from 'express';
 import { authenticate, authorize, branchFilter, applyScopeFilter, ensureScopeAccess, buildScopeCondition, tenantScope, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
+import { setRequestContext } from '@/db/set-tenant-context';
 import { publish, QUEUES } from '@/config/rabbitmq.config';
-import { db } from '@/config/database.config';
+import { db as globalDb } from '@/config/database.config';
 import { transactions, transactionItems, transactionPayments, products, inventory, stockMovements, paymentMethods, shifts, cashRegisters, cashMovements, heldSales, customers, members, membershipTiers, pointsHistory, pointHistory, settings, coupons, promotions, discounts } from '@/db/schema/tables';
 import { eq, and, or, isNull, ne, ilike, inArray, gte, lte, desc, asc, count, sum, sql } from 'drizzle-orm';
 import { queueActivityLog } from '@/infrastructure/helpers/activity-log.helper';
@@ -13,6 +15,23 @@ import { calcPointsEarned, calcPointsRedeemValue } from '../domain/loyalty-point
 import { validateSplitPayments, validateCoupon } from '../domain/split-payment.js';
 
 export const salesRoutes = Router();
+
+// req.tx (a reserved connection) doesn't support .transaction() — see
+// tenant-tx.middleware.ts. Handlers that need real atomicity go through the
+// pooled globalDb instead, setting the RLS context with SET LOCAL (auto-reset
+// on commit/rollback) directly on that transaction.
+async function scopedTransaction<T>(
+    req: { authUser?: { tenantId?: string | null; isSuperAdmin?: boolean; activeBranchPath?: string } },
+    callback: (tx: Parameters<Parameters<typeof globalDb.transaction>[0]>[0]) => Promise<T>,
+): Promise<T> {
+    return globalDb.transaction(async (tx) => {
+        const { tenantId, isSuperAdmin, activeBranchPath } = req.authUser ?? {};
+        if (tenantId && !isSuperAdmin) {
+            await setRequestContext(tx, { tenantId, branchPath: activeBranchPath }, { local: true });
+        }
+        return callback(tx);
+    });
+}
 
 // Generates a collision-resistant display number without a DB count query.
 // Uses millisecond timestamp (base-36) + 4-char random hex — no TOCTOU race.
@@ -26,8 +45,9 @@ function genTxnNo(prefix: string, branchId: string): string {
 // ═══════════════════════════════════════════════════════════════════════════
 // CREATE SALE (Transaction)
 // ═══════════════════════════════════════════════════════════════════════════
-salesRoutes.post('/', authenticate, authorize('sales:create'), async (req, res, next) => {
+salesRoutes.post('/', authenticate, withTenantTx(), authorize('sales:create'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const {
             items,
             customerId,
@@ -286,7 +306,7 @@ salesRoutes.post('/', authenticate, authorize('sales:create'), async (req, res, 
         }
 
         // ── Atomic write: transaction + items + payment + inventory deduction ──
-        const transaction = await db.transaction(async (tx) => {
+        const transaction = await scopedTransaction(req, async (tx) => {
             // 1. Pre-check stock for all tracked items (read with row lock)
             for (const item of items) {
                 const product = txItems.find(t => t.productId === item.productId);
@@ -439,8 +459,9 @@ salesRoutes.post('/', authenticate, authorize('sales:create'), async (req, res, 
 // ═══════════════════════════════════════════════════════════════════════════
 // GET ALL SALES (Transactions)
 // ═══════════════════════════════════════════════════════════════════════════
-salesRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
+salesRoutes.get('/', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { page = 1, limit = 50, startDate, endDate, status, type, branchId } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
         const userPermissions = req.authUser?.permissions || [];
@@ -462,7 +483,13 @@ salesRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
         if (scopeCond) txConds.push(scopeCond);
 
         if (branchId) txConds.push(eq(transactions.branchId, String(branchId)));
-        else if (!filter) txConds.push(eq(transactions.branchId, req.authUser?.activeBranchId || req.user?.branchId || ''));
+        else if (!filter) {
+            const activeBranchId = req.authUser?.activeBranchId || req.user?.branchId;
+            // Superadmins commonly have no branch of their own — pushing an
+            // empty-string branchId condition here would fail as invalid UUID
+            // input rather than just matching nothing. Skip the filter instead.
+            if (activeBranchId) txConds.push(eq(transactions.branchId, activeBranchId));
+        }
 
         if (status) txConds.push(eq(transactions.status, String(status)));
         if (type) txConds.push(eq(transactions.type, String(type)));
@@ -493,278 +520,11 @@ salesRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// GET SALE BY ID (must be after all specific routes like /held, /credit)
-// Note: Using regex to match only valid MongoDB ObjectIds (24 hex characters)
-// ═══════════════════════════════════════════════════════════════════════════
-salesRoutes.get('/:id([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})', authenticate, async (req, res, next) => {
-    try {
-        // BE-54: Tenant-scoped transaction lookup
-        const tenantId = req.authUser?.tenantId;
-        const txConds: any[] = [eq(transactions.id, req.params.id)];
-        if (tenantId && !req.authUser?.isSuperAdmin) {
-            txConds.push(eq(transactions.tenantId, tenantId));
-        }
-
-        const transaction = await db.query.transactions.findFirst({
-            where: and(...txConds),
-            with: { items: { with: { product: true } }, customer: true, member: true, payments: true, user: { columns: { id: true, name: true } } },
-        });
-
-        if (!transaction) {
-            return res.status(403).json({
-                success: false,
-                error: { code: 'FORBIDDEN', message: 'Transaction not found or no access' }
-            });
-        }
-
-        if (!ensureScopeAccess(transaction, req)) {
-            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
-        }
-
-        res.json({ success: true, data: transaction });
-    } catch (error) {
-        next(error);
-    }
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
-// VOID SALE
-// ═══════════════════════════════════════════════════════════════════════════
-salesRoutes.post('/:id([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/void', authenticate, authorize('sales:delete'), async (req, res, next) => {
-    try {
-        const { reason } = req.body;
-
-        // BE-55: Tenant-scoped void
-        const tenantId = req.authUser?.tenantId;
-        const voidConds: any[] = [eq(transactions.id, req.params.id)];
-        if (tenantId && !req.authUser?.isSuperAdmin) {
-            voidConds.push(eq(transactions.tenantId, tenantId));
-        }
-
-        const transaction = await db.query.transactions.findFirst({
-            where: and(...voidConds),
-            with: { items: true },
-        });
-
-        if (!transaction) {
-            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Transaction not found or no access' } });
-        }
-
-        if (!ensureScopeAccess(transaction, req)) {
-            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this transaction' } });
-        }
-
-        if (transaction.status === 'VOIDED') {
-            return res.status(400).json({ success: false, error: { code: 'ALREADY_VOIDED', message: 'Transaction already voided' } });
-        }
-
-        // Atomic void: status update + inventory restore in one transaction
-        await db.transaction(async (tx) => {
-            // Optimistic check: only update if still COMPLETED (prevents double-void race)
-            const [updated] = await tx.update(transactions)
-                .set({ status: 'VOIDED', voidReason: reason })
-                .where(and(eq(transactions.id, req.params.id), eq(transactions.status, 'COMPLETED')))
-                .returning({ id: transactions.id });
-            if (!updated) throw Object.assign(new Error('Already voided or not in COMPLETED state'), { statusCode: 409, code: 'CONFLICT' });
-
-            for (const item of transaction.items) {
-                const inv = await tx.query.inventory.findFirst({ where: and(eq(inventory.productId, item.productId), eq(inventory.branchId, transaction.branchId)) });
-                if (inv) {
-                    const previousQty = inv.quantity;
-                    const newQty = previousQty + item.quantity;
-                    await tx.update(inventory).set({ quantity: newQty, available: newQty - (inv.reserved ?? 0) }).where(eq(inventory.id, inv.id));
-                    await tx.insert(stockMovements).values({
-                        productId: item.productId, branchId: transaction.branchId, type: 'IN',
-                        quantity: item.quantity, previousQty, newQty,
-                        reason: `Void: ${reason || 'No reason provided'}`, reference: transaction.id, referenceType: 'VOID', userId: req.authUser?.userId || req.user?.userId || '',
-                    });
-                }
-            }
-
-            // Reverse loyalty points earned on the original sale
-            const voidUserId = req.authUser?.userId || req.user?.userId || '';
-            const earnedOnSale = transaction.pointsEarned || 0;
-            const redeemedOnSale = transaction.pointsRedeemed || 0;
-            if (earnedOnSale > 0 && transaction.customerId) {
-                await tx.update(customers)
-                    .set({ points: sql`${customers.points} - ${earnedOnSale}`, updatedAt: new Date() })
-                    .where(eq(customers.id, transaction.customerId));
-                await tx.insert(pointsHistory).values({
-                    tenantId: transaction.tenantId, customerId: transaction.customerId,
-                    points: -earnedOnSale, type: 'VOID',
-                    reason: `Void: ${reason || 'No reason provided'}`, referenceId: transaction.id, createdBy: voidUserId,
-                });
-            }
-            if (redeemedOnSale > 0 && transaction.customerId) {
-                await tx.update(customers)
-                    .set({ points: sql`${customers.points} + ${redeemedOnSale}`, updatedAt: new Date() })
-                    .where(eq(customers.id, transaction.customerId));
-                await tx.insert(pointsHistory).values({
-                    tenantId: transaction.tenantId, customerId: transaction.customerId,
-                    points: redeemedOnSale, type: 'VOID',
-                    reason: `Points restored on void: ${reason || 'No reason provided'}`, referenceId: transaction.id, createdBy: voidUserId,
-                });
-            }
-            if (earnedOnSale > 0 && transaction.memberId) {
-                const [updM] = await tx.update(members)
-                    .set({ points: sql`${members.points} - ${earnedOnSale}`, updatedAt: new Date() })
-                    .where(eq(members.id, transaction.memberId))
-                    .returning({ points: members.points });
-                await tx.insert(pointHistory).values({
-                    tenantId: transaction.tenantId, memberId: transaction.memberId,
-                    type: 'VOID', points: -earnedOnSale, balance: updM.points,
-                    reference: transaction.id, referenceType: 'VOID',
-                });
-            }
-        });
-
-        // Invalidate caches after void
-        invalidateQueryCache('dashboard*').catch(() => {});
-        invalidateQueryCache('inventory*').catch(() => {});
-
-        // Log activity async
-        queueActivityLog(req.authUser?.userId || req.user?.userId || '', 'sale_voided', 'sales', `ຍົກເລີກການຂາຍ ${req.params.id}`, { transactionId: req.params.id }, req).catch(() => {});
-
-        res.json({ success: true, message: 'Transaction voided successfully' });
-    } catch (error) {
-        next(error);
-    }
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
-// REFUND SALE
-// ═══════════════════════════════════════════════════════════════════════════
-salesRoutes.post('/:id([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/refund', authenticate, authorize('sales:delete'), async (req, res, next) => {
-    try {
-        const { reason, items: refundItems } = req.body;
-
-        // BE-55: Tenant-scoped refund
-        const tenantId = req.authUser?.tenantId;
-        const refConds: any[] = [eq(transactions.id, req.params.id)];
-        if (tenantId && !req.authUser?.isSuperAdmin) {
-            refConds.push(eq(transactions.tenantId, tenantId));
-        }
-
-        const transaction = await db.query.transactions.findFirst({
-            where: and(...refConds),
-            with: { items: true },
-        });
-
-        if (!transaction) {
-            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Transaction not found or no access' } });
-        }
-
-        if (!ensureScopeAccess(transaction, req)) {
-            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this transaction' } });
-        }
-
-        if (transaction.status !== 'COMPLETED') {
-            return res.status(400).json({ success: false, error: { code: 'INVALID_STATUS', message: 'Can only refund completed transactions' } });
-        }
-
-        let refundAmount = 0;
-        const itemsToRefund = refundItems || transaction.items;
-        for (const item of itemsToRefund) { refundAmount += item.total || (item.unitPrice * item.quantity); }
-
-        const transactionNo = genTxnNo('REF', transaction.branchId);
-
-        const refundTenantId = req.authUser?.tenantId || req.user?.tenantId;
-        const userId = req.authUser?.userId || req.user?.userId || '';
-
-        // Atomic refund: parent status + refund record + items + inventory restore
-        const refund = await db.transaction(async (tx) => {
-            // Lock parent first (prevent double-refund race)
-            const [parentLocked] = await tx.update(transactions)
-                .set({ status: 'REFUNDED' })
-                .where(and(eq(transactions.id, req.params.id), eq(transactions.status, 'COMPLETED')))
-                .returning({ id: transactions.id });
-            if (!parentLocked) throw Object.assign(new Error('Transaction not in COMPLETED state — already refunded?'), { statusCode: 409, code: 'CONFLICT' });
-
-            const [refundRecord] = await tx.insert(transactions).values({
-                tenantId: refundTenantId,
-                transactionNo, type: 'REFUND', status: 'COMPLETED', branchId: transaction.branchId,
-                userId, customerId: transaction.customerId, memberId: transaction.memberId,
-                orderType: transaction.orderType,
-                subtotal:       Math.round(-refundAmount * 100) / 100,
-                discountAmount: 0, taxAmount: 0,
-                total:          Math.round(-refundAmount * 100) / 100,
-                received: 0, change: Math.round(refundAmount * 100) / 100,
-                refundReason: reason, parentId: transaction.id,
-            }).returning();
-
-            await tx.insert(transactionItems).values(itemsToRefund.map((item: any) => ({
-                transactionId: refundRecord.id, productId: item.productId, productName: item.productName,
-                quantity: -item.quantity, unitPrice: item.unitPrice, cost: item.cost || 0,
-                total: Math.round(-(item.total || (item.unitPrice * item.quantity)) * 100) / 100,
-            })));
-
-            for (const item of itemsToRefund) {
-                const inv = await tx.query.inventory.findFirst({ where: and(eq(inventory.productId, item.productId), eq(inventory.branchId, transaction.branchId)) });
-                if (inv) {
-                    const previousQty = inv.quantity;
-                    const newQty = previousQty + item.quantity;
-                    await tx.update(inventory).set({ quantity: newQty, available: newQty - (inv.reserved ?? 0) }).where(eq(inventory.id, inv.id));
-                    await tx.insert(stockMovements).values({
-                        productId: item.productId, branchId: transaction.branchId, type: 'IN',
-                        quantity: item.quantity, previousQty, newQty,
-                        reason: `Refund: ${reason || 'No reason provided'}`, reference: refundRecord.id, referenceType: 'REFUND', userId,
-                    });
-                }
-            }
-
-            // Reverse loyalty points proportionally based on refunded amount
-            const refEarned = transaction.pointsEarned || 0;
-            const refRedeemed = transaction.pointsRedeemed || 0;
-            const refRatio = transaction.total !== 0 ? Math.abs(refundAmount / transaction.total) : 1;
-            const pointsToReverse = Math.floor(refEarned * Math.min(refRatio, 1));
-            const redeemedToRestore = Math.floor(refRedeemed * Math.min(refRatio, 1));
-            if (pointsToReverse > 0 && transaction.customerId) {
-                await tx.update(customers)
-                    .set({ points: sql`${customers.points} - ${pointsToReverse}`, updatedAt: new Date() })
-                    .where(eq(customers.id, transaction.customerId));
-                await tx.insert(pointsHistory).values({
-                    tenantId: refundTenantId, customerId: transaction.customerId,
-                    points: -pointsToReverse, type: 'REFUND',
-                    reason: `Refund: ${reason || 'No reason provided'}`, referenceId: refundRecord.id, createdBy: userId,
-                });
-            }
-            if (redeemedToRestore > 0 && transaction.customerId) {
-                await tx.update(customers)
-                    .set({ points: sql`${customers.points} + ${redeemedToRestore}`, updatedAt: new Date() })
-                    .where(eq(customers.id, transaction.customerId));
-                await tx.insert(pointsHistory).values({
-                    tenantId: refundTenantId, customerId: transaction.customerId,
-                    points: redeemedToRestore, type: 'REFUND',
-                    reason: `Points restored on refund: ${reason || 'No reason provided'}`, referenceId: refundRecord.id, createdBy: userId,
-                });
-            }
-            if (pointsToReverse > 0 && transaction.memberId) {
-                const [updRefM] = await tx.update(members)
-                    .set({ points: sql`${members.points} - ${pointsToReverse}`, updatedAt: new Date() })
-                    .where(eq(members.id, transaction.memberId))
-                    .returning({ points: members.points });
-                await tx.insert(pointHistory).values({
-                    tenantId: refundTenantId, memberId: transaction.memberId,
-                    type: 'REFUND', points: -pointsToReverse, balance: updRefM.points,
-                    reference: refundRecord.id, referenceType: 'REFUND',
-                });
-            }
-
-            return refundRecord;
-        });
-
-        const fullRefund = await db.query.transactions.findFirst({ where: eq(transactions.id, refund.id), with: { items: true } });
-        res.json({ success: true, data: fullRefund });
-    } catch (error) {
-        next(error);
-    }
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
 // DAILY SALES SUMMARY
 // ═══════════════════════════════════════════════════════════════════════════
-salesRoutes.get('/summary/daily', authenticate, branchFilter(), async (req, res, next) => {
+salesRoutes.get('/summary/daily', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { date } = req.query;
         const targetDate = date ? new Date(String(date)) : new Date();
         const startOfDay = new Date(targetDate);
@@ -814,8 +574,9 @@ salesRoutes.get('/summary/daily', authenticate, branchFilter(), async (req, res,
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all shifts
-salesRoutes.get('/shifts', authenticate, branchFilter(), async (req, res, next) => {
+salesRoutes.get('/shifts', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { branchId, userId, status, date, dateFrom, dateTo, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
         const filter = req.branchFilter;
@@ -867,8 +628,9 @@ salesRoutes.get('/shifts', authenticate, branchFilter(), async (req, res, next) 
 });
 
 // Get current user's active shift
-salesRoutes.get('/shifts/current', authenticate, async (req, res, next) => {
+salesRoutes.get('/shifts/current', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const shift = await db.query.shifts.findFirst({
             where: and(eq(shifts.userId, req.authUser?.userId || req.user?.userId || ''), eq(shifts.status, 'OPEN')),
             with: { user: { columns: { name: true } }, register: true },
@@ -881,10 +643,14 @@ salesRoutes.get('/shifts/current', authenticate, async (req, res, next) => {
 });
 
 // Get shift by ID
-salesRoutes.get('/shifts/:id', authenticate, async (req, res, next) => {
+salesRoutes.get('/shifts/:id', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const shiftIdConds: any[] = [eq(shifts.id, req.params.id)];
+        const shiftIdTc = tenantScope(req, shifts.tenantId);
+        if (shiftIdTc) shiftIdConds.push(shiftIdTc);
         const shift = await db.query.shifts.findFirst({
-            where: eq(shifts.id, req.params.id),
+            where: and(...shiftIdConds),
             with: {
                 user: { columns: { name: true, email: true } },
                 register: true,
@@ -905,8 +671,9 @@ salesRoutes.get('/shifts/:id', authenticate, async (req, res, next) => {
 });
 
 // Open shift
-salesRoutes.post('/shifts/open', authenticate, authorize('sales:create'), async (req, res, next) => {
+salesRoutes.post('/shifts/open', authenticate, withTenantTx(), authorize('sales:create'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { openingBalance, registerId, notes } = req.body;
         const userId = req.authUser?.userId || req.user?.userId;
         const branchId = req.authUser?.activeBranchId || req.user?.branchId;
@@ -946,12 +713,16 @@ salesRoutes.post('/shifts/open', authenticate, authorize('sales:create'), async 
 });
 
 // Close shift
-salesRoutes.post('/shifts/:id/close', authenticate, authorize('sales:update'), async (req, res, next) => {
+salesRoutes.post('/shifts/:id/close', authenticate, withTenantTx(), authorize('sales:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { closingBalance, notes } = req.body;
 
+        const closeConds: any[] = [eq(shifts.id, req.params.id)];
+        const closeTc = tenantScope(req, shifts.tenantId);
+        if (closeTc) closeConds.push(closeTc);
         const shift = await db.query.shifts.findFirst({
-            where: eq(shifts.id, req.params.id),
+            where: and(...closeConds),
             with: { transactions: true, cashMovements: true },
         });
 
@@ -984,10 +755,17 @@ salesRoutes.post('/shifts/:id/close', authenticate, authorize('sales:update'), a
 });
 
 // Add cash movement to shift
-salesRoutes.post('/shifts/:id/cash-movement', authenticate, authorize('sales:update'), async (req, res, next) => {
+salesRoutes.post('/shifts/:id/cash-movement', authenticate, withTenantTx(), authorize('sales:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { type, amount, reason } = req.body;
         const userId = req.authUser?.userId || req.user?.userId || '';
+
+        const cmConds: any[] = [eq(shifts.id, req.params.id)];
+        const cmTc = tenantScope(req, shifts.tenantId);
+        if (cmTc) cmConds.push(cmTc);
+        const targetShift = await db.query.shifts.findFirst({ where: and(...cmConds), columns: { id: true } });
+        if (!targetShift) { res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Shift not found' } }); return; }
 
         const [movement] = await db.insert(cashMovements).values({ shiftId: req.params.id, type, amount, reason, userId }).returning();
 
@@ -1002,8 +780,9 @@ salesRoutes.post('/shifts/:id/cash-movement', authenticate, authorize('sales:upd
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all cash registers
-salesRoutes.get('/registers', authenticate, branchFilter(), async (req, res, next) => {
+salesRoutes.get('/registers', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { branchId, isActive } = req.query;
         const filter = req.branchFilter;
 
@@ -1032,8 +811,9 @@ salesRoutes.get('/registers', authenticate, branchFilter(), async (req, res, nex
 });
 
 // Get register by ID
-salesRoutes.get('/registers/:id', authenticate, async (req, res, next) => {
+salesRoutes.get('/registers/:id', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const regIdConds: any[] = [eq(cashRegisters.id, req.params.id)];
         const regIdTc = tenantScope(req, cashRegisters.tenantId);
         if (regIdTc) regIdConds.push(regIdTc);
@@ -1054,8 +834,9 @@ salesRoutes.get('/registers/:id', authenticate, async (req, res, next) => {
 });
 
 // Create cash register
-salesRoutes.post('/registers', authenticate, authorize('settings:update'), async (req, res, next) => {
+salesRoutes.post('/registers', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { name, branchId, isActive } = req.body;
         if (!name || !branchId) {
             return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'name and branchId are required' } });
@@ -1071,8 +852,9 @@ salesRoutes.post('/registers', authenticate, authorize('settings:update'), async
 });
 
 // Update cash register
-salesRoutes.put('/registers/:id', authenticate, authorize('settings:update'), async (req, res, next) => {
+salesRoutes.put('/registers/:id', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { id, _id, createdAt, updatedAt, branch, shifts, ...updateData } = req.body;
         if (updateData.branchId === '' || updateData.branchId === null) delete updateData.branchId;
         // G6: Tenant-scoped update
@@ -1088,8 +870,9 @@ salesRoutes.put('/registers/:id', authenticate, authorize('settings:update'), as
 });
 
 // Delete cash register (soft delete)
-salesRoutes.delete('/registers/:id', authenticate, authorize('settings:update'), async (req, res, next) => {
+salesRoutes.delete('/registers/:id', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // G6: Tenant-scoped delete
         const delConds: any[] = [eq(cashRegisters.id, req.params.id)];
         const delTc = tenantScope(req, cashRegisters.tenantId);
@@ -1107,8 +890,9 @@ salesRoutes.delete('/registers/:id', authenticate, authorize('settings:update'),
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all held sales
-salesRoutes.get('/held', authenticate, branchFilter(), async (req, res, next) => {
+salesRoutes.get('/held', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const filter = req.branchFilter;
         const page = Math.max(1, Number(req.query.page) || 1);
         const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 50));
@@ -1147,8 +931,9 @@ salesRoutes.get('/held', authenticate, branchFilter(), async (req, res, next) =>
 });
 
 // Get held sale by ID
-salesRoutes.get('/held/:id', authenticate, async (req, res, next) => {
+salesRoutes.get('/held/:id', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const heldSale = await db.query.heldSales.findFirst({ where: eq(heldSales.id, req.params.id) });
 
         if (!heldSale) {
@@ -1167,8 +952,9 @@ salesRoutes.get('/held/:id', authenticate, async (req, res, next) => {
 });
 
 // Create held sale
-salesRoutes.post('/held', authenticate, authorize('sales:create'), async (req, res, next) => {
+salesRoutes.post('/held', authenticate, withTenantTx(), authorize('sales:create'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const userId = req.authUser?.userId || req.user?.userId;
         const branchId = req.authUser?.activeBranchId || req.user?.branchId;
 
@@ -1188,8 +974,9 @@ salesRoutes.post('/held', authenticate, authorize('sales:create'), async (req, r
 });
 
 // Delete held sale (when recalled or completed)
-salesRoutes.delete('/held/:id', authenticate, authorize('sales:update', 'sales:delete'), async (req, res, next) => {
+salesRoutes.delete('/held/:id', authenticate, withTenantTx(), authorize('sales:update', 'sales:delete'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const existing = await db.query.heldSales.findFirst({ where: eq(heldSales.id, req.params.id) });
         if (!existing) return res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Held sale not found' } });
         if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
@@ -1207,8 +994,9 @@ salesRoutes.delete('/held/:id', authenticate, authorize('sales:update', 'sales:d
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all credit sales
-salesRoutes.get('/credit', authenticate, branchFilter(), async (req, res, next) => {
+salesRoutes.get('/credit', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const filter = req.branchFilter;
         const branchId = filter?.branchIds?.[0] || req.authUser?.activeBranchId || req.user?.branchId;
         const { status, customerId } = req.query;
@@ -1265,8 +1053,9 @@ salesRoutes.get('/credit', authenticate, branchFilter(), async (req, res, next) 
 });
 
 // Create credit sale
-salesRoutes.post('/credit', authenticate, authorize('pos:credit', 'sales:create'), async (req, res, next) => {
+salesRoutes.post('/credit', authenticate, withTenantTx(), authorize('pos:credit', 'sales:create'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const {
             items,
             customerId,
@@ -1396,8 +1185,9 @@ salesRoutes.post('/credit', authenticate, authorize('pos:credit', 'sales:create'
 });
 
 // Record payment for credit sale
-salesRoutes.post('/credit/:id/payment', authenticate, authorize('pos:credit', 'sales:update'), async (req, res, next) => {
+salesRoutes.post('/credit/:id/payment', authenticate, withTenantTx(), authorize('pos:credit', 'sales:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { amount, paymentMethodId, reference, notes } = req.body;
         const transactionId = req.params.id;
 
@@ -1459,8 +1249,9 @@ salesRoutes.post('/credit/:id/payment', authenticate, authorize('pos:credit', 's
 });
 
 // Get credit sale details
-salesRoutes.get('/credit/:id', authenticate, async (req, res, next) => {
+salesRoutes.get('/credit/:id', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const transaction = await db.query.transactions.findFirst({
             where: eq(transactions.id, req.params.id),
             with: { customer: true, items: { with: { product: true } }, payments: true },
@@ -1493,6 +1284,276 @@ salesRoutes.get('/credit/:id', authenticate, async (req, res, next) => {
                 payments: transaction.payments,
             }
         });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GET SALE BY ID — must stay after all specific literal routes (/held, /credit, /shifts, /registers, /summary) or it would swallow them as ":id"
+// ═══════════════════════════════════════════════════════════════════════════
+salesRoutes.get('/:id', authenticate, withTenantTx(), async (req, res, next) => {
+    try {
+        const db = req.tx ?? globalDb;
+        // BE-54: Tenant-scoped transaction lookup
+        const tenantId = req.authUser?.tenantId;
+        const txConds: any[] = [eq(transactions.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            txConds.push(eq(transactions.tenantId, tenantId));
+        }
+
+        const transaction = await db.query.transactions.findFirst({
+            where: and(...txConds),
+            with: { items: { with: { product: true } }, customer: true, member: true, payments: true, user: { columns: { id: true, name: true } } },
+        });
+
+        if (!transaction) {
+            return res.status(403).json({
+                success: false,
+                error: { code: 'FORBIDDEN', message: 'Transaction not found or no access' }
+            });
+        }
+
+        if (!ensureScopeAccess(transaction, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
+        }
+
+        res.json({ success: true, data: transaction });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// VOID SALE
+// ═══════════════════════════════════════════════════════════════════════════
+salesRoutes.post('/:id/void', authenticate, withTenantTx(), authorize('sales:delete'), async (req, res, next) => {
+    try {
+        const db = req.tx ?? globalDb;
+        const { reason } = req.body;
+
+        // BE-55: Tenant-scoped void
+        const tenantId = req.authUser?.tenantId;
+        const voidConds: any[] = [eq(transactions.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            voidConds.push(eq(transactions.tenantId, tenantId));
+        }
+
+        const transaction = await db.query.transactions.findFirst({
+            where: and(...voidConds),
+            with: { items: true },
+        });
+
+        if (!transaction) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Transaction not found or no access' } });
+        }
+
+        if (!ensureScopeAccess(transaction, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this transaction' } });
+        }
+
+        if (transaction.status === 'VOIDED') {
+            return res.status(400).json({ success: false, error: { code: 'ALREADY_VOIDED', message: 'Transaction already voided' } });
+        }
+
+        // Atomic void: status update + inventory restore in one transaction
+        await scopedTransaction(req, async (tx) => {
+            // Optimistic check: only update if still COMPLETED (prevents double-void race)
+            const [updated] = await tx.update(transactions)
+                .set({ status: 'VOIDED', voidReason: reason })
+                .where(and(eq(transactions.id, req.params.id), eq(transactions.status, 'COMPLETED')))
+                .returning({ id: transactions.id });
+            if (!updated) throw Object.assign(new Error('Already voided or not in COMPLETED state'), { statusCode: 409, code: 'CONFLICT' });
+
+            for (const item of transaction.items) {
+                const inv = await tx.query.inventory.findFirst({ where: and(eq(inventory.productId, item.productId), eq(inventory.branchId, transaction.branchId)) });
+                if (inv) {
+                    const previousQty = inv.quantity;
+                    const newQty = previousQty + item.quantity;
+                    await tx.update(inventory).set({ quantity: newQty, available: newQty - (inv.reserved ?? 0) }).where(eq(inventory.id, inv.id));
+                    await tx.insert(stockMovements).values({
+                        productId: item.productId, branchId: transaction.branchId, type: 'IN',
+                        quantity: item.quantity, previousQty, newQty,
+                        reason: `Void: ${reason || 'No reason provided'}`, reference: transaction.id, referenceType: 'VOID', userId: req.authUser?.userId || req.user?.userId || '',
+                    });
+                }
+            }
+
+            // Reverse loyalty points earned on the original sale
+            const voidUserId = req.authUser?.userId || req.user?.userId || '';
+            const earnedOnSale = transaction.pointsEarned || 0;
+            const redeemedOnSale = transaction.pointsRedeemed || 0;
+            if (earnedOnSale > 0 && transaction.customerId) {
+                await tx.update(customers)
+                    .set({ points: sql`${customers.points} - ${earnedOnSale}`, updatedAt: new Date() })
+                    .where(eq(customers.id, transaction.customerId));
+                await tx.insert(pointsHistory).values({
+                    tenantId: transaction.tenantId, customerId: transaction.customerId,
+                    points: -earnedOnSale, type: 'VOID',
+                    reason: `Void: ${reason || 'No reason provided'}`, referenceId: transaction.id, createdBy: voidUserId,
+                });
+            }
+            if (redeemedOnSale > 0 && transaction.customerId) {
+                await tx.update(customers)
+                    .set({ points: sql`${customers.points} + ${redeemedOnSale}`, updatedAt: new Date() })
+                    .where(eq(customers.id, transaction.customerId));
+                await tx.insert(pointsHistory).values({
+                    tenantId: transaction.tenantId, customerId: transaction.customerId,
+                    points: redeemedOnSale, type: 'VOID',
+                    reason: `Points restored on void: ${reason || 'No reason provided'}`, referenceId: transaction.id, createdBy: voidUserId,
+                });
+            }
+            if (earnedOnSale > 0 && transaction.memberId) {
+                const [updM] = await tx.update(members)
+                    .set({ points: sql`${members.points} - ${earnedOnSale}`, updatedAt: new Date() })
+                    .where(eq(members.id, transaction.memberId))
+                    .returning({ points: members.points });
+                await tx.insert(pointHistory).values({
+                    tenantId: transaction.tenantId, memberId: transaction.memberId,
+                    type: 'VOID', points: -earnedOnSale, balance: updM.points,
+                    reference: transaction.id, referenceType: 'VOID',
+                });
+            }
+        });
+
+        // Invalidate caches after void
+        invalidateQueryCache('dashboard*').catch(() => {});
+        invalidateQueryCache('inventory*').catch(() => {});
+
+        // Log activity async
+        queueActivityLog(req.authUser?.userId || req.user?.userId || '', 'sale_voided', 'sales', `ຍົກເລີກການຂາຍ ${req.params.id}`, { transactionId: req.params.id }, req).catch(() => {});
+
+        res.json({ success: true, message: 'Transaction voided successfully' });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// REFUND SALE
+// ═══════════════════════════════════════════════════════════════════════════
+salesRoutes.post('/:id/refund', authenticate, withTenantTx(), authorize('sales:delete'), async (req, res, next) => {
+    try {
+        const db = req.tx ?? globalDb;
+        const { reason, items: refundItems } = req.body;
+
+        // BE-55: Tenant-scoped refund
+        const tenantId = req.authUser?.tenantId;
+        const refConds: any[] = [eq(transactions.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            refConds.push(eq(transactions.tenantId, tenantId));
+        }
+
+        const transaction = await db.query.transactions.findFirst({
+            where: and(...refConds),
+            with: { items: true },
+        });
+
+        if (!transaction) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Transaction not found or no access' } });
+        }
+
+        if (!ensureScopeAccess(transaction, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this transaction' } });
+        }
+
+        if (transaction.status !== 'COMPLETED') {
+            return res.status(400).json({ success: false, error: { code: 'INVALID_STATUS', message: 'Can only refund completed transactions' } });
+        }
+
+        let refundAmount = 0;
+        const itemsToRefund = refundItems || transaction.items;
+        for (const item of itemsToRefund) { refundAmount += item.total || (item.unitPrice * item.quantity); }
+
+        const transactionNo = genTxnNo('REF', transaction.branchId);
+
+        const refundTenantId = req.authUser?.tenantId || req.user?.tenantId;
+        const userId = req.authUser?.userId || req.user?.userId || '';
+
+        // Atomic refund: parent status + refund record + items + inventory restore
+        const refund = await scopedTransaction(req, async (tx) => {
+            // Lock parent first (prevent double-refund race)
+            const [parentLocked] = await tx.update(transactions)
+                .set({ status: 'REFUNDED' })
+                .where(and(eq(transactions.id, req.params.id), eq(transactions.status, 'COMPLETED')))
+                .returning({ id: transactions.id });
+            if (!parentLocked) throw Object.assign(new Error('Transaction not in COMPLETED state — already refunded?'), { statusCode: 409, code: 'CONFLICT' });
+
+            const [refundRecord] = await tx.insert(transactions).values({
+                tenantId: refundTenantId,
+                transactionNo, type: 'REFUND', status: 'COMPLETED', branchId: transaction.branchId,
+                userId, customerId: transaction.customerId, memberId: transaction.memberId,
+                orderType: transaction.orderType,
+                subtotal:       Math.round(-refundAmount * 100) / 100,
+                discountAmount: 0, taxAmount: 0,
+                total:          Math.round(-refundAmount * 100) / 100,
+                received: 0, change: Math.round(refundAmount * 100) / 100,
+                refundReason: reason, parentId: transaction.id,
+            }).returning();
+
+            await tx.insert(transactionItems).values(itemsToRefund.map((item: any) => ({
+                transactionId: refundRecord.id, productId: item.productId, productName: item.productName,
+                quantity: -item.quantity, unitPrice: item.unitPrice, cost: item.cost || 0,
+                total: Math.round(-(item.total || (item.unitPrice * item.quantity)) * 100) / 100,
+            })));
+
+            for (const item of itemsToRefund) {
+                const inv = await tx.query.inventory.findFirst({ where: and(eq(inventory.productId, item.productId), eq(inventory.branchId, transaction.branchId)) });
+                if (inv) {
+                    const previousQty = inv.quantity;
+                    const newQty = previousQty + item.quantity;
+                    await tx.update(inventory).set({ quantity: newQty, available: newQty - (inv.reserved ?? 0) }).where(eq(inventory.id, inv.id));
+                    await tx.insert(stockMovements).values({
+                        productId: item.productId, branchId: transaction.branchId, type: 'IN',
+                        quantity: item.quantity, previousQty, newQty,
+                        reason: `Refund: ${reason || 'No reason provided'}`, reference: refundRecord.id, referenceType: 'REFUND', userId,
+                    });
+                }
+            }
+
+            // Reverse loyalty points proportionally based on refunded amount
+            const refEarned = transaction.pointsEarned || 0;
+            const refRedeemed = transaction.pointsRedeemed || 0;
+            const refRatio = transaction.total !== 0 ? Math.abs(refundAmount / transaction.total) : 1;
+            const pointsToReverse = Math.floor(refEarned * Math.min(refRatio, 1));
+            const redeemedToRestore = Math.floor(refRedeemed * Math.min(refRatio, 1));
+            if (pointsToReverse > 0 && transaction.customerId) {
+                await tx.update(customers)
+                    .set({ points: sql`${customers.points} - ${pointsToReverse}`, updatedAt: new Date() })
+                    .where(eq(customers.id, transaction.customerId));
+                await tx.insert(pointsHistory).values({
+                    tenantId: refundTenantId, customerId: transaction.customerId,
+                    points: -pointsToReverse, type: 'REFUND',
+                    reason: `Refund: ${reason || 'No reason provided'}`, referenceId: refundRecord.id, createdBy: userId,
+                });
+            }
+            if (redeemedToRestore > 0 && transaction.customerId) {
+                await tx.update(customers)
+                    .set({ points: sql`${customers.points} + ${redeemedToRestore}`, updatedAt: new Date() })
+                    .where(eq(customers.id, transaction.customerId));
+                await tx.insert(pointsHistory).values({
+                    tenantId: refundTenantId, customerId: transaction.customerId,
+                    points: redeemedToRestore, type: 'REFUND',
+                    reason: `Points restored on refund: ${reason || 'No reason provided'}`, referenceId: refundRecord.id, createdBy: userId,
+                });
+            }
+            if (pointsToReverse > 0 && transaction.memberId) {
+                const [updRefM] = await tx.update(members)
+                    .set({ points: sql`${members.points} - ${pointsToReverse}`, updatedAt: new Date() })
+                    .where(eq(members.id, transaction.memberId))
+                    .returning({ points: members.points });
+                await tx.insert(pointHistory).values({
+                    tenantId: refundTenantId, memberId: transaction.memberId,
+                    type: 'REFUND', points: -pointsToReverse, balance: updRefM.points,
+                    reference: refundRecord.id, referenceType: 'REFUND',
+                });
+            }
+
+            return refundRecord;
+        });
+
+        const fullRefund = await db.query.transactions.findFirst({ where: eq(transactions.id, refund.id), with: { items: true } });
+        res.json({ success: true, data: fullRefund });
     } catch (error) {
         next(error);
     }

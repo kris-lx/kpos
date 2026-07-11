@@ -18,6 +18,7 @@ export const QUEUES = {
     CACHE_INVALIDATION: 'kpos.cache-invalidation',
     NOTIFICATION: 'kpos.notification',
     ASSET_CLEANUP: 'kpos.asset-cleanup',
+    EMAIL: 'kpos.email',
 } as const;
 
 // Exchange for fanout (cache invalidation across instances)

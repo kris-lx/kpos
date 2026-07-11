@@ -19,6 +19,18 @@ export default defineConfig({
     },
     build: {
         target: 'esnext',
-        sourcemap: true
+        sourcemap: false,
+        chunkSizeWarningLimit: 1000,
+        rollupOptions: {
+            output: {
+                manualChunks(id) {
+                    if (!id.includes('node_modules')) return;
+                    if (id.includes('lucide-svelte')) return 'icons';
+                    if (id.includes('@tanstack')) return 'query';
+                    if (id.includes('svelte')) return 'svelte';
+                    return 'vendor';
+                }
+            }
+        }
     }
 });

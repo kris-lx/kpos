@@ -112,8 +112,9 @@
                 });
                 
                 const res = await api.post("upload/single", {
-                    json: { 
-                        image: base64, 
+                    json: {
+                        image: base64,
+                        filename: file.name,
                         folder: "store_requests",
                         resourceType: "auto"
                     }

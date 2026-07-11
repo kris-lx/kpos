@@ -8,6 +8,7 @@ export const zh = {
     'app.title': 'POS 销售系统',
     'common.loading': '加载中...',
     'common.save': '保存',
+    'common.readOnlyNoPermission': '您没有编辑权限 — 当前为只读模式',
     'common.cancel': '取消',
     'common.delete': '删除',
     'common.edit': '编辑',
@@ -544,6 +545,7 @@ export const zh = {
     'printers.usb': 'USB',
     'printers.network': '网络',
     'printers.bluetooth': '蓝牙',
+    'printers.usbAccessDenied': '无法访问USB打印机(Windows驱动程序不允许)— 已切换到打印对话框',
 
     // SKU Page
     'sku.title': 'SKU管理',
@@ -1829,6 +1831,12 @@ export const zh = {
     'notifications.lineTokenRequired': 'Line Token Required',
     'notifications.lineTokenSaveHint': 'Line Token Save Hint',
     'notifications.testingSound': 'Testing Sound',
+    'notifications.soundBell': '铃声',
+    'notifications.soundChime': '提示音',
+    'notifications.soundDing': '叮',
+    'notifications.soundBeep': '哔',
+    'notifications.pushNotConfigured': '服务器尚未配置浏览器推送',
+    'notifications.pushUnsupported': '此浏览器不支持推送通知',
     'settings.saveFailed': 'Save Failed',
     'settings.saved': 'Saved',
 };

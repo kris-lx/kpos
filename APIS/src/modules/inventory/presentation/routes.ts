@@ -5,16 +5,33 @@
 import { Router } from 'express';
 import { authenticate, authorize, branchFilter, ensureScopeAccess, buildScopeCondition, buildBranchIdScope, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { queryCache } from '@/infrastructure/http/middleware/cache.middleware';
-import { db, dbRead } from '@/config/database.config';
+import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
+import { setRequestContext } from '@/db/set-tenant-context';
+import { db as globalDb } from '@/config/database.config';
 import { products, categories, inventory, stockMovements, vendors, purchaseOrders, purchaseOrderItems, stockTransfers, stockTransferItems, stockCounts, stockCountItems, branches, stores } from '@/db/schema/tables';
 import { eq, and, or, ne, ilike, inArray, isNotNull, isNull, gte, lte, gt, lt, desc, asc, count, sum, sql } from 'drizzle-orm';
 import { queueActivityLog } from '@/infrastructure/helpers/activity-log.helper';
 
 export const inventoryRoutes = Router();
 
+// req.tx (a reserved connection) doesn't support .transaction() — see
+// tenant-tx.middleware.ts. Handlers that need real atomicity go through the
+// pooled globalDb instead, setting the RLS context with SET LOCAL inside.
+async function scopedTransaction(req, callback) {
+    return globalDb.transaction(async (tx) => {
+        const { tenantId, isSuperAdmin, activeBranchPath } = req.authUser ?? {};
+        if (tenantId && !isSuperAdmin) {
+            await setRequestContext(tx, { tenantId, branchPath: activeBranchPath }, { local: true });
+        }
+        return callback(tx);
+    });
+}
+
 // Get inventory status with pagination, search, and filters
-inventoryRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
+inventoryRoutes.get('/', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { 
             branchId, 
             lowStock, 
@@ -128,8 +145,10 @@ inventoryRoutes.get('/', authenticate, branchFilter(), async (req, res, next) =>
 });
 
 // Get inventory stats (for dashboard cards)
-inventoryRoutes.get('/stats', authenticate, branchFilter(), queryCache(30, 'inventory'), async (req, res, next) => {
+inventoryRoutes.get('/stats', authenticate, withTenantTx(), branchFilter(), queryCache(30, 'inventory'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const filter = req.branchFilter;
         const userBranchId = filter?.branchIds?.[0] || (req.user as any)?.branchId;
         
@@ -186,8 +205,10 @@ inventoryRoutes.get('/stats', authenticate, branchFilter(), queryCache(30, 'inve
 });
 
 // Get inventory movements
-inventoryRoutes.get('/movements', authenticate, branchFilter(), async (req, res, next) => {
+inventoryRoutes.get('/movements', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { productId, branchId, type, startDate, endDate, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
         const filter = req.branchFilter;
@@ -221,8 +242,10 @@ inventoryRoutes.get('/movements', authenticate, branchFilter(), async (req, res,
 });
 
 // Adjust inventory
-inventoryRoutes.put('/adjust', authenticate, branchFilter(), authorize('inventory:update'), async (req, res, next) => {
+inventoryRoutes.put('/adjust', authenticate, withTenantTx(), branchFilter(), authorize('inventory:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { productId, quantity, type, reason, reference } = req.body;
         const userId = req.user!.userId;
         // Get branchId from request body or from user's assigned branch
@@ -273,8 +296,10 @@ inventoryRoutes.put('/adjust', authenticate, branchFilter(), authorize('inventor
 });
 
 // Stock transfer between branches
-inventoryRoutes.post('/transfer', authenticate, authorize('inventory:transfer'), async (req, res, next) => {
+inventoryRoutes.post('/transfer', authenticate, withTenantTx(), authorize('inventory:transfer'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { productId, fromBranchId, toBranchId, quantity, reason } = req.body;
         const userId = req.user!.userId;
 
@@ -344,7 +369,7 @@ inventoryRoutes.post('/transfer', authenticate, authorize('inventory:transfer'),
         const toNewQty = toPreviousQty + quantity;
         const transferReason = reason || `ໂອນຈາກ ${fromBranch.name} ໄປ ${toBranch.name}`;
 
-        const result = await db.transaction(async (tx) => {
+        const result = await scopedTransaction(req, async (tx) => {
             // BE-43: Inject tenantId into stock movement inserts
             const [outMovement] = await tx.insert(stockMovements).values({
                 tenantId: tenantId || null,
@@ -392,8 +417,10 @@ inventoryRoutes.post('/transfer', authenticate, authorize('inventory:transfer'),
 });
 
 // Out of stock items
-inventoryRoutes.get('/out-of-stock', authenticate, branchFilter(), async (req, res, next) => {
+inventoryRoutes.get('/out-of-stock', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { search, page = 1, limit = 20, branchId: qBranchId } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
         const filter = req.branchFilter;
@@ -458,8 +485,10 @@ inventoryRoutes.get('/out-of-stock', authenticate, branchFilter(), async (req, r
 });
 
 // Low stock alerts
-inventoryRoutes.get('/alerts', authenticate, branchFilter(), async (req, res, next) => {
+inventoryRoutes.get('/alerts', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const filter = req.branchFilter;
         const branchId = filter?.branchIds?.[0] || req.user?.branchId || String(req.query.branchId);
 
@@ -479,8 +508,10 @@ inventoryRoutes.get('/alerts', authenticate, branchFilter(), async (req, res, ne
 });
 
 // Get all vendors (tenant-scoped)
-inventoryRoutes.get('/vendors', authenticate, async (req, res, next) => {
+inventoryRoutes.get('/vendors', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { search, isActive, page = 1, limit = 20, all } = req.query;
         const returnAll = all === 'true';
         const skip = (Number(page) - 1) * Number(limit);
@@ -503,8 +534,10 @@ inventoryRoutes.get('/vendors', authenticate, async (req, res, next) => {
 });
 
 // Get vendor by ID
-inventoryRoutes.get('/vendors/:id', authenticate, async (req, res, next) => {
+inventoryRoutes.get('/vendors/:id', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const vOneTenantId = req.authUser?.tenantId;
         const vOneConds: any[] = [eq(vendors.id, req.params.id)];
         if (vOneTenantId && !req.authUser?.isSuperAdmin) vOneConds.push(eq(vendors.tenantId, vOneTenantId));
@@ -517,8 +550,10 @@ inventoryRoutes.get('/vendors/:id', authenticate, async (req, res, next) => {
 }); // <--- Added missing closing });
 
 // Create vendor
-inventoryRoutes.post('/vendors', authenticate, authorize('inventory:create'), async (req, res, next) => {
+inventoryRoutes.post('/vendors', authenticate, withTenantTx(), authorize('inventory:create'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { name, code, contactName, phone, email, address, notes, taxId, paymentTerms, isActive, isStarred } = req.body;
         if (!name?.trim()) {
             res.status(400).json({ success: false, error: { code: 'VAL_001', message: 'ກະລຸນາປ້ອນຊື່ຜູ້ສະໜອງ' } });
@@ -550,8 +585,10 @@ inventoryRoutes.post('/vendors', authenticate, authorize('inventory:create'), as
 });
 
 // Update vendor
-inventoryRoutes.put('/vendors/:id', authenticate, authorize('inventory:update'), async (req, res, next) => {
+inventoryRoutes.put('/vendors/:id', authenticate, withTenantTx(), authorize('inventory:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { name, contactName, phone, email, address, notes, code, taxId, paymentTerms, isActive, isStarred } = req.body;
         
         if (name !== undefined && (!name || !name.trim())) {
@@ -596,8 +633,10 @@ inventoryRoutes.put('/vendors/:id', authenticate, authorize('inventory:update'),
 }); 
 
 // Delete vendor
-inventoryRoutes.delete('/vendors/:id', authenticate, authorize('inventory:delete'), async (req, res, next) => {
+inventoryRoutes.delete('/vendors/:id', authenticate, withTenantTx(), authorize('inventory:delete'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         // BE-76: Tenant-scoped vendor delete
         const vDelTenantId = req.authUser?.tenantId;
         const vDelConds: any[] = [eq(vendors.id, req.params.id)];
@@ -626,8 +665,10 @@ inventoryRoutes.delete('/vendors/:id', authenticate, authorize('inventory:delete
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all purchase orders
-inventoryRoutes.get('/purchase-orders', authenticate, branchFilter(), async (req, res, next) => {
+inventoryRoutes.get('/purchase-orders', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { branchId, vendorId, status, page = 1, limit = 50, all } = req.query;
         const returnAll = all === 'true';
         const skip = (Number(page) - 1) * Number(limit);
@@ -665,8 +706,10 @@ inventoryRoutes.get('/purchase-orders', authenticate, branchFilter(), async (req
 });
 
 // Get purchase order by ID (scope-checked)
-inventoryRoutes.get('/purchase-orders/:id', authenticate, async (req, res, next) => {
+inventoryRoutes.get('/purchase-orders/:id', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         // BE-76: Tenant-scoped PO lookup
         const poGetTenantId = req.authUser?.tenantId;
         const poGetConds: any[] = [eq(purchaseOrders.id, req.params.id)];
@@ -692,8 +735,10 @@ inventoryRoutes.get('/purchase-orders/:id', authenticate, async (req, res, next)
 });
 
 // Create purchase order
-inventoryRoutes.post('/purchase-orders', authenticate, branchFilter(), authorize('inventory:create'), async (req, res, next) => {
+inventoryRoutes.post('/purchase-orders', authenticate, withTenantTx(), branchFilter(), authorize('inventory:create'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { items, ...orderData } = req.body;
         const userId = req.user!.userId;
 
@@ -736,8 +781,10 @@ inventoryRoutes.post('/purchase-orders', authenticate, branchFilter(), authorize
 });
 
 // Update purchase order
-inventoryRoutes.put('/purchase-orders/:id', authenticate, authorize('inventory:update'), async (req, res, next) => {
+inventoryRoutes.put('/purchase-orders/:id', authenticate, withTenantTx(), authorize('inventory:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         // BE-76: Tenant-scoped PO update
         const poUpdTenantId = req.authUser?.tenantId;
         const poUpdConds: any[] = [eq(purchaseOrders.id, req.params.id)];
@@ -754,8 +801,10 @@ inventoryRoutes.put('/purchase-orders/:id', authenticate, authorize('inventory:u
 });
 
 // Update purchase order status
-inventoryRoutes.patch('/purchase-orders/:id/status', authenticate, authorize('inventory:update'), async (req, res, next) => {
+inventoryRoutes.patch('/purchase-orders/:id/status', authenticate, withTenantTx(), authorize('inventory:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { status } = req.body;
         const userId = req.user!.userId;
 
@@ -801,8 +850,10 @@ inventoryRoutes.patch('/purchase-orders/:id/status', authenticate, authorize('in
 });
 
 // Delete purchase order
-inventoryRoutes.delete('/purchase-orders/:id', authenticate, authorize('inventory:delete'), async (req, res, next) => {
+inventoryRoutes.delete('/purchase-orders/:id', authenticate, withTenantTx(), authorize('inventory:delete'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         // BE-76: Tenant-scoped PO delete
         const poDelTenantId = req.authUser?.tenantId;
         const poDelConds: any[] = [eq(purchaseOrders.id, req.params.id)];
@@ -827,8 +878,10 @@ inventoryRoutes.delete('/purchase-orders/:id', authenticate, authorize('inventor
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all stock transfers
-inventoryRoutes.get('/stock-transfers', authenticate, branchFilter(), async (req, res, next) => {
+inventoryRoutes.get('/stock-transfers', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { fromBranchId, toBranchId, status, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
         const filter = req.branchFilter;
@@ -861,8 +914,10 @@ inventoryRoutes.get('/stock-transfers', authenticate, branchFilter(), async (req
 });
 
 // Create stock transfer
-inventoryRoutes.post('/stock-transfers', authenticate, authorize('inventory:update'), branchFilter(), async (req, res, next) => {
+inventoryRoutes.post('/stock-transfers', authenticate, withTenantTx(), authorize('inventory:update'), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { items, fromBranchId, toBranchId, ...transferData } = req.body;
         const userId = req.user!.userId;
         const filter = req.branchFilter;
@@ -937,8 +992,10 @@ inventoryRoutes.post('/stock-transfers', authenticate, authorize('inventory:upda
 });
 
 // ─── Approve a stock transfer (deduct from source, add to destination) ───────
-inventoryRoutes.patch('/stock-transfers/:id/approve', authenticate, authorize('inventory:update'), branchFilter(), async (req, res, next) => {
+inventoryRoutes.patch('/stock-transfers/:id/approve', authenticate, withTenantTx(), authorize('inventory:update'), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { id } = req.params;
         const userId = req.user!.userId;
         const tenantId = req.authUser?.tenantId;
@@ -1019,8 +1076,10 @@ inventoryRoutes.patch('/stock-transfers/:id/approve', authenticate, authorize('i
 });
 
 // ─── Reject a stock transfer ──────────────────────────────────────────────────
-inventoryRoutes.patch('/stock-transfers/:id/reject', authenticate, authorize('inventory:update'), branchFilter(), async (req, res, next) => {
+inventoryRoutes.patch('/stock-transfers/:id/reject', authenticate, withTenantTx(), authorize('inventory:update'), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { id } = req.params;
         const { reason } = req.body;
         const userId = req.user!.userId;
@@ -1055,8 +1114,10 @@ inventoryRoutes.patch('/stock-transfers/:id/reject', authenticate, authorize('in
 });
 
 // Expiry tracking with pagination
-inventoryRoutes.get('/expiring', authenticate, branchFilter(), async (req, res, next) => {
+inventoryRoutes.get('/expiring', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { branchId, days = 90, page = 1, limit = 20, search, daysFilter, all } = req.query;
         const returnAll = all === 'true';
         const skip = (Number(page) - 1) * Number(limit);
@@ -1141,8 +1202,10 @@ inventoryRoutes.get('/expiring', authenticate, branchFilter(), async (req, res, 
 });
 
 // Get stock in records
-inventoryRoutes.get('/stock-in', authenticate, branchFilter(), async (req, res, next) => {
+inventoryRoutes.get('/stock-in', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { search, page = 1, limit = 10, branchId: qBranchId, all } = req.query;
         const returnAll = all === 'true';
         const skip = (Number(page) - 1) * Number(limit);
@@ -1191,8 +1254,10 @@ inventoryRoutes.get('/stock-in', authenticate, branchFilter(), async (req, res, 
 });
 
 // Get stock out records
-inventoryRoutes.get('/stock-out', authenticate, branchFilter(), async (req, res, next) => {
+inventoryRoutes.get('/stock-out', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { search, page = 1, limit = 10, branchId: qBranchId, all } = req.query;
         const returnAll = all === 'true';
         const skip = (Number(page) - 1) * Number(limit);
@@ -1237,8 +1302,10 @@ inventoryRoutes.get('/stock-out', authenticate, branchFilter(), async (req, res,
 });
 
 // Create stock out
-inventoryRoutes.post('/stock-out', authenticate, authorize('inventory:create'), async (req, res, next) => {
+inventoryRoutes.post('/stock-out', authenticate, withTenantTx(), authorize('inventory:create'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { productId, quantity, reason, reference, notes, date } = req.body;
         const userId = req.user!.userId;
         const branchId = req.user!.branchId || 'default';
@@ -1266,8 +1333,10 @@ inventoryRoutes.post('/stock-out', authenticate, authorize('inventory:create'), 
 });
 
 // Create stock in
-inventoryRoutes.post('/stock-in', authenticate, authorize('inventory:create'), async (req, res, next) => {
+inventoryRoutes.post('/stock-in', authenticate, withTenantTx(), authorize('inventory:create'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { productId, quantity, unitCost, supplier, reference, notes, date, expiryDate, batchNumber } = req.body;
         const userId = req.user!.userId;
         const branchId = req.user!.branchId || 'default';
@@ -1302,8 +1371,10 @@ inventoryRoutes.post('/stock-in', authenticate, authorize('inventory:create'), a
 });
 
 // Update stock in
-inventoryRoutes.put('/stock-in/:id', authenticate, authorize('inventory:update'), async (req, res, next) => {
+inventoryRoutes.put('/stock-in/:id', authenticate, withTenantTx(), authorize('inventory:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { id } = req.params;
         const { productId, quantity, unitCost, supplier, reference, notes, date, expiryDate, batchNumber } = req.body;
         const userId = req.user!.userId;
@@ -1345,8 +1416,10 @@ inventoryRoutes.put('/stock-in/:id', authenticate, authorize('inventory:update')
 });
 
 // Delete stock in (reverses inventory)
-inventoryRoutes.delete('/stock-in/:id', authenticate, authorize('inventory:delete'), async (req, res, next) => {
+inventoryRoutes.delete('/stock-in/:id', authenticate, withTenantTx(), authorize('inventory:delete'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         // BE-76: Tenant-scoped stock-in delete
         const siDelTenantId = req.authUser?.tenantId;
         const siDelConds: any[] = [eq(stockMovements.id, req.params.id)];
@@ -1365,8 +1438,10 @@ inventoryRoutes.delete('/stock-in/:id', authenticate, authorize('inventory:delet
 });
 
 // Update stock out
-inventoryRoutes.put('/stock-out/:id', authenticate, authorize('inventory:update'), async (req, res, next) => {
+inventoryRoutes.put('/stock-out/:id', authenticate, withTenantTx(), authorize('inventory:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { id } = req.params;
         const { productId, quantity, reason, reference, notes, date } = req.body;
         const branchId = req.user!.branchId || 'default';
@@ -1405,8 +1480,10 @@ inventoryRoutes.put('/stock-out/:id', authenticate, authorize('inventory:update'
 });
 
 // Delete stock out
-inventoryRoutes.delete('/stock-out/:id', authenticate, authorize('inventory:delete'), async (req, res, next) => {
+inventoryRoutes.delete('/stock-out/:id', authenticate, withTenantTx(), authorize('inventory:delete'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         // BE-76: Tenant-scoped stock-out delete
         const soDelTenantId = req.authUser?.tenantId;
         const soDelConds: any[] = [eq(stockMovements.id, req.params.id)];
@@ -1428,8 +1505,10 @@ inventoryRoutes.delete('/stock-out/:id', authenticate, authorize('inventory:dele
 });
 
 // Get adjustments
-inventoryRoutes.get('/adjustments', authenticate, branchFilter(), async (req, res, next) => {
+inventoryRoutes.get('/adjustments', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { search, page = 1, limit = 50, branchId: qBranchId, all, type, adjustmentType } = req.query;
         const returnAll = all === 'true';
         const skip = (Number(page) - 1) * Number(limit);
@@ -1486,8 +1565,10 @@ inventoryRoutes.get('/adjustments', authenticate, branchFilter(), async (req, re
 });
 
 // Get transfers
-inventoryRoutes.get('/transfers', authenticate, branchFilter(), async (req, res, next) => {
+inventoryRoutes.get('/transfers', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { search, status, page = 1, limit = 50, branchId: qBranchId, all } = req.query;
         const returnAll = all === 'true';
         const skip = (Number(page) - 1) * Number(limit);
@@ -1526,8 +1607,10 @@ inventoryRoutes.get('/transfers', authenticate, branchFilter(), async (req, res,
 });
 
 // Create transfer
-inventoryRoutes.post('/transfers', authenticate, authorize('inventory:update'), branchFilter(), async (req, res, next) => {
+inventoryRoutes.post('/transfers', authenticate, withTenantTx(), authorize('inventory:update'), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { productId, quantity, fromBranchId, toBranchId, reference, notes, date } = req.body;
         const userId = req.user!.userId;
         const filter = req.branchFilter;
@@ -1570,8 +1653,10 @@ inventoryRoutes.post('/transfers', authenticate, authorize('inventory:update'), 
 });
 
 // Approve a simple transfer (deduct from source, credit destination)
-inventoryRoutes.patch('/transfers/:id/approve', authenticate, authorize('inventory:update'), async (req, res, next) => {
+inventoryRoutes.patch('/transfers/:id/approve', authenticate, withTenantTx(), authorize('inventory:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { id } = req.params;
         const userId = req.user!.userId;
         const tenantId = req.authUser?.tenantId;
@@ -1613,8 +1698,10 @@ inventoryRoutes.patch('/transfers/:id/approve', authenticate, authorize('invento
 });
 
 // Reject a simple transfer
-inventoryRoutes.patch('/transfers/:id/reject', authenticate, authorize('inventory:update'), async (req, res, next) => {
+inventoryRoutes.patch('/transfers/:id/reject', authenticate, withTenantTx(), authorize('inventory:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { id } = req.params;
         const { reason } = req.body;
         const userId = req.user!.userId;
@@ -1633,8 +1720,10 @@ inventoryRoutes.patch('/transfers/:id/reject', authenticate, authorize('inventor
 });
 
 // Get stock counts
-inventoryRoutes.get('/stock-counts', authenticate, branchFilter(), async (req, res, next) => {
+inventoryRoutes.get('/stock-counts', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { status, page = 1, limit = 50, all } = req.query;
         const returnAll = all === 'true';
         const skip = (Number(page) - 1) * Number(limit);
@@ -1669,8 +1758,10 @@ inventoryRoutes.get('/stock-counts', authenticate, branchFilter(), async (req, r
 });
 
 // Create stock count
-inventoryRoutes.post('/stock-counts', authenticate, authorize('inventory:adjust'), async (req, res, next) => {
+inventoryRoutes.post('/stock-counts', authenticate, withTenantTx(), authorize('inventory:adjust'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { date, notes, items } = req.body;
         const userId = req.user!.userId;
         const branchId = req.user!.branchId || 'default';
@@ -1702,8 +1793,10 @@ inventoryRoutes.post('/stock-counts', authenticate, authorize('inventory:adjust'
 });
 
 // Approve stock count (maker/checker) — only roleLevel ≤ 4 (hq_admin, hq_manager) or admin
-inventoryRoutes.patch('/stock-counts/:id/approve', authenticate, authorize('inventory:adjust'), async (req, res, next) => {
+inventoryRoutes.patch('/stock-counts/:id/approve', authenticate, withTenantTx(), authorize('inventory:adjust'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const userId = req.authUser?.userId || req.user?.userId;
         const roleLevel = req.authUser?.roleLevel ?? 7;
         if (!userId) {
@@ -1753,8 +1846,10 @@ inventoryRoutes.patch('/stock-counts/:id/approve', authenticate, authorize('inve
 });
 
 // Reject stock count (maker/checker)
-inventoryRoutes.patch('/stock-counts/:id/reject', authenticate, authorize('inventory:adjust'), async (req, res, next) => {
+inventoryRoutes.patch('/stock-counts/:id/reject', authenticate, withTenantTx(), authorize('inventory:adjust'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const userId = req.authUser?.userId || req.user?.userId;
         const roleLevel = req.authUser?.roleLevel ?? 7;
         if (!req.authUser?.isSuperAdmin && roleLevel > 4) {

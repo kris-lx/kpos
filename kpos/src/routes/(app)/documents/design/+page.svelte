@@ -41,6 +41,7 @@
     // Available elements for drag & drop
     const availableElements = [
         { type: "logo", name: "Logo", icon: Image },
+        { type: "image", name: "ຮູບພາບ", icon: Image },
         { type: "text", name: "ຂໍ້ຄວາມ", icon: Type },
         { type: "storeName", name: "ຊື່ຮ້ານ", icon: FileText },
         { type: "address", name: "ທີ່ຢູ່", icon: FileText },
@@ -195,6 +196,36 @@
             qrDataUrl = qrUploadedImageUrl;
         };
         reader.readAsDataURL(file);
+    }
+
+    // Generic "Image" element — uploads to Cloudinary (same as logos/product photos
+    // elsewhere in the app) so the design stores a small hosted URL rather than a
+    // multi-KB base64 blob inside the settings row.
+    let uploadingImageElementId = $state<string | null>(null);
+
+    async function handleImageElementUpload(elementId: string, e: Event) {
+        const input = e.target as HTMLInputElement;
+        const file = input.files?.[0];
+        if (!file) return;
+        uploadingImageElementId = elementId;
+        try {
+            const base64 = await new Promise<string>((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result as string);
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+            const res = await api.post("upload/single", {
+                json: { image: base64, filename: file.name, folder: "receipt-design" },
+            }).json<any>();
+            const url = res.success && res.data?.url ? res.data.url : base64;
+            updateElement(elementId, { content: url });
+        } catch {
+            toast.error("ອັບໂຫລດຮູບພາບບໍ່ສຳເລັດ");
+        } finally {
+            uploadingImageElementId = null;
+            input.value = "";
+        }
     }
 
     $effect(() => { generateQrPreview(); });
@@ -714,6 +745,10 @@
                 html += logoUrl
                     ? `<div class="logo"><img src="${logoUrl}" style="max-width:80px;max-height:80px;object-fit:contain" alt="Logo"/></div>`
                     : `<div class="logo"><div class="logo-box">LOGO</div></div>`;
+            } else if (el.type === 'image') {
+                html += el.content
+                    ? `<div class="center" style="padding:8px 0"><img src="${el.content}" style="max-width:70%;max-height:100px;object-fit:contain"/></div>`
+                    : '';
             } else if (el.type === 'qrcode') {
                 const qrSrc = qrDataUrl || '';
                 html += qrSrc
@@ -897,6 +932,17 @@
                                             />
                                         </div>
                                     </div>
+                                {:else if element.type === "image"}
+                                    <div class="text-center py-2">
+                                        {#if element.content}
+                                            <img src={element.content} alt="" class="mx-auto max-h-20 max-w-[70%] object-contain rounded" />
+                                        {:else}
+                                            <div class="inline-flex flex-col items-center gap-1 w-20 h-20 bg-gray-100 border border-dashed border-gray-300 rounded-lg justify-center text-gray-400">
+                                                <Image class="w-6 h-6" />
+                                                <span class="text-[10px]">ຮູບພາບ</span>
+                                            </div>
+                                        {/if}
+                                    </div>
                                 {:else if element.type === "qrcode"}
                                     <div class="text-center py-2">
                                         <div
@@ -1000,6 +1046,14 @@
                                             <div class="inline-flex w-12 h-12 bg-gray-100 rounded items-center justify-center text-gray-400 text-xs">LOGO</div>
                                         {/if}
                                     </div>
+                                {:else if el.type === 'image'}
+                                    <div class="text-center py-1">
+                                        {#if el.content}
+                                            <img src={el.content} alt="" class="mx-auto max-h-16 max-w-[70%] object-contain" />
+                                        {:else}
+                                            <div class="inline-block w-16 h-16 border border-dashed border-gray-300 flex items-center justify-center text-xs text-gray-400">ຮູບພາບ</div>
+                                        {/if}
+                                    </div>
                                 {:else if el.type === 'qrcode'}
                                     <div class="text-center py-1">
                                         {#if qrDataUrl}
@@ -1064,8 +1118,38 @@
                             </div>
                         {/if}
 
+                        <!-- Image element upload -->
+                        {#if selectedElement.type === "image"}
+                            <div class="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 p-3 space-y-2">
+                                {#if selectedElement.content}
+                                    <img src={selectedElement.content} alt="" class="mx-auto max-h-24 max-w-full object-contain rounded" />
+                                {:else}
+                                    <div class="w-14 h-14 mx-auto bg-gray-200 dark:bg-gray-700 rounded-lg flex items-center justify-center">
+                                        <Image class="w-7 h-7 text-gray-400" />
+                                    </div>
+                                {/if}
+                                <label class="flex items-center justify-center gap-2 px-3 py-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600 text-xs text-gray-700 dark:text-gray-300 transition-colors">
+                                    {#if uploadingImageElementId === selectedElement.id}
+                                        <span class="w-3.5 h-3.5 border-2 border-gray-400 border-t-transparent rounded-full animate-spin"></span>
+                                        ກຳລັງອັບໂຫລດ...
+                                    {:else}
+                                        <Image class="w-3.5 h-3.5" />
+                                        {selectedElement.content ? "ປ່ຽນຮູບພາບ" : "ອັບໂຫລດຮູບພາບ"}
+                                    {/if}
+                                    <input
+                                        type="file"
+                                        accept="image/*"
+                                        class="hidden"
+                                        disabled={uploadingImageElementId === selectedElement.id}
+                                        onchange={(e) => handleImageElementUpload(selectedElement.id, e)}
+                                    />
+                                </label>
+                                <p class="text-xs text-gray-400 text-center">ຮູບພາບອິດສະຫຼະ — ໃສ່ບ່ອນໃດກໍ່ໄດ້ໃນໃບບິນ (ໂປໂມຊັນ, ຕາປະທັບ, ລາຍເຊັນ...)</p>
+                            </div>
+                        {/if}
+
                         <!-- Content -->
-                        {#if !["divider", "items", "logo", "qrcode", "barcode"].includes(selectedElement.type)}
+                        {#if !["divider", "items", "logo", "image", "qrcode", "barcode"].includes(selectedElement.type)}
                             <div>
                                 <label
                                     for="element-content"

@@ -224,7 +224,15 @@
 
     async function exportToCsv() {
         try {
-            const res = await api.get(`inventory?limit=10000${auth.activeBranchId ? `&branchId=${auth.activeBranchId}` : ''}`).json<any>();
+            // Reuse the same search/filter params as the on-screen list (minus
+            // pagination) so the export matches what's currently visible instead
+            // of silently ignoring active filters and widening the store scope.
+            const params = new URLSearchParams();
+            if (debouncedSearch) params.append("search", debouncedSearch);
+            if (filterType === "low") params.append("lowStock", "true");
+            if (filterType === "out") params.append("outOfStock", "true");
+            params.append("limit", "10000");
+            const res = await api.get(`inventory?${params.toString()}`).json<any>();
             const rows: any[] = res.data || [];
             let csv = '﻿';
             csv += `${t("inventory.csvHeaderProductName")},${t("product.sku")},${t("staff.branch")},${t("inventory.stock")},${t("inventory.reserved")},${t("inventory.available")},${t("inventory.location")},${t("staff.status")}\n`;

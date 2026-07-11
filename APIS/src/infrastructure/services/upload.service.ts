@@ -32,6 +32,9 @@ export interface UploadOptions {
     maxHeight?: number;
     quality?: number;
     resourceType?: 'image' | 'video' | 'raw' | 'auto';
+    /** Original filename from the client — when given, the asset is stored under this
+     *  name (sanitized) instead of a Cloudinary-generated random public_id. */
+    originalFilename?: string;
 }
 
 class UploadService {
@@ -76,6 +79,24 @@ class UploadService {
         return 'data:application/octet-stream;base64,';
     }
 
+    /**
+     * Turn an original filename into a safe Cloudinary public_id.
+     * `keepExtension` matters for resource_type 'raw' (Cloudinary doesn't append a
+     * format there, unlike image/video), so raw uploads keep their extension.
+     */
+    private sanitizePublicId(filename: string, keepExtension: boolean): string {
+        const dot = filename.lastIndexOf('.');
+        const hasExt = dot > 0 && dot < filename.length - 1;
+        const base = hasExt && !keepExtension ? filename.slice(0, dot) : filename;
+        const cleaned = base
+            .normalize('NFKD')
+            .replace(/[^\w.\-]+/g, '_')
+            .replace(/_+/g, '_')
+            .replace(/^[_.]+|[_.]+$/g, '')
+            .slice(0, 120);
+        return cleaned || 'file';
+    }
+
     async uploadSingle(
         fileData: string | Buffer,
         options: UploadOptions = {}
@@ -115,8 +136,13 @@ class UploadService {
             });
         }
 
+        const publicId = options.originalFilename
+            ? this.sanitizePublicId(options.originalFilename, resourceType === 'raw')
+            : undefined;
+
         const result = (await cloudinary.uploader.upload(file, {
             folder,
+            ...(publicId ? { public_id: publicId, overwrite: true } : {}),
             ...(isImageType && transformation.length > 0 ? { transformation } : {}),
             resource_type: resourceType,
         })) as any;

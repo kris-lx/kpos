@@ -3,8 +3,9 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, branchFilter, requireStoreAccess, applyScopeFilter, invalidateUserStoreCache, getRoleLevel, type ScopeFilter, buildScopeCondition } from '@/infrastructure/http/middleware/auth.middleware';
-import { db } from '@/config/database.config';
+import { authenticate, authorize, branchFilter, requireStoreAccess, applyScopeFilter, invalidateUserStoreCache, invalidateAllUserStoreCache, getRoleLevel, type ScopeFilter, buildScopeCondition } from '@/infrastructure/http/middleware/auth.middleware';
+import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
+import { db as globalDb } from '@/config/database.config';
 import { stores, branches, users, userStores, storeRequests } from '@/db/schema/tables';
 import { eq, and, or, ilike, inArray, desc, asc, count } from 'drizzle-orm';
 
@@ -46,8 +47,9 @@ function canManageTargetUser(req: any, target: UserScopeRecord): boolean {
 // ═══════════════════════════════════════════════════════════════════════════
 // GET ALL STORES (filtered by accessible branches)
 // ═══════════════════════════════════════════════════════════════════════════
-storeRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
+storeRoutes.get('/', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { branchId, search, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
         const filter = req.branchFilter;
@@ -113,8 +115,9 @@ storeRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
 // ═══════════════════════════════════════════════════════════════════════════
 // GET USER'S ACCESSIBLE STORES
 // ═══════════════════════════════════════════════════════════════════════════
-storeRoutes.get('/my-stores', authenticate, async (req, res, next) => {
+storeRoutes.get('/my-stores', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         if (!req.authUser) {
             return res.status(401).json({
                 success: false,
@@ -144,8 +147,9 @@ storeRoutes.get('/my-stores', authenticate, async (req, res, next) => {
 /**
  * GET /stores/requests - Get user's own store requests
  */
-storeRoutes.get('/requests', authenticate, async (req, res, next) => {
+storeRoutes.get('/requests', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const userId = req.user?.userId;
         const { status, page = 1, limit = 10 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
@@ -183,8 +187,9 @@ storeRoutes.get('/requests', authenticate, async (req, res, next) => {
 /**
  * POST /stores/requests - Submit a new store/branch request
  */
-storeRoutes.post('/requests', authenticate, async (req, res, next) => {
+storeRoutes.post('/requests', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const userId = req.user?.userId;
         
         if (!userId) {
@@ -305,8 +310,9 @@ storeRoutes.post('/requests', authenticate, async (req, res, next) => {
 /**
  * GET /stores/requests/:id - Get a specific request
  */
-storeRoutes.get('/requests/:id', authenticate, async (req, res, next) => {
+storeRoutes.get('/requests/:id', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const userId = req.user?.userId;
         const { id } = req.params;
 
@@ -338,8 +344,9 @@ storeRoutes.get('/requests/:id', authenticate, async (req, res, next) => {
 /**
  * DELETE /stores/requests/:id - Cancel a pending request
  */
-storeRoutes.delete('/requests/:id', authenticate, async (req, res, next) => {
+storeRoutes.delete('/requests/:id', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const userId = req.user?.userId;
         const { id } = req.params;
 
@@ -371,8 +378,9 @@ storeRoutes.delete('/requests/:id', authenticate, async (req, res, next) => {
 // ═══════════════════════════════════════════════════════════════════════════
 // GET STORE BY ID (MUST be after all specific named routes like /requests, /my-stores)
 // ═══════════════════════════════════════════════════════════════════════════
-storeRoutes.get('/:id', authenticate, branchFilter(), async (req, res, next) => {
+storeRoutes.get('/:id', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const filter = req.branchFilter;
         
         // BE-75: Tenant-scoped store lookup
@@ -416,9 +424,10 @@ storeRoutes.get('/:id', authenticate, branchFilter(), async (req, res, next) => 
 // ═══════════════════════════════════════════════════════════════════════════
 // CREATE STORE
 // ═══════════════════════════════════════════════════════════════════════════
-storeRoutes.post('/', authenticate, authorize('stores:create', 'branches:create'), async (req, res, next) => {
+storeRoutes.post('/', authenticate, withTenantTx(), authorize('stores:create', 'branches:create'), async (req, res, next) => {
     try {
-        const { name, code, branchId, address, phone, email, description, isDefault, settings } = req.body;
+        const db = req.tx ?? globalDb;
+        const { name, code, branchId, address, phone, email, description, logo, isDefault, settings } = req.body;
 
         // Validate required fields
         if (!name || !code || !branchId) {
@@ -445,7 +454,7 @@ storeRoutes.post('/', authenticate, authorize('stores:create', 'branches:create'
         const tenantId = (req.authUser?.tenantId || req.user?.tenantId) || null;
         const [store] = await db.insert(stores).values({
             tenantId,
-            name, code, branchId, address, phone, email, description,
+            name, code, branchId, address, phone, email, description, logo,
             isDefault: isDefault || false,
             settings,
         }).returning();
@@ -470,10 +479,11 @@ storeRoutes.post('/', authenticate, authorize('stores:create', 'branches:create'
 // ═══════════════════════════════════════════════════════════════════════════
 // UPDATE STORE
 // ═══════════════════════════════════════════════════════════════════════════
-storeRoutes.put('/:id', authenticate, authorize('stores:update', 'branches:update'), async (req, res, next) => {
+storeRoutes.put('/:id', authenticate, withTenantTx(), authorize('stores:update', 'branches:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { id } = req.params;
-        const { name, code, address, phone, email, description, isActive, isDefault, settings } = req.body;
+        const { name, code, address, phone, email, description, logo, isActive, isDefault, settings } = req.body;
 
         // BE-75: Tenant-scoped store update
         const tenantId = req.authUser?.tenantId;
@@ -502,12 +512,17 @@ storeRoutes.put('/:id', authenticate, authorize('stores:update', 'branches:updat
         if (phone !== undefined) updateData.phone = phone;
         if (email !== undefined) updateData.email = email;
         if (description !== undefined) updateData.description = description;
+        if (logo !== undefined) updateData.logo = logo;
         if (isActive !== undefined) updateData.isActive = isActive;
         if (isDefault !== undefined) updateData.isDefault = isDefault;
         if (settings) updateData.settings = settings;
 
         delete updateData.tenantId;
         const [store] = await db.update(stores).set(updateData).where(and(...updConds)).returning();
+
+        // Logo/name changes affect every user with access to this store, not just
+        // the editor — a per-user cache bust wouldn't reach the others' sidebars.
+        await invalidateAllUserStoreCache();
 
         res.json({ success: true, data: store });
     } catch (error) {
@@ -518,8 +533,9 @@ storeRoutes.put('/:id', authenticate, authorize('stores:update', 'branches:updat
 // ═══════════════════════════════════════════════════════════════════════════
 // TRANSFER STORE TO ANOTHER BRANCH
 // ═══════════════════════════════════════════════════════════════════════════
-storeRoutes.put('/:id/transfer', authenticate, authorize('stores:update', 'branches:update'), async (req, res, next) => {
+storeRoutes.put('/:id/transfer', authenticate, withTenantTx(), authorize('stores:update', 'branches:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { id } = req.params;
         const { toBranchId } = req.body;
 
@@ -569,8 +585,9 @@ storeRoutes.put('/:id/transfer', authenticate, authorize('stores:update', 'branc
 // ═══════════════════════════════════════════════════════════════════════════
 // DELETE STORE (Soft delete)
 // ═══════════════════════════════════════════════════════════════════════════
-storeRoutes.delete('/:id', authenticate, authorize('stores:delete', 'branches:delete'), async (req, res, next) => {
+storeRoutes.delete('/:id', authenticate, withTenantTx(), authorize('stores:delete', 'branches:delete'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-75: Tenant-scoped store delete
         const tenantId = req.authUser?.tenantId;
         const delConds: any[] = [eq(stores.id, req.params.id)];
@@ -586,8 +603,9 @@ storeRoutes.delete('/:id', authenticate, authorize('stores:delete', 'branches:de
 // ═══════════════════════════════════════════════════════════════════════════
 // ASSIGN USER TO STORE
 // ═══════════════════════════════════════════════════════════════════════════
-storeRoutes.post('/:id/users', authenticate, authorize('staff:update'), async (req, res, next) => {
+storeRoutes.post('/:id/users', authenticate, withTenantTx(), authorize('staff:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { id: storeId } = req.params;
         const { userId, canRead = true, canWrite = true, canDelete = false, canManage = false, isDefault = false } = req.body;
 
@@ -650,8 +668,9 @@ storeRoutes.post('/:id/users', authenticate, authorize('staff:update'), async (r
 // ═══════════════════════════════════════════════════════════════════════════
 // REMOVE USER FROM STORE
 // ═══════════════════════════════════════════════════════════════════════════
-storeRoutes.delete('/:id/users/:userId', authenticate, authorize('staff:update'), async (req, res, next) => {
+storeRoutes.delete('/:id/users/:userId', authenticate, withTenantTx(), authorize('staff:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { id: storeId, userId } = req.params;
 
         const tenantId = req.authUser?.tenantId;
@@ -681,8 +700,9 @@ storeRoutes.delete('/:id/users/:userId', authenticate, authorize('staff:update')
 // ═══════════════════════════════════════════════════════════════════════════
 // GET STORE USERS
 // ═══════════════════════════════════════════════════════════════════════════
-storeRoutes.get('/:id/users', authenticate, branchFilter(), async (req, res, next) => {
+storeRoutes.get('/:id/users', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { id: storeId } = req.params;
 
         const tenantId = req.authUser?.tenantId;
@@ -713,8 +733,9 @@ storeRoutes.get('/:id/users', authenticate, branchFilter(), async (req, res, nex
 // ═══════════════════════════════════════════════════════════════════════════
 // GET USER'S STORE ASSIGNMENTS
 // ═══════════════════════════════════════════════════════════════════════════
-storeRoutes.get('/users/:userId/stores', authenticate, authorize('staff:read'), async (req, res, next) => {
+storeRoutes.get('/users/:userId/stores', authenticate, withTenantTx(), authorize('staff:read'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { userId } = req.params;
 
         const tenantId = req.authUser?.tenantId;
@@ -741,8 +762,9 @@ storeRoutes.get('/users/:userId/stores', authenticate, authorize('staff:read'), 
 // ═══════════════════════════════════════════════════════════════════════════
 // BULK ASSIGN USER TO MULTIPLE STORES
 // ═══════════════════════════════════════════════════════════════════════════
-storeRoutes.post('/users/:userId/bulk-assign', authenticate, authorize('staff:update'), async (req, res, next) => {
+storeRoutes.post('/users/:userId/bulk-assign', authenticate, withTenantTx(), authorize('staff:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { userId } = req.params;
         const { storeIds, permissions = {} } = req.body;
 
@@ -818,8 +840,9 @@ storeRoutes.post('/users/:userId/bulk-assign', authenticate, authorize('staff:up
 // ═══════════════════════════════════════════════════════════════════════════
 // REMOVE ALL STORE ASSIGNMENTS FOR USER
 // ═══════════════════════════════════════════════════════════════════════════
-storeRoutes.delete('/users/:userId/stores', authenticate, authorize('staff:update'), async (req, res, next) => {
+storeRoutes.delete('/users/:userId/stores', authenticate, withTenantTx(), authorize('staff:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { userId } = req.params;
         const { storeIds } = req.body;
 

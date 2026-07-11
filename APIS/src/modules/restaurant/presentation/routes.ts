@@ -13,7 +13,8 @@ import {
 import { TableStatus } from '../domain/entities/Table';
 import { OrderStatus, OrderItemStatus } from '../domain/entities/Order';
 import { ReservationStatus } from '../domain/entities/Reservation';
-import { db } from '@/config/database.config';
+import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
+import { db as globalDb } from '@/config/database.config';
 import { branches, tables as restaurantTables, orderItems } from '@/db/schema/tables';
 import { eq, and } from 'drizzle-orm';
 
@@ -28,7 +29,7 @@ async function resolveScopedBranch(req: Request, branchId?: string | null) {
         conditions.push(eq(branches.tenantId, req.authUser.tenantId));
     }
 
-    const branch = await db.query.branches.findFirst({
+    const branch = await (req.tx ?? globalDb).query.branches.findFirst({
         where: and(...conditions),
         columns: { id: true, tenantId: true },
     });
@@ -47,7 +48,7 @@ async function ensureScopedTable(req: Request, tableId: string, branchId?: strin
     }
     if (branchId) conditions.push(eq(restaurantTables.branchId, branchId));
 
-    const table = await db.query.tables.findFirst({
+    const table = await (req.tx ?? globalDb).query.tables.findFirst({
         where: and(...conditions),
         columns: { id: true, branchId: true, tenantId: true },
     });
@@ -67,8 +68,9 @@ async function loadScopedOrder(req: Request, orderId: string) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all tables
-restaurantRoutes.get('/tables', authenticate, branchFilter(), async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.get('/tables', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { branchId, status, zone, floor } = req.query;
         const filter = req.branchFilter;
         const effectiveBranchId = (branchId as string) || filter?.branchIds?.[0] || req.authUser?.activeBranchId;
@@ -91,8 +93,9 @@ restaurantRoutes.get('/tables', authenticate, branchFilter(), async (req: Reques
 });
 
 // Get table stats
-restaurantRoutes.get('/tables/stats', authenticate, branchFilter(), async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.get('/tables/stats', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { branchId } = req.query;
 
         const branch = await resolveScopedBranch(req, branchId as string | undefined);
@@ -110,8 +113,9 @@ restaurantRoutes.get('/tables/stats', authenticate, branchFilter(), async (req: 
 });
 
 // Get table by ID (scope-checked)
-restaurantRoutes.get('/tables/:id', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.get('/tables/:id', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-76: Tenant-scoped table lookup
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         const table = await tableService.findById(req.params.id, tenantId);
@@ -132,8 +136,9 @@ restaurantRoutes.get('/tables/:id', authenticate, async (req: Request, res: Resp
 });
 
 // Create table
-restaurantRoutes.post('/tables', authenticate, authorize('tables:create'), async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.post('/tables', authenticate, withTenantTx(), authorize('tables:create'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const branch = await resolveScopedBranch(req, req.body.branchId);
         if (!branch) {
             res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Invalid branch or no access' } });
@@ -152,8 +157,9 @@ restaurantRoutes.post('/tables', authenticate, authorize('tables:create'), async
 });
 
 // Update table
-restaurantRoutes.put('/tables/:id', authenticate, authorize('tables:update'), async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.put('/tables/:id', authenticate, withTenantTx(), authorize('tables:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         if (!(await ensureScopedTable(req, req.params.id))) {
             res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Table not found or no access' } });
@@ -171,8 +177,9 @@ restaurantRoutes.put('/tables/:id', authenticate, authorize('tables:update'), as
 });
 
 // Update table status
-restaurantRoutes.patch('/tables/:id/status', authenticate, authorize('tables:update'), async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.patch('/tables/:id/status', authenticate, withTenantTx(), authorize('tables:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { status } = req.body;
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         if (!(await ensureScopedTable(req, req.params.id))) {
@@ -187,8 +194,9 @@ restaurantRoutes.patch('/tables/:id/status', authenticate, authorize('tables:upd
 });
 
 // Delete table (soft delete)
-restaurantRoutes.delete('/tables/:id', authenticate, authorize('tables:delete'), async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.delete('/tables/:id', authenticate, withTenantTx(), authorize('tables:delete'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         if (!(await ensureScopedTable(req, req.params.id))) {
             res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Table not found or no access' } });
@@ -206,8 +214,9 @@ restaurantRoutes.delete('/tables/:id', authenticate, authorize('tables:delete'),
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get distinct zones from tables
-restaurantRoutes.get('/zones', authenticate, branchFilter(), async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.get('/zones', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const filter = req.branchFilter;
         const effectiveBranchId = (req.query.branchId as string) || filter?.branchIds?.[0] || req.authUser?.activeBranchId;
 
@@ -246,8 +255,9 @@ restaurantRoutes.get('/zones', authenticate, branchFilter(), async (req: Request
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all orders
-restaurantRoutes.get('/orders', authenticate, branchFilter(), async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.get('/orders', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { branchId, status, tableId } = req.query;
         const filter = req.branchFilter;
         const effectiveBranchId = (branchId as string) || filter?.branchIds?.[0] || req.authUser?.activeBranchId;
@@ -267,8 +277,9 @@ restaurantRoutes.get('/orders', authenticate, branchFilter(), async (req: Reques
 });
 
 // Get order stats
-restaurantRoutes.get('/orders/stats', authenticate, branchFilter(), async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.get('/orders/stats', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { branchId } = req.query;
 
         const branch = await resolveScopedBranch(req, branchId as string | undefined);
@@ -286,8 +297,9 @@ restaurantRoutes.get('/orders/stats', authenticate, branchFilter(), async (req: 
 });
 
 // Get order by ID
-restaurantRoutes.get('/orders/:id', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.get('/orders/:id', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         const order = await orderService.findById(req.params.id, tenantId);
 
@@ -307,8 +319,9 @@ restaurantRoutes.get('/orders/:id', authenticate, async (req: Request, res: Resp
 });
 
 // Create order
-restaurantRoutes.post('/orders', authenticate, authorize('restaurant:manage'), async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.post('/orders', authenticate, withTenantTx(), authorize('restaurant:manage'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const branch = await resolveScopedBranch(req, req.body.branchId);
         if (!branch) {
             res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Invalid branch or no access' } });
@@ -332,8 +345,9 @@ restaurantRoutes.post('/orders', authenticate, authorize('restaurant:manage'), a
 });
 
 // Update order
-restaurantRoutes.put('/orders/:id', authenticate, authorize('restaurant:manage'), async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.put('/orders/:id', authenticate, withTenantTx(), authorize('restaurant:manage'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         const existingOrder = await loadScopedOrder(req, req.params.id);
         if (!existingOrder) {
@@ -356,8 +370,9 @@ restaurantRoutes.put('/orders/:id', authenticate, authorize('restaurant:manage')
 });
 
 // Update order status
-restaurantRoutes.patch('/orders/:id/status', authenticate, authorize('restaurant:manage'), async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.patch('/orders/:id/status', authenticate, withTenantTx(), authorize('restaurant:manage'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { status } = req.body;
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         const existingOrder = await loadScopedOrder(req, req.params.id);
@@ -373,8 +388,9 @@ restaurantRoutes.patch('/orders/:id/status', authenticate, authorize('restaurant
 });
 
 // Add items to order
-restaurantRoutes.post('/orders/:id/items', authenticate, authorize('restaurant:manage'), async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.post('/orders/:id/items', authenticate, withTenantTx(), authorize('restaurant:manage'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { items } = req.body;
         const existingOrder = await loadScopedOrder(req, req.params.id);
         if (!existingOrder) {
@@ -394,8 +410,9 @@ restaurantRoutes.post('/orders/:id/items', authenticate, authorize('restaurant:m
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get kitchen orders
-restaurantRoutes.get('/kitchen', authenticate, branchFilter(), async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.get('/kitchen', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { branchId } = req.query;
         const filter = req.branchFilter;
         const effectiveBranchId = (branchId as string) || filter?.branchIds?.[0] || req.authUser?.activeBranchId;
@@ -408,8 +425,9 @@ restaurantRoutes.get('/kitchen', authenticate, branchFilter(), async (req: Reque
 });
 
 // Update order item status (kitchen)
-restaurantRoutes.put('/kitchen/:orderId/items/:itemId', authenticate, authorize('restaurant:kitchen', 'restaurant:manage'), async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.put('/kitchen/:orderId/items/:itemId', authenticate, withTenantTx(), authorize('restaurant:kitchen', 'restaurant:manage'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { status } = req.body;
         const order = await loadScopedOrder(req, req.params.orderId);
         if (!order) {
@@ -432,8 +450,9 @@ restaurantRoutes.put('/kitchen/:orderId/items/:itemId', authenticate, authorize(
 });
 
 // Legacy endpoint for backward compatibility
-restaurantRoutes.patch('/kitchen/items/:id/status', authenticate, authorize('restaurant:kitchen', 'restaurant:manage'), async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.patch('/kitchen/items/:id/status', authenticate, withTenantTx(), authorize('restaurant:kitchen', 'restaurant:manage'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { status } = req.body;
         const itemRecord = await db.query.orderItems.findFirst({
             where: eq(orderItems.id, req.params.id),
@@ -460,8 +479,9 @@ restaurantRoutes.patch('/kitchen/items/:id/status', authenticate, authorize('res
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all reservations
-restaurantRoutes.get('/reservations', authenticate, branchFilter(), async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.get('/reservations', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { branchId, status, date, page, limit } = req.query;
         const filter = req.branchFilter;
         const effectiveBranchId = (branchId as string) || filter?.branchIds?.[0] || req.authUser?.activeBranchId;
@@ -492,8 +512,9 @@ restaurantRoutes.get('/reservations', authenticate, branchFilter(), async (req: 
 });
 
 // Get reservation stats
-restaurantRoutes.get('/reservations/stats', authenticate, branchFilter(), async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.get('/reservations/stats', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { branchId, date } = req.query;
 
         const branch = await resolveScopedBranch(req, branchId as string | undefined);
@@ -515,8 +536,9 @@ restaurantRoutes.get('/reservations/stats', authenticate, branchFilter(), async 
 });
 
 // Get reservation by ID
-restaurantRoutes.get('/reservations/:id', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.get('/reservations/:id', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         const reservation = await reservationService.findById(req.params.id, tenantId);
 
@@ -536,8 +558,9 @@ restaurantRoutes.get('/reservations/:id', authenticate, async (req: Request, res
 });
 
 // Create reservation
-restaurantRoutes.post('/reservations', authenticate, authorize('restaurant:reservations', 'restaurant:manage'), async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.post('/reservations', authenticate, withTenantTx(), authorize('restaurant:reservations', 'restaurant:manage'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const branch = await resolveScopedBranch(req, req.body.branchId);
         if (!branch) {
             res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Invalid branch or no access' } });
@@ -561,8 +584,9 @@ restaurantRoutes.post('/reservations', authenticate, authorize('restaurant:reser
 });
 
 // Update reservation
-restaurantRoutes.put('/reservations/:id', authenticate, authorize('restaurant:reservations', 'restaurant:manage'), async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.put('/reservations/:id', authenticate, withTenantTx(), authorize('restaurant:reservations', 'restaurant:manage'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         const existing = await reservationService.findById(req.params.id, tenantId);
         if (!existing || !ensureScopeAccess(existing as any, req)) {
@@ -585,8 +609,9 @@ restaurantRoutes.put('/reservations/:id', authenticate, authorize('restaurant:re
 });
 
 // Update reservation status
-restaurantRoutes.patch('/reservations/:id/status', authenticate, authorize('restaurant:reservations', 'restaurant:manage'), async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.patch('/reservations/:id/status', authenticate, withTenantTx(), authorize('restaurant:reservations', 'restaurant:manage'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { status } = req.body;
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         const existing = await reservationService.findById(req.params.id, tenantId);
@@ -602,8 +627,9 @@ restaurantRoutes.patch('/reservations/:id/status', authenticate, authorize('rest
 });
 
 // Delete reservation
-restaurantRoutes.delete('/reservations/:id', authenticate, authorize('restaurant:reservations', 'restaurant:manage'), async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.delete('/reservations/:id', authenticate, withTenantTx(), authorize('restaurant:reservations', 'restaurant:manage'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         const existing = await reservationService.findById(req.params.id, tenantId);
         if (!existing || !ensureScopeAccess(existing as any, req)) {
@@ -622,7 +648,7 @@ restaurantRoutes.delete('/reservations/:id', authenticate, authorize('restaurant
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get e-menu (public)
-restaurantRoutes.get('/e-menu', async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.get('/e-menu', async (req, res, next) => {
     try {
         const { branchId } = req.query;
         const menuData = await eMenuService.getMenu(branchId as string);
@@ -633,7 +659,7 @@ restaurantRoutes.get('/e-menu', async (req: Request, res: Response, next: NextFu
 });
 
 // Create order from e-menu (public)
-restaurantRoutes.post('/e-menu/order', async (req: Request, res: Response, next: NextFunction) => {
+restaurantRoutes.post('/e-menu/order', async (req, res, next) => {
     try {
         const { branchId, tableNumber, items } = req.body;
 
@@ -651,7 +677,9 @@ restaurantRoutes.post('/e-menu/order', async (req: Request, res: Response, next:
             res.status(400).json({ success: false, error: { code: 'RES_006', message: 'branchId is required' } });
             return;
         }
-        const branch = await db.query.branches.findFirst({
+        // Public e-menu endpoint — no authenticate/withTenantTx, always globalDb.
+        // eslint-disable-next-line no-restricted-syntax -- public e-menu endpoint, no authenticate/req.tx
+        const branch = await globalDb.query.branches.findFirst({
             where: and(eq(branches.id, String(branchId)), eq(branches.isActive, true)),
             columns: { id: true },
         });

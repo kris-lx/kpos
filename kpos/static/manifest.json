@@ -1,25 +1,27 @@
 {
-    "name": "KPOS",
+    "name": "KPOS - Point of Sale",
     "short_name": "KPOS",
     "description": "Enterprise Point of Sale System",
     "start_url": "/",
     "display": "standalone",
     "background_color": "#ffffff",
-    "theme_color": "#3b82f6",
+    "theme_color": "#4F46E5",
     "orientation": "any",
     "icons": [
         {
             "src": "/favicon.svg",
             "sizes": "any",
             "type": "image/svg+xml",
-            "purpose": "any maskable"
+            "purpose": "any"
+        },
+        {
+            "src": "/favicon.svg",
+            "sizes": "any",
+            "type": "image/svg+xml",
+            "purpose": "maskable"
         }
     ],
-    "categories": [
-        "business",
-        "finance",
-        "shopping"
-    ],
+    "categories": ["business", "finance", "shopping"],
     "lang": "lo",
     "dir": "ltr",
     "scope": "/",

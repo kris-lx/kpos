@@ -1,26 +1,47 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // KPOS - withTenantTx Middleware
-// Wraps every authenticated request in a transaction where the per-request
-// RLS context (tenant_id + branch_path + optional schema) is set.
+// Attaches req.tx: a Drizzle handle bound to a single reserved Postgres
+// connection with the per-request RLS context (tenant_id + branch_path)
+// already set on it as session-level GUCs.
+//
+// Deliberately does NOT wrap the request in `db.transaction()`. That was the
+// original design here, but it pins one physical connection for the entire
+// request/response lifecycle — including any slow external I/O a handler
+// does mid-request (SwiftPass/JDB payment gateway calls, Cloudinary uploads,
+// outbound email sends). With a capped connection pool (20 in production),
+// a burst of concurrent slow requests would exhaust it and start failing
+// unrelated requests. `primaryClient.reserve()` checks out one connection we
+// fully control instead — same GUC-binding property, without the forced
+// transaction envelope.
+//
+// req.tx does NOT support .transaction() — postgres.js's reserve()-returned
+// connection object has no .begin() (verified: throws "this.client.begin is
+// not a function"). Handlers that need real atomicity use the pooled
+// globalDb.transaction() directly instead (see scopedTransaction() in
+// sales/routes.ts for the pattern — sets RLS context with SET LOCAL inside
+// the transaction rather than going through req.tx at all).
 //
 // MUST run AFTER `authenticate` so `req.authUser` is populated.
 // Three-level tenant isolation — Layer 2 (PostgreSQL RLS).
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { Request, Response, NextFunction } from 'express';
-import { db } from '@/config/database.config';
-import { setRequestContext } from '@/db/set-tenant-context';
-import type { PgTransaction } from 'drizzle-orm/pg-core';
+import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
+import { primaryClient } from '@/config/database.config';
+import { setRequestContext, resetRequestContext } from '@/db/set-tenant-context';
+import * as schema from '@/db/schema';
 
 declare global {
     namespace Express {
         interface Request {
             /**
-             * Transaction-scoped Drizzle handle with RLS GUCs already set.
-             * Handlers should prefer `req.tx` over the global `db` for
-             * tenant-owned tables so RLS policies are enforced.
+             * Drizzle handle bound to a reserved connection with RLS GUCs
+             * already set. Handlers should prefer `req.tx` over the global
+             * `db` for tenant-owned tables so RLS policies are enforced.
+             * Falls back to the global `db` (no req.tx) for unauthenticated
+             * routes and superadmin requests — see withTenantTx() below.
              */
-            tx?: PgTransaction<any, any, any>;
+            tx?: PostgresJsDatabase<typeof schema>;
         }
     }
 }
@@ -34,9 +55,9 @@ export function withTenantTx() {
 
         const { tenantId, activeBranchPath, isSuperAdmin } = req.authUser;
 
-        // SuperAdmin operates outside any tenant scope — skip the transaction
-        // wrapper so cross-tenant queries are possible. (Their routes are
-        // already gated by `isSuperAdmin` checks.)
+        // SuperAdmin operates outside any tenant scope — skip the reserved
+        // connection so cross-tenant queries are possible. (Their routes are
+        // already gated by `isSuperAdmin` checks at the application layer.)
         if (isSuperAdmin) {
             return next();
         }
@@ -49,29 +70,41 @@ export function withTenantTx() {
             return;
         }
 
-        try {
-            await db.transaction(async (tx) => {
-                await setRequestContext(tx, {
-                    tenantId,
-                    branchPath: activeBranchPath,
-                    // schemaName: loaded from tenants table when Enterprise plan is enabled
-                });
-                req.tx = tx;
+        let reserved: Awaited<ReturnType<typeof primaryClient.reserve>> | undefined;
+        let released = false;
+        const releaseConnection = async (): Promise<void> => {
+            if (released || !reserved) return;
+            released = true;
+            try {
+                await resetRequestContext(drizzle(reserved, { schema }));
+            } catch {
+                // Connection may already be broken — still release it so it's
+                // not leaked from the pool; a broken connection gets recycled
+                // by postgres.js on next use rather than reused as-is.
+            }
+            reserved.release();
+        };
 
-                // Run the rest of the chain inside this transaction. We resolve
-                // the transaction only after `next()` completes.
-                await new Promise<void>((resolve, reject) => {
-                    res.on('finish', resolve);
-                    res.on('close', resolve);
-                    try {
-                        next((err?: unknown) => (err ? reject(err) : resolve()));
-                    } catch (err) {
-                        reject(err);
-                    }
-                });
-            });
+        try {
+            reserved = await primaryClient.reserve();
+            // drizzle-orm/postgres-js reads client.options.parsers during setup —
+            // the reserve()-returned connection object doesn't expose `.options`
+            // (only the parent pool client does), so drizzle(reserved, ...) throws
+            // "Cannot read properties of undefined (reading 'parsers')" without
+            // this. Type parsers/options are pool-wide config, not per-connection
+            // state, so sharing the reference here is safe.
+            (reserved as any).options = (primaryClient as any).options;
+            const tx = drizzle(reserved, { schema });
+            await setRequestContext(tx, { tenantId, branchPath: activeBranchPath }, { local: false });
+            req.tx = tx;
         } catch (err) {
+            await releaseConnection();
             next(err);
+            return;
         }
+
+        res.on('finish', releaseConnection);
+        res.on('close', releaseConnection);
+        next();
     };
 }

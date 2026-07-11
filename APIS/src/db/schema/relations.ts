@@ -189,6 +189,7 @@ export const stockMovementsRelations = relations(stockMovements, ({ one }) => ({
 export const customersRelations = relations(customers, ({ one, many }) => ({
     branch: one(branches, { fields: [customers.branchId], references: [branches.id] }),
     store: one(stores, { fields: [customers.storeId], references: [stores.id] }),
+    priceLevel: one(priceLevels, { fields: [customers.priceLevelId], references: [priceLevels.id] }),
     transactions: many(transactions),
     pointsHistory: many(pointsHistory),
 }));

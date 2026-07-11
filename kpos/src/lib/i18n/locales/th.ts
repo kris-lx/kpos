@@ -8,6 +8,7 @@ export const th = {
     'app.title': 'ระบบจัดการร้านค้า',
     'common.loading': 'กำลังโหลด...',
     'common.save': 'บันทึก',
+    'common.readOnlyNoPermission': 'คุณไม่มีสิทธิ์แก้ไข — แสดงแบบอ่านอย่างเดียว',
     'common.cancel': 'ยกเลิก',
     'common.delete': 'ลบ',
     'common.edit': 'แก้ไข',
@@ -819,6 +820,7 @@ export const th = {
     'printers.usb': 'USB',
     'printers.network': 'Network',
     'printers.bluetooth': 'Bluetooth',
+    'printers.usbAccessDenied': 'ไม่สามารถเข้าถึงเครื่องพิมพ์ USB ได้ (ไดรเวอร์ Windows ไม่อนุญาต) — เปลี่ยนไปใช้กล่องโต้ตอบการพิมพ์แทน',
 
     // SKU Page
     'sku.title': 'จัดการ SKU',
@@ -1976,6 +1978,12 @@ export const th = {
     'notifications.lineTokenRequired': 'Line Token Required',
     'notifications.lineTokenSaveHint': 'Line Token Save Hint',
     'notifications.testingSound': 'Testing Sound',
+    'notifications.soundBell': 'กระดิ่ง',
+    'notifications.soundChime': 'ไพเราะ',
+    'notifications.soundDing': 'ดิง',
+    'notifications.soundBeep': 'บี๊บ',
+    'notifications.pushNotConfigured': 'ยังไม่ได้ตั้งค่า Push Notification บนเซิร์ฟเวอร์',
+    'notifications.pushUnsupported': 'เบราว์เซอร์นี้ไม่รองรับ Push Notification',
     'settings.saveFailed': 'Save Failed',
     'settings.saved': 'Saved',
 };

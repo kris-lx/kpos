@@ -4,7 +4,8 @@
     import { onMount } from "svelte";
     import { toast } from "svelte-sonner";
     import { auth } from "$stores";
-    import { Loader2, Save, Bell, Mail, MessageSquare, Volume2, BellRing, MessageCircle, Send, CheckCircle2, XCircle } from "lucide-svelte";
+    import { playNotificationSound } from "$lib/utils/notificationSound";
+    import { Loader2, Save, Bell, Mail, MessageSquare, Volume2, BellRing, MessageCircle, Send, CheckCircle2, XCircle, Play } from "lucide-svelte";
 
     let settings = $state({
         lowStock: { enabled: true, threshold: 10, emailAlert: false, pushAlert: true, soundAlert: true },
@@ -33,9 +34,17 @@
     }
 
     async function subscribePush() {
+        if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+            toast.error(t('notifications.pushUnsupported'));
+            return;
+        }
         pushLoading = true;
         try {
             const { data } = await api.get('notifications/push/key').json<any>();
+            if (!data?.publicKey) {
+                toast.error(t('notifications.pushNotConfigured'));
+                return;
+            }
             const reg = await navigator.serviceWorker.ready;
             const permission = await Notification.requestPermission();
             if (permission !== 'granted') { pushPermission = permission; toast.error(t('notifications.pushDenied')); return; }
@@ -47,8 +56,12 @@
             await api.post('notifications/push/subscribe', { json: sub.toJSON() }).json<any>();
             pushSubscribed = true;
             toast.success(t('notifications.pushEnabled'));
-        } catch {
-            toast.error(t('notifications.pushSubscribeError'));
+        } catch (error: any) {
+            if (error?.response?.status === 503) {
+                toast.error(t('notifications.pushNotConfigured'));
+            } else {
+                toast.error(t('notifications.pushSubscribeError'));
+            }
         } finally {
             pushLoading = false;
         }
@@ -154,8 +167,13 @@
         }
     }
 
-    function testSound(sound: string) {
-        toast.info(t('notifications.testingSound', { sound: t(soundOptions.find((s) => s.value === sound)?.labelKey || 'notifications.sound') }));
+    async function testSound(sound: string) {
+        try {
+            await playNotificationSound(sound, Number(settings.sound.volume));
+            toast.info(t('notifications.testingSound', { sound: t(soundOptions.find((s) => s.value === sound)?.labelKey || 'notifications.sound') }));
+        } catch {
+            toast.error(t('common.error'));
+        }
     }
 </script>
 
@@ -374,8 +392,9 @@
                                                 settings.sound.newOrderSound,
                                             )}
                                         class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600"
+                                        aria-label={t('notifications.newOrderSound')}
                                     >
-                                        ▶️
+                                        <Play class="w-4 h-4" />
                                     </button>
                                 </div>
                             </div>
@@ -399,8 +418,9 @@
                                                 settings.sound.alertSound,
                                             )}
                                         class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600"
+                                        aria-label={t('notifications.alertSound')}
                                     >
-                                        ▶️
+                                        <Play class="w-4 h-4" />
                                     </button>
                                 </div>
                             </div>
@@ -416,8 +436,8 @@
                     {t("notifications.pushTitle")}
                 </h2>
                 <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">{t("notifications.pushDesc")}</p>
-                {#if !('Notification' in window)}
-                    <p class="text-sm text-gray-400">{t("notifications.pushDenied")}</p>
+                {#if !('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)}
+                    <p class="text-sm text-gray-400">{t("notifications.pushUnsupported")}</p>
                 {:else if pushPermission === 'denied'}
                     <div class="flex items-center gap-2 text-sm text-red-600 dark:text-red-400">
                         <XCircle class="w-4 h-4" />

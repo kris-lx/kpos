@@ -4,15 +4,17 @@
 
 import { Router } from 'express';
 import { authenticate, authorize, branchFilter, buildScopeCondition, ensureScopeAccess, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
-import { db, dbRead } from '@/config/database.config';
+import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
+import { db as globalDb } from '@/config/database.config';
 import { categories, products, stores } from '@/db/schema/tables';
 import { eq, and, or, asc, isNull, inArray } from 'drizzle-orm';
 
 export const categoryRoutes = Router();
 
 // Get all categories (store-scoped)
-categoryRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
+categoryRoutes.get('/', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const filter = req.branchFilter;
 
         // Build scope: show store-specific categories + global (storeId=NULL) categories
@@ -78,8 +80,9 @@ categoryRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => 
 });
 
 // Get category by ID (scope-checked)
-categoryRoutes.get('/:id', authenticate, async (req, res, next) => {
+categoryRoutes.get('/:id', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-36: Tenant-scoped category lookup
         const tenantId = req.authUser?.tenantId;
         const getConds: any[] = [eq(categories.id, req.params.id)];
@@ -108,8 +111,9 @@ categoryRoutes.get('/:id', authenticate, async (req, res, next) => {
 });
 
 // Create category (auto-set storeId)
-categoryRoutes.post('/', authenticate, branchFilter(), authorize('categories:create'), async (req, res, next) => {
+categoryRoutes.post('/', authenticate, withTenantTx(), branchFilter(), authorize('categories:create'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { name, description, image, parentId, sortOrder, storeId: bodyStoreId, branchId: bodyBranchId } = req.body;
 
         if (!name) {
@@ -146,6 +150,21 @@ categoryRoutes.post('/', authenticate, branchFilter(), authorize('categories:cre
                 columns: { id: true },
             });
             if (branchStore) resolvedStoreId = branchStore.id;
+        } else if (!resolvedStoreId && req.authUser?.branchId) {
+            // activeStoreId couldn't resolve — most often because this user has
+            // no rows in user_stores (never got a store assignment). Without
+            // this fallback the category would be created with storeId=NULL,
+            // which branch-scoped list queries deliberately exclude — making it
+            // permanently invisible to the very user who just created it, even
+            // though the create call itself reports success.
+            const branchStore = await db.query.stores.findFirst({
+                where: and(eq(stores.branchId, req.authUser.branchId), eq(stores.isDefault, true)),
+                columns: { id: true },
+            }) ?? await db.query.stores.findFirst({
+                where: eq(stores.branchId, req.authUser.branchId),
+                columns: { id: true },
+            });
+            if (branchStore) resolvedStoreId = branchStore.id;
         }
         if (resolvedStoreId) data.storeId = resolvedStoreId;
 
@@ -159,8 +178,9 @@ categoryRoutes.post('/', authenticate, branchFilter(), authorize('categories:cre
 });
 
 // Update category (scope-checked)
-categoryRoutes.put('/:id', authenticate, authorize('categories:update'), async (req, res, next) => {
+categoryRoutes.put('/:id', authenticate, withTenantTx(), authorize('categories:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-36: Tenant-scoped update
         const tenantId = req.authUser?.tenantId;
         const updConds: any[] = [eq(categories.id, req.params.id)];
@@ -185,8 +205,9 @@ categoryRoutes.put('/:id', authenticate, authorize('categories:update'), async (
 });
 
 // Delete category (scope-checked)
-categoryRoutes.delete('/:id', authenticate, authorize('categories:delete'), async (req, res, next) => {
+categoryRoutes.delete('/:id', authenticate, withTenantTx(), authorize('categories:delete'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-36: Tenant-scoped delete
         const tenantId = req.authUser?.tenantId;
         const delConds: any[] = [eq(categories.id, req.params.id)];

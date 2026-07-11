@@ -1,0 +1,1 @@
+ALTER TABLE "customers" ADD COLUMN "price_level_id" uuid;

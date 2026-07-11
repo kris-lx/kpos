@@ -12,8 +12,10 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import { sql } from 'drizzle-orm';
 
-const DATABASE_URL = process.env.DATABASE_URL;
-if (!DATABASE_URL) { console.error('DATABASE_URL not set'); process.exit(1); }
+// TRUNCATE requires the superuser/migration connection — kpos_app (DATABASE_URL,
+// used by the running API) only has SELECT/INSERT/UPDATE/DELETE.
+const DATABASE_URL = process.env.DATABASE_MIGRATE_URL || process.env.DATABASE_URL;
+if (!DATABASE_URL) { console.error('DATABASE_MIGRATE_URL (or DATABASE_URL) not set'); process.exit(1); }
 
 const client = postgres(DATABASE_URL, { max: 1 });
 const db = drizzle(client);

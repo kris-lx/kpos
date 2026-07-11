@@ -4,7 +4,8 @@
 
 import { Router } from 'express';
 import { authenticate, authorize, branchFilter, getRoleLevel, ROLE_LEVELS, ensureScopeAccess, invalidateUserStoreCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
-import { db } from '@/config/database.config';
+import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
+import { db as globalDb } from '@/config/database.config';
 import { users, userStores, roles, branches } from '@/db/schema/tables';
 import { eq, and, or, ilike, inArray, notInArray, isNull, desc, asc, count } from 'drizzle-orm';
 import argon2 from 'argon2';
@@ -32,8 +33,9 @@ async function invalidateStaffAuthCaches(userId: string, tenantId?: string | nul
 }
 
 // Get all staff
-staffRoutes.get('/', authenticate, authorize('staff:read'), branchFilter(), async (req, res, next) => {
+staffRoutes.get('/', authenticate, withTenantTx(), authorize('staff:read'), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { page = 1, limit = 20, search, branchId, role, status } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
         const filter = req.branchFilter;
@@ -117,8 +119,9 @@ staffRoutes.get('/', authenticate, authorize('staff:read'), branchFilter(), asyn
 
 // Get all roles (scoped: non-admins only see non-system roles for their level)
 // MUST be before /:id to prevent Express matching /roles/list as /:id
-staffRoutes.get('/roles/list', authenticate, async (req, res, next) => {
+staffRoutes.get('/roles/list', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const user = req.authUser || req.user!;
         const isSuperAdmin = req.authUser?.isSuperAdmin ?? false;
         const isAdmin = isSuperAdmin || ['admin', 'hq_admin', 'hq_manager'].includes(user.role);
@@ -162,8 +165,9 @@ staffRoutes.get('/roles/list', authenticate, async (req, res, next) => {
 
 // Get branches list for staff dropdown - scoped to user's accessible branches
 // MUST be before /:id to prevent Express matching /branches/list as /:id
-staffRoutes.get('/branches/list', authenticate, async (req, res, next) => {
+staffRoutes.get('/branches/list', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const authUser = req.authUser!;
         const isSuperAdmin = authUser.isSuperAdmin;
         const isAdmin = isSuperAdmin || ['admin', 'hq_admin', 'hq_manager'].includes(authUser.role);
@@ -190,8 +194,9 @@ staffRoutes.get('/branches/list', authenticate, async (req, res, next) => {
 });
 
 // Get staff by ID
-staffRoutes.get('/:id', authenticate, authorize('staff:read'), async (req, res, next) => {
+staffRoutes.get('/:id', authenticate, withTenantTx(), authorize('staff:read'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const authUser = req.authUser;
         const isSuperAdmin = authUser?.isSuperAdmin;
 
@@ -238,8 +243,9 @@ staffRoutes.get('/:id', authenticate, authorize('staff:read'), async (req, res, 
 });
 
 // Create staff
-staffRoutes.post('/', authenticate, branchFilter(), authorize('staff:create'), async (req, res, next) => {
+staffRoutes.post('/', authenticate, withTenantTx(), branchFilter(), authorize('staff:create'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { email, password, name, phone, role, branchId, storeId, roleId, isActive, permissions } = req.body;
         const authUser = req.authUser;
         const creatorStoreId = storeId || authUser?.activeStoreId || undefined;
@@ -322,8 +328,9 @@ staffRoutes.post('/', authenticate, branchFilter(), authorize('staff:create'), a
 });
 
 // Update staff
-staffRoutes.put('/:id', authenticate, authorize('staff:update'), async (req, res, next) => {
+staffRoutes.put('/:id', authenticate, withTenantTx(), authorize('staff:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { password, id, _id, createdAt, updatedAt, ...updateData } = req.body;
 
         const tenantId = req.authUser?.tenantId;
@@ -392,8 +399,9 @@ staffRoutes.put('/:id', authenticate, authorize('staff:update'), async (req, res
 });
 
 // Delete staff (soft delete)
-staffRoutes.delete('/:id', authenticate, authorize('staff:delete'), async (req, res, next) => {
+staffRoutes.delete('/:id', authenticate, withTenantTx(), authorize('staff:delete'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // Tenant-scoped delete
         const tenantId = req.authUser?.tenantId;
         const delConds: any[] = [eq(users.id, req.params.id)];
@@ -412,8 +420,9 @@ staffRoutes.delete('/:id', authenticate, authorize('staff:delete'), async (req, 
 });
 
 // Get staff member permissions (uses staff:read instead of users:read)
-staffRoutes.get('/:id/permissions', authenticate, authorize('staff:read'), async (req, res, next) => {
+staffRoutes.get('/:id/permissions', authenticate, withTenantTx(), authorize('staff:read'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const tenantId = req.authUser?.tenantId;
         const userConds: any[] = [eq(users.id, req.params.id)];
         if (tenantId && !req.authUser?.isSuperAdmin) userConds.push(eq(users.tenantId, tenantId));
@@ -494,8 +503,9 @@ staffRoutes.get('/:id/permissions', authenticate, authorize('staff:read'), async
 });
 
 // Update staff member permissions (uses staff:update instead of users:update)
-staffRoutes.put('/:id/permissions', authenticate, authorize('staff:update'), async (req, res, next) => {
+staffRoutes.put('/:id/permissions', authenticate, withTenantTx(), authorize('staff:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { permissions } = req.body;
 
         if (!Array.isArray(permissions)) {

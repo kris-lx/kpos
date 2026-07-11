@@ -6,6 +6,9 @@ import type { Request, Response, NextFunction } from 'express';
 import { LoginUseCase, RegisterUseCase, RefreshTokenUseCase } from '../../application';
 import { authService, DatabaseConnectionError, REFRESH_COOKIE_NAME } from '../../infrastructure/services/auth.service';
 import { BaseController } from '@/shared/application';
+import { db } from '@/config/database.config';
+import { users } from '@/db/schema/tables';
+import { eq } from 'drizzle-orm';
 
 const loginUseCase = new LoginUseCase(authService);
 const registerUseCase = new RegisterUseCase(authService);
@@ -94,9 +97,19 @@ class AuthController extends BaseController {
                 return;
             }
 
+            // name/avatar aren't part of the JWT-derived authUser (kept lean for the
+            // hot request path) — fetched here since /auth/me is only called once
+            // at login/profile-refresh time, not on every request.
+            const profile = await db.query.users.findFirst({
+                where: eq(users.id, req.authUser.userId),
+                columns: { name: true, avatar: true },
+            });
+
             this.ok(res, {
                 id: req.authUser.userId,
                 email: req.authUser.email,
+                name: profile?.name,
+                avatar: profile?.avatar || null,
                 role: req.authUser.role,
                 branchId: req.authUser.activeBranchId,
                 tenantId: req.authUser.tenantId,

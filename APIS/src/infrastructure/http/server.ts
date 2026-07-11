@@ -8,9 +8,10 @@ import cors from 'cors';
 import helmet from 'helmet';
 import { createServer, type Server as HttpServer } from 'http';
 import { Server as SocketServer } from 'socket.io';
+import { createAdapter } from '@socket.io/redis-adapter';
 import { appConfig } from '@/config/app.config';
 import { isDatabaseConnected } from '@/config/database.config';
-import { isRedisAvailable } from '@/config/redis.config';
+import { isRedisAvailable, getRedisClient } from '@/config/redis.config';
 import { errorHandler, notFoundHandler } from './middleware/error.middleware';
 import { requestLogger } from './middleware/logger.middleware';
 import { rateLimiter } from './middleware/rateLimit.middleware';
@@ -106,6 +107,34 @@ export class AppServer {
     private setupSocketHandlers(): void {
         SocketEventEmitter.setIO(this.io);
         setupSocketHandlers(this.io);
+        this.attachRedisAdapter();
+    }
+
+    // Scaling audit (2026-07-11): Socket.IO's default adapter only broadcasts
+    // to sockets connected to the SAME process. Without this, `sale:new`,
+    // `inventory:change`, `order:update`, `table:update`, and notification
+    // events emitted on one horizontally-scaled instance would never reach
+    // clients connected to a different instance — kitchen displays, live
+    // inventory, etc. would silently miss most updates in a multi-instance
+    // deployment. Falls back to the default (single-instance-only) adapter
+    // when Redis isn't configured, same as today — not worse, just not fixed.
+    private attachRedisAdapter(): void {
+        const base = getRedisClient();
+        if (!base) return;
+        try {
+            const pubClient = base.duplicate();
+            const subClient = base.duplicate();
+            // ioredis clients throw (EventEmitter default behavior for an
+            // unhandled 'error' event) if nothing is listening — without
+            // these, a connection error on either duplicated client would
+            // crash the process instead of just leaving events single-instance.
+            pubClient.on('error', (err) => console.warn('⚠️  Socket.IO Redis adapter pub client error:', err.message));
+            subClient.on('error', (err) => console.warn('⚠️  Socket.IO Redis adapter sub client error:', err.message));
+            this.io.adapter(createAdapter(pubClient, subClient));
+            console.log('✅ Socket.IO Redis adapter attached — events now broadcast across instances');
+        } catch (err) {
+            console.warn('⚠️  Failed to attach Socket.IO Redis adapter — falling back to single-instance broadcasting:', err);
+        }
     }
 
     private setupErrorHandling(): void {

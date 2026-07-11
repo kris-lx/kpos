@@ -10,7 +10,12 @@ import * as schema from "@/db/schema";
 
 // ─── Connection Pools ────────────────────────────────────────────────────
 
-const primaryClient = postgres(dbConfig.url, {
+// Exported (not just module-private) so withTenantTx() can reserve a single
+// physical connection per request via primaryClient.reserve() — needed to
+// bind the RLS session GUCs (app.current_tenant_id, ...) to one connection
+// for the request's DB work without pinning it across slow external I/O the
+// way wrapping the whole request in db.transaction() would.
+export const primaryClient = postgres(dbConfig.url, {
   max: appConfig.isProduction ? 20 : 5,
   idle_timeout: 20,
   connect_timeout: 10,

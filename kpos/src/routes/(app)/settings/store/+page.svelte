@@ -5,6 +5,8 @@
     import { toast } from "svelte-sonner";
     import { Store, Camera, Save, Loader2, ChevronLeft } from "lucide-svelte";
 
+    const canUpdateSettings = $derived(auth.hasPermission('settings:update'));
+
     let isLoading = $state(true);
     let isSaving = $state(false);
     let storeLogo = $state<string | null>(null);
@@ -16,7 +18,6 @@
         storePhone: "",
         storeEmail: "",
         taxId: "",
-        businessType: "",
         enableTax: true,
         taxRate: 10,
     });
@@ -35,7 +36,7 @@
                 reader.readAsDataURL(file);
             });
             try {
-                const res = await api.post("upload/single", { json: { image: base64, folder: "logos" } }).json<any>();
+                const res = await api.post("upload/single", { json: { image: base64, filename: file.name, folder: "logos" } }).json<any>();
                 storeLogo = res.success && res.data?.url ? res.data.url : base64;
             } catch {
                 storeLogo = base64;
@@ -48,24 +49,29 @@
         }
     }
 
+    // Store identity (name/logo/address/phone/email/taxId) lives on the branches
+    // table — the same source receipts and invoices already read from — instead
+    // of a disconnected generic settings blob, so this page always reflects
+    // what was actually configured (e.g. via Management > Stores/Branches).
     async function load() {
         isLoading = true;
         try {
-            const res = await api.get("settings").json<any>();
-            if (res.success && res.data) {
-                const d = res.data;
-                form = {
-                    storeName: d.general?.businessName || d.general?.storeName || "",
-                    storeAddress: d.general?.address || "",
-                    storePhone: d.general?.phone || "",
-                    storeEmail: d.general?.email || "",
-                    taxId: d.general?.taxId || "",
-                    businessType: d.general?.businessType || "",
-                    enableTax: d.tax?.vatEnabled ?? true,
-                    taxRate: d.tax?.vatRate ?? 10,
-                };
-                storeLogo = d.general?.logo || null;
-            }
+            const [branchRes, settingsRes] = await Promise.all([
+                auth.activeBranchId ? api.get(`branches/${auth.activeBranchId}`).json<any>() : Promise.resolve(null),
+                api.get("settings").json<any>(),
+            ]);
+            const branch = branchRes?.success ? branchRes.data : null;
+            const d = settingsRes?.success ? settingsRes.data : {};
+            form = {
+                storeName: branch?.name || "",
+                storeAddress: branch?.address || "",
+                storePhone: branch?.phone || "",
+                storeEmail: branch?.email || "",
+                taxId: branch?.taxId || "",
+                enableTax: d.tax?.vatEnabled ?? true,
+                taxRate: d.tax?.vatRate ?? 10,
+            };
+            storeLogo = branch?.logo || null;
         } catch {}
         isLoading = false;
     }
@@ -73,25 +79,30 @@
     async function save() {
         isSaving = true;
         try {
-            await api.post("settings/bulk", {
-                json: {
-                    settings: {
-                        general: {
-                            businessName: form.storeName,
+            await Promise.all([
+                auth.activeBranchId
+                    ? api.put(`branches/${auth.activeBranchId}`, {
+                        json: {
+                            name: form.storeName,
                             address: form.storeAddress,
                             phone: form.storePhone,
                             email: form.storeEmail,
                             taxId: form.taxId,
-                            businessType: form.businessType,
                             logo: storeLogo,
                         },
-                        tax: {
-                            vatEnabled: form.enableTax,
-                            vatRate: form.taxRate,
+                    }).json()
+                    : Promise.resolve(),
+                api.post("settings/bulk", {
+                    json: {
+                        settings: {
+                            tax: {
+                                vatEnabled: form.enableTax,
+                                vatRate: form.taxRate,
+                            },
                         },
                     },
-                },
-            }).json<any>();
+                }).json(),
+            ]);
             toast.success(t("common.saved"));
         } catch {
             toast.error(t("common.error"));
@@ -119,7 +130,12 @@
     {#if isLoading}
         <div class="flex items-center justify-center py-16"><Loader2 class="w-8 h-8 animate-spin text-primary-500" /></div>
     {:else}
-        <div class="space-y-6 bg-white dark:bg-gray-900 rounded-xl p-6">
+        {#if !canUpdateSettings}
+            <div class="mb-4 px-4 py-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl text-sm text-amber-700 dark:text-amber-300">
+                {t("common.readOnlyNoPermission")}
+            </div>
+        {/if}
+        <fieldset disabled={!canUpdateSettings} class="space-y-6 bg-white dark:bg-gray-900 rounded-xl p-6 disabled:opacity-75">
             <!-- Logo -->
             <div class="flex items-center gap-6">
                 <div class="relative group">
@@ -196,6 +212,6 @@
                     {t("common.save")}
                 </button>
             </div>
-        </div>
+        </fieldset>
     {/if}
 </div>

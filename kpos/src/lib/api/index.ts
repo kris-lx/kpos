@@ -6,8 +6,7 @@ import ky, { type BeforeRequestHook, type AfterResponseHook } from 'ky';
 import { PUBLIC_API_URL } from '$env/static/public';
 import { browser } from '$app/environment';
 import { LOCAL_STORAGE_KEYS } from '$lib/config';
-import { authClientApi } from './auth-client';
-import { getToken, setToken } from './token';
+import { getToken, setToken, refreshAccessToken } from './token';
 
 // PUBLIC_API_URL must be set in .env — no hardcoded fallback
 if (!PUBLIC_API_URL) {
@@ -60,24 +59,6 @@ const beforeRequest: BeforeRequestHook = (request) => {
         }
     }
 };
-
-let refreshPromise: Promise<string | null> | null = null;
-
-async function refreshAccessToken(): Promise<string | null> {
-    if (!refreshPromise) {
-        refreshPromise = authClientApi.refresh()
-            .then((response) => {
-                const token = response.success ? response.data?.accessToken ?? null : null;
-                setToken(token);
-                return token;
-            })
-            .catch(() => null)
-            .finally(() => {
-                refreshPromise = null;
-            });
-    }
-    return refreshPromise;
-}
 
 const afterResponse: AfterResponseHook = async (request, _options, response) => {
     if (response.status === 401 && browser && request.headers.get('X-KPOS-Retry') !== '1') {
@@ -497,6 +478,7 @@ export interface Product {
     stock: number; // Computed from inventory
     isActive: boolean;
     inventory?: { quantity: number };
+    attributes?: { size?: string; color?: string; [key: string]: unknown };
 }
 
 export interface Category {
@@ -516,6 +498,8 @@ export interface Customer {
     memberCode?: string;
     points: number;
     totalSpent: number;
+    priceLevelId?: string | null;
+    priceLevel?: { id: string; name: string } | null;
 }
 
 export interface SaleInput {

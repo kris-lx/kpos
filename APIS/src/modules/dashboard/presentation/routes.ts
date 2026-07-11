@@ -5,7 +5,8 @@
 import { Router } from 'express';
 import { authenticate, branchFilter, buildScopeCondition, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { queryCache } from '@/infrastructure/http/middleware/cache.middleware';
-import { db, dbRead } from '@/config/database.config';
+import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
+import { db as globalDb } from '@/config/database.config';
 import { transactions, products, customers, inventory, transactionItems, transactionPayments, users } from '@/db/schema/tables';
 import { eq, and, gte, lt, lte, inArray, asc, desc, count, sum, sql } from 'drizzle-orm';
 
@@ -21,8 +22,10 @@ function branchAccessCheck(filter: ScopeFilter | undefined, branchIdParam: strin
 }
 
 // Get dashboard stats (comprehensive — D-01 through D-07)
-dashboardRoutes.get('/stats', authenticate, branchFilter(), queryCache(30, 'dashboard'), async (req, res, next) => {
+dashboardRoutes.get('/stats', authenticate, withTenantTx(), branchFilter(), queryCache(30, 'dashboard'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { branchId } = req.query;
         const filter = req.branchFilter;
 
@@ -217,8 +220,10 @@ dashboardRoutes.get('/stats', authenticate, branchFilter(), queryCache(30, 'dash
 });
 
 // Get low stock alerts
-dashboardRoutes.get('/low-stock', authenticate, branchFilter(), async (req, res, next) => {
+dashboardRoutes.get('/low-stock', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { branchId } = req.query;
         const filter = req.branchFilter;
 
@@ -258,8 +263,10 @@ dashboardRoutes.get('/low-stock', authenticate, branchFilter(), async (req, res,
 });
 
 // Get sales chart data
-dashboardRoutes.get('/sales-chart', authenticate, branchFilter(), queryCache(60, 'dashboard'), async (req, res, next) => {
+dashboardRoutes.get('/sales-chart', authenticate, withTenantTx(), branchFilter(), queryCache(60, 'dashboard'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { branchId, period = '7days' } = req.query;
         const filter = req.branchFilter;
 
@@ -307,8 +314,10 @@ dashboardRoutes.get('/sales-chart', authenticate, branchFilter(), queryCache(60,
 });
 
 // Get recent transactions
-dashboardRoutes.get('/recent-transactions', authenticate, branchFilter(), async (req, res, next) => {
+dashboardRoutes.get('/recent-transactions', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { branchId, limit = 10 } = req.query;
         const filter = req.branchFilter;
 
@@ -340,8 +349,10 @@ dashboardRoutes.get('/recent-transactions', authenticate, branchFilter(), async 
 });
 
 // Get top selling products
-dashboardRoutes.get('/top-products', authenticate, branchFilter(), queryCache(60, 'dashboard'), async (req, res, next) => {
+dashboardRoutes.get('/top-products', authenticate, withTenantTx(), branchFilter(), queryCache(60, 'dashboard'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
+        const dbRead = db;
         const { branchId, limit = 5 } = req.query;
         const filter = req.branchFilter;
         const thirtyDaysAgo = new Date();

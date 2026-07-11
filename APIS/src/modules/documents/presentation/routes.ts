@@ -5,7 +5,8 @@
 import { Router } from 'express';
 import { authenticate, authorize, branchFilter, applyScopeFilter, ensureScopeAccess, buildScopeCondition, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { DEFAULT_SETTINGS } from '@/shared/constants';
-import { db } from '@/config/database.config';
+import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
+import { db as globalDb } from '@/config/database.config';
 import { documents, settings } from '@/db/schema/tables';
 import { eq, and, or, ilike, isNull, gte, lte, desc, asc, count, sql } from 'drizzle-orm';
 
@@ -16,8 +17,9 @@ export const documentRoutes = Router();
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all invoices
-documentRoutes.get('/invoices', authenticate, branchFilter(), async (req, res, next) => {
+documentRoutes.get('/invoices', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { status, page = '1', limit = '20', search, from, to } = req.query;
         const pageNum = Math.max(1, parseInt(String(page), 10) || 1);
         const limitNum = Math.min(100, Math.max(1, parseInt(String(limit), 10) || 20));
@@ -87,8 +89,9 @@ documentRoutes.get('/invoices', authenticate, branchFilter(), async (req, res, n
 });
 
 // Get invoice by ID (scope-checked)
-documentRoutes.get('/invoices/:id', authenticate, async (req, res, next) => {
+documentRoutes.get('/invoices/:id', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-74: Tenant-scoped invoice lookup
         const tenantId = req.authUser?.tenantId;
         const getConds: any[] = [eq(documents.id, req.params.id), eq(documents.type, 'INVOICE')];
@@ -134,8 +137,9 @@ documentRoutes.get('/invoices/:id', authenticate, async (req, res, next) => {
 });
 
 // Create invoice
-documentRoutes.post('/invoices', authenticate, branchFilter(), authorize('documents:create'), async (req, res, next) => {
+documentRoutes.post('/invoices', authenticate, withTenantTx(), branchFilter(), authorize('documents:create'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const {
             customerId,
             customerName,
@@ -193,8 +197,9 @@ documentRoutes.post('/invoices', authenticate, branchFilter(), authorize('docume
 });
 
 // Update invoice
-documentRoutes.put('/invoices/:id', authenticate, authorize('documents:update'), async (req, res, next) => {
+documentRoutes.put('/invoices/:id', authenticate, withTenantTx(), authorize('documents:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-74: Tenant-scoped invoice update
         const tenantId = req.authUser?.tenantId;
         const updConds: any[] = [eq(documents.id, req.params.id), eq(documents.type, 'INVOICE')];
@@ -230,8 +235,9 @@ documentRoutes.put('/invoices/:id', authenticate, authorize('documents:update'),
 });
 
 // Delete invoice
-documentRoutes.delete('/invoices/:id', authenticate, authorize('documents:delete'), async (req, res, next) => {
+documentRoutes.delete('/invoices/:id', authenticate, withTenantTx(), authorize('documents:delete'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-74: Tenant-scoped invoice delete
         const tenantId = req.authUser?.tenantId;
         const delConds: any[] = [eq(documents.id, req.params.id), eq(documents.type, 'INVOICE')];
@@ -251,8 +257,9 @@ documentRoutes.delete('/invoices/:id', authenticate, authorize('documents:delete
 });
 
 // Mark invoice as paid
-documentRoutes.put('/invoices/:id/mark-paid', authenticate, authorize('documents:update'), async (req, res, next) => {
+documentRoutes.put('/invoices/:id/mark-paid', authenticate, withTenantTx(), authorize('documents:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const tenantId = req.authUser?.tenantId;
         const conds: any[] = [eq(documents.id, req.params.id), eq(documents.type, 'INVOICE')];
         if (tenantId && !req.authUser?.isSuperAdmin) conds.push(eq(documents.tenantId, tenantId));
@@ -268,8 +275,9 @@ documentRoutes.put('/invoices/:id/mark-paid', authenticate, authorize('documents
 });
 
 // Send invoice
-documentRoutes.post('/invoices/:id/send', authenticate, authorize('documents:update'), async (req, res, next) => {
+documentRoutes.post('/invoices/:id/send', authenticate, withTenantTx(), authorize('documents:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const tenantId = req.authUser?.tenantId;
         const conds: any[] = [eq(documents.id, req.params.id), eq(documents.type, 'INVOICE')];
         if (tenantId && !req.authUser?.isSuperAdmin) conds.push(eq(documents.tenantId, tenantId));
@@ -287,8 +295,9 @@ documentRoutes.post('/invoices/:id/send', authenticate, authorize('documents:upd
 });
 
 // Approve invoice (maker/checker)
-documentRoutes.patch('/invoices/:id/approve', authenticate, authorize('documents:update'), async (req, res, next) => {
+documentRoutes.patch('/invoices/:id/approve', authenticate, withTenantTx(), authorize('documents:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const roleLevel = req.authUser?.roleLevel ?? 7;
         if (!req.authUser?.isSuperAdmin && roleLevel > 4) {
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Only HQ admins or above can approve invoices' } });
@@ -309,8 +318,9 @@ documentRoutes.patch('/invoices/:id/approve', authenticate, authorize('documents
 });
 
 // Reject invoice (maker/checker)
-documentRoutes.patch('/invoices/:id/reject', authenticate, authorize('documents:update'), async (req, res, next) => {
+documentRoutes.patch('/invoices/:id/reject', authenticate, withTenantTx(), authorize('documents:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const roleLevel = req.authUser?.roleLevel ?? 7;
         if (!req.authUser?.isSuperAdmin && roleLevel > 4) {
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Only HQ admins or above can reject invoices' } });
@@ -337,8 +347,9 @@ documentRoutes.patch('/invoices/:id/reject', authenticate, authorize('documents:
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all tax invoices
-documentRoutes.get('/tax-invoices', authenticate, branchFilter(), async (req, res, next) => {
+documentRoutes.get('/tax-invoices', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { status, page = '1', limit = '20', search, from, to } = req.query;
         const pageNum = Math.max(1, parseInt(String(page), 10) || 1);
         const limitNum = Math.min(100, Math.max(1, parseInt(String(limit), 10) || 20));
@@ -407,8 +418,9 @@ documentRoutes.get('/tax-invoices', authenticate, branchFilter(), async (req, re
 });
 
 // Get tax invoice by ID (scope-checked)
-documentRoutes.get('/tax-invoices/:id', authenticate, async (req, res, next) => {
+documentRoutes.get('/tax-invoices/:id', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-74: Tenant-scoped tax invoice lookup
         const tenantId = req.authUser?.tenantId;
         const getConds: any[] = [eq(documents.id, req.params.id), eq(documents.type, 'TAX_INVOICE')];
@@ -450,8 +462,9 @@ documentRoutes.get('/tax-invoices/:id', authenticate, async (req, res, next) => 
 });
 
 // Create tax invoice
-documentRoutes.post('/tax-invoices', authenticate, branchFilter(), authorize('documents:create'), async (req, res, next) => {
+documentRoutes.post('/tax-invoices', authenticate, withTenantTx(), branchFilter(), authorize('documents:create'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { customerName, taxId, orderId, subtotal, taxAmount, total } = req.body;
 
         // Generate tax invoice number
@@ -487,8 +500,9 @@ documentRoutes.post('/tax-invoices', authenticate, branchFilter(), authorize('do
 });
 
 // Update tax invoice (scope-checked)
-documentRoutes.put('/tax-invoices/:id', authenticate, authorize('documents:update'), async (req, res, next) => {
+documentRoutes.put('/tax-invoices/:id', authenticate, withTenantTx(), authorize('documents:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-74: Tenant-scoped tax invoice update
         const tenantId = req.authUser?.tenantId;
         const updConds: any[] = [eq(documents.id, req.params.id), eq(documents.type, 'TAX_INVOICE')];
@@ -518,8 +532,9 @@ documentRoutes.put('/tax-invoices/:id', authenticate, authorize('documents:updat
 });
 
 // Delete tax invoice (scope-checked)
-documentRoutes.delete('/tax-invoices/:id', authenticate, authorize('documents:delete'), async (req, res, next) => {
+documentRoutes.delete('/tax-invoices/:id', authenticate, withTenantTx(), authorize('documents:delete'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-74: Tenant-scoped tax invoice delete
         const tenantId = req.authUser?.tenantId;
         const delConds: any[] = [eq(documents.id, req.params.id), eq(documents.type, 'TAX_INVOICE')];
@@ -543,8 +558,9 @@ documentRoutes.delete('/tax-invoices/:id', authenticate, authorize('documents:de
 });
 
 // Issue tax invoice (scope-checked)
-documentRoutes.put('/tax-invoices/:id/issue', authenticate, authorize('documents:update'), async (req, res, next) => {
+documentRoutes.put('/tax-invoices/:id/issue', authenticate, withTenantTx(), authorize('documents:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-74: Tenant-scoped tax invoice issue
         const tenantId = req.authUser?.tenantId;
         const issConds: any[] = [eq(documents.id, req.params.id), eq(documents.type, 'TAX_INVOICE')];
@@ -574,8 +590,9 @@ documentRoutes.put('/tax-invoices/:id/issue', authenticate, authorize('documents
 });
 
 // Approve tax invoice (maker/checker) — HQ/admin only
-documentRoutes.patch('/tax-invoices/:id/approve', authenticate, authorize('documents:update'), async (req, res, next) => {
+documentRoutes.patch('/tax-invoices/:id/approve', authenticate, withTenantTx(), authorize('documents:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const roleLevel = req.authUser?.roleLevel ?? 7;
         if (!req.authUser?.isSuperAdmin && roleLevel > 4) {
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Only HQ admins or above can approve tax invoices' } });
@@ -601,8 +618,9 @@ documentRoutes.patch('/tax-invoices/:id/approve', authenticate, authorize('docum
 });
 
 // Reject tax invoice (maker/checker) — HQ/admin only
-documentRoutes.patch('/tax-invoices/:id/reject', authenticate, authorize('documents:update'), async (req, res, next) => {
+documentRoutes.patch('/tax-invoices/:id/reject', authenticate, withTenantTx(), authorize('documents:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const roleLevel = req.authUser?.roleLevel ?? 7;
         if (!req.authUser?.isSuperAdmin && roleLevel > 4) {
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Only HQ admins or above can reject tax invoices' } });
@@ -629,8 +647,9 @@ documentRoutes.patch('/tax-invoices/:id/reject', authenticate, authorize('docume
 });
 
 // Cancel tax invoice (scope-checked)
-documentRoutes.put('/tax-invoices/:id/cancel', authenticate, authorize('documents:update'), async (req, res, next) => {
+documentRoutes.put('/tax-invoices/:id/cancel', authenticate, withTenantTx(), authorize('documents:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-74: Tenant-scoped tax invoice cancel
         const tenantId = req.authUser?.tenantId;
         const canConds: any[] = [eq(documents.id, req.params.id), eq(documents.type, 'TAX_INVOICE')];
@@ -660,8 +679,9 @@ documentRoutes.put('/tax-invoices/:id/cancel', authenticate, authorize('document
 });
 
 // Print tax invoice (scope-checked)
-documentRoutes.get('/tax-invoices/:id/print', authenticate, async (req, res, next) => {
+documentRoutes.get('/tax-invoices/:id/print', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-74: Tenant-scoped tax invoice print
         const tenantId = req.authUser?.tenantId;
         const prtConds: any[] = [eq(documents.id, req.params.id), eq(documents.type, 'TAX_INVOICE')];
@@ -731,8 +751,9 @@ documentRoutes.get('/tax-invoices/:id/print', authenticate, async (req, res, nex
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get invoice settings
-documentRoutes.get('/settings', authenticate, authorize('documents:view', 'documents:read', 'settings:read'), async (req, res, next) => {
+documentRoutes.get('/settings', authenticate, withTenantTx(), authorize('documents:view', 'documents:read', 'settings:read'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const tenantId = req.authUser?.tenantId;
         const activeBranchId = req.authUser?.activeBranchId || req.user?.branchId;
         const invoiceConds: any[] = [eq(settings.category, 'invoice')];
@@ -796,8 +817,9 @@ documentRoutes.get('/settings', authenticate, authorize('documents:view', 'docum
 });
 
 // Update invoice settings
-documentRoutes.put('/settings', authenticate, authorize('settings:update'), async (req, res, next) => {
+documentRoutes.put('/settings', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const settingsBody = req.body;
         const tenantId = req.authUser?.tenantId || req.user?.tenantId || null;
         const branchId = req.authUser?.activeBranchId || req.user?.branchId || null;

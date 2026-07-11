@@ -205,11 +205,52 @@
 
     let menuItems = $state<MenuItem[]>([]);
 
+    // Map API key (e.g. "sales.pos") → nav translation suffix (e.g. "pos")
+    const API_KEY_TO_NAV: Record<string, string> = {
+        'sales.pos': 'pos', 'sales.credit': 'creditSales', 'sales.held': 'heldOrders',
+        'sales.customerDisplay': 'customerDisplay',
+        'products.list': 'productsList', 'products.categories': 'categories',
+        'products.barcode': 'barcode', 'products.sku': 'sku', 'products.pricing': 'pricing',
+        'inventory.stock': 'stock', 'inventory.stockin': 'stockIn', 'inventory.stockout': 'stockOut',
+        'inventory.adjust': 'stockAdjust', 'inventory.transfer': 'stockTransfer',
+        'inventory.count': 'stockCount', 'inventory.purchase-orders': 'purchaseOrders',
+        'inventory.vendors': 'vendors', 'inventory.expiry': 'expiry',
+        'restaurant.tables': 'tables', 'restaurant.orders': 'orders',
+        'restaurant.kitchen': 'kitchen', 'restaurant.reservations': 'reservations',
+        'restaurant.emenu': 'emenu',
+        'promotions.list': 'promotionsList', 'promotions.coupons': 'coupons',
+        'promotions.discounts': 'discounts',
+        'crm.members': 'members', 'crm.points': 'points', 'crm.loyalty': 'loyalty',
+        'payments.methods': 'paymentMethods', 'payments.transactions': 'transactions',
+        'payments.settlements': 'settlements',
+        'documents.receipts': 'receipts', 'documents.design': 'receiptDesign',
+        'documents.invoices': 'invoices', 'documents.tax-invoices': 'taxInvoices',
+        'reports.sales': 'salesReport', 'reports.products': 'productReport',
+        'reports.inventory': 'inventoryReport', 'reports.financial': 'financialReport',
+        'reports.staff': 'staffReport', 'reports.customers': 'customerReport',
+        'reports.promotions': 'promotionsReport', 'reports.period-compare': 'periodCompare',
+        'reports.branch-compare': 'branchCompare', 'reports.gl': 'glReport',
+        'management.branches': 'branches', 'management.stores': 'stores',
+        'management.staff': 'staffList', 'management.users': 'users',
+        'management.roles': 'roles', 'management.cashregisters': 'cashRegisters',
+        'management.shifts': 'shifts',
+        'settings.general': 'generalSettings', 'settings.display': 'displaySettings',
+        'settings.receipt': 'receiptSettings', 'settings.tax': 'taxSettings',
+        'settings.payments': 'paymentSettings', 'settings.printers': 'printerSettings',
+        'settings.notifications': 'notificationsSettings',
+        'admin.dashboard': 'adminDashboard', 'admin.requests': 'adminRequests',
+        'admin.stores': 'stores', 'admin.branches': 'adminBranches',
+        'admin.users': 'adminUsers', 'admin.roles': 'adminRoles',
+        'admin.rules': 'adminRules', 'admin.permissions': 'adminPermissions',
+        'admin.audit': 'adminAudit',
+    };
+
     function mapApiMenuItem(raw: any): MenuItem {
+        const navSuffix = API_KEY_TO_NAV[raw.key] ?? raw.key;
         const item: MenuItem = {
             id: raw.key,
             name: raw.labelLao || raw.label,
-            nameKey: raw.key ? `nav.${raw.key.replace(/\./g, '_')}` : undefined,
+            nameKey: `nav.${navSuffix}`,
             icon: resolveIcon(raw.icon),
             permission: raw.requiredPermission || undefined,
             href: raw.path || undefined,
@@ -341,29 +382,36 @@
         "flex flex-col h-full bg-white dark:bg-gray-900",
         "border-r border-gray-200 dark:border-gray-800",
         "transition-all duration-300 ease-out",
-        isOpen ? "w-64" : "w-20",
+        isOpen ? "sidebar-open" : "sidebar-closed",
     )}
 >
     <!-- Logo -->
     <div
-        class="flex items-center gap-3 h-16 px-4 border-b border-gray-200 dark:border-gray-800 shrink-0"
+        class="app-header flex items-center gap-3 px-4 sidebar-logo-area border-b border-gray-200 dark:border-gray-800 shrink-0"
     >
-        {#if auth.activeStore?.storeName && false}
-            <!-- reserved for branch logo img -->
+        {#if auth.activeStore?.storeLogo}
+            <div class="sidebar-logo-icon rounded-xl overflow-hidden shrink-0 shadow-lg shadow-primary-500/25">
+                <img
+                    src={auth.activeStore.storeLogo}
+                    alt={auth.activeStore.storeName}
+                    class="w-full h-full object-cover"
+                />
+            </div>
+        {:else}
+            <div
+                class="sidebar-logo-icon flex items-center justify-center rounded-xl bg-linear-to-br from-primary-500 to-primary-600 text-white shadow-lg shadow-primary-500/25 shrink-0"
+            >
+                <Store class="w-5 h-5" />
+            </div>
         {/if}
-        <div
-            class="flex items-center justify-center w-10 h-10 rounded-xl bg-linear-to-br from-primary-500 to-primary-600 text-white shadow-lg shadow-primary-500/25 shrink-0"
-        >
-            <Store class="w-5 h-5" />
-        </div>
         {#if isOpen}
             <div class="flex flex-col min-w-0" transition:fade={{ duration: 150 }}>
                 <span class="text-base font-bold text-gray-900 dark:text-white truncate leading-tight">
-                    {auth.activeStore?.branchName || auth.activeStore?.storeName || 'KPOS'}
+                    {auth.activeStore?.storeName || auth.activeStore?.branchName || 'KPOS'}
                 </span>
                 <span class="text-xs text-gray-500 dark:text-gray-400 truncate">
-                    {auth.activeStore?.storeName && auth.activeStore.storeName !== auth.activeStore.branchName
-                        ? auth.activeStore.storeName
+                    {auth.activeStore?.branchName && auth.activeStore.branchName !== auth.activeStore.storeName
+                        ? auth.activeStore.branchName
                         : 'Enterprise POS'}
                 </span>
             </div>
@@ -371,7 +419,7 @@
     </div>
 
     <!-- Navigation -->
-    <nav class={cn("flex-1 py-4 px-3", isOpen ? "overflow-y-auto scrollbar-thin" : "overflow-visible")}>
+    <nav class={cn("flex-1 py-4 px-3 sidebar-nav", isOpen ? "overflow-y-auto scrollbar-thin" : "overflow-visible")}>
         {#if menuLoading}
             <ul class="space-y-1">
                 {#each { length: isOpen ? 8 : 6 } as _, i}
@@ -656,3 +704,19 @@
         </div>
     </div>
 </aside>
+
+<style>
+/* Sidebar logo icon — scales at large displays */
+.sidebar-logo-icon {
+    width: 2.5rem;  /* 40px */
+    height: 2.5rem;
+}
+@media (min-width: 1920px) {
+    .sidebar-logo-icon { width: 3rem; height: 3rem; }
+    .sidebar-logo-area { padding-left: 1.25rem; padding-right: 1.25rem; gap: 0.875rem; }
+    .sidebar-nav { padding-left: 1rem; padding-right: 1rem; }
+}
+@media (min-width: 3840px) {
+    .sidebar-logo-icon { width: 3.5rem; height: 3.5rem; }
+}
+</style>

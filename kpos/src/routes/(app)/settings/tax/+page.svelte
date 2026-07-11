@@ -19,6 +19,8 @@
         Calculator,
     } from "lucide-svelte";
 
+    const canUpdateSettings = $derived(auth.hasPermission('settings:update'));
+
     // State
     let searchQuery = $state("");
     let isLoading = $state(true);
@@ -133,6 +135,7 @@
             </div>
         </div>
 
+        {#if canUpdateSettings}
         <button
             onclick={() => { resetForm(); showModal = true; }}
             class="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-orange-500 to-danger-600 text-white rounded-xl text-sm font-semibold shadow-lg"
@@ -140,6 +143,7 @@
             <Plus class="w-5 h-5" />
             ເພີ່ມພາສີ
         </button>
+        {/if}
     </div>
 
     <!-- Stats -->
@@ -225,6 +229,7 @@
                             <p class="text-sm text-gray-500 dark:text-gray-400 pt-2 border-t border-gray-200 dark:border-gray-700">{tax.description}</p>
                         {/if}
                     </div>
+                    {#if canUpdateSettings}
                     <div class="px-4 py-3 border-t border-gray-200 dark:border-gray-700 flex justify-end gap-2">
                         <button onclick={() => openEdit(tax)} class="p-2 text-orange-600 hover:bg-orange-50 dark:hover:bg-orange-900/30 rounded-lg">
                             <Edit class="w-4 h-4" />
@@ -233,6 +238,7 @@
                             <Trash2 class="w-4 h-4" />
                         </button>
                     </div>
+                    {/if}
                 </div>
             {/each}
         </div>

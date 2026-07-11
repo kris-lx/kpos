@@ -4,7 +4,8 @@
 
 import { Router } from 'express';
 import { authenticate, authorize, branchFilter, applyScopeFilter, ensureScopeAccess, buildScopeCondition, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
-import { db } from '@/config/database.config';
+import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
+import { db as globalDb } from '@/config/database.config';
 import { transactions, transactionPayments, paymentMethods, settlements } from '@/db/schema/tables';
 import { eq, and, or, ilike, inArray, gte, lte, lt, desc, asc, count, sum, sql, isNull } from 'drizzle-orm';
 
@@ -15,8 +16,9 @@ export const paymentRoutes = Router();
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all transactions
-paymentRoutes.get('/transactions', authenticate, branchFilter(), async (req, res, next) => {
+paymentRoutes.get('/transactions', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const {
             page = 1,
             limit = 20,
@@ -72,8 +74,9 @@ paymentRoutes.get('/transactions', authenticate, branchFilter(), async (req, res
 });
 
 // Get transaction by ID (scope-checked)
-paymentRoutes.get('/transactions/:id', authenticate, async (req, res, next) => {
+paymentRoutes.get('/transactions/:id', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-73: Tenant-scoped transaction lookup
         const tenantId = req.authUser?.tenantId;
         const getConds: any[] = [eq(transactions.id, req.params.id)];
@@ -102,8 +105,9 @@ paymentRoutes.get('/transactions/:id', authenticate, async (req, res, next) => {
 });
 
 // Get transaction summary (for dashboard/reports)
-paymentRoutes.get('/summary', authenticate, async (req, res, next) => {
+paymentRoutes.get('/summary', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { branchId, dateFrom, dateTo } = req.query;
 
         const today = new Date();
@@ -156,8 +160,9 @@ paymentRoutes.get('/summary', authenticate, async (req, res, next) => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all payment methods
-paymentRoutes.get('/methods', authenticate, async (req, res, next) => {
+paymentRoutes.get('/methods', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { activeOnly } = req.query;
 
         // BE-73: Tenant isolation on payment methods
@@ -179,8 +184,9 @@ paymentRoutes.get('/methods', authenticate, async (req, res, next) => {
 });
 
 // Get payment method by ID
-paymentRoutes.get('/methods/:id', authenticate, async (req, res, next) => {
+paymentRoutes.get('/methods/:id', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-73: Tenant-scoped payment method lookup
         const tenantId = req.authUser?.tenantId;
         const pmConds: any[] = [eq(paymentMethods.id, req.params.id)];
@@ -201,8 +207,9 @@ paymentRoutes.get('/methods/:id', authenticate, async (req, res, next) => {
 });
 
 // Create payment method
-paymentRoutes.post('/methods', authenticate, authorize('payments:manage'), async (req, res, next) => {
+paymentRoutes.post('/methods', authenticate, withTenantTx(), authorize('payments:manage'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const pmTenantId = req.authUser?.tenantId || req.user?.tenantId;
         const [method] = await db.insert(paymentMethods).values({ ...req.body, tenantId: pmTenantId }).returning();
 
@@ -213,8 +220,9 @@ paymentRoutes.post('/methods', authenticate, authorize('payments:manage'), async
 });
 
 // Update payment method
-paymentRoutes.put('/methods/:id', authenticate, authorize('payments:manage'), async (req, res, next) => {
+paymentRoutes.put('/methods/:id', authenticate, withTenantTx(), authorize('payments:manage'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-73: Tenant-scoped payment method update
         const tenantId = req.authUser?.tenantId;
         const updConds: any[] = [eq(paymentMethods.id, req.params.id)];
@@ -230,8 +238,9 @@ paymentRoutes.put('/methods/:id', authenticate, authorize('payments:manage'), as
 });
 
 // Toggle payment method status
-paymentRoutes.patch('/methods/:id/toggle', authenticate, authorize('payments:manage'), async (req, res, next) => {
+paymentRoutes.patch('/methods/:id/toggle', authenticate, withTenantTx(), authorize('payments:manage'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-73: Tenant-scoped payment method toggle
         const tenantId = req.authUser?.tenantId;
         const togConds: any[] = [eq(paymentMethods.id, req.params.id)];
@@ -252,8 +261,9 @@ paymentRoutes.patch('/methods/:id/toggle', authenticate, authorize('payments:man
 });
 
 // Delete payment method
-paymentRoutes.delete('/methods/:id', authenticate, authorize('payments:manage'), async (req, res, next) => {
+paymentRoutes.delete('/methods/:id', authenticate, withTenantTx(), authorize('payments:manage'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-73: Tenant-scoped payment method delete
         const tenantId = req.authUser?.tenantId;
         const delConds: any[] = [eq(paymentMethods.id, req.params.id)];
@@ -271,8 +281,9 @@ paymentRoutes.delete('/methods/:id', authenticate, authorize('payments:manage'),
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Process refund
-paymentRoutes.post('/refunds', authenticate, authorize('payments:refund'), async (req, res, next) => {
+paymentRoutes.post('/refunds', authenticate, withTenantTx(), authorize('payments:refund'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { transactionId, amount, reason, items } = req.body;
         const user = (req as unknown as { user: { id: string; branchId: string } }).user;
 
@@ -327,8 +338,9 @@ paymentRoutes.post('/refunds', authenticate, authorize('payments:refund'), async
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Void transaction
-paymentRoutes.post('/void/:id', authenticate, authorize('payments:void'), async (req, res, next) => {
+paymentRoutes.post('/void/:id', authenticate, withTenantTx(), authorize('payments:void'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { reason } = req.body;
 
         // BE-73: Tenant-scoped void
@@ -363,8 +375,9 @@ paymentRoutes.post('/void/:id', authenticate, authorize('payments:void'), async 
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all settlements
-paymentRoutes.get('/settlements', authenticate, branchFilter(), async (req, res, next) => {
+paymentRoutes.get('/settlements', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { page = 1, limit = 20, status, dateFrom, dateTo } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
         const filter = req.branchFilter;
@@ -401,8 +414,9 @@ paymentRoutes.get('/settlements', authenticate, branchFilter(), async (req, res,
 });
 
 // Create settlement
-paymentRoutes.post('/settlements', authenticate, authorize('payments:settle'), async (req, res, next) => {
+paymentRoutes.post('/settlements', authenticate, withTenantTx(), authorize('payments:settle'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { date } = req.body;
         const userId = req.authUser?.userId || req.user?.userId;
         const branchId = req.authUser?.activeBranchId || req.user?.branchId;

@@ -112,6 +112,16 @@
     --z-modal: 200;
     --z-toast: 300;
     --z-tooltip: 400;
+
+    /* Large display breakpoints */
+    --breakpoint-3xl: 1920px;
+    --breakpoint-4xl: 2560px;
+    --breakpoint-5xl: 3840px;
+    --breakpoint-6xl: 7680px;
+
+    /* Sidebar widths per breakpoint */
+    --sidebar-open-width: 16rem;
+    --sidebar-closed-width: 5rem;
 }
 
 /* Dark Mode Variables */
@@ -130,12 +140,39 @@
 html {
     @apply antialiased;
     font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+    font-size: 16px;
+}
+
+/* Scale base font up at 2K, 4K, and 8K so UI is readable at distance */
+@media (min-width: 2560px) {
+    html { font-size: 17px; }
+}
+
+@media (min-width: 3840px) {
+    html { font-size: 20px; }
+}
+
+@media (min-width: 7680px) {
+    html { font-size: 28px; }
 }
 
 body {
     @apply bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-gray-100;
     min-height: 100vh;
     min-height: 100dvh;
+}
+
+.app-shell {
+    padding-top: env(safe-area-inset-top);
+    padding-right: env(safe-area-inset-right);
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-left: env(safe-area-inset-left);
+}
+
+.app-sidebar-fixed {
+    top: env(safe-area-inset-top);
+    bottom: env(safe-area-inset-bottom);
+    left: env(safe-area-inset-left);
 }
 
 /* Input Fields for Dark Mode */
@@ -154,6 +191,10 @@ textarea::placeholder {
 ::-webkit-scrollbar {
     width: 8px;
     height: 8px;
+}
+
+@media (min-width: 3840px) {
+    ::-webkit-scrollbar { width: 12px; height: 12px; }
 }
 
 ::-webkit-scrollbar-track {
@@ -181,9 +222,30 @@ textarea::placeholder {
     display: grid;
     grid-template-columns: 1fr 380px;
     grid-template-rows: auto 1fr;
-    height: 100vh;
-    height: 100dvh;
+    height: 100%;
+    min-height: 0;
     gap: 0;
+}
+
+/* Cart panel widens on larger screens for comfort */
+@media (min-width: 1280px) {
+    .pos-layout { grid-template-columns: 1fr 420px; }
+}
+
+@media (min-width: 1920px) {
+    .pos-layout { grid-template-columns: 1fr 480px; }
+}
+
+@media (min-width: 2560px) {
+    .pos-layout { grid-template-columns: 1fr 560px; }
+}
+
+@media (min-width: 3840px) {
+    .pos-layout { grid-template-columns: 1fr 700px; }
+}
+
+@media (min-width: 7680px) {
+    .pos-layout { grid-template-columns: 1fr 960px; }
 }
 
 .pos-products {
@@ -219,6 +281,38 @@ textarea::placeholder {
     }
 }
 
+@media (min-width: 1920px) {
+    .product-grid {
+        grid-template-columns: repeat(auto-fill, minmax(180px, 220px));
+        gap: 1rem;
+        padding: 1.5rem;
+    }
+}
+
+@media (min-width: 2560px) {
+    .product-grid {
+        grid-template-columns: repeat(auto-fill, minmax(220px, 260px));
+        gap: 1.25rem;
+        padding: 2rem;
+    }
+}
+
+@media (min-width: 3840px) {
+    .product-grid {
+        grid-template-columns: repeat(auto-fill, minmax(280px, 320px));
+        gap: 1.5rem;
+        padding: 2.5rem;
+    }
+}
+
+@media (min-width: 7680px) {
+    .product-grid {
+        grid-template-columns: repeat(auto-fill, minmax(360px, 400px));
+        gap: 2rem;
+        padding: 3rem;
+    }
+}
+
 /* Number Pad */
 .numpad-grid {
     display: grid;
@@ -228,6 +322,22 @@ textarea::placeholder {
 
 .numpad-btn {
     @apply h-14 text-xl font-medium bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 rounded-xl transition-colors active:scale-95;
+}
+
+@media (min-width: 1920px) {
+    .numpad-btn { height: 4rem; font-size: 1.25rem; }
+}
+
+@media (min-width: 2560px) {
+    .numpad-btn { height: 4.5rem; font-size: 1.375rem; }
+}
+
+@media (min-width: 3840px) {
+    .numpad-btn { height: 5rem; font-size: 1.5rem; border-radius: 1rem; }
+}
+
+@media (min-width: 7680px) {
+    .numpad-btn { height: 6rem; font-size: 2rem; }
 }
 
 /* Category Tabs */
@@ -306,6 +416,100 @@ textarea::placeholder {
 .animate-fade-in {
     animation: fadeIn 0.15s ease-out;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Responsive Utilities — Large Display Support
+   All large-screen scaling lives here as plain CSS classes so it works
+   regardless of whether Tailwind JIT scans or generates the 3xl/4xl prefix.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Header height — used on both Sidebar logo row and top header */
+.app-header {
+    height: 4rem; /* 64px */
+}
+
+@media (min-width: 1920px) { .app-header { height: 4.5rem; } }
+@media (min-width: 3840px) { .app-header { height: 5rem; } }
+
+/* Top header horizontal padding — scales at large displays */
+.header-padding {
+    padding-left: 1rem;
+    padding-right: 1rem;
+}
+
+@media (min-width: 1920px) { .header-padding { padding-left: 1.5rem; padding-right: 1.5rem; } }
+@media (min-width: 3840px) { .header-padding { padding-left: 2rem; padding-right: 2rem; } }
+
+/* ── Sidebar panel width ─────────────────────────────────────────────────── */
+.sidebar-open {
+    width: 16rem; /* 256px */
+}
+
+.sidebar-closed {
+    width: 5rem; /* 80px */
+}
+
+@media (min-width: 1920px) {
+    .sidebar-open   { width: 18rem; }
+    .sidebar-closed { width: 6rem;  }
+}
+
+@media (min-width: 2560px) {
+    .sidebar-open   { width: 20rem; }
+}
+
+@media (min-width: 3840px) {
+    .sidebar-open   { width: 24rem; }
+    .sidebar-closed { width: 7rem;  }
+}
+
+@media (min-width: 7680px) {
+    .sidebar-open   { width: 28rem; }
+    .sidebar-closed { width: 8rem;  }
+}
+
+/* ── Main content offset (matches sidebar widths above) ─────────────────── */
+/* On mobile (<768px) the sidebar is hidden — no offset needed.             */
+.main-offset-open,
+.main-offset-closed {
+    margin-left: 0;
+    width: 100%;
+}
+
+@media (min-width: 768px) {
+    .main-offset-open   { margin-left: 16rem; width: calc(100% - 16rem); flex: 0 0 auto; }
+    .main-offset-closed { margin-left: 5rem;  width: calc(100% - 5rem);  flex: 0 0 auto; }
+}
+
+@media (min-width: 1920px) {
+    .main-offset-open   { margin-left: 18rem; width: calc(100% - 18rem); }
+    .main-offset-closed { margin-left: 6rem;  width: calc(100% - 6rem);  }
+}
+
+@media (min-width: 2560px) {
+    .main-offset-open   { margin-left: 20rem; width: calc(100% - 20rem); }
+}
+
+@media (min-width: 3840px) {
+    .main-offset-open   { margin-left: 24rem; width: calc(100% - 24rem); }
+    .main-offset-closed { margin-left: 7rem;  width: calc(100% - 7rem);  }
+}
+
+@media (min-width: 7680px) {
+    .main-offset-open   { margin-left: 28rem; width: calc(100% - 28rem); }
+    .main-offset-closed { margin-left: 8rem;  width: calc(100% - 8rem);  }
+}
+
+/* ── Auth pages (login / forgot / reset) card width ─────────────────────── */
+.auth-card {
+    width: 100%;
+    max-width: 28rem; /* 448px */
+}
+
+@media (min-width: 1920px) { .auth-card { max-width: 36rem; } }  /* 576px */
+@media (min-width: 2560px) { .auth-card { max-width: 44rem; } }  /* 704px */
+@media (min-width: 3840px) { .auth-card { max-width: 54rem; } }  /* 864px */
+@media (min-width: 7680px) { .auth-card { max-width: 72rem; } }  /* 1152px */
 
 /* Hide scrollbar but allow scrolling */
 .scrollbar-none {

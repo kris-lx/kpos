@@ -486,6 +486,7 @@ export const customers = pgTable('customers', {
     lastVisitAt: timestamp('last_visit_at'),
     branchId: uuid('branch_id'),
     storeId: uuid('store_id'),
+    priceLevelId: uuid('price_level_id'),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
@@ -1085,6 +1086,89 @@ export const documentTemplates = pgTable('document_templates', {
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (t) => [
     uniqueIndex('document_templates_tenant_type_idx').on(t.tenantId, t.type),
+]);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// EMAIL PROVIDERS (Phase 11 — per-tenant email config, no more hardcoded Brevo)
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const emailProviders = pgTable('email_providers', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id').notNull(),
+    name: text('name').notNull(),
+    type: text('type').notNull(), // smtp | brevo | sendgrid | mailgun
+    config: jsonb('config').notNull(), // AES-256-GCM encrypted at app level
+    isActive: boolean('is_active').notNull().default(false),
+    isDefault: boolean('is_default').notNull().default(false),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (t) => [
+    uniqueIndex('email_providers_tenant_name_idx').on(t.tenantId, t.name),
+    index('email_providers_tenant_idx').on(t.tenantId),
+]);
+
+export const emailTemplates = pgTable('email_templates', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'), // NULL = system default
+    key: text('key').notNull(), // receipt, password_reset, low_stock_alert, shift_summary
+    subject: text('subject').notNull(),
+    htmlBody: text('html_body').notNull(),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (t) => [
+    uniqueIndex('email_templates_tenant_key_idx').on(t.tenantId, t.key),
+]);
+
+export const emailLogs = pgTable('email_logs', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id').notNull(),
+    toEmail: text('to_email').notNull(),
+    templateKey: text('template_key'),
+    status: text('status').notNull(), // sent | failed | queued
+    error: text('error'),
+    sentAt: timestamp('sent_at').notNull().defaultNow(),
+}, (t) => [
+    index('email_logs_tenant_idx').on(t.tenantId),
+    index('email_logs_tenant_sent_idx').on(t.tenantId, t.sentAt),
+]);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PAYMENT GATEWAYS (SwiftPass Alipay/WeChat QR, JDB Yes Pay) — per-tenant
+// merchant credentials + dynamic QR payment requests
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const paymentGatewayConfigs = pgTable('payment_gateway_configs', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id').notNull(),
+    provider: text('provider').notNull(), // swiftpass_alipay | swiftpass_wechat | jdb_yespay
+    config: jsonb('config').notNull(), // AES-256-GCM encrypted at app level (encryptJson)
+    isActive: boolean('is_active').notNull().default(false),
+    environment: text('environment').notNull().default('sandbox'), // sandbox | production
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (t) => [
+    uniqueIndex('payment_gateway_configs_tenant_provider_idx').on(t.tenantId, t.provider),
+]);
+
+export const qrPaymentRequests = pgTable('qr_payment_requests', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id').notNull(),
+    branchId: uuid('branch_id').notNull(),
+    provider: text('provider').notNull(),
+    outTradeNo: text('out_trade_no').notNull(), // idempotency key sent to the gateway
+    amount: doublePrecision('amount').notNull(),
+    status: text('status').notNull().default('pending'), // pending | paid | expired | failed
+    qrPayload: text('qr_payload'), // pay_url / pay_info / emv string to encode as QR
+    gatewayRef: text('gateway_ref'), // provider's own transaction id once confirmed
+    lastCheckedAt: timestamp('last_checked_at'),
+    saleTransactionId: uuid('sale_transaction_id'), // linked back after POS finalizes the sale
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    expiresAt: timestamp('expires_at').notNull(),
+    confirmedAt: timestamp('confirmed_at'),
+}, (t) => [
+    uniqueIndex('qr_payment_requests_tenant_outtrade_idx').on(t.tenantId, t.outTradeNo),
+    index('qr_payment_requests_tenant_idx').on(t.tenantId),
 ]);
 
 // ═══════════════════════════════════════════════════════════════════════════

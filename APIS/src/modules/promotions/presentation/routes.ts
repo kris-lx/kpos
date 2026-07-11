@@ -4,7 +4,8 @@
 
 import { Router } from 'express';
 import { authenticate, authorize, branchFilter, applyScopeFilter, ensureScopeAccess, invalidateQueryCache, buildScopeCondition, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
-import { db } from '@/config/database.config';
+import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
+import { db as globalDb } from '@/config/database.config';
 import { coupons, discounts, promotions } from '@/db/schema/tables';
 import { eq, and, or, ilike, isNull, lte, gte, gt, lt, desc, asc, count } from 'drizzle-orm';
 
@@ -15,8 +16,9 @@ export const promotionRoutes = Router();
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all coupons
-promotionRoutes.get('/coupons/list', authenticate, branchFilter(), async (req, res, next) => {
+promotionRoutes.get('/coupons/list', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { page = 1, limit = 20, search, status } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
         const now = new Date();
@@ -73,8 +75,9 @@ promotionRoutes.get('/coupons/list', authenticate, branchFilter(), async (req, r
 });
 
 // Validate coupon
-promotionRoutes.post('/coupons/validate', authenticate, async (req, res, next) => {
+promotionRoutes.post('/coupons/validate', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { code, subtotal, memberId } = req.body;
         const now = new Date();
 
@@ -142,8 +145,9 @@ promotionRoutes.post('/coupons/validate', authenticate, async (req, res, next) =
 });
 
 // Create coupon
-promotionRoutes.post('/coupons', authenticate, authorize('promotions:create'), async (req, res, next) => {
+promotionRoutes.post('/coupons', authenticate, withTenantTx(), authorize('promotions:create'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // Check if code exists
         const existing = await db.query.coupons.findFirst({ where: eq(coupons.code, req.body.code) });
         if (existing) {
@@ -167,8 +171,9 @@ promotionRoutes.post('/coupons', authenticate, authorize('promotions:create'), a
 });
 
 // Update coupon (scope-checked)
-promotionRoutes.put('/coupons/:id', authenticate, authorize('promotions:update'), async (req, res, next) => {
+promotionRoutes.put('/coupons/:id', authenticate, withTenantTx(), authorize('promotions:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-71: Tenant-scoped coupon update
         const tenantId = req.authUser?.tenantId;
         const updConds: any[] = [eq(coupons.id, req.params.id)];
@@ -192,8 +197,9 @@ promotionRoutes.put('/coupons/:id', authenticate, authorize('promotions:update')
 });
 
 // Delete coupon (scope-checked)
-promotionRoutes.delete('/coupons/:id', authenticate, authorize('promotions:delete'), async (req, res, next) => {
+promotionRoutes.delete('/coupons/:id', authenticate, withTenantTx(), authorize('promotions:delete'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-71: Tenant-scoped coupon delete
         const tenantId = req.authUser?.tenantId;
         const delConds: any[] = [eq(coupons.id, req.params.id)];
@@ -216,8 +222,9 @@ promotionRoutes.delete('/coupons/:id', authenticate, authorize('promotions:delet
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all discounts with pagination
-promotionRoutes.get('/discounts', authenticate, branchFilter(), async (req, res, next) => {
+promotionRoutes.get('/discounts', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { page = 1, limit = 20, search, isActive, applyTo } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
         const filter = req.branchFilter;
@@ -272,8 +279,9 @@ promotionRoutes.get('/discounts', authenticate, branchFilter(), async (req, res,
 });
 
 // Create discount
-promotionRoutes.post('/discounts', authenticate, authorize('promotions:create'), async (req, res, next) => {
+promotionRoutes.post('/discounts', authenticate, withTenantTx(), authorize('promotions:create'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // Map frontend fields to Prisma model fields
         const { 
             type, value, startDate, endDate, 
@@ -315,8 +323,9 @@ promotionRoutes.post('/discounts', authenticate, authorize('promotions:create'),
 });
 
 // Update discount (scope-checked)
-promotionRoutes.put('/discounts/:id', authenticate, authorize('promotions:update'), async (req, res, next) => {
+promotionRoutes.put('/discounts/:id', authenticate, withTenantTx(), authorize('promotions:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-71: Tenant-scoped discount update
         const tenantId = req.authUser?.tenantId;
         const updConds: any[] = [eq(discounts.id, req.params.id)];
@@ -360,8 +369,9 @@ promotionRoutes.put('/discounts/:id', authenticate, authorize('promotions:update
 });
 
 // Delete discount (scope-checked)
-promotionRoutes.delete('/discounts/:id', authenticate, authorize('promotions:delete'), async (req, res, next) => {
+promotionRoutes.delete('/discounts/:id', authenticate, withTenantTx(), authorize('promotions:delete'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-71: Tenant-scoped discount delete
         const tenantId = req.authUser?.tenantId;
         const delConds: any[] = [eq(discounts.id, req.params.id)];
@@ -384,8 +394,9 @@ promotionRoutes.delete('/discounts/:id', authenticate, authorize('promotions:del
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all promotions
-promotionRoutes.get('/', authenticate, branchFilter(), async (req, res, next) => {
+promotionRoutes.get('/', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { page = 1, limit = 20, search, status } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
         const now = new Date();
@@ -443,8 +454,9 @@ promotionRoutes.get('/', authenticate, branchFilter(), async (req, res, next) =>
 });
 
 // Get promotion by ID (scope-checked)
-promotionRoutes.get('/:id', authenticate, async (req, res, next) => {
+promotionRoutes.get('/:id', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-71: Tenant-scoped promotion lookup
         const tenantId = req.authUser?.tenantId;
         const getConds: any[] = [eq(promotions.id, req.params.id)];
@@ -469,8 +481,9 @@ promotionRoutes.get('/:id', authenticate, async (req, res, next) => {
 });
 
 // Create promotion
-promotionRoutes.post('/', authenticate, authorize('promotions:create'), async (req, res, next) => {
+promotionRoutes.post('/', authenticate, withTenantTx(), authorize('promotions:create'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { id, _id, createdAt, updatedAt, ...body } = req.body;
 
         if (!body.name || !body.type || body.value == null || !body.startDate) {
@@ -511,8 +524,9 @@ promotionRoutes.post('/', authenticate, authorize('promotions:create'), async (r
 });
 
 // Update promotion (scope-checked)
-promotionRoutes.put('/:id', authenticate, authorize('promotions:update'), async (req, res, next) => {
+promotionRoutes.put('/:id', authenticate, withTenantTx(), authorize('promotions:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-71: Tenant-scoped promotion update
         const tenantId = req.authUser?.tenantId;
         const updConds: any[] = [eq(promotions.id, req.params.id)];
@@ -547,8 +561,9 @@ promotionRoutes.put('/:id', authenticate, authorize('promotions:update'), async 
 });
 
 // Delete promotion (scope-checked)
-promotionRoutes.delete('/:id', authenticate, authorize('promotions:delete'), async (req, res, next) => {
+promotionRoutes.delete('/:id', authenticate, withTenantTx(), authorize('promotions:delete'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // BE-71: Tenant-scoped promotion delete
         const tenantId = req.authUser?.tenantId;
         const delConds: any[] = [eq(promotions.id, req.params.id)];

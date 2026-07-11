@@ -110,9 +110,9 @@ export function isValidUUID(value: string): boolean {
     return UUID_REGEX.test(value);
 }
 
-export function validateParamId(req: Request, res: Response, next: NextFunction): void {
+export function validateParamId(req: Request<any, any, any, any>, res: Response<any>, next: NextFunction): void {
     const { id } = req.params;
-    if (id && !isValidUUID(id)) {
+    if (id && typeof id === 'string' && !isValidUUID(id)) {
         res.status(400).json({
             success: false,
             error: { code: 'VAL_002', message: 'Invalid ID format' },

@@ -52,7 +52,7 @@
 </svelte:head>
 
 <div
-    class="min-h-screen flex items-center justify-center bg-linear-to-br from-primary-500 to-primary-700 dark:from-gray-900 dark:to-gray-800 p-4"
+    class="min-h-screen flex items-center justify-center bg-linear-to-br from-primary-500 to-primary-700 dark:from-gray-900 dark:to-gray-800 p-4 auth-screen"
 >
     <!-- Theme and Language Controls -->
     <div class="absolute top-4 right-4 flex items-center gap-2">
@@ -97,20 +97,20 @@
         </button>
     </div>
 
-    <div class="w-full max-w-md">
+    <div class="auth-card">
         <!-- Logo & Title -->
         <div class="text-center mb-8">
             <div
-                class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-white dark:bg-gray-800 shadow-lg mb-4"
+                class="auth-logo-icon inline-flex items-center justify-center rounded-2xl bg-white dark:bg-gray-800 shadow-lg mb-4"
             >
-                <Store class="w-8 h-8 text-primary-600" />
+                <Store class="auth-logo-svg w-8 h-8 text-primary-600" />
             </div>
-            <h1 class="text-3xl font-bold text-white">{t("app.name")}</h1>
-            <p class="text-primary-100 mt-1">{t("app.title")}</p>
+            <h1 class="text-3xl font-bold text-white auth-app-title">{t("app.name")}</h1>
+            <p class="text-primary-100 mt-1 auth-app-subtitle">{t("app.title")}</p>
         </div>
 
         <!-- Login Form -->
-        <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-xl p-8">
+        <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-xl p-8 auth-form-card">
             <h2 class="text-xl font-semibold text-gray-900 dark:text-white mb-6">
                 {t("auth.login")}
             </h2>
@@ -239,3 +239,32 @@
         </p>
     </div>
 </div>
+
+<style>
+@media (min-width: 1920px) { .auth-screen { padding: 2rem; } }
+@media (min-width: 3840px) { .auth-screen { padding: 3rem; } }
+
+.auth-logo-icon {
+    width: 4rem;   /* 64px */
+    height: 4rem;
+}
+@media (min-width: 1920px) {
+    .auth-logo-icon    { width: 5rem;  height: 5rem; }
+    .auth-form-card    { padding: 2.5rem; }
+    .auth-app-title    { font-size: 2.25rem; line-height: 2.5rem; }
+}
+@media (min-width: 2560px) {
+    .auth-logo-icon    { width: 6.5rem; height: 6.5rem; }
+    .auth-logo-svg     { width: 3rem;   height: 3rem; }
+    .auth-form-card    { padding: 3rem; }
+    .auth-app-title    { font-size: 3rem;  line-height: 1.2; }
+    .auth-app-subtitle { font-size: 1.125rem; }
+}
+@media (min-width: 3840px) {
+    .auth-logo-icon    { width: 8rem;  height: 8rem; }
+    .auth-logo-svg     { width: 4rem;  height: 4rem; }
+    .auth-form-card    { padding: 3.5rem; }
+    .auth-app-title    { font-size: 3.75rem; line-height: 1.15; }
+    .auth-app-subtitle { font-size: 1.375rem; }
+}
+</style>

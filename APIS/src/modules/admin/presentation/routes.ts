@@ -4,10 +4,12 @@
 
 import { Router } from 'express';
 import { totalmem, freemem } from 'os';
-import { authenticate, authorize, requireSuperAdmin, requireAdmin, requireTenantAdmin, isSuperAdmin, isAdmin, invalidateRoleRulesCache, invalidateAllUserStoreCache, invalidateUserStoreCache, branchFilter, buildTenantCondition, ROLE_LEVELS } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, requireSuperAdmin, requireAdmin, requireTenantAdmin, isSuperAdmin, isAdmin, invalidateRoleRulesCache, invalidateAllUserStoreCache, invalidateUserStoreCache, branchFilter, buildTenantCondition, tenantScope, ROLE_LEVELS } from '@/infrastructure/http/middleware/auth.middleware';
 import { permissionsToMask } from '@/infrastructure/permissions';
 import { invalidateAllTenantPermissions } from '@/infrastructure/services/permission.service';
-import { db } from '@/config/database.config';
+import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
+import { setRequestContext } from '@/db/set-tenant-context';
+import { db as globalDb } from '@/config/database.config';
 import { writePlatformAuditLog } from '@/infrastructure/helpers/platform-audit.helper';
 import { publish, QUEUES, isRabbitMQConnected } from '@/config/rabbitmq.config';
 import argon2 from 'argon2';
@@ -21,6 +23,19 @@ import {
 } from '@/shared/defaultAccessControl';
 
 export const adminRoutes = Router();
+
+// req.tx (a reserved connection) doesn't support .transaction() — see
+// tenant-tx.middleware.ts. Handlers that need real atomicity go through the
+// pooled globalDb instead, setting the RLS context with SET LOCAL inside.
+async function scopedTransaction(req, callback) {
+    return globalDb.transaction(async (tx) => {
+        const { tenantId, isSuperAdmin, activeBranchPath } = req.authUser ?? {};
+        if (tenantId && !isSuperAdmin) {
+            await setRequestContext(tx, { tenantId, branchPath: activeBranchPath }, { local: true });
+        }
+        return callback(tx);
+    });
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PUBLIC STORE REGISTRATION (No Auth Required)
@@ -63,7 +78,8 @@ adminRoutes.post('/register-and-apply', async (req, res, next) => {
         }
 
         // Check email uniqueness before uploading files
-        const existing = await db.query.users.findFirst({ where: eq(users.email, String(email).toLowerCase()) });
+        // eslint-disable-next-line no-restricted-syntax -- public route (no auth/req.tx), inherently cross-tenant lookup by email
+        const existing = await globalDb.query.users.findFirst({ where: eq(users.email, String(email).toLowerCase()) });
         if (existing) {
             return res.status(409).json({
                 success: false,
@@ -107,7 +123,7 @@ adminRoutes.post('/register-and-apply', async (req, res, next) => {
         const hashedPassword = await argon2.hash(String(password));
 
         // Create user + store request atomically
-        const [newUser] = await db.transaction(async (tx) => {
+        const [newUser] = await scopedTransaction(req, async (tx) => {
             const [user] = await tx.insert(users).values({
                 email: String(email).toLowerCase(),
                 password: hashedPassword,
@@ -169,8 +185,9 @@ adminRoutes.post('/register-and-apply', async (req, res, next) => {
  * GET /admin/requests/count - Get count of pending requests (for notification badge)
  * Must be before /requests/:id to avoid route conflict
  */
-adminRoutes.get('/requests/count', authenticate, requireTenantAdmin(), branchFilter(), async (req, res, next) => {
+adminRoutes.get('/requests/count', authenticate, withTenantTx(), requireTenantAdmin(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const countConds: any[] = [eq(storeRequests.status, 'pending')];
         const tenantScope = buildTenantCondition(req.branchFilter, storeRequests.tenantId);
         if (tenantScope) countConds.push(tenantScope);
@@ -184,8 +201,9 @@ adminRoutes.get('/requests/count', authenticate, requireTenantAdmin(), branchFil
 /**
  * GET /admin/requests - Get all store/branch requests (Super Admin only)
  */
-adminRoutes.get('/requests', authenticate, requireTenantAdmin(), branchFilter(), async (req, res, next) => {
+adminRoutes.get('/requests', authenticate, withTenantTx(), requireTenantAdmin(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { status, type, search, page = 1, limit = 20 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
 
@@ -254,8 +272,9 @@ adminRoutes.get('/requests', authenticate, requireTenantAdmin(), branchFilter(),
 /**
  * GET /admin/requests/:id - Get single request details
  */
-adminRoutes.get('/requests/:id', authenticate, requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.get('/requests/:id', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { id } = req.params;
 
         const request = await db.query.storeRequests.findFirst({
@@ -283,8 +302,9 @@ adminRoutes.get('/requests/:id', authenticate, requireTenantAdmin(), async (req,
 /**
  * POST /admin/requests/:id/approve - Approve a store/branch request
  */
-adminRoutes.post('/requests/:id/approve', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.post('/requests/:id/approve', authenticate, withTenantTx(), requireAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { id } = req.params;
         const { note } = req.body;
         const reviewerId = req.authUser!.userId;
@@ -505,8 +525,9 @@ adminRoutes.post('/requests/:id/approve', authenticate, requireAdmin(), async (r
 /**
  * POST /admin/requests/:id/reject - Reject a store/branch request
  */
-adminRoutes.post('/requests/:id/reject', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.post('/requests/:id/reject', authenticate, withTenantTx(), requireAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { id } = req.params;
         const { note } = req.body;
         const reviewerId = req.authUser!.userId;
@@ -567,8 +588,9 @@ adminRoutes.post('/requests/:id/reject', authenticate, requireAdmin(), async (re
 /**
  * GET /admin/branches - Get all branches with full details
  */
-adminRoutes.get('/branches', authenticate, requireTenantAdmin(), branchFilter(), async (req, res, next) => {
+adminRoutes.get('/branches', authenticate, withTenantTx(), requireTenantAdmin(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { search, isActive, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
 
@@ -626,8 +648,9 @@ adminRoutes.get('/branches', authenticate, requireTenantAdmin(), branchFilter(),
 /**
  * POST /admin/branches - Create a new branch (Super Admin only)
  */
-adminRoutes.post('/branches', authenticate, requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.post('/branches', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { name, code, address, phone, email, taxId, logo, isMain, settings, parentBranchId } = req.body;
 
         if (!name || !String(name).trim()) {
@@ -684,12 +707,16 @@ adminRoutes.post('/branches', authenticate, requireTenantAdmin(), async (req, re
 /**
  * PUT /admin/branches/:id - Update a branch
  */
-adminRoutes.put('/branches/:id', authenticate, requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.put('/branches/:id', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { id } = req.params;
         const { name, code, address, phone, email, taxId, logo, isMain, isActive, settings } = req.body;
 
-        const existing = await db.query.branches.findFirst({ where: eq(branches.id, id) });
+        const branchTenantScope = tenantScope(req, branches.tenantId);
+        const existing = await db.query.branches.findFirst({
+            where: branchTenantScope ? and(eq(branches.id, id), branchTenantScope) : eq(branches.id, id),
+        });
         if (!existing) {
             return res.status(404).json({
                 success: false,
@@ -698,7 +725,8 @@ adminRoutes.put('/branches/:id', authenticate, requireTenantAdmin(), async (req,
         }
 
         if (code && code !== existing.code) {
-            const duplicate = await db.query.branches.findFirst({ where: eq(branches.code, code) });
+            const dupConds = branchTenantScope ? and(eq(branches.code, code), branchTenantScope) : eq(branches.code, code);
+            const duplicate = await db.query.branches.findFirst({ where: dupConds });
             if (duplicate) {
                 return res.status(400).json({
                     success: false,
@@ -708,7 +736,8 @@ adminRoutes.put('/branches/:id', authenticate, requireTenantAdmin(), async (req,
         }
 
         if (isMain && !existing.isMain) {
-            await db.update(branches).set({ isMain: false }).where(eq(branches.isMain, true));
+            const mainResetConds = branchTenantScope ? and(eq(branches.isMain, true), branchTenantScope) : eq(branches.isMain, true);
+            await db.update(branches).set({ isMain: false }).where(mainResetConds);
         }
 
         const [branch] = await db.update(branches).set({ name, code, address, phone, email, taxId, logo, isMain, isActive, settings }).where(eq(branches.id, id)).returning();
@@ -722,11 +751,15 @@ adminRoutes.put('/branches/:id', authenticate, requireTenantAdmin(), async (req,
 /**
  * DELETE /admin/branches/:id - Deactivate a branch
  */
-adminRoutes.delete('/branches/:id', authenticate, requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.delete('/branches/:id', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { id } = req.params;
 
-        const branch = await db.query.branches.findFirst({ where: eq(branches.id, id) });
+        const delBranchScope = tenantScope(req, branches.tenantId);
+        const branch = await db.query.branches.findFirst({
+            where: delBranchScope ? and(eq(branches.id, id), delBranchScope) : eq(branches.id, id),
+        });
 
         if (!branch) {
             return res.status(404).json({
@@ -757,8 +790,9 @@ adminRoutes.delete('/branches/:id', authenticate, requireTenantAdmin(), async (r
 /**
  * GET /admin/stores - Get all stores
  */
-adminRoutes.get('/stores', authenticate, requireTenantAdmin(), branchFilter(), async (req, res, next) => {
+adminRoutes.get('/stores', authenticate, withTenantTx(), requireTenantAdmin(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { search, branchId, isActive, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
 
@@ -796,8 +830,9 @@ adminRoutes.get('/stores', authenticate, requireTenantAdmin(), branchFilter(), a
 /**
  * POST /admin/stores - Create a new store
  */
-adminRoutes.post('/stores', authenticate, requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.post('/stores', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { name, code, branchId, address, phone, email, settings } = req.body;
 
         const existing = await db.query.stores.findFirst({ where: eq(stores.code, code) });
@@ -821,8 +856,9 @@ adminRoutes.post('/stores', authenticate, requireTenantAdmin(), async (req, res,
 /**
  * PUT /admin/stores/:id - Update a store
  */
-adminRoutes.put('/stores/:id', authenticate, requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.put('/stores/:id', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { id } = req.params;
         const { name, code, branchId, address, phone, email, isActive, settings } = req.body;
 
@@ -856,8 +892,9 @@ adminRoutes.put('/stores/:id', authenticate, requireTenantAdmin(), async (req, r
 /**
  * DELETE /admin/stores/:id - Deactivate a store
  */
-adminRoutes.delete('/stores/:id', authenticate, requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.delete('/stores/:id', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { id } = req.params;
 
         const store = await db.query.stores.findFirst({ where: eq(stores.id, id) });
@@ -883,8 +920,9 @@ adminRoutes.delete('/stores/:id', authenticate, requireTenantAdmin(), async (req
 /**
  * GET /admin/stores/:id/details - Get store with full details
  */
-adminRoutes.get('/stores/:id/details', authenticate, async (req, res, next) => {
+adminRoutes.get('/stores/:id/details', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const store = await db.query.stores.findFirst({
             where: eq(stores.id, req.params.id),
             with: { branch: { columns: { id: true, name: true, code: true, address: true, phone: true } } },
@@ -901,8 +939,9 @@ adminRoutes.get('/stores/:id/details', authenticate, async (req, res, next) => {
 /**
  * GET /admin/stores/:id/stats - Get store statistics
  */
-adminRoutes.get('/stores/:id/stats', authenticate, async (req, res, next) => {
+adminRoutes.get('/stores/:id/stats', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const store = await db.query.stores.findFirst({ where: eq(stores.id, req.params.id) });
         if (!store) {
             return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Store not found' } });
@@ -938,8 +977,9 @@ adminRoutes.get('/stores/:id/stats', authenticate, async (req, res, next) => {
 /**
  * GET /admin/stores/:id/branches - Get branches related to store
  */
-adminRoutes.get('/stores/:id/branches', authenticate, async (req, res, next) => {
+adminRoutes.get('/stores/:id/branches', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const store = await db.query.stores.findFirst({ where: eq(stores.id, req.params.id), columns: { branchId: true } });
         if (!store) {
             return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Store not found' } });
@@ -954,8 +994,9 @@ adminRoutes.get('/stores/:id/branches', authenticate, async (req, res, next) => 
 /**
  * GET /admin/stores/:id/users - Get users with access to store
  */
-adminRoutes.get('/stores/:id/users', authenticate, async (req, res, next) => {
+adminRoutes.get('/stores/:id/users', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const usList = await db.query.userStores.findMany({
             where: eq(userStores.storeId, req.params.id),
             with: { user: { columns: { id: true, name: true, email: true, phone: true, role: true, avatar: true, isActive: true } } },
@@ -977,8 +1018,9 @@ adminRoutes.get('/stores/:id/users', authenticate, async (req, res, next) => {
 /**
  * PUT /admin/stores/:id/update - Update store (non-admin users for their own store)
  */
-adminRoutes.put('/stores/:id/update', authenticate, authorize('stores:update'), async (req, res, next) => {
+adminRoutes.put('/stores/:id/update', authenticate, withTenantTx(), authorize('stores:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const authUser = req.authUser!;
 
         // Ownership/tenant guard: the target store must belong to the caller's tenant,
@@ -1026,8 +1068,9 @@ adminRoutes.put('/stores/:id/update', authenticate, authorize('stores:update'), 
 /**
  * GET /admin/dashboard - System overview statistics (scoped to tenant)
  */
-adminRoutes.get('/dashboard', authenticate, requireTenantAdmin(), branchFilter(), async (req, res, next) => {
+adminRoutes.get('/dashboard', authenticate, withTenantTx(), requireTenantAdmin(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // Build tenant-scoped conditions for each table via centralized scope helper
         const branchTenant = buildTenantCondition(req.branchFilter, branches.tenantId);
         const storeTenant = buildTenantCondition(req.branchFilter, stores.tenantId);
@@ -1084,8 +1127,9 @@ adminRoutes.get('/dashboard', authenticate, requireTenantAdmin(), branchFilter()
 /**
  * GET /admin/dashboard/chart-data - Chart data for Pie, Column, Line charts
  */
-adminRoutes.get('/dashboard/chart-data', authenticate, requireTenantAdmin(), branchFilter(), async (req, res, next) => {
+adminRoutes.get('/dashboard/chart-data', authenticate, withTenantTx(), requireTenantAdmin(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const tenantCond = buildTenantCondition(req.branchFilter, users.tenantId);
         const storeTenantCond = buildTenantCondition(req.branchFilter, stores.tenantId);
         const txTenantCond = buildTenantCondition(req.branchFilter, transactions.tenantId);
@@ -1164,8 +1208,9 @@ adminRoutes.get('/dashboard/chart-data', authenticate, requireTenantAdmin(), bra
  * Returns branches grouped by tenant with per-branch stats (products, categories, stock, users).
  * Super admin: all tenants. Tenant admin: own tenant only.
  */
-adminRoutes.get('/stores-overview', authenticate, requireTenantAdmin(), branchFilter(), async (req, res, next) => {
+adminRoutes.get('/stores-overview', authenticate, withTenantTx(), requireTenantAdmin(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const authUser = req.authUser!;
         const filter = req.branchFilter;
 
@@ -1264,8 +1309,9 @@ adminRoutes.get('/stores-overview', authenticate, requireTenantAdmin(), branchFi
 /**
  * POST /admin/users - Create a new user (Super Admin / Admin)
  */
-adminRoutes.post('/users', authenticate, requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.post('/users', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { email, password, name, phone, avatar, role, roleId, branchId, permissions, isActive = true } = req.body;
 
         // Validate required fields
@@ -1321,8 +1367,9 @@ adminRoutes.post('/users', authenticate, requireTenantAdmin(), async (req, res, 
 /**
  * GET /admin/users - List all users (Super Admin)
  */
-adminRoutes.get('/users', authenticate, requireTenantAdmin(), branchFilter(), async (req, res, next) => {
+adminRoutes.get('/users', authenticate, withTenantTx(), requireTenantAdmin(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { search, branchId, isActive, isSuperAdmin, page = 1, limit = 20 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
 
@@ -1371,8 +1418,9 @@ adminRoutes.get('/users', authenticate, requireTenantAdmin(), branchFilter(), as
 /**
  * PUT /admin/users/:id/super-admin - Toggle Super Admin status
  */
-adminRoutes.put('/users/:id/super-admin', authenticate, requireSuperAdmin(), async (req, res, next) => {
+adminRoutes.put('/users/:id/super-admin', authenticate, withTenantTx(), requireSuperAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { id } = req.params;
         const { isSuperAdmin: newStatus } = req.body;
 
@@ -1398,8 +1446,9 @@ adminRoutes.put('/users/:id/super-admin', authenticate, requireSuperAdmin(), asy
 /**
  * POST /admin/requests - Create a new store/branch request (Any authenticated user)
  */
-adminRoutes.post('/requests', authenticate, async (req, res, next) => {
+adminRoutes.post('/requests', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const requesterId = req.authUser!.userId;
         const {
             type,
@@ -1476,8 +1525,9 @@ adminRoutes.post('/requests', authenticate, async (req, res, next) => {
 /**
  * GET /admin/my-requests - Get current user's requests
  */
-adminRoutes.get('/my-requests', authenticate, async (req, res, next) => {
+adminRoutes.get('/my-requests', authenticate, withTenantTx(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const requesterId = req.authUser!.userId;
         const { status, page = 1, limit = 10 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
@@ -1508,7 +1558,7 @@ adminRoutes.get('/my-requests', authenticate, async (req, res, next) => {
 /**
  * GET /admin/check-super-admin - Check if current user is Super Admin
  */
-adminRoutes.get('/check-super-admin', authenticate, async (req, res) => {
+adminRoutes.get('/check-super-admin', authenticate, withTenantTx(), async (req, res) => {
     res.json({
         success: true,
         data: {
@@ -1521,8 +1571,9 @@ adminRoutes.get('/check-super-admin', authenticate, async (req, res) => {
 /**
  * GET /admin/permissions - Get all permission groups (dynamic from database or default)
  */
-adminRoutes.get('/permissions', authenticate, requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.get('/permissions', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const dbPermissions = await db.query.permissionGroups.findMany({
             where: eq(permissionGroups.isActive, true),
             orderBy: asc(permissionGroups.order),
@@ -1551,8 +1602,9 @@ adminRoutes.get('/permissions', authenticate, requireTenantAdmin(), async (req, 
 /**
  * POST /admin/permissions - Create/Update permission groups (Super Admin only)
  */
-adminRoutes.post('/permissions', authenticate, requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.post('/permissions', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { groups } = req.body;
 
         await db.delete(permissions);
@@ -1580,8 +1632,9 @@ adminRoutes.post('/permissions', authenticate, requireTenantAdmin(), async (req,
 /**
  * GET /admin/roles - Get all roles
  */
-adminRoutes.get('/roles', authenticate, requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.get('/roles', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { search, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
 
@@ -1615,7 +1668,7 @@ adminRoutes.get('/roles', authenticate, requireTenantAdmin(), async (req, res, n
  * GET /admin/roles/templates - Get default role templates
  * MUST be before /roles/:id to prevent Express matching 'templates' as :id
  */
-adminRoutes.get('/roles/templates', authenticate, requireTenantAdmin(), async (req, res) => {
+adminRoutes.get('/roles/templates', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res) => {
     // Add a stable id so frontend keyed-each blocks don't crash on undefined
     const templates = ACCESS_DEFAULT_ROLES.map(r => ({ ...r, id: r.name }));
     res.json({ success: true, data: templates });
@@ -1625,8 +1678,9 @@ adminRoutes.get('/roles/templates', authenticate, requireTenantAdmin(), async (r
  * POST /admin/roles/seed - Seed default roles to database
  * MUST be before /roles/:id to prevent Express matching 'seed' as :id
  */
-adminRoutes.post('/roles/seed', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.post('/roles/seed', authenticate, withTenantTx(), requireAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const results: any[] = [];
 
         for (const roleData of ACCESS_DEFAULT_ROLES) {
@@ -1659,8 +1713,9 @@ adminRoutes.post('/roles/seed', authenticate, requireAdmin(), async (req, res, n
 /**
  * GET /admin/roles/:id - Get single role
  */
-adminRoutes.get('/roles/:id', authenticate, requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.get('/roles/:id', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { id } = req.params;
 
         const role = await db.query.roles.findFirst({ where: eq(roles.id, id) });
@@ -1681,8 +1736,9 @@ adminRoutes.get('/roles/:id', authenticate, requireTenantAdmin(), async (req, re
 /**
  * POST /admin/roles - Create a new role
  */
-adminRoutes.post('/roles', authenticate, requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.post('/roles', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { name, displayName, description, permissions } = req.body;
 
         // Super-admin creates global roles (tenantId=null); others create tenant-scoped roles
@@ -1737,8 +1793,9 @@ adminRoutes.post('/roles', authenticate, requireTenantAdmin(), async (req, res, 
 /**
  * PATCH /admin/roles/:id - Update a role
  */
-adminRoutes.patch('/roles/:id', authenticate, requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.patch('/roles/:id', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { id } = req.params;
         const { name, displayName, description, permissions } = req.body;
 
@@ -1815,8 +1872,9 @@ adminRoutes.patch('/roles/:id', authenticate, requireTenantAdmin(), async (req, 
 /**
  * DELETE /admin/roles/:id - Delete a role
  */
-adminRoutes.delete('/roles/:id', authenticate, requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.delete('/roles/:id', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { id } = req.params;
 
         // Tenant + branch scoped lookup/delete — prevents cross-tenant/branch deletion.
@@ -1893,7 +1951,8 @@ async function logActivity(
         const tenantId = req?.authUser?.tenantId || req?.user?.tenantId || undefined;
         const queued = isRabbitMQConnected() && publish(QUEUES.ACTIVITY_LOG, { ...payload, tenantId } as Record<string, unknown>);
         if (!queued) {
-            await db.insert(activityLogs).values({
+            // eslint-disable-next-line no-restricted-syntax -- tenantId already explicit in the insert values above
+            await globalDb.insert(activityLogs).values({
                 tenantId,
                 userId,
                 action,
@@ -1911,8 +1970,9 @@ async function logActivity(
 /**
  * GET /admin/activity - Get recent activity (for dashboard)
  */
-adminRoutes.get('/activity', authenticate, requireTenantAdmin(), branchFilter(), async (req, res, next) => {
+adminRoutes.get('/activity', authenticate, withTenantTx(), requireTenantAdmin(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { limit = 10 } = req.query;
 
         const actConds: any[] = [];
@@ -1934,8 +1994,9 @@ adminRoutes.get('/activity', authenticate, requireTenantAdmin(), branchFilter(),
 /**
  * GET /admin/audit - Get audit logs with filtering
  */
-adminRoutes.get('/audit', authenticate, requireTenantAdmin(), branchFilter(), async (req, res, next) => {
+adminRoutes.get('/audit', authenticate, withTenantTx(), requireTenantAdmin(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { search, action, userId, dateFrom, dateTo, page = 1, limit = 20 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
 
@@ -1990,8 +2051,9 @@ adminRoutes.get('/audit', authenticate, requireTenantAdmin(), branchFilter(), as
 /**
  * GET /admin/audit/export - Export audit logs as CSV
  */
-adminRoutes.get('/audit/export', authenticate, requireTenantAdmin(), branchFilter(), async (req, res, next) => {
+adminRoutes.get('/audit/export', authenticate, withTenantTx(), requireTenantAdmin(), branchFilter(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { action, userId, dateFrom, dateTo } = req.query;
 
         const eConds: any[] = [];
@@ -2030,8 +2092,9 @@ adminRoutes.get('/audit/export', authenticate, requireTenantAdmin(), branchFilte
  * Applies the latest default permission sets for system roles (store_owner, hq_admin, admin).
  * Safe to call multiple times (idempotent). Super admin only.
  */
-adminRoutes.post('/system/fix-role-permissions', authenticate, requireSuperAdmin(), async (req, res, next) => {
+adminRoutes.post('/system/fix-role-permissions', authenticate, withTenantTx(), requireSuperAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const branchPerms = ['branches:view', 'branches:create', 'branches:update', 'branches:delete'];
         const roleUpdates: { name: string; addPerms: string[]; removeRuleNames: string[] }[] = [
             { name: 'store_owner', addPerms: branchPerms, removeRuleNames: [] },
@@ -2079,8 +2142,9 @@ adminRoutes.post('/system/fix-role-permissions', authenticate, requireSuperAdmin
 /**
  * GET /admin/system/health - Get system health status
  */
-adminRoutes.get('/system/health', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.get('/system/health', authenticate, withTenantTx(), requireAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const startTime = Date.now();
         
         // Check database connection
@@ -2141,8 +2205,9 @@ adminRoutes.get('/system/health', authenticate, requireAdmin(), async (req, res,
 /**
  * GET /admin/users/:id - Get single user details
  */
-adminRoutes.get('/users/:id', authenticate, requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.get('/users/:id', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { id } = req.params;
 
         // First query: basic user data with branch and role
@@ -2184,8 +2249,9 @@ adminRoutes.get('/users/:id', authenticate, requireTenantAdmin(), async (req, re
 /**
  * PATCH /admin/users/:id - Update user
  */
-adminRoutes.patch('/users/:id', authenticate, requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.patch('/users/:id', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { id } = req.params;
         const { name, email, phone, roleId, branchId, permissions, isActive } = req.body;
 
@@ -2259,8 +2325,9 @@ adminRoutes.patch('/users/:id', authenticate, requireTenantAdmin(), async (req, 
 /**
  * DELETE /admin/users/:id - Deactivate user
  */
-adminRoutes.delete('/users/:id', authenticate, requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.delete('/users/:id', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { id } = req.params;
 
         // Prevent self-deletion
@@ -2271,7 +2338,10 @@ adminRoutes.delete('/users/:id', authenticate, requireTenantAdmin(), async (req,
             });
         }
 
-        const user = await db.query.users.findFirst({ where: eq(users.id, id) });
+        const delUserScope = tenantScope(req, users.tenantId);
+        const user = await db.query.users.findFirst({
+            where: delUserScope ? and(eq(users.id, id), delUserScope) : eq(users.id, id),
+        });
         if (!user) {
             return res.status(404).json({
                 success: false,
@@ -2292,9 +2362,14 @@ adminRoutes.delete('/users/:id', authenticate, requireTenantAdmin(), async (req,
 
 /**
  * PATCH /admin/users/:id/super-admin - Toggle Super Admin (alternative endpoint)
+ *
+ * Platform-superadmin only — requireAdmin() (roleLevel <= 2) would let any regular
+ * tenant admin (e.g. merchant_owner) grant platform-wide superadmin to an arbitrary
+ * user by id. Granting this specific privilege must never be tenant-scoped.
  */
-adminRoutes.patch('/users/:id/super-admin', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.patch('/users/:id/super-admin', authenticate, withTenantTx(), requireSuperAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { id } = req.params;
         const { isSuperAdmin: newStatus } = req.body;
 
@@ -2324,8 +2399,9 @@ adminRoutes.patch('/users/:id/super-admin', authenticate, requireAdmin(), async 
 /**
  * POST /admin/enums/seed - Seed all enum values into DB from hardcoded defaults
  */
-adminRoutes.post('/enums/seed', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.post('/enums/seed', authenticate, withTenantTx(), requireAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         let inserted = 0;
         let skipped = 0;
         for (const [type, entries] of Object.entries(ENUM_SEED_DATA)) {
@@ -2354,8 +2430,9 @@ adminRoutes.post('/enums/seed', authenticate, requireAdmin(), async (req, res, n
 /**
  * GET /admin/enums - List all enum types or a specific type
  */
-adminRoutes.get('/enums', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.get('/enums', authenticate, withTenantTx(), requireAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { type } = req.query;
         const rows = await db.query.systemEnums.findMany({
             where: type ? eq(systemEnums.type, String(type)) : undefined,
@@ -2381,8 +2458,9 @@ adminRoutes.get('/enums', authenticate, requireAdmin(), async (req, res, next) =
 /**
  * POST /admin/enums - Create a new enum value
  */
-adminRoutes.post('/enums', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.post('/enums', authenticate, withTenantTx(), requireAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { type, value, label, labelLao, order = 0, isActive = true } = req.body;
         if (!type || !value || !label) {
             return res.status(400).json({ success: false, error: { code: 'VALIDATION', message: 'type, value, label are required' } });
@@ -2407,8 +2485,9 @@ adminRoutes.post('/enums', authenticate, requireAdmin(), async (req, res, next) 
 /**
  * PUT /admin/enums/:id - Update an enum value
  */
-adminRoutes.put('/enums/:id', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.put('/enums/:id', authenticate, withTenantTx(), requireAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { id } = req.params;
         const { label, labelLao, order, isActive } = req.body;
         const existing = await db.query.systemEnums.findFirst({ where: eq(systemEnums.id, id) });
@@ -2431,8 +2510,9 @@ adminRoutes.put('/enums/:id', authenticate, requireAdmin(), async (req, res, nex
 /**
  * DELETE /admin/enums/:id - Delete a non-system enum value
  */
-adminRoutes.delete('/enums/:id', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.delete('/enums/:id', authenticate, withTenantTx(), requireAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { id } = req.params;
         const existing = await db.query.systemEnums.findFirst({ where: eq(systemEnums.id, id) });
         if (!existing) {
@@ -2804,6 +2884,17 @@ const DEFAULT_MENU_STRUCTURE = [
         ]
     },
     {
+        // Self-service page for users with no store access yet to submit a
+        // request. No requiredPermission — a store-less user by definition
+        // has no stores:* permission, so gating this behind one would make
+        // it permanently unreachable for exactly the people who need it.
+        key: "store-request",
+        label: "Store Request",
+        labelLao: "ຂໍເປີດຮ້ານ/ສາຂາ",
+        icon: "Store",
+        path: "/store-request",
+    },
+    {
         key: "help",
         label: "Help",
         labelLao: "ຊ່ວຍເຫຼືອ",
@@ -2815,8 +2906,9 @@ const DEFAULT_MENU_STRUCTURE = [
 /**
  * GET /admin/menu-permissions - Get menu structure for role assignment
  */
-adminRoutes.get('/menu-permissions', authenticate, requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.get('/menu-permissions', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         // Try to get from database first
         const dbMenus = await db.query.menuPermissions.findMany({
             where: and(eq(menuPermissions.isActive, true), isNull(menuPermissions.parentId)),
@@ -2839,8 +2931,9 @@ adminRoutes.get('/menu-permissions', authenticate, requireTenantAdmin(), async (
 /**
  * POST /admin/menu-permissions/seed - Seed menu permissions to database
  */
-adminRoutes.post('/menu-permissions/seed', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.post('/menu-permissions/seed', authenticate, withTenantTx(), requireAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         await db.delete(menuPermissions);
 
         for (let i = 0; i < DEFAULT_MENU_STRUCTURE.length; i++) {
@@ -2872,8 +2965,9 @@ adminRoutes.post('/menu-permissions/seed', authenticate, requireAdmin(), async (
 /**
  * POST /admin/rules/seed - Seed default rules + role-rule CRUD mappings
  */
-adminRoutes.post('/rules/seed', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.post('/rules/seed', authenticate, withTenantTx(), requireAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         await db.delete(roleRules);
         await db.delete(rules);
 
@@ -2922,8 +3016,9 @@ adminRoutes.post('/rules/seed', authenticate, requireAdmin(), async (req, res, n
 /**
  * GET /admin/rules - Get all rules
  */
-adminRoutes.get('/rules', authenticate, requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.get('/rules', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const allRules = await db.query.rules.findMany({
             where: eq(rules.isActive, true),
             orderBy: asc(rules.order),
@@ -2938,8 +3033,9 @@ adminRoutes.get('/rules', authenticate, requireTenantAdmin(), async (req, res, n
 /**
  * GET /admin/roles/:id/rules - Get rules for a specific role with CRUD flags
  */
-adminRoutes.get('/roles/:id/rules', authenticate, requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.get('/roles/:id/rules', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const rrList = await db.query.roleRules.findMany({
             where: eq(roleRules.roleId, req.params.id),
             with: { rule: true },
@@ -2954,8 +3050,9 @@ adminRoutes.get('/roles/:id/rules', authenticate, requireTenantAdmin(), async (r
  * PUT /admin/roles/:id/rules - Update rules for a specific role
  * Body: { rules: [{ ruleId, canRead, canCreate, canUpdate, canDelete }] }
  */
-adminRoutes.put('/roles/:id/rules', authenticate, requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.put('/roles/:id/rules', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { id: roleId } = req.params;
         const { rules } = req.body;
 
@@ -2992,8 +3089,9 @@ adminRoutes.put('/roles/:id/rules', authenticate, requireTenantAdmin(), async (r
  * GET /admin/rules/matrix - Get the full CRUD matrix in one call
  * Returns: { roles, rules, matrix: { [roleId]: { [ruleId]: { r, c, u, d } } } }
  */
-adminRoutes.get('/rules/matrix', authenticate, requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.get('/rules/matrix', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const [matrixRules, matrixRoles, matrixRoleRules] = await Promise.all([
             db.query.rules.findMany({ where: eq(rules.isActive, true), orderBy: asc(rules.order) }),
             db.query.roles.findMany({ orderBy: asc(roles.name) }),
@@ -3044,8 +3142,9 @@ adminRoutes.get('/rules/matrix', authenticate, requireTenantAdmin(), async (req,
  * PUT /admin/rules/matrix - Batch save the entire CRUD matrix in one call
  * Body: { matrix: { [roleId]: { [ruleId]: { r, c, u, d } } } }
  */
-adminRoutes.put('/rules/matrix', authenticate, requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.put('/rules/matrix', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { matrix } = req.body;
         if (!matrix || typeof matrix !== 'object') {
             return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'matrix is required' } });
@@ -3110,8 +3209,9 @@ adminRoutes.put('/rules/matrix', authenticate, requireTenantAdmin(), async (req,
  * POST /admin/roles/:id/copy-rules - Copy rules from one role to another
  * Body: { sourceRoleId: string }
  */
-adminRoutes.post('/roles/:id/copy-rules', authenticate, requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.post('/roles/:id/copy-rules', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const targetRoleId = req.params.id;
         const { sourceRoleId } = req.body;
 
@@ -3149,8 +3249,9 @@ adminRoutes.post('/roles/:id/copy-rules', authenticate, requireTenantAdmin(), as
 /**
  * PATCH /stores/:id/status - Toggle store status
  */
-adminRoutes.patch('/stores/:id/status', authenticate, authorize('stores:update', 'admin:manage'), async (req, res, next) => {
+adminRoutes.patch('/stores/:id/status', authenticate, withTenantTx(), authorize('stores:update', 'admin:manage'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { id } = req.params;
         const { isActive } = req.body;
 
@@ -3178,8 +3279,9 @@ adminRoutes.patch('/stores/:id/status', authenticate, authorize('stores:update',
  * POST /admin/reset-database - Reset database (Super Admin only)
  * ລົບຂໍ້ມູນທັງໝົດແຕ່ຈົ່ງໄວ້ Super Admin users ແລະ roles
  */
-adminRoutes.post('/reset-database', authenticate, requireSuperAdmin(), async (req, res, next) => {
+adminRoutes.post('/reset-database', authenticate, withTenantTx(), requireSuperAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const superAdmins = await db.query.users.findMany({
             where: eq(users.isSuperAdmin, true),
             columns: { id: true, email: true, name: true },
@@ -3304,8 +3406,9 @@ adminRoutes.post('/reset-database', authenticate, requireSuperAdmin(), async (re
  * POST /admin/backup
  * Export all tables as a JSON backup file (super admin only).
  */
-adminRoutes.post('/backup', authenticate, requireSuperAdmin(), async (req, res, next) => {
+adminRoutes.post('/backup', authenticate, withTenantTx(), requireSuperAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
 
         const [
@@ -3434,8 +3537,9 @@ adminRoutes.post('/backup', authenticate, requireSuperAdmin(), async (req, res, 
  * Associates each user with the store that belongs to their branch.
  * Safe to run multiple times (upsert).
  */
-adminRoutes.post('/backfill-user-stores', authenticate, requireAdmin(), async (req, res, next) => {
+adminRoutes.post('/backfill-user-stores', authenticate, withTenantTx(), requireAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const usersWithoutStores = await db.query.users.findMany({
             where: and(eq(users.isSuperAdmin, false), ne(users.branchId, '')),
             columns: { id: true, branchId: true, name: true, email: true },
@@ -3480,8 +3584,9 @@ adminRoutes.post('/backfill-user-stores', authenticate, requireAdmin(), async (r
 // BITMASK MIGRATION — compute maskLow/maskHigh for all existing roles
 // POST /admin/migrate-role-masks  (Super Admin only)
 // ═══════════════════════════════════════════════════════════════════════════
-adminRoutes.post('/migrate-role-masks', authenticate, requireSuperAdmin(), async (req, res, next) => {
+adminRoutes.post('/migrate-role-masks', authenticate, withTenantTx(), requireSuperAdmin(), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const allRoles = await db.query.roles.findMany({
             columns: { id: true, permissions: true, maskLow: true, maskHigh: true },
         });

@@ -89,12 +89,23 @@
         price: 0,
         cost: 0,
         unit: "ຊິ້ນ",
+        size: "",
+        color: "",
         isActive: true,
         image: "",
         description: "",
         stock: 0,
         minStock: 10,
     });
+
+    // Reusable unit list: previously-used units across products + common Lao POS defaults
+    const DEFAULT_UNITS = ["ຊິ້ນ", "ອັນ", "ກ້ອນ", "ກ່ອງ", "ຖົງ", "ໂຕ", "ແກ້ວ", "ຂວດ", "ແພັກ", "ຊຸດ"];
+    let unitOptions = $derived(
+        Array.from(new Set([
+            ...products.map((p) => p.unit).filter((u): u is string => !!u),
+            ...DEFAULT_UNITS,
+        ]))
+    );
 
     // Stats
     let stats = $derived({
@@ -224,7 +235,13 @@
             if (formData.image && formData.image.trim() !== '') data.image = formData.image;
             if (formData.stock !== undefined && formData.stock > 0) data.stock = Number(formData.stock);
             if (formData.minStock !== undefined) data.minStock = Number(formData.minStock);
-            
+
+            // Size/color stored in the generic `attributes` JSON column
+            const attributes: Record<string, string> = {};
+            if (formData.size && formData.size.trim() !== '') attributes.size = formData.size.trim();
+            if (formData.color && formData.color.trim() !== '') attributes.color = formData.color.trim();
+            if (Object.keys(attributes).length > 0) data.attributes = attributes;
+
             console.log("Submitting product data:", data);
             
             if (editingProduct) {
@@ -286,6 +303,8 @@
             stock: product.stock || 0,
             minStock: product.minStock || 5,
             unit: product.unit || "ຊິ້ນ",
+            size: product.attributes?.size || "",
+            color: product.attributes?.color || "",
             isActive: product.isActive ?? true,
             image: product.image || "",
         };
@@ -313,6 +332,8 @@
             stock: 0,
             minStock: 5,
             unit: "ຊິ້ນ",
+            size: "",
+            color: "",
             isActive: true,
             image: "",
         };
@@ -374,7 +395,7 @@
                 reader.readAsDataURL(file);
             });
             const res = await api.post("upload/single", {
-                json: { image: base64, folder: "products" },
+                json: { image: base64, filename: file.name, folder: "products" },
             }).json<any>();
             if (!res.success) throw new Error(res.error?.message || "Upload failed");
             formData.image = res.data.url;
@@ -718,20 +739,24 @@
                         </div>
 
                         <!-- Quick Actions -->
-                        {#if canEdit}
+                        {#if canEdit || canDeleteProduct}
                         <div class="absolute bottom-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                            {#if canEdit}
                             <button
                                 onclick={(e) => { e.stopPropagation(); openEdit(product); }}
                                 class="p-2 bg-white/90 dark:bg-gray-800/90 rounded-lg shadow hover:bg-white dark:hover:bg-gray-700 transition-all"
                             >
                                 <Edit class="w-4 h-4 text-gray-600 dark:text-gray-400" />
                             </button>
+                            {/if}
+                            {#if canDeleteProduct}
                             <button
                                 onclick={(e) => { e.stopPropagation(); handleDelete(product); }}
                                 class="p-2 bg-white/90 dark:bg-gray-800/90 rounded-lg shadow hover:bg-danger-50 dark:hover:bg-danger-900/30 transition-all"
                             >
                                 <Trash2 class="w-4 h-4 text-danger-500" />
                             </button>
+                            {/if}
                         </div>
                         {/if}
                     </div>
@@ -748,6 +773,21 @@
                             <div class="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400 mb-2">
                                 <Tag class="w-3 h-3" />
                                 <span class="font-mono">{product.sku}</span>
+                            </div>
+                        {/if}
+
+                        {#if product.attributes?.size || product.attributes?.color}
+                            <div class="flex flex-wrap gap-1 mb-2">
+                                {#if product.attributes?.size}
+                                    <span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300">
+                                        {product.attributes.size}
+                                    </span>
+                                {/if}
+                                {#if product.attributes?.color}
+                                    <span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300">
+                                        {product.attributes.color}
+                                    </span>
+                                {/if}
                             </div>
                         {/if}
 
@@ -815,6 +855,20 @@
                                             {#if product.barcode}
                                                 <p class="text-xs text-gray-500 dark:text-gray-400 font-mono">{product.barcode}</p>
                                             {/if}
+                                            {#if product.attributes?.size || product.attributes?.color}
+                                                <div class="flex flex-wrap gap-1 mt-1">
+                                                    {#if product.attributes?.size}
+                                                        <span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300">
+                                                            {product.attributes.size}
+                                                        </span>
+                                                    {/if}
+                                                    {#if product.attributes?.color}
+                                                        <span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300">
+                                                            {product.attributes.color}
+                                                        </span>
+                                                    {/if}
+                                                </div>
+                                            {/if}
                                         </div>
                                     </div>
                                 </td>
@@ -853,6 +907,8 @@
                                         >
                                             <Edit class="w-4 h-4" />
                                         </button>
+                                        {/if}
+                                        {#if canDeleteProduct}
                                         <button
                                             onclick={() => handleDelete(product)}
                                             class="p-2 text-gray-400 hover:text-danger-500 hover:bg-danger-50 dark:hover:bg-danger-900/30 rounded-lg transition-all"
@@ -1150,7 +1206,39 @@
                         </label>
                         <input id="a11y-app-products-page-svelte-11"
                             type="text"
+                            list="unit-options"
                             bind:value={formData.unit}
+                            placeholder="ຊິ້ນ"
+                            class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        />
+                        <datalist id="unit-options">
+                            {#each unitOptions as unitOption (unitOption)}
+                                <option value={unitOption}></option>
+                            {/each}
+                        </datalist>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label for="a11y-app-products-page-svelte-12" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                            ຂະໜາດ (Size)
+                        </label>
+                        <input id="a11y-app-products-page-svelte-12"
+                            type="text"
+                            bind:value={formData.size}
+                            placeholder="S, M, L, XL, ..."
+                            class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        />
+                    </div>
+                    <div>
+                        <label for="a11y-app-products-page-svelte-13" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                            ສີ (Color)
+                        </label>
+                        <input id="a11y-app-products-page-svelte-13"
+                            type="text"
+                            bind:value={formData.color}
+                            placeholder="ແດງ, ຂາວ, ດຳ, ..."
                             class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                         />
                     </div>
@@ -1240,6 +1328,21 @@
                     <p class="text-gray-600 dark:text-gray-400 text-sm mb-4">{selectedProduct.description}</p>
                 {/if}
 
+                {#if selectedProduct.attributes?.size || selectedProduct.attributes?.color}
+                    <div class="flex flex-wrap gap-2 mb-4">
+                        {#if selectedProduct.attributes?.size}
+                            <span class="px-2.5 py-1 rounded-lg text-xs font-medium bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300">
+                                ຂະໜາດ: {selectedProduct.attributes.size}
+                            </span>
+                        {/if}
+                        {#if selectedProduct.attributes?.color}
+                            <span class="px-2.5 py-1 rounded-lg text-xs font-medium bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300">
+                                ສີ: {selectedProduct.attributes.color}
+                            </span>
+                        {/if}
+                    </div>
+                {/if}
+
                 <!-- Details Grid -->
                 <div class="grid grid-cols-2 gap-3 mb-6">
                     <div class="p-3 bg-blue-50 dark:bg-blue-900/30 rounded-xl">
@@ -1261,8 +1364,9 @@
                 </div>
 
                 <!-- Actions -->
-                {#if canEdit}
+                {#if canEdit || canDeleteProduct}
                 <div class="flex gap-3">
+                    {#if canEdit}
                     <button
                         onclick={() => { showDetailModal = false; openEdit(selectedProduct); }}
                         class="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 font-medium hover:bg-gray-50 dark:hover:bg-gray-700 transition-all"
@@ -1270,6 +1374,8 @@
                         <Edit class="w-4 h-4" />
                         ແກ້ໄຂ
                     </button>
+                    {/if}
+                    {#if canDeleteProduct}
                     <button
                         onclick={() => { showDetailModal = false; handleDelete(selectedProduct); }}
                         class="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-danger-500 hover:bg-danger-50 dark:hover:bg-danger-900/30 font-medium transition-all"
@@ -1277,6 +1383,7 @@
                         <Trash2 class="w-4 h-4" />
                         ລຶບ
                     </button>
+                    {/if}
                 </div>
                 {/if}
             </div>

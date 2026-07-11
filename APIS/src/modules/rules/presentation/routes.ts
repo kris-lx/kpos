@@ -5,15 +5,17 @@
 
 import { Router } from 'express';
 import { authenticate, authorize, ROLE_LEVELS, invalidateRoleRulesCache } from '@/infrastructure/http/middleware/auth.middleware';
-import { db } from '@/config/database.config';
+import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
+import { db as globalDb } from '@/config/database.config';
 import { rules, roleRules, roles } from '@/db/schema/tables';
 import { eq, and, or, isNull, ilike, desc, asc, inArray } from 'drizzle-orm';
 
 export const rulesRoutes = Router();
 
 // GET /rules — list rules for the tenant (system + tenant-owned)
-rulesRoutes.get('/', authenticate, authorize('roles:read'), async (req, res, next) => {
+rulesRoutes.get('/', authenticate, withTenantTx(), authorize('roles:read'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const authUser = req.authUser!;
         const tenantId = authUser.tenantId;
         const { search } = req.query;
@@ -40,8 +42,9 @@ rulesRoutes.get('/', authenticate, authorize('roles:read'), async (req, res, nex
 });
 
 // GET /rules/:id
-rulesRoutes.get('/:id', authenticate, authorize('roles:read'), async (req, res, next) => {
+rulesRoutes.get('/:id', authenticate, withTenantTx(), authorize('roles:read'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const authUser = req.authUser!;
         const tenantId = authUser.tenantId;
         const conds: any[] = [eq(rules.id, req.params.id)];
@@ -57,8 +60,9 @@ rulesRoutes.get('/:id', authenticate, authorize('roles:read'), async (req, res, 
 });
 
 // POST /rules — create a new rule (hq_admin level or above required)
-rulesRoutes.post('/', authenticate, authorize('roles:create'), async (req, res, next) => {
+rulesRoutes.post('/', authenticate, withTenantTx(), authorize('roles:create'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const authUser = req.authUser!;
         const userLevel = authUser.isSuperAdmin ? 1 : (ROLE_LEVELS[authUser.role] ?? 7);
         if (userLevel > 3) {
@@ -87,8 +91,9 @@ rulesRoutes.post('/', authenticate, authorize('roles:create'), async (req, res, 
 });
 
 // PUT /rules/:id — update a rule (cannot update isSystem=true rules)
-rulesRoutes.put('/:id', authenticate, authorize('roles:update'), async (req, res, next) => {
+rulesRoutes.put('/:id', authenticate, withTenantTx(), authorize('roles:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const authUser = req.authUser!;
         const tenantId = authUser.tenantId;
         const conds: any[] = [eq(rules.id, req.params.id)];
@@ -119,8 +124,9 @@ rulesRoutes.put('/:id', authenticate, authorize('roles:update'), async (req, res
 });
 
 // DELETE /rules/:id — soft-delete (set isActive=false), only non-system rules
-rulesRoutes.delete('/:id', authenticate, authorize('roles:delete'), async (req, res, next) => {
+rulesRoutes.delete('/:id', authenticate, withTenantTx(), authorize('roles:delete'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const authUser = req.authUser!;
         const tenantId = authUser.tenantId;
         const conds: any[] = [eq(rules.id, req.params.id)];
@@ -140,8 +146,9 @@ rulesRoutes.delete('/:id', authenticate, authorize('roles:delete'), async (req, 
 });
 
 // GET /rules/:id/role-rules — get all role assignments for a rule
-rulesRoutes.get('/:id/role-rules', authenticate, authorize('roles:read'), async (req, res, next) => {
+rulesRoutes.get('/:id/role-rules', authenticate, withTenantTx(), authorize('roles:read'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const authUser = req.authUser!;
         const tenantId = authUser.tenantId;
 
@@ -163,8 +170,9 @@ rulesRoutes.get('/:id/role-rules', authenticate, authorize('roles:read'), async 
 });
 
 // PUT /rules/role-rules/assign — bulk assign rules to a role with CRUD flags
-rulesRoutes.put('/role-rules/assign', authenticate, authorize('roles:update'), async (req, res, next) => {
+rulesRoutes.put('/role-rules/assign', authenticate, withTenantTx(), authorize('roles:update'), async (req, res, next) => {
     try {
+        const db = req.tx ?? globalDb;
         const { roleId, assignments } = req.body;
         // assignments: Array<{ ruleId: string; canRead: boolean; canCreate: boolean; canUpdate: boolean; canDelete: boolean }>
         if (!roleId || !Array.isArray(assignments)) {
