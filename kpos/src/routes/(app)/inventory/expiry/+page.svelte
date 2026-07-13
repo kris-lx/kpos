@@ -1,7 +1,7 @@
 ﻿<script lang="ts">
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
-    import { cn } from "$utils";
+    import { cn, escapeCsvCell } from "$utils";
     import { api } from "$api";
     import { auth } from "$stores";
     import { formatDate } from "$lib/utils";
@@ -125,7 +125,7 @@
                 const days = getDaysUntilExpiry(item.expiryDate);
                 const config = getExpiryConfig(days);
                 const expiryDate = item.expiryDate ? new Date(item.expiryDate).toLocaleDateString('lo-LA') : '';
-                csv += `"${item.product?.name || item.productName || ''}","${item.product?.sku || item.sku || ''}","${item.batchNumber || ''}","${item.quantity || 0}","${expiryDate}","${days}","${config.label}"\n`;
+                csv += `${escapeCsvCell(item.product?.name || item.productName || '')},${escapeCsvCell(item.product?.sku || item.sku || '')},${escapeCsvCell(item.batchNumber || '')},"${item.quantity || 0}","${expiryDate}","${days}","${config.label}"\n`;
             }
             downloadFile(csv, `expiry-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
             toast.success(t('common.exportSuccess'));

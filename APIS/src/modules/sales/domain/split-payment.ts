@@ -7,6 +7,18 @@ export function validateSplitPayments(
     totalAmount: number,
 ): SplitPaymentResult {
     if (!Array.isArray(payments) || payments.length <= 1) return { ok: true };
+    // Each leg must be a positive amount — previously only the sum was
+    // checked against totalAmount, so a payload like
+    // [{amount: 200000}, {amount: -50000}] for a 150000 total passed
+    // validation and both legs were inserted verbatim, corrupting
+    // per-tender-type reporting and letting a client silently divert value
+    // between payment methods.
+    for (const p of payments) {
+        const amt = Number(p.amount);
+        if (!Number.isFinite(amt) || amt <= 0) {
+            return { ok: false, code: 'SPLIT_PAYMENT_INVALID_AMOUNT', message: 'Each split payment amount must be a positive number' };
+        }
+    }
     const totalPaid = payments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
     if (totalPaid < totalAmount) {
         return { ok: false, code: 'SPLIT_PAYMENT_INSUFFICIENT', message: 'Total of split payments is less than order total' };

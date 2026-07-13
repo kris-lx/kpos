@@ -1,7 +1,7 @@
 ﻿<script lang="ts">
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
-    import { cn } from "$utils";
+    import { cn, escapeCsvCell } from "$utils";
     import { api } from "$api";
     import { auth } from "$lib/stores/auth.svelte";
     import { formatDate } from "$lib/utils";
@@ -230,7 +230,7 @@
             const totalQty = (tr.items || []).reduce((s: number, i: any) => s + (i.quantity || 0), 0);
             const statusLabel = tr.status === 'completed' ? 'ສຳເລັດ' : tr.status === 'pending' ? 'ລໍຖ້າ' : tr.status;
             const date = tr.createdAt ? new Date(tr.createdAt).toLocaleDateString('lo-LA') : '';
-            csv += `"${date}","${fromName}","${toName}","${itemSummary}","${totalQty}","${tr.notes || ''}","${statusLabel}"\n`;
+            csv += `"${date}",${escapeCsvCell(fromName)},${escapeCsvCell(toName)},${escapeCsvCell(itemSummary)},"${totalQty}",${escapeCsvCell(tr.notes || '')},"${statusLabel}"\n`;
         }
         downloadFile(csv, `transfers-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
         toast.success(t('common.exportSuccess'));

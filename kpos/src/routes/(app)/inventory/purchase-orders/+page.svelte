@@ -4,7 +4,7 @@
     import { cn } from "$utils";
     import { api } from "$api";
     import { auth } from "$lib/stores/auth.svelte";
-    import { formatCurrency, formatDate } from "$lib/utils";
+    import { formatCurrency, formatDate, escapeHtml, escapeCsvCell } from "$lib/utils";
     import { toast } from "svelte-sonner";
     import MoneyInput from "$lib/components/MoneyInput.svelte";
     import {
@@ -213,7 +213,7 @@
                 const vendorName = vendors.find((v: any) => v.id === order.vendorId)?.name || order.vendor?.name || '';
                 const statusLabel = order.status === 'completed' ? 'ສຳເລັດ' : order.status === 'pending' ? 'ລໍຖ້າ' : order.status === 'draft' ? 'ຮ່າງ' : order.status;
                 const date = order.createdAt ? new Date(order.createdAt).toLocaleDateString('lo-LA') : '';
-                csv += `"${date}","${order.poNumber || order.orderNo || ''}","${vendorName}","${order.items?.length || 0}","${order.total || 0}","${statusLabel}"\n`;
+                csv += `"${date}",${escapeCsvCell(order.poNumber || order.orderNo || '')},${escapeCsvCell(vendorName)},"${order.items?.length || 0}","${order.total || 0}","${statusLabel}"\n`;
             }
             downloadFile(csv, `purchase-orders-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
             toast.success(t('common.exportSuccess'));
@@ -235,8 +235,8 @@
                 const date = order.createdAt ? new Date(order.createdAt).toLocaleDateString('lo-LA') : '';
                 return `<tr style="background:${i % 2 === 0 ? '#fff' : '#f9fafb'}">
                     <td style="border:1px solid #e5e7eb;padding:8px">${date}</td>
-                    <td style="border:1px solid #e5e7eb;padding:8px">${order.poNumber || order.orderNo || ''}</td>
-                    <td style="border:1px solid #e5e7eb;padding:8px">${vendorName}</td>
+                    <td style="border:1px solid #e5e7eb;padding:8px">${escapeHtml(order.poNumber || order.orderNo || '')}</td>
+                    <td style="border:1px solid #e5e7eb;padding:8px">${escapeHtml(vendorName)}</td>
                     <td style="border:1px solid #e5e7eb;padding:8px;text-align:center">${order.items?.length || 0}</td>
                     <td style="border:1px solid #e5e7eb;padding:8px;text-align:right">${(order.total || order.totalAmount || 0).toLocaleString()}</td>
                     <td style="border:1px solid #e5e7eb;padding:8px">${statusLabel}</td>

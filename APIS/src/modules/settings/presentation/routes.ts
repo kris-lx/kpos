@@ -7,10 +7,14 @@ import { authenticate, authorize, ensureScopeAccess, isAdmin } from '@/infrastru
 import { DEFAULT_SETTINGS } from '@/shared/constants';
 import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
 import { db as globalDb } from '@/config/database.config';
-import { settings, documents, documentTemplates, notifications, systemEnums, branches, emailProviders, emailTemplates, emailLogs } from '@/db/schema/tables';
-import { eq, and, or, isNull, inArray, desc, asc, count, sql } from 'drizzle-orm';
+import { settings, documents, documentTemplates, notifications, systemEnums, branches, emailProviders, emailTemplates, emailLogs, ssoProviders, transactions } from '@/db/schema/tables';
+import { eq, and, or, isNull, inArray, desc, asc, count, sql, gte } from 'drizzle-orm';
 import { encryptJson, decryptJson } from '@/shared/crypto';
 import { invalidateProviderCache, testProviderConnection, sendTestEmail } from '@/infrastructure/services/email/email.service';
+import { invalidateSsoProviderCache, testOidcConnection } from '@/infrastructure/services/sso/sso.service';
+import { resolveIntegration, saveIntegration, disconnectIntegration, getIntegrationStatus } from '@/infrastructure/services/integrations/integration.service';
+import { verifyChannelToken, broadcastMessage, LineApiError } from '@/infrastructure/services/integrations/line.client';
+import { parseServiceAccountJson, verifyAccess as verifyGoogleSheetsAccess, appendRows, GoogleSheetsApiError, type ServiceAccountJson } from '@/infrastructure/services/integrations/google-sheets.client';
 
 export const settingRoutes = Router();
 
@@ -498,16 +502,30 @@ settingRoutes.get('/integrations', authenticate, withTenantTx(), async (req, res
     try {
         const db = req.tx ?? globalDb;
         const branchId = req.query.branchId ? String(req.query.branchId) : req.user!.branchId;
-        
+
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         const settingsRows = await getSettingsForBranchMultiCategory(['integrations', 'integration'], branchId, tenantId);
-        
+
         // Return as array with id from key
         const integrations = settingsRows.map(s => {
             const val = typeof s.value === 'string' ? JSON.parse(s.value) : s.value;
             return { id: s.key, ...(val as object) };
         });
-        
+
+        // Merge in real connection status for the integrations backed by
+        // tenant_integrations (line, google_sheets) — never the decrypted
+        // config, just whether a valid credential is on file.
+        if (req.authUser?.tenantId) {
+            const realTenantId = req.authUser.tenantId;
+            for (const type of ['line', 'google_sheets'] as const) {
+                const status = await getIntegrationStatus(realTenantId, type);
+                const existingIdx = integrations.findIndex(i => i.id === type);
+                const merged = { id: type, connected: status.connected, lastSync: status.connectedAt };
+                if (existingIdx >= 0) integrations[existingIdx] = { ...integrations[existingIdx], ...merged };
+                else integrations.push(merged);
+            }
+        }
+
         res.json({ success: true, data: integrations });
     } catch (error) {
         next(error);
@@ -528,6 +546,114 @@ settingRoutes.put('/integrations/:integrationId', authenticate, withTenantTx(), 
         
         res.json({ success: true, data: setting });
     } catch (error) {
+        next(error);
+    }
+});
+
+// ── LINE (Messaging API — broadcast) ────────────────────────────────────────
+// Not LINE Notify (deprecated by LINE, March 2025). Uses a LINE Official
+// Account channel access token; sends via broadcast (all current followers),
+// no per-customer LINE user ID linking in this v1.
+
+settingRoutes.post('/integrations/line/connect', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
+    try {
+        const tenantId = req.authUser?.tenantId;
+        if (!tenantId) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Tenant context required' } });
+
+        const { channelAccessToken } = req.body;
+        if (!channelAccessToken || typeof channelAccessToken !== 'string') {
+            return res.status(400).json({ success: false, error: { code: 'VALIDATION_001', message: 'channelAccessToken is required' } });
+        }
+
+        const info = await verifyChannelToken(channelAccessToken);
+        await saveIntegration(tenantId, 'line', { channelAccessToken });
+
+        res.json({ success: true, data: { connected: true, displayName: info.displayName } });
+    } catch (error: any) {
+        if (error instanceof LineApiError) {
+            return res.status(400).json({ success: false, error: { code: 'LINE_TOKEN_INVALID', message: error.message } });
+        }
+        next(error);
+    }
+});
+
+settingRoutes.post('/integrations/line/test', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
+    try {
+        const tenantId = req.authUser?.tenantId;
+        if (!tenantId) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Tenant context required' } });
+
+        const config = await resolveIntegration<{ channelAccessToken: string }>(tenantId, 'line');
+        if (!config) return res.status(404).json({ success: false, error: { code: 'NOT_CONNECTED', message: 'LINE is not connected' } });
+
+        await broadcastMessage(config.channelAccessToken, 'KPOS: ນີ້ແມ່ນຂໍ້ຄວາມທົດສອບ — ການເຊື່ອມຕໍ່ LINE ເຮັດວຽກແລ້ວ!');
+        res.json({ success: true, data: { message: 'Test broadcast sent' } });
+    } catch (error: any) {
+        if (error instanceof LineApiError) {
+            return res.status(502).json({ success: false, error: { code: 'LINE_SEND_FAILED', message: error.message } });
+        }
+        next(error);
+    }
+});
+
+// ── Google Sheets (service account, no OAuth consent flow) ─────────────────
+
+settingRoutes.post('/integrations/google-sheets/connect', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
+    try {
+        const tenantId = req.authUser?.tenantId;
+        if (!tenantId) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Tenant context required' } });
+
+        const { serviceAccountJson, spreadsheetId } = req.body;
+        if (!serviceAccountJson || !spreadsheetId) {
+            return res.status(400).json({ success: false, error: { code: 'VALIDATION_001', message: 'serviceAccountJson and spreadsheetId are required' } });
+        }
+
+        let sa: ServiceAccountJson;
+        try {
+            sa = typeof serviceAccountJson === 'string' ? parseServiceAccountJson(serviceAccountJson) : serviceAccountJson;
+        } catch (parseErr: any) {
+            return res.status(400).json({ success: false, error: { code: 'VALIDATION_002', message: parseErr.message } });
+        }
+
+        const info = await verifyGoogleSheetsAccess(sa, spreadsheetId);
+        await saveIntegration(tenantId, 'google_sheets', { serviceAccount: sa, spreadsheetId });
+
+        res.json({ success: true, data: { connected: true, spreadsheetTitle: info.title } });
+    } catch (error: any) {
+        if (error instanceof GoogleSheetsApiError) {
+            return res.status(400).json({ success: false, error: { code: 'GOOGLE_SHEETS_ACCESS_FAILED', message: error.message } });
+        }
+        next(error);
+    }
+});
+
+settingRoutes.post('/integrations/google-sheets/export', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
+    try {
+        const db = req.tx ?? globalDb;
+        const tenantId = req.authUser?.tenantId;
+        if (!tenantId) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Tenant context required' } });
+
+        const config = await resolveIntegration<{ serviceAccount: ServiceAccountJson; spreadsheetId: string }>(tenantId, 'google_sheets');
+        if (!config) return res.status(404).json({ success: false, error: { code: 'NOT_CONNECTED', message: 'Google Sheets is not connected' } });
+
+        const startOfDay = new Date();
+        startOfDay.setHours(0, 0, 0, 0);
+        const todayTxns = await db.query.transactions.findMany({
+            where: and(eq(transactions.tenantId, tenantId), gte(transactions.createdAt, startOfDay)),
+            columns: { transactionNo: true, total: true, status: true, createdAt: true },
+            orderBy: [asc(transactions.createdAt)],
+        });
+
+        const rows = todayTxns.map(t => [t.transactionNo, t.total, t.status, t.createdAt.toISOString()]);
+        if (rows.length === 0) {
+            return res.json({ success: true, data: { exported: 0, message: 'No transactions today — nothing to export' } });
+        }
+
+        await appendRows(config.serviceAccount, config.spreadsheetId, 'Sheet1', rows);
+        res.json({ success: true, data: { exported: rows.length } });
+    } catch (error: any) {
+        if (error instanceof GoogleSheetsApiError) {
+            return res.status(502).json({ success: false, error: { code: 'GOOGLE_SHEETS_EXPORT_FAILED', message: error.message } });
+        }
         next(error);
     }
 });
@@ -1736,6 +1862,151 @@ settingRoutes.post('/email/:id/test', authenticate, withTenantTx(), authorize('s
     }
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// SSO PROVIDERS (per-tenant OIDC config — mirrors EMAIL PROVIDERS above)
+// ═══════════════════════════════════════════════════════════════════════════
+
+function maskSsoProvider(row: typeof ssoProviders.$inferSelect) {
+    return {
+        id: row.id,
+        name: row.name,
+        type: row.type,
+        isActive: row.isActive,
+        isDefault: row.isDefault,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+    };
+}
+
+// List providers (config fields masked — never sent to the client)
+settingRoutes.get('/sso', authenticate, withTenantTx(), authorize('settings:read'), async (req, res, next) => {
+    try {
+        const db = req.tx ?? globalDb;
+        const tenantId = req.authUser?.tenantId;
+        if (!tenantId) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Tenant context required' } });
+
+        const rows = await db.query.ssoProviders.findMany({
+            where: eq(ssoProviders.tenantId, tenantId),
+            orderBy: [desc(ssoProviders.isDefault), desc(ssoProviders.createdAt)],
+        });
+        res.json({ success: true, data: rows.map(maskSsoProvider) });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Create/save a provider config
+settingRoutes.post('/sso', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
+    try {
+        const db = req.tx ?? globalDb;
+        const tenantId = req.authUser?.tenantId;
+        if (!tenantId) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Tenant context required' } });
+
+        const { name, type = 'oidc', config, isActive = false, isDefault = false } = req.body;
+        if (!name || !config) {
+            return res.status(400).json({ success: false, error: { code: 'VALIDATION_001', message: 'name and config are required' } });
+        }
+        if (type !== 'oidc') {
+            return res.status(400).json({ success: false, error: { code: 'VALIDATION_002', message: 'Invalid provider type' } });
+        }
+        if (!config.issuerUrl || !config.clientId || !config.clientSecret) {
+            return res.status(400).json({ success: false, error: { code: 'VALIDATION_003', message: 'issuerUrl, clientId and clientSecret are required' } });
+        }
+
+        if (isDefault) {
+            await db.update(ssoProviders).set({ isDefault: false }).where(eq(ssoProviders.tenantId, tenantId));
+        }
+
+        const [row] = await db.insert(ssoProviders).values({
+            tenantId,
+            name,
+            type,
+            config: encryptJson(config),
+            isActive,
+            isDefault,
+        }).returning();
+
+        await invalidateSsoProviderCache(tenantId);
+        res.status(201).json({ success: true, data: maskSsoProvider(row) });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Update a provider config
+settingRoutes.put('/sso/:id', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
+    try {
+        const db = req.tx ?? globalDb;
+        const tenantId = req.authUser?.tenantId;
+        if (!tenantId) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Tenant context required' } });
+
+        const existing = await db.query.ssoProviders.findFirst({
+            where: and(eq(ssoProviders.id, req.params.id), eq(ssoProviders.tenantId, tenantId)),
+        });
+        if (!existing) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Provider not found or no access' } });
+
+        const { name, config, isActive, isDefault } = req.body;
+
+        if (isDefault === true) {
+            await db.update(ssoProviders).set({ isDefault: false }).where(eq(ssoProviders.tenantId, tenantId));
+        }
+
+        const [row] = await db.update(ssoProviders).set({
+            name: name ?? existing.name,
+            config: config ? encryptJson(config) : existing.config,
+            isActive: isActive ?? existing.isActive,
+            isDefault: isDefault ?? existing.isDefault,
+            updatedAt: new Date(),
+        }).where(eq(ssoProviders.id, req.params.id)).returning();
+
+        await invalidateSsoProviderCache(tenantId);
+        res.json({ success: true, data: maskSsoProvider(row) });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Delete a provider config
+settingRoutes.delete('/sso/:id', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
+    try {
+        const db = req.tx ?? globalDb;
+        const tenantId = req.authUser?.tenantId;
+        if (!tenantId) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Tenant context required' } });
+
+        const existing = await db.query.ssoProviders.findFirst({
+            where: and(eq(ssoProviders.id, req.params.id), eq(ssoProviders.tenantId, tenantId)),
+        });
+        if (!existing) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Provider not found or no access' } });
+
+        await db.delete(ssoProviders).where(eq(ssoProviders.id, req.params.id));
+        await invalidateSsoProviderCache(tenantId);
+        res.json({ success: true, data: { message: 'Deleted' } });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Test connection — verifies the OIDC discovery document is reachable
+settingRoutes.post('/sso/:id/test', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
+    try {
+        const db = req.tx ?? globalDb;
+        const tenantId = req.authUser?.tenantId;
+        if (!tenantId) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Tenant context required' } });
+
+        const existing = await db.query.ssoProviders.findFirst({
+            where: and(eq(ssoProviders.id, req.params.id), eq(ssoProviders.tenantId, tenantId)),
+        });
+        if (!existing) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Provider not found or no access' } });
+
+        const config = decryptJson(existing.config as unknown as string);
+        await testOidcConnection(config as any);
+
+        res.json({ success: true, data: { message: 'Connection verified' } });
+    } catch (error: any) {
+        res.status(502).json({ success: false, error: { code: 'PROVIDER_TEST_FAILED', message: error?.message || 'Test failed' } });
+    }
+});
+
 // List templates
 settingRoutes.get('/email/templates', authenticate, withTenantTx(), authorize('settings:read'), async (req, res, next) => {
     try {
@@ -1808,6 +2079,19 @@ settingRoutes.get('/email/logs', authenticate, withTenantTx(), authorize('settin
 // API KEY MANAGEMENT
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Never return a stored secret in full — the frontend previously received
+// the raw apiKey/secretKey on every GET and re-submitted it verbatim on
+// save, so any staff account with settings:read access (or anyone who could
+// read the response, e.g. via an XSS elsewhere in the app) could pull live
+// payment-gateway secrets straight out of devtools/network tab regardless of
+// the frontend's purely cosmetic "masked with reveal toggle" display. Only
+// the last 4 characters are shown; the rest of the value stays server-side.
+function maskSecret(value: string | undefined | null): string {
+    if (!value) return '';
+    if (value.length <= 4) return '•'.repeat(value.length);
+    return '•'.repeat(value.length - 4) + value.slice(-4);
+}
+
 // Get all API keys (stored as settings with category 'api_key')
 settingRoutes.get('/api-keys', authenticate, withTenantTx(), authorize('settings:read'), async (req, res, next) => {
     try {
@@ -1824,13 +2108,13 @@ settingRoutes.get('/api-keys', authenticate, withTenantTx(), authorize('settings
         });
 
         const keys = apiKeyRows.map(s => {
-            const val = typeof s.value === 'string' ? JSON.parse(s.value) : s.value as Record<string, unknown>;
+            const val = decryptJson<Record<string, unknown>>(s.value as unknown as string);
             return {
                 id: s.id,
                 name: s.key,
                 service: (val as any).service || '',
-                apiKey: (val as any).apiKey || '',
-                secretKey: (val as any).secretKey || '',
+                apiKey: maskSecret((val as any).apiKey),
+                secretKey: maskSecret((val as any).secretKey),
                 isActive: (val as any).isActive !== false,
                 lastUsed: (val as any).lastUsed || null,
                 createdAt: s.createdAt,
@@ -1862,14 +2146,14 @@ settingRoutes.post('/api-keys', authenticate, withTenantTx(), authorize('setting
         const [setting] = await db.insert(settings).values({
             category: 'api_key',
             key: name,
-            value: JSON.stringify({ service, apiKey, secretKey, isActive: true }),
+            value: encryptJson({ service, apiKey, secretKey, isActive: true }),
             branchId,
             tenantId: akTenantId,
         }).returning();
 
         res.status(201).json({
             success: true,
-            data: { id: setting.id, name, service, apiKey, secretKey, isActive: true, createdAt: setting.createdAt },
+            data: { id: setting.id, name, service, apiKey: maskSecret(apiKey), secretKey: maskSecret(secretKey), isActive: true, createdAt: setting.createdAt },
         });
     } catch (error) {
         next(error);
@@ -1890,14 +2174,19 @@ settingRoutes.put('/api-keys/:id', authenticate, withTenantTx(), authorize('sett
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'API key not found or no access' } });
         }
 
-        const currentVal = typeof existing.value === 'string' ? JSON.parse(existing.value) : existing.value as Record<string, unknown>;
+        const currentVal = decryptJson<Record<string, unknown>>(existing.value as unknown as string);
+        // apiKey/secretKey are only overwritten when the client actually
+        // sends a new value — the frontend now leaves these fields blank on
+        // edit (since it never receives the real secret back from GET), so
+        // an update that only changes e.g. `name` doesn't clobber the
+        // existing credential with an empty string.
         const [updated] = await db.update(settings)
             .set({
                 key: name || existing.key,
-                value: JSON.stringify({
+                value: encryptJson({
                     service: service ?? (currentVal as any).service,
-                    apiKey: apiKey ?? (currentVal as any).apiKey,
-                    secretKey: secretKey ?? (currentVal as any).secretKey,
+                    apiKey: apiKey || (currentVal as any).apiKey,
+                    secretKey: secretKey || (currentVal as any).secretKey,
                     isActive: isActive !== undefined ? isActive : (currentVal as any).isActive,
                     lastUsed: (currentVal as any).lastUsed,
                 }),
@@ -1953,6 +2242,14 @@ settingRoutes.post('/integrations/:id/disconnect', authenticate, withTenantTx(),
         const db = req.tx ?? globalDb;
         const branchId = req.user!.branchId;
         const disTenantId = req.authUser?.tenantId;
+
+        // line / google-sheets are backed by tenant_integrations, not the
+        // generic settings blob — clear that instead/as well.
+        if (disTenantId && (req.params.id === 'line' || req.params.id === 'google-sheets')) {
+            await disconnectIntegration(disTenantId, req.params.id === 'google-sheets' ? 'google_sheets' : 'line');
+            return res.json({ success: true, data: { id: req.params.id, connected: false } });
+        }
+
         const disBranchCond = branchId ? eq(settings.branchId, branchId) : isNull(settings.branchId);
         const disConds: any[] = [eq(settings.category, 'integration'), eq(settings.key, req.params.id), disBranchCond];
         if (disTenantId && !req.authUser?.isSuperAdmin) disConds.push(eq(settings.tenantId, disTenantId));
@@ -2055,9 +2352,17 @@ settingRoutes.put('/backup/schedule', authenticate, withTenantTx(), authorize('s
 // ─── Manual Backup Trigger ────────────────────────────────────────────────
 settingRoutes.post('/backup/run', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
     try {
-        const db = req.tx ?? globalDb;
+        // Only superadmin may trigger an unscoped (all-tenants) backup — every
+        // ordinary tenant admin is forced onto their own tenantId, even if it
+        // happened to be absent from the token, so this can never silently
+        // dump other tenants' data (see runBackup()'s tenant filter).
+        if (!req.authUser?.isSuperAdmin && !req.authUser?.tenantId) {
+            res.status(403).json({ success: false, error: { code: 'TENANT_SCOPE_MISSING', message: 'Missing tenant context' } });
+            return;
+        }
+        const backupTenantId = req.authUser?.isSuperAdmin ? undefined : (req.authUser?.tenantId ?? undefined);
         const { runBackup } = await import('@/infrastructure/workers/backup.worker');
-        const filepath = await runBackup(req.authUser?.tenantId ?? undefined);
+        const filepath = await runBackup(backupTenantId);
         res.json({ success: true, data: { filepath, runAt: new Date().toISOString() } });
     } catch (error) { next(error); }
 });

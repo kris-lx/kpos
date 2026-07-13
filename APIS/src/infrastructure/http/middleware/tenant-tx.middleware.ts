@@ -28,7 +28,7 @@
 import type { Request, Response, NextFunction } from 'express';
 import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { primaryClient } from '@/config/database.config';
-import { setRequestContext, resetRequestContext } from '@/db/set-tenant-context';
+import { setRequestContext, setSuperAdminBypassContext, resetRequestContext } from '@/db/set-tenant-context';
 import * as schema from '@/db/schema';
 
 declare global {
@@ -38,8 +38,11 @@ declare global {
              * Drizzle handle bound to a reserved connection with RLS GUCs
              * already set. Handlers should prefer `req.tx` over the global
              * `db` for tenant-owned tables so RLS policies are enforced.
-             * Falls back to the global `db` (no req.tx) for unauthenticated
-             * routes and superadmin requests — see withTenantTx() below.
+             * For superadmin requests, the connection instead gets the
+             * app.bypass_rls GUC (drizzle/0020) so cross-tenant queries see
+             * every tenant's rows rather than only tenant_id IS NULL orphans.
+             * Falls back to the global `db` (no req.tx) only for
+             * unauthenticated routes — see withTenantTx() below.
              */
             tx?: PostgresJsDatabase<typeof schema>;
         }
@@ -55,14 +58,7 @@ export function withTenantTx() {
 
         const { tenantId, activeBranchPath, isSuperAdmin } = req.authUser;
 
-        // SuperAdmin operates outside any tenant scope — skip the reserved
-        // connection so cross-tenant queries are possible. (Their routes are
-        // already gated by `isSuperAdmin` checks at the application layer.)
-        if (isSuperAdmin) {
-            return next();
-        }
-
-        if (!tenantId) {
+        if (!isSuperAdmin && !tenantId) {
             res.status(403).json({
                 success: false,
                 error: { code: 'TENANT_SCOPE_MISSING', message: 'Missing tenant context' },
@@ -95,7 +91,13 @@ export function withTenantTx() {
             // state, so sharing the reference here is safe.
             (reserved as any).options = (primaryClient as any).options;
             const tx = drizzle(reserved, { schema });
-            await setRequestContext(tx, { tenantId, branchPath: activeBranchPath }, { local: false });
+            if (isSuperAdmin) {
+                // Controlled, policy-level cross-tenant bypass (drizzle/0020) —
+                // NOT a DB-role BYPASSRLS grant. See setSuperAdminBypassContext().
+                await setSuperAdminBypassContext(tx, { local: false });
+            } else {
+                await setRequestContext(tx, { tenantId: tenantId!, branchPath: activeBranchPath }, { local: false });
+            }
             req.tx = tx;
         } catch (err) {
             await releaseConnection();

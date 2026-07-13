@@ -3,11 +3,11 @@
 // Replaces the old hardcoded-Brevo email.service.ts (Phase 11).
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { db } from '@/config/database.config';
 import { cache } from '@/config/redis.config';
 import { emailProviders, emailTemplates, emailLogs } from '@/db/schema/tables';
 import { eq, and, isNull, or, desc } from 'drizzle-orm';
 import { decryptJson } from '@/shared/crypto';
+import { runWithTenantContext } from '@/shared/tenant-context';
 import type { IEmailAdapter, EmailProviderType, EmailProviderConfig } from './types';
 import { SmtpAdapter } from './smtp.adapter';
 import { BrevoAdapter } from './brevo.adapter';
@@ -37,10 +37,15 @@ async function resolveActiveProvider(tenantId: string): Promise<ResolvedProvider
     const cached = await cache.get<ResolvedProvider>(cacheKey);
     if (cached) return cached;
 
-    const row = await db.query.emailProviders.findFirst({
-        where: and(eq(emailProviders.tenantId, tenantId), eq(emailProviders.isActive, true)),
-        orderBy: [desc(emailProviders.isDefault), desc(emailProviders.updatedAt)],
-    });
+    // email_providers has FORCE ROW LEVEL SECURITY — the plain pooled `db`
+    // connection has no app.current_tenant_id GUC set, so this must run
+    // inside a tenant-scoped transaction or it silently sees zero rows.
+    const row = await runWithTenantContext(tenantId, (tx) =>
+        tx.query.emailProviders.findFirst({
+            where: and(eq(emailProviders.tenantId, tenantId), eq(emailProviders.isActive, true)),
+            orderBy: [desc(emailProviders.isDefault), desc(emailProviders.updatedAt)],
+        }),
+    );
     if (!row) return null;
 
     const resolved: ResolvedProvider = {
@@ -82,13 +87,18 @@ function renderTemplate(source: string, data: Record<string, unknown>): string {
 }
 
 async function resolveTemplate(tenantId: string, templateKey: string): Promise<{ subject: string; htmlBody: string } | null> {
-    const rows = await db.query.emailTemplates.findMany({
-        where: and(
-            eq(emailTemplates.key, templateKey),
-            eq(emailTemplates.isActive, true),
-            or(eq(emailTemplates.tenantId, tenantId), isNull(emailTemplates.tenantId)),
-        ),
-    });
+    // Same RLS scoping requirement as resolveActiveProvider — without tenant
+    // context, only the NULL-tenantId system-default rows would be visible,
+    // never a tenant's own override.
+    const rows = await runWithTenantContext(tenantId, (tx) =>
+        tx.query.emailTemplates.findMany({
+            where: and(
+                eq(emailTemplates.key, templateKey),
+                eq(emailTemplates.isActive, true),
+                or(eq(emailTemplates.tenantId, tenantId), isNull(emailTemplates.tenantId)),
+            ),
+        }),
+    );
     const template = rows.find(r => r.tenantId === tenantId) || rows.find(r => !r.tenantId);
     if (!template) return null;
     return { subject: template.subject, htmlBody: template.htmlBody };
@@ -117,13 +127,18 @@ export async function sendEmail({ tenantId, templateKey, data, to }: SendEmailPa
 }
 
 export async function logEmailResult(params: { tenantId: string; toEmail: string; templateKey: string; status: 'sent' | 'failed' | 'queued'; error?: string }): Promise<void> {
-    await db.insert(emailLogs).values({
-        tenantId: params.tenantId,
-        toEmail: params.toEmail,
-        templateKey: params.templateKey,
-        status: params.status,
-        error: params.error,
-    });
+    // email_logs also has FORCE ROW LEVEL SECURITY — an insert with a real
+    // tenantId via the plain pooled `db` connection throws 42501
+    // insufficient_privilege without tenant context set first.
+    await runWithTenantContext(params.tenantId, (tx) =>
+        tx.insert(emailLogs).values({
+            tenantId: params.tenantId,
+            toEmail: params.toEmail,
+            templateKey: params.templateKey,
+            status: params.status,
+            error: params.error,
+        }),
+    );
 }
 
 // Fire-and-forget send with retry via the EMAIL queue (falls back to inline send if

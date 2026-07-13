@@ -1,11 +1,19 @@
-# KPOS - Main Server Configuration
+# KPOS - Local HTTP-only nginx (no domain, no TLS/Let's Encrypt)
+# Used by the `local-nginx` profile — same reverse-proxy routing as the
+# production HTTPS config (default-ssl.conf.template) minus everything that
+# needs a real domain: no ACME challenge location, no cert paths, no
+# HTTP->HTTPS redirect. For a real deployment with a domain, use the
+# `production` profile instead (docker-compose.yml's `nginx` + `certbot`
+# services), not this one.
 
 server {
     listen 80;
     listen [::]:80;
-    server_name localhost kpos.local;
+    server_name ${DOMAIN};
 
-    # Security headers
+    # Security headers — same as the TLS config minus HSTS (meaningless
+    # without HTTPS, and would make this box "stick" to HTTPS in a browser
+    # that later gets pointed at an actual domain on the same hostname).
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-XSS-Protection "1; mode=block" always;

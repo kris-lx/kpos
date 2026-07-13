@@ -33,7 +33,16 @@ describe('split payment validation (T-04)', () => {
             100000,
         );
         expect(result.ok).toBe(false);
-        if (!result.ok) expect(result.code).toBe('SPLIT_PAYMENT_INSUFFICIENT');
+        if (!result.ok) expect(result.code).toBe('SPLIT_PAYMENT_INVALID_AMOUNT');
+    });
+
+    it('rejects split payments with a negative leg even when the sum covers the total', () => {
+        const result = validateSplitPayments(
+            [{ method: 'cash', amount: 200000 }, { method: 'card', amount: -50000 }],
+            150000,
+        );
+        expect(result.ok).toBe(false);
+        if (!result.ok) expect(result.code).toBe('SPLIT_PAYMENT_INVALID_AMOUNT');
     });
 
     it('treats single-element array as single payment (no validation)', () => {

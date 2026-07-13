@@ -1,5 +1,5 @@
 ﻿<script lang="ts">
-    import { cn, formatCurrency } from "$utils";
+    import { cn, formatCurrency, escapeHtml, escapeCsvCell } from "$utils";
     import { api } from "$api";
     import { t } from "$lib/i18n/index.svelte";
     import { auth } from "$stores";
@@ -122,7 +122,7 @@
             let csv = '\ufeff';
             csv += `${t("common.rank")},${t("common.name")},${t("reports.salesCount")},${t("reports.revenue")},${t("reports.average")},${t("reports.hours")},${t("reports.revenuePerHour")}\n`;
             staffReports.forEach((s: any, i: number) => {
-                csv += `${i + 1},"${s.name || ''}",${s.totalSales || 0},"${formatCurrency(s.revenue || 0)}","${formatCurrency(s.avgOrderValue || 0)}",${s.hoursWorked ?? 0},"${formatCurrency(s.revenuePerHour || 0)}"\n`;
+                csv += `${i + 1},${escapeCsvCell(s.name || '')},${s.totalSales || 0},"${formatCurrency(s.revenue || 0)}","${formatCurrency(s.avgOrderValue || 0)}",${s.hoursWorked ?? 0},"${formatCurrency(s.revenuePerHour || 0)}"\n`;
             });
             downloadFile(csv, `staff-report-${periodFilter}.csv`, 'text/csv;charset=utf-8');
             toast.success(t("reports.exportSuccess"));
@@ -140,7 +140,7 @@
 <style>body{font-family:'Noto Sans Lao','Phetsarath OT',sans-serif;padding:20px}h1{text-align:center}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ddd;padding:8px}th{background:#f5f5f5}.text-right{text-align:right}</style></head>
 <body><h1>${t("reports.staff")}</h1><p style="text-align:center">${new Date().toLocaleDateString('lo-LA')}</p>
 <table><tr><th>${t("common.rank")}</th><th>${t("common.name")}</th><th>${t("reports.salesCount")}</th><th>${t("reports.revenue")}</th><th>${t("reports.average")}</th><th>${t("reports.hoursShort")}</th><th>${t("reports.revenuePerHour")}</th></tr>
-${staffReports.map((s: any, i: number) => `<tr><td>${i + 1}</td><td>${s.name || ''}</td><td class="text-right">${s.totalSales || 0}</td><td class="text-right">${formatCurrency(s.revenue || 0)}</td><td class="text-right">${formatCurrency(s.avgOrderValue || 0)}</td><td class="text-right">${s.hoursWorked ?? 0}</td><td class="text-right">${formatCurrency(s.revenuePerHour || 0)}</td></tr>`).join('')}
+${staffReports.map((s: any, i: number) => `<tr><td>${i + 1}</td><td>${escapeHtml(s.name || '')}</td><td class="text-right">${s.totalSales || 0}</td><td class="text-right">${formatCurrency(s.revenue || 0)}</td><td class="text-right">${formatCurrency(s.avgOrderValue || 0)}</td><td class="text-right">${s.hoursWorked ?? 0}</td><td class="text-right">${formatCurrency(s.revenuePerHour || 0)}</td></tr>`).join('')}
 </table></body></html>`;
         const w = window.open('', '_blank');
         if (w) {
@@ -158,7 +158,7 @@ ${staffReports.map((s: any, i: number) => `<tr><td>${i + 1}</td><td>${s.name || 
         const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office"><head><meta charset="utf-8"><style>table{width:100%;border-collapse:collapse}th,td{border:1px solid #000;padding:8px}th{background:#f0f0f0}</style></head>
 <body><h1 style="text-align:center">${t("reports.staff")}</h1><p style="text-align:center">${new Date().toLocaleDateString('lo-LA')}</p>
 <table><tr><th>${t("common.rank")}</th><th>${t("common.name")}</th><th>${t("reports.salesCount")}</th><th>${t("reports.revenue")}</th><th>${t("reports.average")}</th><th>${t("reports.hoursShort")}</th><th>${t("reports.revenuePerHour")}</th></tr>
-${staffReports.map((s: any, i: number) => `<tr><td>${i + 1}</td><td>${s.name || ''}</td><td>${s.totalSales || 0}</td><td>${formatCurrency(s.revenue || 0)}</td><td>${formatCurrency(s.avgOrderValue || 0)}</td><td>${s.hoursWorked ?? 0}</td><td>${formatCurrency(s.revenuePerHour || 0)}</td></tr>`).join('')}
+${staffReports.map((s: any, i: number) => `<tr><td>${i + 1}</td><td>${escapeHtml(s.name || '')}</td><td>${s.totalSales || 0}</td><td>${formatCurrency(s.revenue || 0)}</td><td>${formatCurrency(s.avgOrderValue || 0)}</td><td>${s.hoursWorked ?? 0}</td><td>${formatCurrency(s.revenuePerHour || 0)}</td></tr>`).join('')}
 </table></body></html>`;
         downloadFile(html, `staff-report-${periodFilter}.doc`, 'application/msword');
         toast.success(t("reports.exportSuccess"));

@@ -653,6 +653,9 @@ export const shifts = pgTable('shifts', {
     index('shifts_store_idx').on(t.storeId),
     index('shifts_tenant_idx').on(t.tenantId),
     uniqueIndex('shifts_tenant_no_idx').on(t.tenantId, t.shiftNo),
+    // Partial unique index (drizzle/0022) — one OPEN shift per user, enforced
+    // at the DB level so a check-then-insert race can't create two.
+    uniqueIndex('shifts_one_open_per_user_idx').on(t.userId).where(sql`status = 'OPEN'`),
 ]);
 
 export const cashRegisters = pgTable('cash_registers', {
@@ -927,6 +930,10 @@ export const settlements = pgTable('settlements', {
     index('settlements_tenant_idx').on(t.tenantId),
     index('settlements_branch_idx').on(t.branchId),
     index('settlements_store_idx').on(t.storeId),
+    // One settlement per tenant+branch+day (drizzle/0023) — the route
+    // normalizes settlementDate to midnight before insert so this actually
+    // catches same-day duplicates regardless of time-of-day.
+    uniqueIndex('settlements_branch_date_idx').on(t.tenantId, t.branchId, t.settlementDate),
 ]);
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1105,6 +1112,45 @@ export const emailProviders = pgTable('email_providers', {
 }, (t) => [
     uniqueIndex('email_providers_tenant_name_idx').on(t.tenantId, t.name),
     index('email_providers_tenant_idx').on(t.tenantId),
+]);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SSO PROVIDERS (per-tenant OIDC config — same shape as emailProviders)
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const ssoProviders = pgTable('sso_providers', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id').notNull(),
+    name: text('name').notNull(),
+    type: text('type').notNull(), // oidc (SAML may be added later)
+    config: jsonb('config').notNull(), // AES-256-GCM encrypted at app level
+    isActive: boolean('is_active').notNull().default(false),
+    isDefault: boolean('is_default').notNull().default(false),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (t) => [
+    uniqueIndex('sso_providers_tenant_name_idx').on(t.tenantId, t.name),
+    index('sso_providers_tenant_idx').on(t.tenantId),
+]);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TENANT INTEGRATIONS (LINE, Google Sheets, ... — one credential set per
+// tenant per type, unlike emailProviders/ssoProviders which support multiple
+// named providers)
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const tenantIntegrations = pgTable('tenant_integrations', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id').notNull(),
+    type: text('type').notNull(), // 'line' | 'google_sheets'
+    config: jsonb('config').notNull(), // AES-256-GCM encrypted at app level
+    isActive: boolean('is_active').notNull().default(false),
+    connectedAt: timestamp('connected_at'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (t) => [
+    uniqueIndex('tenant_integrations_tenant_type_idx').on(t.tenantId, t.type),
+    index('tenant_integrations_tenant_idx').on(t.tenantId),
 ]);
 
 export const emailTemplates = pgTable('email_templates', {

@@ -1,7 +1,7 @@
 ﻿<script lang="ts">
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
-    import { cn } from "$utils";
+    import { cn, escapeCsvCell } from "$utils";
     import { api } from "$api";
     import { auth } from "$stores";
     import { toast } from "svelte-sonner";
@@ -188,7 +188,7 @@
         csv += 'ຊື່,ລະຫັດ,ຊື່ຜູ້ຕິດຕໍ່,ເບີໂທ,ອີເມລ,ທີ່ຢູ່,ເງື່ອນໄຂຈ່າຍ,ສະຖານະ\n';
         for (const v of vendors) {
             const status = v.isActive ? 'ເປີດໃຊ້' : 'ປິດໃຊ້';
-            csv += `"${v.name || ''}","${v.code || ''}","${v.contactName || ''}","${v.phone || ''}","${v.email || ''}","${v.address || ''}","${v.paymentTerms || 0} ວັນ","${status}"\n`;
+            csv += `${escapeCsvCell(v.name || '')},${escapeCsvCell(v.code || '')},${escapeCsvCell(v.contactName || '')},${escapeCsvCell(v.phone || '')},${escapeCsvCell(v.email || '')},${escapeCsvCell(v.address || '')},"${v.paymentTerms || 0} ວັນ","${status}"\n`;
         }
         downloadFile(csv, `vendors-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
         toast.success(t('common.exportSuccess'));

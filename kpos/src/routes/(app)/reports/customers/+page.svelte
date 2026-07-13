@@ -1,7 +1,7 @@
 ﻿<script lang="ts">
     import { t } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
-    import { formatCurrency, formatNumber, formatDate } from "$lib/utils";
+    import { formatCurrency, formatNumber, formatDate, escapeHtml, escapeCsvCell } from "$lib/utils";
     import { onMount } from "svelte";
     import { auth } from "$stores";
     import { toast } from "svelte-sonner";
@@ -122,7 +122,7 @@
     function exportExcel() {
         showExportMenu = false;
         const rows = buildCsvRows();
-        const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+        const csv = rows.map(r => r.map(v => escapeCsvCell(v)).join(',')).join('\n');
         const bom = '\uFEFF';
         const blob = new Blob([bom + csv], { type: 'text/csv;charset=utf-8;' });
         const url = URL.createObjectURL(blob);
@@ -138,7 +138,7 @@
         showExportMenu = false;
         const rows = buildCsvRows();
         const tableRows = rows.slice(1).map(r =>
-            `<tr>${r.map((v, i) => `<td style="border:1px solid #ddd;padding:6px 10px;${i >= 5 ? 'text-align:right' : ''}">${v}</td>`).join('')}</tr>`
+            `<tr>${r.map((v, i) => `<td style="border:1px solid #ddd;padding:6px 10px;${i >= 5 ? 'text-align:right' : ''}">${escapeHtml(v)}</td>`).join('')}</tr>`
         ).join('');
         const summary = reportData.summary || {};
         const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
@@ -146,9 +146,9 @@
 <style>body{font-family:sans-serif;padding:24px}h1{font-size:20px;margin-bottom:8px}p{margin:2px 0;color:#555;font-size:13px}table{width:100%;border-collapse:collapse;margin-top:16px}th{background:#f3f4f6;border:1px solid #ddd;padding:8px 10px;text-align:left;font-size:13px}td{font-size:12px}@media print{button{display:none}}</style>
 </head><body>
 <h1>ລາຍງານລູກຄ້າ</h1>
-<p>ໄລຍະ: ${dateRange.from} ຫາ ${dateRange.to}</p>
+<p>ໄລຍະ: ${escapeHtml(dateRange.from)} ຫາ ${escapeHtml(dateRange.to)}</p>
 <p>ລູກຄ້າທັງໝົດ: ${summary.totalCustomers ?? 0} | ລູກຄ້າໃໝ່: ${summary.newCustomers ?? 0} | ລູກຄ້າມີການຊື້: ${summary.activeCustomers ?? 0}</p>
-<table><thead><tr>${rows[0].map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${tableRows}</tbody></table>
+<table><thead><tr>${rows[0].map(h => `<th>${escapeHtml(h)}</th>`).join('')}</tr></thead><tbody>${tableRows}</tbody></table>
 <script>window.onload=()=>window.print()<\/script></body></html>`;
         const w = window.open('', '_blank');
         if (w) { w.document.write(html); w.document.close(); }
@@ -159,9 +159,9 @@
         showExportMenu = false;
         const rows = buildCsvRows();
         const tableRows = rows.slice(1).map(r =>
-            `<w:tr>${r.map(v => `<w:tc><w:p><w:r><w:t>${String(v).replace(/[<>&]/g, c => c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&amp;')}</w:t></w:r></w:p></w:tc>`).join('')}</w:tr>`
+            `<w:tr>${r.map(v => `<w:tc><w:p><w:r><w:t>${escapeHtml(v)}</w:t></w:r></w:p></w:tc>`).join('')}</w:tr>`
         ).join('');
-        const headerRow = `<w:tr>${rows[0].map(h => `<w:tc><w:tcPr><w:shd w:fill="F3F4F6"/></w:tcPr><w:p><w:r><w:rPr><w:b/></w:rPr><w:t>${h}</w:t></w:r></w:p></w:tc>`).join('')}</w:tr>`;
+        const headerRow = `<w:tr>${rows[0].map(h => `<w:tc><w:tcPr><w:shd w:fill="F3F4F6"/></w:tcPr><w:p><w:r><w:rPr><w:b/></w:rPr><w:t>${escapeHtml(h)}</w:t></w:r></w:p></w:tc>`).join('')}</w:tr>`;
         const xml = `<?xml version="1.0" encoding="UTF-8"?><?mso-application progid="Word.Document"?>
 <w:wordDocument xmlns:w="http://schemas.microsoft.com/office/word/2003/wordml">
 <w:body><w:p><w:r><w:rPr><w:b/><w:sz w:val="28"/></w:rPr><w:t>ລາຍງານລູກຄ້າ</w:t></w:r></w:p>

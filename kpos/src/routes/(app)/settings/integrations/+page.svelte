@@ -4,10 +4,10 @@
     import { onMount } from "svelte";
     import { toast } from "svelte-sonner";
     import { auth } from "$stores";
-    import { Loader2, Save, Puzzle, Link, Settings, X, Plus, Key, Eye, EyeOff, Copy, Trash2, Edit, RefreshCw, Shield, Mail, Send, FileText, History, CheckCircle2, XCircle } from "lucide-svelte";
+    import { Loader2, Save, Puzzle, Link, Settings, X, Plus, Key, Copy, Trash2, Edit, RefreshCw, Shield, Mail, Send, FileText, History, CheckCircle2, XCircle } from "lucide-svelte";
     const t = i18n.t;
 
-    let activeTab = $state<"services" | "apikeys" | "email">("services");
+    let activeTab = $state<"services" | "apikeys" | "email" | "sso">("services");
 
     // Email providers
     type EmailProviderType = "smtp" | "brevo" | "sendgrid" | "mailgun";
@@ -33,6 +33,95 @@
     let emailLogs = $state<any[]>([]);
     let emailLogsLoading = $state(false);
     let emailSubTab = $state<"providers" | "templates" | "logs">("providers");
+
+    // SSO providers (OIDC)
+    let ssoProviders = $state<any[]>([]);
+    let ssoProvidersLoading = $state(false);
+    let showSsoModal = $state(false);
+    let editingSsoProvider = $state<any>(null);
+    let ssoSaving = $state(false);
+    let ssoForm = $state<{ name: string; isActive: boolean; isDefault: boolean; config: Record<string, any> }>({
+        name: "", isActive: true, isDefault: false, config: {},
+    });
+    let testingSsoProviderId = $state<string | null>(null);
+
+    const SSO_FIELD_DEFS: { key: string; label: string; type?: string; placeholder?: string }[] = [
+        { key: "issuerUrl", label: "Issuer URL", placeholder: "https://accounts.google.com" },
+        { key: "clientId", label: "Client ID" },
+        { key: "clientSecret", label: "Client Secret", type: "password" },
+    ];
+
+    async function loadSsoProviders() {
+        ssoProvidersLoading = true;
+        try {
+            const res = await api.get("settings/sso").json<any>();
+            ssoProviders = res.data || [];
+        } catch (e) {
+            console.error("Failed to load SSO providers:", e);
+            ssoProviders = [];
+        } finally {
+            ssoProvidersLoading = false;
+        }
+    }
+
+    function openSsoModal(provider?: any) {
+        if (provider) {
+            editingSsoProvider = provider;
+            ssoForm = { name: provider.name, isActive: provider.isActive, isDefault: provider.isDefault, config: {} };
+        } else {
+            editingSsoProvider = null;
+            ssoForm = { name: "", isActive: true, isDefault: false, config: {} };
+        }
+        showSsoModal = true;
+    }
+
+    async function saveSsoProvider() {
+        if (!ssoForm.name) {
+            toast.error("ກະລຸນາປ້ອນຊື່");
+            return;
+        }
+        ssoSaving = true;
+        try {
+            const payload = { name: ssoForm.name, type: "oidc", isActive: ssoForm.isActive, isDefault: ssoForm.isDefault, config: ssoForm.config };
+            if (editingSsoProvider) {
+                await api.put(`settings/sso/${editingSsoProvider.id}`, { json: payload }).json();
+            } else {
+                await api.post("settings/sso", { json: payload }).json();
+            }
+            toast.success("ບັນທຶກແລ້ວ");
+            showSsoModal = false;
+            loadSsoProviders();
+        } catch (e) {
+            console.error("Failed to save SSO provider:", e);
+            toast.error("ບັນທຶກບໍ່ສຳເລັດ");
+        } finally {
+            ssoSaving = false;
+        }
+    }
+
+    async function deleteSsoProvider(provider: any) {
+        if (!confirm("ຕ້ອງການລຶບ SSO provider ນີ້ບໍ?")) return;
+        try {
+            await api.delete(`settings/sso/${provider.id}`).json();
+            toast.success("ລຶບແລ້ວ");
+            loadSsoProviders();
+        } catch (e) {
+            toast.error("ລຶບບໍ່ສຳເລັດ");
+        }
+    }
+
+    async function testSsoProvider(provider: any) {
+        testingSsoProviderId = provider.id;
+        try {
+            await api.post(`settings/sso/${provider.id}/test`, { json: {} }).json();
+            toast.success("ເຊື່ອມຕໍ່ສຳເລັດ");
+        } catch (e: any) {
+            console.error("SSO test failed:", e);
+            toast.error("ການທົດສອບບໍ່ສຳເລັດ — ກວດສອບ credentials");
+        } finally {
+            testingSsoProviderId = null;
+        }
+    }
 
     const EMAIL_FIELD_DEFS: Record<EmailProviderType, { key: string; label: string; type?: string; placeholder?: string }[]> = {
         smtp: [
@@ -185,6 +274,8 @@
             if (emailSubTab === "providers") loadEmailProviders();
             else if (emailSubTab === "templates") loadEmailTemplates();
             else if (emailSubTab === "logs") loadEmailLogs();
+        } else if (activeTab === "sso") {
+            loadSsoProviders();
         }
     });
 
@@ -193,13 +284,16 @@
     let loading = $state(true);
     let showModal = $state(false);
     let selectedIntegration = $state<any>(null);
+    let integrationSaving = $state(false);
+    let integrationTesting = $state(false);
+    let lineForm = $state({ channelAccessToken: "" });
+    let sheetsForm = $state({ serviceAccountJson: "", spreadsheetId: "" });
 
     // API Keys
     let apiKeys = $state<any[]>([]);
     let apiKeysLoading = $state(false);
     let showKeyModal = $state(false);
     let editingKey = $state<any>(null);
-    let showKeyValues = $state<Record<string, boolean>>({});
     let keyForm = $state({ name: "", service: "", apiKey: "", secretKey: "", isActive: true });
     let keySaving = $state(false);
 
@@ -307,7 +401,12 @@
     function openKeyModal(key?: any) {
         if (key) {
             editingKey = key;
-            keyForm = { name: key.name, service: key.service, apiKey: key.apiKey, secretKey: key.secretKey || "", isActive: key.isActive };
+            // The server only ever returns a masked apiKey/secretKey (last 4
+            // chars) — never pre-fill the form with it, since resubmitting
+            // the masked placeholder would overwrite the real stored secret
+            // with garbage. Leave both blank; the backend keeps the existing
+            // value when these fields are omitted.
+            keyForm = { name: key.name, service: key.service, apiKey: "", secretKey: "", isActive: key.isActive };
         } else {
             editingKey = null;
             keyForm = { name: "", service: "", apiKey: "", secretKey: "", isActive: true };
@@ -316,7 +415,7 @@
     }
 
     async function saveKey() {
-        if (!keyForm.name || !keyForm.apiKey) {
+        if (!keyForm.name || (!editingKey && !keyForm.apiKey)) {
             toast.error("ກະລຸນາປ້ອນຊື່ ແລະ API Key");
             return;
         }
@@ -355,15 +454,6 @@
         toast.success(t("integrations.keyCopied"));
     }
 
-    function toggleShowKey(id: string) {
-        showKeyValues = { ...showKeyValues, [id]: !showKeyValues[id] };
-    }
-
-    function maskKey(key: string): string {
-        if (!key) return "";
-        return key.slice(0, 4) + "•".repeat(Math.max(0, key.length - 8)) + key.slice(-4);
-    }
-
     function isConnected(integrationId: string): boolean {
         return integrations.some((i) => i.id === integrationId && i.connected);
     }
@@ -374,10 +464,18 @@
 
     function openConfig(integration: any) {
         selectedIntegration = integration;
+        lineForm = { channelAccessToken: "" };
+        sheetsForm = { serviceAccountJson: "", spreadsheetId: "" };
         showModal = true;
     }
 
+    // line / google_sheets collect real credentials via the modal (saveIntegrationCredentials);
+    // everything else still uses the old bodyless "just flip a flag" connect.
     async function connect(integrationId: string) {
+        if (integrationId === "line" || integrationId === "google_sheets") {
+            openConfig(availableIntegrations.find((i) => i.id === integrationId));
+            return;
+        }
         try {
             await api.post(`settings/integrations/${integrationId}/connect`).json();
             loadIntegrations();
@@ -397,6 +495,64 @@
         } catch (error) {
             console.error("Failed to disconnect:", error);
             toast.error("ຍົກເລີກການເຊື່ອມຕໍ່ບໍ່ສຳເລັດ");
+        }
+    }
+
+    async function saveIntegrationCredentials() {
+        if (!selectedIntegration) return;
+        integrationSaving = true;
+        try {
+            if (selectedIntegration.id === "line") {
+                if (!lineForm.channelAccessToken.trim()) {
+                    toast.error("ກະລຸນາປ້ອນ Channel Access Token");
+                    return;
+                }
+                const res = await api.post("settings/integrations/line/connect", { json: lineForm }).json<any>();
+                toast.success(`ເຊື່ອມຕໍ່ສຳເລັດ: ${res.data?.displayName || "LINE"}`);
+            } else if (selectedIntegration.id === "google_sheets") {
+                if (!sheetsForm.serviceAccountJson.trim() || !sheetsForm.spreadsheetId.trim()) {
+                    toast.error("ກະລຸນາປ້ອນ Service Account JSON ແລະ Spreadsheet ID");
+                    return;
+                }
+                const res = await api.post("settings/integrations/google-sheets/connect", { json: sheetsForm }).json<any>();
+                toast.success(`ເຊື່ອມຕໍ່ສຳເລັດ: ${res.data?.spreadsheetTitle || sheetsForm.spreadsheetId}`);
+            } else {
+                toast.error("ບໍລິການນີ້ຍັງບໍ່ພ້ອມໃຊ້ງານ");
+                return;
+            }
+            showModal = false;
+            loadIntegrations();
+        } catch (error: any) {
+            const errData = await error.response?.json?.().catch(() => null);
+            toast.error(errData?.error?.message || "ບັນທຶກບໍ່ສຳເລັດ — ກວດສອບ credentials");
+        } finally {
+            integrationSaving = false;
+        }
+    }
+
+    async function testLineIntegration() {
+        integrationTesting = true;
+        try {
+            await api.post("settings/integrations/line/test").json();
+            toast.success("ສົ່ງຂໍ້ຄວາມທົດສອບແລ້ວ — ກວດ LINE ຂອງທ່ານ");
+        } catch (error: any) {
+            const errData = await error.response?.json?.().catch(() => null);
+            toast.error(errData?.error?.message || "ສົ່ງທົດສອບບໍ່ສຳເລັດ");
+        } finally {
+            integrationTesting = false;
+        }
+    }
+
+    async function exportGoogleSheetsNow() {
+        integrationTesting = true;
+        try {
+            const res = await api.post("settings/integrations/google-sheets/export").json<any>();
+            toast.success(res.data?.exported > 0 ? `ສົ່ງອອກແລ້ວ ${res.data.exported} ລາຍການ` : "ບໍ່ມີລາຍການວັນນີ້ໃຫ້ສົ່ງອອກ");
+        } catch (error: any) {
+            const errData = await error.response?.json?.().catch(() => null);
+            toast.error(errData?.error?.message || "ສົ່ງອອກບໍ່ສຳເລັດ");
+        } finally {
+            integrationTesting = false;
         }
     }
 
@@ -473,6 +629,13 @@
             <Mail class="w-4 h-4" />
             Email
         </button>
+        <button
+            onclick={() => (activeTab = "sso")}
+            class="flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all {activeTab === 'sso' ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm' : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
+        >
+            <Shield class="w-4 h-4" />
+            SSO
+        </button>
     </div>
 
     <!-- API Keys Tab -->
@@ -519,18 +682,8 @@
                                 <td class="px-4 py-3">
                                     <div class="flex items-center gap-2">
                                         <code class="text-xs font-mono text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded">
-                                            {showKeyValues[key.id] ? key.apiKey : maskKey(key.apiKey)}
+                                            {key.apiKey}
                                         </code>
-                                        <button onclick={() => toggleShowKey(key.id)} class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">
-                                            {#if showKeyValues[key.id]}
-                                                <EyeOff class="w-4 h-4" />
-                                            {:else}
-                                                <Eye class="w-4 h-4" />
-                                            {/if}
-                                        </button>
-                                        <button onclick={() => copyKey(key.apiKey)} class="text-gray-400 hover:text-primary-600">
-                                            <Copy class="w-4 h-4" />
-                                        </button>
                                     </div>
                                 </td>
                                 <td class="px-4 py-3">
@@ -688,6 +841,70 @@
                     </table>
                 </div>
             {/if}
+        {/if}
+
+    <!-- SSO Tab -->
+    {:else if activeTab === "sso"}
+        <div class="mb-4 flex justify-end">
+            <button onclick={() => openSsoModal()} class="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 text-sm font-medium">
+                <Plus class="w-4 h-4" /> Add SSO Provider
+            </button>
+        </div>
+        {#if ssoProvidersLoading}
+            <div class="flex justify-center py-12"><Loader2 class="h-8 w-8 animate-spin text-primary-600" /></div>
+        {:else if ssoProviders.length === 0}
+            <div class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-16 text-center">
+                <Shield class="w-16 h-16 mx-auto text-gray-300 dark:text-gray-600 mb-4" />
+                <h3 class="text-lg font-semibold text-gray-900 dark:text-white">No SSO provider configured</h3>
+                <p class="text-gray-500 dark:text-gray-400 mt-2 mb-6">Add an OIDC provider (Okta, Azure AD, Google Workspace) so staff can sign in with your organization's identity provider. Accounts must already exist locally — SSO does not auto-create users.</p>
+                <button onclick={() => openSsoModal()} class="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 text-sm font-medium mx-auto">
+                    <Plus class="w-4 h-4" /> Add SSO Provider
+                </button>
+            </div>
+        {:else}
+            <div class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
+                <table class="w-full">
+                    <thead class="bg-gray-50 dark:bg-gray-700/50">
+                        <tr class="text-left text-xs text-gray-500 dark:text-gray-400 uppercase">
+                            <th class="px-4 py-3">Name</th>
+                            <th class="px-4 py-3">Type</th>
+                            <th class="px-4 py-3">Status</th>
+                            <th class="px-4 py-3 text-center">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-gray-100 dark:divide-gray-700">
+                        {#each ssoProviders as provider (provider.id)}
+                            <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50">
+                                <td class="px-4 py-3">
+                                    <div class="flex items-center gap-2">
+                                        <span class="font-medium text-gray-900 dark:text-white">{provider.name}</span>
+                                        {#if provider.isDefault}<span class="px-1.5 py-0.5 text-xs bg-primary-100 dark:bg-primary-900/50 text-primary-700 dark:text-primary-400 rounded-full">default</span>{/if}
+                                    </div>
+                                </td>
+                                <td class="px-4 py-3 text-gray-600 dark:text-gray-400 uppercase text-xs font-mono">{provider.type}</td>
+                                <td class="px-4 py-3">
+                                    <span class="px-2 py-1 text-xs rounded-full {provider.isActive ? 'bg-success-100 dark:bg-success-900/50 text-success-700 dark:text-success-400' : 'bg-gray-100 dark:bg-gray-700 text-gray-500'}">
+                                        {provider.isActive ? "Active" : "Inactive"}
+                                    </span>
+                                </td>
+                                <td class="px-4 py-3">
+                                    <div class="flex items-center justify-center gap-1">
+                                        <button onclick={() => testSsoProvider(provider)} disabled={testingSsoProviderId === provider.id} class="p-1.5 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg disabled:opacity-50" title="Test Connection">
+                                            {#if testingSsoProviderId === provider.id}<Loader2 class="w-4 h-4 animate-spin" />{:else}<RefreshCw class="w-4 h-4" />{/if}
+                                        </button>
+                                        <button onclick={() => openSsoModal(provider)} class="p-1.5 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg" title="Edit">
+                                            <Edit class="w-4 h-4" />
+                                        </button>
+                                        <button onclick={() => deleteSsoProvider(provider)} class="p-1.5 text-danger-500 hover:bg-danger-100 dark:hover:bg-danger-900/30 rounded-lg" title="Delete">
+                                            <Trash2 class="w-4 h-4" />
+                                        </button>
+                                    </div>
+                                </td>
+                            </tr>
+                        {/each}
+                    </tbody>
+                </table>
+            </div>
         {/if}
 
     <!-- Services Tab -->
@@ -874,10 +1091,11 @@
                 <!-- API Key -->
                 <div>
                     <label for="key-apikey" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                        {t("integrations.keyValue")} <span class="text-danger-500">*</span>
+                        {t("integrations.keyValue")} {#if !editingKey}<span class="text-danger-500">*</span>{/if}
+                        {#if editingKey}<span class="ml-1 text-xs text-gray-400">(leave blank to keep unchanged)</span>{/if}
                     </label>
                     <div class="relative">
-                        <input id="key-apikey" type="text" bind:value={keyForm.apiKey} placeholder="sk_live_xxxxxxxxxx"
+                        <input id="key-apikey" type="text" bind:value={keyForm.apiKey} placeholder={editingKey ? editingKey.apiKey : "sk_live_xxxxxxxxxx"}
                             class="w-full pl-3 pr-10 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white text-sm font-mono focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none transition-all" />
                         {#if keyForm.apiKey}
                             <button onclick={() => copyKey(keyForm.apiKey)} class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-primary-600 transition-colors" title="ຄັດລອກ">
@@ -917,7 +1135,7 @@
                 <button onclick={() => (showKeyModal = false)} class="px-4 py-2 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-xl text-sm font-medium transition-colors">
                     {t("common.cancel")}
                 </button>
-                <button onclick={saveKey} disabled={keySaving || !keyForm.name || !keyForm.apiKey}
+                <button onclick={saveKey} disabled={keySaving || !keyForm.name || (!editingKey && !keyForm.apiKey)}
                     class="flex items-center gap-2 px-5 py-2 bg-primary-600 text-white rounded-xl hover:bg-primary-700 text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm">
                     {#if keySaving}<Loader2 class="w-4 h-4 animate-spin" />{:else}<Save class="w-4 h-4" />{/if}
                     {t("common.save")}
@@ -1010,6 +1228,77 @@
     </div>
 {/if}
 
+{#if showSsoModal}
+    <div class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+        <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-lg border border-gray-200 dark:border-gray-700 max-h-[90vh] overflow-y-auto">
+            <div class="flex items-center justify-between px-6 py-5 border-b border-gray-200 dark:border-gray-700">
+                <div class="flex items-center gap-3">
+                    <div class="p-2 bg-primary-100 dark:bg-primary-900/50 rounded-xl">
+                        <Shield class="w-5 h-5 text-primary-600 dark:text-primary-400" />
+                    </div>
+                    <h2 class="text-base font-bold text-gray-900 dark:text-white">
+                        {editingSsoProvider ? "Edit SSO Provider" : "Add SSO Provider"}
+                    </h2>
+                </div>
+                <button onclick={() => (showSsoModal = false)} class="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl transition-colors">
+                    <X class="w-4 h-4 text-gray-500" />
+                </button>
+            </div>
+
+            <div class="px-6 py-5 space-y-4">
+                <div>
+                    <label for="sso-provider-name" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">Name</label>
+                    <input id="sso-provider-name" type="text" bind:value={ssoForm.name} placeholder="Okta"
+                        class="w-full px-3 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary-500 outline-none" />
+                </div>
+
+                {#if editingSsoProvider}
+                    <div class="flex items-start gap-2 px-3 py-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl text-xs text-amber-700 dark:text-amber-300">
+                        <Shield class="w-4 h-4 mt-0.5 shrink-0" />
+                        Stored credentials are never sent back to the browser. Leave fields blank to keep the current value, or fill them in to replace it.
+                    </div>
+                {/if}
+
+                {#each SSO_FIELD_DEFS as field (field.key)}
+                    <div>
+                        <label for="sso-field-{field.key}" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{field.label}</label>
+                        <input id="sso-field-{field.key}" type={field.type || "text"} placeholder={field.placeholder}
+                            value={ssoForm.config[field.key] ?? ""}
+                            oninput={(e) => (ssoForm.config[field.key] = (e.target as HTMLInputElement).value)}
+                            class="w-full px-3 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white text-sm font-mono focus:ring-2 focus:ring-primary-500 outline-none" />
+                    </div>
+                {/each}
+
+                <div class="flex items-center justify-between px-4 py-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
+                    <p class="text-sm font-medium text-gray-700 dark:text-gray-300">{t("common.enabled")}</p>
+                    <button aria-label="toggle active" onclick={() => (ssoForm.isActive = !ssoForm.isActive)}
+                        class="relative w-11 h-6 rounded-full transition-colors {ssoForm.isActive ? 'bg-primary-600' : 'bg-gray-300 dark:bg-gray-600'}">
+                        <span class="absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform {ssoForm.isActive ? 'translate-x-6' : 'translate-x-1'}"></span>
+                    </button>
+                </div>
+                <div class="flex items-center justify-between px-4 py-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
+                    <p class="text-sm font-medium text-gray-700 dark:text-gray-300">Default provider</p>
+                    <button aria-label="toggle default" onclick={() => (ssoForm.isDefault = !ssoForm.isDefault)}
+                        class="relative w-11 h-6 rounded-full transition-colors {ssoForm.isDefault ? 'bg-primary-600' : 'bg-gray-300 dark:bg-gray-600'}">
+                        <span class="absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform {ssoForm.isDefault ? 'translate-x-6' : 'translate-x-1'}"></span>
+                    </button>
+                </div>
+            </div>
+
+            <div class="flex justify-end gap-3 px-6 py-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 rounded-b-2xl">
+                <button onclick={() => (showSsoModal = false)} class="px-4 py-2 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-xl text-sm font-medium">
+                    {t("common.cancel")}
+                </button>
+                <button onclick={saveSsoProvider} disabled={ssoSaving || !ssoForm.name}
+                    class="flex items-center gap-2 px-5 py-2 bg-primary-600 text-white rounded-xl hover:bg-primary-700 text-sm font-semibold disabled:opacity-50">
+                    {#if ssoSaving}<Loader2 class="w-4 h-4 animate-spin" />{:else}<Save class="w-4 h-4" />{/if}
+                    {t("common.save")}
+                </button>
+            </div>
+        </div>
+    </div>
+{/if}
+
 {#if editingTemplate}
     <div class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
         <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-2xl border border-gray-200 dark:border-gray-700 max-h-[90vh] overflow-y-auto">
@@ -1060,49 +1349,66 @@
             <p class="text-gray-600 dark:text-gray-400 mb-6">{selectedIntegration.description}</p>
 
             <div class="space-y-4">
-                {#if selectedIntegration.id === "bcel"}
-                    <div>
-                        <label for="a11y-app-settings-integrations-page-svelte-1001"
-                            class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
-                            >Merchant ID</label>
-                        <input id="a11y-app-settings-integrations-page-svelte-1001"
-                            type="text"
-                            class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg"
-                            placeholder="BCEL Merchant ID"
-                        />
-                    </div>
-                    <div>
-                        <label for="a11y-app-settings-integrations-page-svelte-1002"
-                            class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
-                            >API Key</label>
-                        <input id="a11y-app-settings-integrations-page-svelte-1002"
-                            type="password"
-                            class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg"
-                            placeholder="API Key"
-                        />
+                {#if selectedIntegration.id === "bcel" || selectedIntegration.id === "ldb"}
+                    <div class="flex items-start gap-2 px-3 py-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg text-sm text-amber-700 dark:text-amber-300">
+                        <Shield class="w-4 h-4 mt-0.5 shrink-0" />
+                        ບໍລິການນີ້ຍັງບໍ່ພ້ອມໃຊ້ງານ — ກຳລັງລໍຖ້າເອກະສານ API ຈາກທະນາຄານ. ຈະເປີດໃຫ້ໃຊ້ໄດ້ໃນຮອບຕໍ່ໄປ.
                     </div>
                 {:else if selectedIntegration.id === "line"}
+                    <div class="flex items-start gap-2 px-3 py-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg text-xs text-blue-700 dark:text-blue-300">
+                        ໃຊ້ LINE Messaging API (Channel Access Token ຈາກ LINE Official Account) — ຂໍ້ຄວາມຈະຖືກສົ່ງແບບ broadcast ໃຫ້ຄົນທີ່ຕິດຕາມ OA ຂອງທ່ານທັງໝົດ.
+                    </div>
                     <div>
-                        <label for="a11y-app-settings-integrations-page-svelte-1003"
+                        <label for="line-channel-token"
                             class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
                             >Channel Access Token</label>
-                        <textarea id="a11y-app-settings-integrations-page-svelte-1003"
-                            class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg"
+                        <textarea id="line-channel-token"
+                            bind:value={lineForm.channelAccessToken}
+                            class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg font-mono text-sm"
                             rows="3"
                             placeholder="LINE Channel Access Token"
                         ></textarea>
                     </div>
+                    {#if isConnected("line")}
+                        <button onclick={testLineIntegration} disabled={integrationTesting}
+                            class="w-full flex items-center justify-center gap-2 px-4 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50">
+                            {#if integrationTesting}<Loader2 class="w-4 h-4 animate-spin" />{:else}<Send class="w-4 h-4" />{/if}
+                            ສົ່ງຂໍ້ຄວາມທົດສອບ
+                        </button>
+                    {/if}
                 {:else if selectedIntegration.id === "google_sheets"}
+                    <div class="flex items-start gap-2 px-3 py-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg text-xs text-blue-700 dark:text-blue-300">
+                        ສ້າງ Service Account ໃນ Google Cloud Console, ດາວໂຫຼດ JSON key, ແລ້ວແຊຣ໌ Sheet ຂອງທ່ານໃຫ້ອີເມວຂອງ Service Account (ສິດ Editor).
+                    </div>
                     <div>
-                        <label for="a11y-app-settings-integrations-page-svelte-1004"
+                        <label for="sheets-service-account"
+                            class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                            >Service Account JSON</label>
+                        <textarea id="sheets-service-account"
+                            bind:value={sheetsForm.serviceAccountJson}
+                            class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white rounded-lg font-mono text-xs"
+                            rows="6"
+                            placeholder={'{ "client_email": "...", "private_key": "..." }'}
+                        ></textarea>
+                    </div>
+                    <div>
+                        <label for="sheets-spreadsheet-id"
                             class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
                             >Spreadsheet ID</label>
-                        <input id="a11y-app-settings-integrations-page-svelte-1004"
+                        <input id="sheets-spreadsheet-id"
                             type="text"
-                            class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg"
-                            placeholder="Google Sheets ID"
+                            bind:value={sheetsForm.spreadsheetId}
+                            class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg font-mono text-sm"
+                            placeholder="1AbC...xyz (from the sheet's URL)"
                         />
                     </div>
+                    {#if isConnected("google_sheets")}
+                        <button onclick={exportGoogleSheetsNow} disabled={integrationTesting}
+                            class="w-full flex items-center justify-center gap-2 px-4 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50">
+                            {#if integrationTesting}<Loader2 class="w-4 h-4 animate-spin" />{:else}<Send class="w-4 h-4" />{/if}
+                            ສົ່ງອອກຂໍ້ມູນຕອນນີ້
+                        </button>
+                    {/if}
                 {:else}
                     <p class="text-gray-500 dark:text-gray-400">ການຕັ້ງຄ່າສຳລັບບໍລິການນີ້</p>
                 {/if}
@@ -1115,12 +1421,16 @@
                 >
                     ປິດ
                 </button>
-                <button
-                    class="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 flex items-center gap-2"
-                >
-                    <Save class="w-4 h-4" />
-                    ບັນທຶກ
-                </button>
+                {#if selectedIntegration.id === "line" || selectedIntegration.id === "google_sheets"}
+                    <button
+                        onclick={saveIntegrationCredentials}
+                        disabled={integrationSaving}
+                        class="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 flex items-center gap-2 disabled:opacity-50"
+                    >
+                        {#if integrationSaving}<Loader2 class="w-4 h-4 animate-spin" />{:else}<Save class="w-4 h-4" />{/if}
+                        ບັນທຶກ
+                    </button>
+                {/if}
             </div>
         </div>
     </div>

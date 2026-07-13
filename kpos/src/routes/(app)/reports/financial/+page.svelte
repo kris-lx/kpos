@@ -1,6 +1,6 @@
 ﻿<script lang="ts">
     import { onMount } from "svelte";
-    import { cn, formatCurrency } from "$utils";
+    import { cn, formatCurrency, escapeHtml, escapeCsvCell } from "$utils";
     import { api } from "$api";
     import { t } from "$lib/i18n/index.svelte";
     import { auth } from "$stores";
@@ -114,7 +114,7 @@
             csv += `ອັດຕາກຳໄລ,"${(financialData.profitMargin || 0).toFixed(1)}%"\n`;
             csv += '\nວິທີການຊຳລະ,ຍອດ,ຈຳນວນ\n';
             (financialData.paymentMethods || []).forEach((p: any) => {
-                csv += `"${p.methodName || ''}","${formatCurrency(p.total || 0)}",${p.count || 0}\n`;
+                csv += `${escapeCsvCell(p.methodName || '')},"${formatCurrency(p.total || 0)}",${p.count || 0}\n`;
             });
             downloadFile(csv, `financial-report-${periodFilter}.csv`, 'text/csv;charset=utf-8');
             toast.success(t("reports.exportSuccess"));
@@ -137,7 +137,7 @@
 <tr><td>ກຳໄລ</td><td class="text-right">${formatCurrency(financialData.profit || 0)}</td></tr>
 <tr><td>ອັດຕາກຳໄລ</td><td class="text-right">${(financialData.profitMargin || 0).toFixed(1)}%</td></tr></table>
 <h2>ວິທີການຊຳລະ</h2><table><tr><th>ວິທີ</th><th>ຍອດ</th><th>ຈຳນວນ</th></tr>
-${(financialData.paymentMethods || []).map((p: any) => `<tr><td>${p.methodName || ''}</td><td class="text-right">${formatCurrency(p.total || 0)}</td><td class="text-right">${p.count || 0}</td></tr>`).join('')}
+${(financialData.paymentMethods || []).map((p: any) => `<tr><td>${escapeHtml(p.methodName || '')}</td><td class="text-right">${formatCurrency(p.total || 0)}</td><td class="text-right">${p.count || 0}</td></tr>`).join('')}
 </table></body></html>`;
         const w = window.open('', '_blank');
         if (w) {
@@ -160,7 +160,7 @@ ${(financialData.paymentMethods || []).map((p: any) => `<tr><td>${p.methodName |
 <tr><td>ກຳໄລ</td><td>${formatCurrency(financialData.profit || 0)}</td></tr>
 <tr><td>ອັດຕາກຳໄລ</td><td>${(financialData.profitMargin || 0).toFixed(1)}%</td></tr></table>
 <h2>ວິທີການຊຳລະ</h2><table><tr><th>ວິທີ</th><th>ຍອດ</th><th>ຈຳນວນ</th></tr>
-${(financialData.paymentMethods || []).map((p: any) => `<tr><td>${p.methodName || ''}</td><td>${formatCurrency(p.total || 0)}</td><td>${p.count || 0}</td></tr>`).join('')}
+${(financialData.paymentMethods || []).map((p: any) => `<tr><td>${escapeHtml(p.methodName || '')}</td><td>${formatCurrency(p.total || 0)}</td><td>${p.count || 0}</td></tr>`).join('')}
 </table></body></html>`;
         downloadFile(html, `financial-report-${periodFilter}.doc`, 'application/msword');
         toast.success(t("reports.exportSuccess"));

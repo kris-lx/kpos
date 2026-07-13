@@ -1,0 +1,18 @@
+# KPOS - HTTP server (port 80)
+# Serves the ACME HTTP-01 challenge for Let's Encrypt and redirects
+# everything else to HTTPS. ${DOMAIN} is substituted by nginx's built-in
+# envsubst-on-startup (files under /etc/nginx/templates/*.template -> conf.d).
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${DOMAIN};
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}

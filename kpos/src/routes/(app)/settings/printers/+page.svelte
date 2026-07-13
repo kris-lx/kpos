@@ -4,6 +4,7 @@
     import { onMount } from "svelte";
     import { toast } from "svelte-sonner";
     import { auth } from "$stores";
+    import { escapeHtml } from "$utils";
     import {
         Loader2, Save, Printer, Plus, Trash2, Edit, AlertCircle,
         RefreshCw, ChevronLeft, Wifi, Bluetooth, Usb, Settings2,
@@ -218,7 +219,7 @@
                 if (w) {
                     w.document.write(`<html><body style="font-family:monospace;text-align:center">
                         <h2>** KPOS TEST PRINT **</h2>
-                        <hr/><p>Printer: ${p.name}</p>
+                        <hr/><p>Printer: ${escapeHtml(p.name)}</p>
                         <p>Time: ${new Date().toLocaleString()}</p>
                         <hr/><p>PRINTER OK</p>
                     </body></html>`);

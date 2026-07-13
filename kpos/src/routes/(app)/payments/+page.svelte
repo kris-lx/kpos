@@ -1,7 +1,7 @@
 ﻿<script lang="ts">
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
-    import { cn } from "$utils";
+    import { cn, escapeCsvCell, escapeHtml } from "$utils";
     import { api } from "$api";
     import { auth } from "$stores";
     import { formatCurrency, formatDateTime } from "$lib/utils";
@@ -245,7 +245,7 @@
         let csv = '\ufeff';
         csv += `${t("common.date")},${t("common.code")},${t("customers.customer")},${t("payments.method")},${t("payments.amount")},${t("payments.status")}\n`;
         for (const tx of filteredTransactions) {
-            csv += `"${formatDate(tx.createdAt)}","${tx.transactionNo}","${tx.customer}","${tx.methodName}","${tx.amount}","${tx.status}"\n`;
+            csv += `"${formatDate(tx.createdAt)}",${escapeCsvCell(tx.transactionNo)},${escapeCsvCell(tx.customer)},${escapeCsvCell(tx.methodName)},"${tx.amount}","${tx.status}"\n`;
         }
         downloadFile(csv, `payments-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
         toast.success(t("reports.exportSuccess"));
@@ -253,7 +253,7 @@
 
     function exportToPDF() {
         const rows = filteredTransactions.map(tx =>
-            `<tr><td>${formatDate(tx.createdAt)}</td><td>${tx.transactionNo}</td><td>${tx.customer}</td><td>${tx.methodName}</td><td style="text-align:right">${formatCurrency(tx.amount)}</td><td>${tx.status}</td></tr>`
+            `<tr><td>${formatDate(tx.createdAt)}</td><td>${escapeHtml(tx.transactionNo)}</td><td>${escapeHtml(tx.customer)}</td><td>${escapeHtml(tx.methodName)}</td><td style="text-align:right">${formatCurrency(tx.amount)}</td><td>${escapeHtml(tx.status)}</td></tr>`
         ).join('');
         const total = filteredTransactions.reduce((s, tx) => s + (tx.amount || 0), 0);
         const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${t("payments.reportTitle")}</title>
@@ -270,7 +270,7 @@
 
     function exportToWord() {
         const rows = filteredTransactions.map(tx =>
-            `<tr><td>${formatDate(tx.createdAt)}</td><td>${tx.transactionNo}</td><td>${tx.customer}</td><td>${tx.methodName}</td><td>${formatCurrency(tx.amount)}</td><td>${tx.status}</td></tr>`
+            `<tr><td>${formatDate(tx.createdAt)}</td><td>${escapeHtml(tx.transactionNo)}</td><td>${escapeHtml(tx.customer)}</td><td>${escapeHtml(tx.methodName)}</td><td>${formatCurrency(tx.amount)}</td><td>${escapeHtml(tx.status)}</td></tr>`
         ).join('');
         const total = filteredTransactions.reduce((s, tx) => s + (tx.amount || 0), 0);
         const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office"><head><meta charset="utf-8"><style>table{width:100%;border-collapse:collapse}th,td{border:1px solid #000;padding:8px}th{background:#f0f0f0}tfoot td{font-weight:bold}</style></head>

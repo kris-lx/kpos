@@ -3,8 +3,9 @@
 // Process async jobs: stock movements, activity logs, cache invalidation
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { createHmac } from 'crypto';
 import { consume, subscribeCacheInvalidation, publish, QUEUES, isRabbitMQConnected } from '@/config/rabbitmq.config';
+import { computeAuditChecksum } from '@/shared/audit-checksum';
+import { acquireLock, releaseLock } from '@/shared/distributed-lock';
 import { cache } from '@/config/redis.config';
 import { db } from '@/config/database.config';
 import { inventory, stockMovements, activityLogs, notifications, sessions } from '@/db/schema/tables';
@@ -100,19 +101,14 @@ async function processActivityLog(data: {
 }): Promise<void> {
     const entityId = data.entityId || data.resourceId;
     // Re-compute checksum if not already provided by the publisher
-    const checksum = data.checksum || (() => {
-        const secret = process.env.JWT_SECRET || 'fallback-audit-key';
-        return createHmac('sha256', secret)
-            .update(JSON.stringify({
-                userId: data.userId,
-                action: data.action,
-                resource: data.resource || data.entity || '',
-                details: data.details || data.description || '',
-                metadata: data.metadata || {},
-                ts: data.ts || new Date().toISOString(),
-            }))
-            .digest('hex');
-    })();
+    const checksum = data.checksum || computeAuditChecksum({
+        userId: data.userId,
+        action: data.action,
+        resource: data.resource || data.entity || '',
+        details: data.details || data.description || '',
+        metadata: data.metadata || {},
+        ts: data.ts || new Date().toISOString(),
+    });
     await db.insert(activityLogs).values({
         userId: data.userId,
         action: data.action,
@@ -239,14 +235,25 @@ export async function queueAssetCleanup(publicIds: string[], reason?: string): P
 // Session Cleanup — delete revoked sessions older than 7 days
 // Runs every 6 hours to prevent unbounded session table growth
 // ═══════════════════════════════════════════════════════════════════════════
+const SESSION_CLEANUP_LOCK_KEY = 'kpos:session-cleanup-lock';
+const SESSION_CLEANUP_LOCK_TTL_MS = 5 * 60 * 1000; // generous vs. typical cleanup duration
+
 async function cleanupExpiredSessions(): Promise<void> {
+    // Scaling audit (2026-07-11): this runs in every API instance on the same
+    // interval. Deleting the same rows twice is harmless, but the lock still
+    // avoids every replica hitting the DB with the same DELETE simultaneously
+    // on every tick, and matches the pattern already used for the backup cron.
+    const lockToken = await acquireLock(SESSION_CLEANUP_LOCK_KEY, SESSION_CLEANUP_LOCK_TTL_MS);
+    if (!lockToken) return; // another instance is already running this tick's cleanup
     try {
         const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-        const result = await db.delete(sessions)
+        await db.delete(sessions)
             .where(and(isNotNull(sessions.revokedAt), lt(sessions.revokedAt, cutoff)));
         console.log(`[SessionCleanup] Deleted old revoked sessions (cutoff: ${cutoff.toISOString()})`);
     } catch (err) {
         console.error('[SessionCleanup] Failed:', err);
+    } finally {
+        await releaseLock(SESSION_CLEANUP_LOCK_KEY, lockToken);
     }
 }
 

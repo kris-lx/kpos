@@ -34,6 +34,7 @@
         ChevronLeft,
         ChevronRight,
         AlertCircle,
+        Monitor,
     } from "lucide-svelte";
 
     const queryClient = useQueryClient();
@@ -209,6 +210,60 @@
     // BroadcastChannel for customer display sync
     let displayChannel: BroadcastChannel | null = null;
 
+    // Customer-facing second-screen display — auto-open on the first item
+    // added to an empty cart, mirroring the "auto open" setting in
+    // Settings > Display, which previously only lived in the config UI and
+    // was never actually read anywhere (the display window had to be opened
+    // manually via a nav icon hidden on narrow screens).
+    let customerDisplayWindow: Window | null = null;
+    // Defaults mirror Settings > Display's own defaults — the manual open
+    // button must work even for a tenant that has never visited that
+    // settings page and saved a display_config row (GET returns {} in that
+    // case), not just after auto-open's config has loaded.
+    let customerDisplayConfig: { enabled: boolean; autoOpen: boolean; url: string; position: "left" | "right" | "top" | "bottom"; width: number; height: number } = {
+        enabled: true, autoOpen: false, url: "/display/customer", position: "right", width: 1920, height: 1080,
+    };
+    let wasCartEmpty = $state(true);
+
+    async function loadCustomerDisplayConfig() {
+        try {
+            const res = await api.get('settings/category/display').json<any>();
+            const rows: any[] = Array.isArray(res.data) ? res.data : [];
+            const row = rows.find((s: any) => s.key === 'display_config');
+            if (res.success && row?.value) {
+                const parsed = typeof row.value === 'string' ? JSON.parse(row.value) : row.value;
+                if (parsed?.customerDisplay) customerDisplayConfig = { ...customerDisplayConfig, ...parsed.customerDisplay };
+            }
+        } catch {
+            // Non-fatal — falls back to the defaults above.
+        }
+    }
+
+    // `auto` distinguishes an auto-open attempt (from the cart-empty effect
+    // below) from a direct button click. Browsers only allow window.open()
+    // to succeed when it's called synchronously inside a real user-gesture
+    // handler (click/keydown) — a call triggered from a reactive $effect
+    // (which fires asynchronously, outside that gesture) is popup-blocked
+    // silently: window.open() returns null, no error, no console warning.
+    // That's why "open automatically when adding to cart" can silently do
+    // nothing even with the setting enabled — surface it so the cashier
+    // knows to use the manual button instead of assuming it's broken.
+    function openCustomerDisplayWindow(auto = false) {
+        if (customerDisplayWindow && !customerDisplayWindow.closed) {
+            customerDisplayWindow.focus();
+            return;
+        }
+        const { width, height, position, url } = customerDisplayConfig;
+        let left = 0;
+        if (position === "right") left = window.screen.width;
+        else if (position === "left") left = -width;
+        const features = `width=${width},height=${height},left=${left},top=0,menubar=no,toolbar=no,location=no,status=no`;
+        customerDisplayWindow = window.open(url, "customer_display", features);
+        if (!customerDisplayWindow && auto) {
+            toast.warning(t('pos.customerDisplayBlocked'));
+        }
+    }
+
     // Hoist event handlers so onDestroy can remove the same references
     const onOnline = () => { isOnline = true; retryOfflineSales(); };
     const onOffline = () => { isOnline = false; };
@@ -236,6 +291,7 @@
         window.addEventListener('offline', onOffline);
         pendingOfflineSales = await pendingSaleCount();
         loadPriceLevels();
+        loadCustomerDisplayConfig();
 
         // Initialize BroadcastChannel for customer display
         if (typeof BroadcastChannel !== "undefined") {
@@ -282,6 +338,18 @@
         window.removeEventListener('online', onOnline);
         window.removeEventListener('offline', onOffline);
         if (qrPollTimer) clearInterval(qrPollTimer);
+    });
+
+    // Auto-open the customer display window on the first item added to an
+    // empty cart (only when the setting is enabled) — separate from the
+    // BroadcastChannel sync effect below so a config-load race doesn't
+    // block the sync itself.
+    $effect(() => {
+        const isEmpty = cart.itemCount === 0;
+        if (wasCartEmpty && !isEmpty && customerDisplayConfig?.enabled && customerDisplayConfig?.autoOpen) {
+            openCustomerDisplayWindow(true);
+        }
+        wasCartEmpty = isEmpty;
     });
 
     // Sync cart to customer display
@@ -1180,44 +1248,55 @@
             </div>
 
             <!-- Customer -->
-            <button
-                onclick={() => (showCustomerModal = true)}
-                class={cn(
-                    "w-full flex items-center gap-3 p-3 rounded-xl border border-dashed transition-colors",
-                    cart.customer
-                        ? "border-primary-300 bg-primary-50 dark:bg-primary-900/20"
-                        : "border-gray-300 dark:border-gray-700 hover:border-primary-300",
-                )}
-            >
-                <div
+            <div class="flex items-center gap-2">
+                <button
+                    onclick={() => (showCustomerModal = true)}
                     class={cn(
-                        "w-10 h-10 rounded-full flex items-center justify-center",
+                        "flex-1 flex items-center gap-3 p-3 rounded-xl border border-dashed transition-colors",
                         cart.customer
-                            ? "bg-primary-500 text-white"
-                            : "bg-gray-100 dark:bg-gray-800 text-gray-400",
+                            ? "border-primary-300 bg-primary-50 dark:bg-primary-900/20"
+                            : "border-gray-300 dark:border-gray-700 hover:border-primary-300",
                     )}
                 >
-                    <User class="w-5 h-5" />
-                </div>
-                {#if cart.customer}
-                    <div class="text-left flex-1">
-                        <p class="font-medium text-gray-900 dark:text-white">
-                            {cart.customer.name}
-                        </p>
-                        <p class="text-xs text-gray-500">
-                            {cart.customer.phone || t('pos.memberCustomer')}
-                        </p>
+                    <div
+                        class={cn(
+                            "w-10 h-10 rounded-full flex items-center justify-center",
+                            cart.customer
+                                ? "bg-primary-500 text-white"
+                                : "bg-gray-100 dark:bg-gray-800 text-gray-400",
+                        )}
+                    >
+                        <User class="w-5 h-5" />
                     </div>
-                    {#if loyaltyEnabled && customerCurrentPoints > 0}
-                        <span class="text-xs bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 px-2 py-1 rounded-full flex items-center gap-1 shrink-0">
-                            <Gift class="w-3 h-3" />
-                            {customerCurrentPoints}
-                        </span>
+                    {#if cart.customer}
+                        <div class="text-left flex-1">
+                            <p class="font-medium text-gray-900 dark:text-white">
+                                {cart.customer.name}
+                            </p>
+                            <p class="text-xs text-gray-500">
+                                {cart.customer.phone || t('pos.memberCustomer')}
+                            </p>
+                        </div>
+                        {#if loyaltyEnabled && customerCurrentPoints > 0}
+                            <span class="text-xs bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 px-2 py-1 rounded-full flex items-center gap-1 shrink-0">
+                                <Gift class="w-3 h-3" />
+                                {customerCurrentPoints}
+                            </span>
+                        {/if}
+                    {:else}
+                        <span class="text-gray-500">{t('pos.selectCustomer')}</span>
                     {/if}
-                {:else}
-                    <span class="text-gray-500">{t('pos.selectCustomer')}</span>
-                {/if}
-            </button>
+                </button>
+                <button
+                    type="button"
+                    onclick={() => openCustomerDisplayWindow(false)}
+                    aria-label={t('pos.openCustomerDisplay')}
+                    title={t('pos.openCustomerDisplay')}
+                    class="shrink-0 p-3 rounded-xl border border-gray-300 dark:border-gray-700 text-gray-500 hover:border-primary-300 hover:text-primary-600 transition-colors"
+                >
+                    <Monitor class="w-5 h-5" />
+                </button>
+            </div>
 
             {#if priceLevelOptions.length > 0}
                 <select

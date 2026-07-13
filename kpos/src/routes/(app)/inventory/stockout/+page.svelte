@@ -2,7 +2,7 @@
     import { onMount } from "svelte";
     import { i18n } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
-    import { formatCurrency, formatDate } from "$lib/utils";
+    import { formatCurrency, formatDate, escapeCsvCell } from "$lib/utils";
     import { toast } from "svelte-sonner";
     import { auth } from "$stores";
     import { Minus, Search, Package, X, ChevronLeft, ChevronRight, Loader2, Trash2, AlertCircle, Pencil, Download } from "lucide-svelte";
@@ -219,7 +219,7 @@
                 const reason = reasons.find((r: any) => r.value === item.reason);
                 const reasonLabel = reason?.labelKey ? t(reason.labelKey) : (reason?.label || item.reason || '');
                 const date = item.createdAt ? new Date(item.createdAt).toLocaleDateString('lo-LA') : '';
-                csv += `"${date}","${productName}","${Math.abs(item.quantity || 0)}","${reasonLabel}","${item.reference || ''}","${item.notes || ''}"\n`;
+                csv += `"${date}",${escapeCsvCell(productName)},"${Math.abs(item.quantity || 0)}","${reasonLabel}",${escapeCsvCell(item.reference || '')},${escapeCsvCell(item.notes || '')}\n`;
             }
             downloadFile(csv, `stockout-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
             toast.success(t("reports.exportSuccess"));

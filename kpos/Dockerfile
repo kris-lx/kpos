@@ -24,14 +24,16 @@ FROM node:22-alpine AS production
 WORKDIR /app
 RUN apk add --no-cache curl
 
-# Copy only the built output and production deps
-COPY --from=builder /app/build ./build
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/package.json ./
+# Copy only the built output and production deps.
+# node:alpine ships a built-in non-root `node` user (uid 1000) — use it.
+COPY --chown=node:node --from=builder /app/build ./build
+COPY --chown=node:node --from=builder /app/node_modules ./node_modules
+COPY --chown=node:node --from=builder /app/package.json ./
 
 ENV NODE_ENV=production
 ENV HOST=0.0.0.0
 ENV PORT=3000
+USER node
 EXPOSE 3000
 
 # adapter-node entry point

@@ -202,6 +202,14 @@ export const en = {
   "auth.logoutSuccess": "Logged out successfully",
   "auth.noAccount": "Don't have an account?",
   "auth.registerNow": "Register now",
+  "auth.signInWithSso": "Sign in with SSO",
+  "auth.ssoOrgCode": "Organization code",
+  "auth.ssoOrgCodePrompt": "Enter your organization code",
+  "auth.signingIn": "Signing in...",
+  "auth.ssoErrorUnknownOrg": "Unknown organization code",
+  "auth.ssoErrorNotConfigured": "SSO is not configured for this organization",
+  "auth.ssoErrorNoAccount": "No account found for your email. Contact your administrator.",
+  "auth.ssoErrorGeneric": "SSO sign-in failed. Please try again.",
 
   // Register Store/Branch
   "register.storeTitle": "Request Store/Branch",
@@ -277,6 +285,8 @@ export const en = {
   "pos.outOfStock": "Out of stock",
   "pos.memberCustomer": "Member",
   "pos.selectCustomer": "Select customer (optional)",
+  "pos.openCustomerDisplay": "Open customer display",
+  "pos.customerDisplayBlocked": "Customer display was blocked by your browser's popup blocker — click the display icon next to \"Select customer\" to open it manually, then allow popups for this site.",
   "pos.discountPromotion": "Discount / Promotion",
   "pos.amountDue": "Amount Due",
   "pos.cash": "Cash",

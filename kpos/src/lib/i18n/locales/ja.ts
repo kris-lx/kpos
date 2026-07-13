@@ -94,6 +94,14 @@ export const ja = {
     'auth.loginFailed': 'メールアドレスまたはパスワードが正しくありません',
     'auth.loginError': 'ログイン中にエラーが発生しました',
     'auth.logoutSuccess': 'ログアウトしました',
+    'auth.signInWithSso': 'SSOでサインイン',
+    'auth.ssoOrgCode': '組織コード',
+    'auth.ssoOrgCodePrompt': '組織コードを入力してください',
+    'auth.signingIn': 'サインイン中...',
+    'auth.ssoErrorUnknownOrg': '組織コードが見つかりません',
+    'auth.ssoErrorNotConfigured': 'この組織ではSSOが設定されていません',
+    'auth.ssoErrorNoAccount': 'このメールアドレスに一致するアカウントが見つかりません。管理者にお問い合わせください。',
+    'auth.ssoErrorGeneric': 'SSOサインインに失敗しました。もう一度お試しください。',
 
     // POS
     'pos.title': '販売',
@@ -1397,6 +1405,8 @@ export const ja = {
     'pos.noItemsToHold': 'No items to hold',
     'pos.scanQrToPay': 'Scan QR Code to pay',
     'pos.selectCustomer': 'Select customer (optional)',
+    'pos.openCustomerDisplay': 'Open customer display',
+    'pos.customerDisplayBlocked': 'Customer display was blocked by your browser\'s popup blocker — click the display icon next to "Select customer" to open it manually.',
     'pos.tryAnotherSearch': 'Try searching with different keywords',
     'pos.waitingForCard': 'Waiting for card from customer',
     'product.unit.piece': 'pcs',

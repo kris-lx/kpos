@@ -38,6 +38,8 @@ Thumbs.db
 # Test
 coverage
 .nyc_output
+test-results
+playwright-report
 
 # Misc
 *.local

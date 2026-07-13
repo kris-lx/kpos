@@ -3,28 +3,10 @@
 // Publishes to RabbitMQ queue if available, falls back to direct DB write
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { createHmac } from 'crypto';
 import { db } from '@/config/database.config';
 import { activityLogs } from '@/db/schema/tables';
 import { publish, QUEUES, isRabbitMQConnected } from '@/config/rabbitmq.config';
-
-/**
- * Computes HMAC-SHA256 checksum of audit log fields using JWT_SECRET.
- * Allows offline verification that a log record has not been tampered with.
- */
-function computeAuditChecksum(fields: {
-    userId: string;
-    action: string;
-    resource: string;
-    details: string;
-    metadata: Record<string, unknown>;
-    ts: string;
-}): string {
-    const secret = process.env.JWT_SECRET || 'fallback-audit-key';
-    return createHmac('sha256', secret)
-        .update(JSON.stringify(fields))
-        .digest('hex');
-}
+import { computeAuditChecksum } from '@/shared/audit-checksum';
 
 export async function queueActivityLog(
     userId: string,

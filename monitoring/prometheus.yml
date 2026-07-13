@@ -1,0 +1,21 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Direct scrape of the API's own /metrics (prom-client — see
+  # metrics.middleware.ts). Node's OTel auto-instrumentation reliably emits
+  # traces but not metrics in this SDK version (verified live: traces reach
+  # the otel-collector immediately, metrics never populate its Prometheus
+  # exporter even after several export cycles) — this is the target that
+  # actually has data. `api` resolves via the kpos-network container name
+  # when running the full docker-compose stack; running the API locally
+  # (`npm run dev`, outside Docker) instead, swap this for
+  # host.docker.internal:5000.
+  - job_name: 'kpos-api'
+    static_configs:
+      - targets: ['api:5000']
+
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

@@ -6,7 +6,9 @@
     import { Eye, EyeOff, Store, Sun, Moon, Globe } from "lucide-svelte";
     import { toast } from "svelte-sonner";
     import { browser } from "$app/environment";
+    import { page } from "$app/stores";
     import { LOCAL_STORAGE_KEYS } from "$lib/config";
+    import { PUBLIC_API_URL } from "$env/static/public";
 
     // Clear any stale auth state so the login form always starts fresh
     if (browser && !auth.isAuthenticated) {
@@ -21,6 +23,28 @@
     let isLoading = $state(false);
     let error = $state("");
     let showLangMenu = $state(false);
+
+    const SSO_ERROR_KEYS: Record<string, string> = {
+        unknown_organization: "auth.ssoErrorUnknownOrg",
+        not_configured: "auth.ssoErrorNotConfigured",
+        no_account_found: "auth.ssoErrorNoAccount",
+        invalid_state: "auth.ssoErrorGeneric",
+        no_email_claim: "auth.ssoErrorGeneric",
+        sso_failed: "auth.ssoErrorGeneric",
+    };
+
+    if (browser) {
+        const ssoError = $page.url.searchParams.get("ssoError") || $page.url.searchParams.get("error");
+        if (ssoError) {
+            error = t(SSO_ERROR_KEYS[ssoError] || "auth.ssoErrorGeneric");
+        }
+    }
+
+    function handleSsoClick() {
+        const orgCode = window.prompt(t("auth.ssoOrgCodePrompt"));
+        if (!orgCode) return;
+        window.location.href = `${PUBLIC_API_URL}/auth/sso/${encodeURIComponent(orgCode.trim())}`;
+    }
 
     async function handleSubmit(e: SubmitEvent) {
         e.preventDefault();
@@ -222,7 +246,20 @@
                         <span>{t("auth.login")}</span>
                     {/if}
                 </button>
-                
+
+                <!-- SSO -->
+                <button
+                    type="button"
+                    onclick={handleSsoClick}
+                    class={cn(
+                        "w-full py-3 px-4 rounded-xl font-medium",
+                        "border border-gray-300 dark:border-gray-600",
+                        "text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors",
+                    )}
+                >
+                    {t("auth.signInWithSso")}
+                </button>
+
                 <!-- Register Link -->
                 <div class="text-center text-sm mt-6">
                     <span class="text-gray-500 dark:text-gray-400">{t("auth.noAccount")}</span>

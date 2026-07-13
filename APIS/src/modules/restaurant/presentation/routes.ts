@@ -17,6 +17,7 @@ import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middlew
 import { db as globalDb } from '@/config/database.config';
 import { branches, tables as restaurantTables, orderItems } from '@/db/schema/tables';
 import { eq, and } from 'drizzle-orm';
+import { setSuperAdminBypassContext } from '@/db/set-tenant-context';
 
 export const restaurantRoutes = Router();
 
@@ -651,6 +652,14 @@ restaurantRoutes.delete('/reservations/:id', authenticate, withTenantTx(), autho
 restaurantRoutes.get('/e-menu', async (req, res, next) => {
     try {
         const { branchId } = req.query;
+        // Require branchId, same as POST /e-menu/order — without it,
+        // getMenu() has no tenant to scope its bypass-context queries to,
+        // and previously returned every tenant's active settings/categories/
+        // products merged into one response.
+        if (!branchId) {
+            res.status(400).json({ success: false, error: { code: 'RES_006', message: 'branchId is required' } });
+            return;
+        }
         const menuData = await eMenuService.getMenu(branchId as string);
         res.json({ success: true, data: menuData });
     } catch (error) {
@@ -677,11 +686,21 @@ restaurantRoutes.post('/e-menu/order', async (req, res, next) => {
             res.status(400).json({ success: false, error: { code: 'RES_006', message: 'branchId is required' } });
             return;
         }
-        // Public e-menu endpoint — no authenticate/withTenantTx, always globalDb.
+        // Public e-menu endpoint — no authenticate/withTenantTx, so there's no
+        // tenant GUC to set from req.authUser. Under FORCE ROW LEVEL SECURITY
+        // this plain globalDb read always returned undefined for any real
+        // (non-null-tenant) branch — every e-menu order 404'd regardless of
+        // whether the branch existed. branchId is not secret (it's the whole
+        // point of a public menu link), so the same controlled bypass GUC
+        // used elsewhere (drizzle/0020) is safe here, scoped by the explicit
+        // branch id in the WHERE clause.
         // eslint-disable-next-line no-restricted-syntax -- public e-menu endpoint, no authenticate/req.tx
-        const branch = await globalDb.query.branches.findFirst({
-            where: and(eq(branches.id, String(branchId)), eq(branches.isActive, true)),
-            columns: { id: true },
+        const branch = await globalDb.transaction(async (tx) => {
+            await setSuperAdminBypassContext(tx, { local: true });
+            return tx.query.branches.findFirst({
+                where: and(eq(branches.id, String(branchId)), eq(branches.isActive, true)),
+                columns: { id: true },
+            });
         });
         if (!branch) {
             res.status(404).json({ success: false, error: { code: 'RES_007', message: 'Invalid or inactive branch' } });

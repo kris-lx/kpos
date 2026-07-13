@@ -94,6 +94,21 @@ export async function setRequestContext(
 }
 
 /**
+ * Sets the `app.bypass_rls` GUC used by the *_tenant_isolation / branches_path_scope
+ * policies' superadmin escape hatch (see drizzle/0020_superadmin_rls_bypass.sql).
+ * MUST only ever be called with a caller already confirmed to be
+ * `req.authUser.isSuperAdmin` — never derive this from request input. The
+ * value is a fixed literal, not interpolated from any caller-supplied data.
+ */
+export async function setSuperAdminBypassContext(
+    db: ContextCapableDb,
+    options: { local?: boolean } = {},
+): Promise<void> {
+    const setKeyword = options.local === false ? 'SET' : 'SET LOCAL';
+    await db.execute(sql.raw(`${setKeyword} app.bypass_rls = 'true'`));
+}
+
+/**
  * Resets session-level GUCs set by {@link setRequestContext} with
  * `local: false`. MUST be called on a reserved connection before releasing
  * it back to the pool — otherwise the tenant context set for one request

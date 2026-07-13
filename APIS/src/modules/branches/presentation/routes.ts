@@ -153,6 +153,20 @@ branchRoutes.post('/', authenticate, withTenantTx(), authorize('branches:create'
                 error: { code: 'VALIDATION', message: 'Name and code are required' }
             });
         }
+        // `code` becomes part of `branches.branchPath` (materialized path,
+        // '.'-joined — see below) which is read back and used to build
+        // branch-scope SQL conditions elsewhere (auth.middleware.ts). Reject
+        // '.' (the path separator — would let a branch masquerade as a
+        // descendant of an unrelated branch) and anything outside the
+        // character set `set-tenant-context.ts`'s BRANCH_PATH_RE already
+        // requires for this same column, so a bad branchPath can never reach
+        // the DB in the first place.
+        if (!/^[\w -]+$/.test(code)) {
+            return res.status(400).json({
+                success: false,
+                error: { code: 'VALIDATION', message: "Branch code may only contain letters, numbers, spaces, underscores and hyphens (no '.')" }
+            });
+        }
 
         const dupConds: any[] = [eq(branches.code, code)];
         if (tenantId) dupConds.push(eq(branches.tenantId, tenantId));
@@ -210,6 +224,13 @@ branchRoutes.put('/:id', authenticate, withTenantTx(), authorize('branches:updat
         }
 
         const { name, code, address, phone, email, taxId, logo, isMain, isActive, settings } = req.body;
+        // Same constraint as create — code feeds branchPath (see POST / above).
+        if (code !== undefined && !/^[\w -]+$/.test(code)) {
+            return res.status(400).json({
+                success: false,
+                error: { code: 'VALIDATION', message: "Branch code may only contain letters, numbers, spaces, underscores and hyphens (no '.')" }
+            });
+        }
         const data: Record<string, unknown> = { updatedAt: new Date() };
         if (name !== undefined) data.name = name;
         if (code !== undefined) data.code = code;

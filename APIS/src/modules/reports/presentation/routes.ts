@@ -55,6 +55,14 @@ reportRoutes.get('/summary', authenticate, withTenantTx(), branchFilter(), async
 
         // Low stock
         const invConds: any[] = [lte(inventory.quantity, 10)];
+        // Was missing the tenant filter every sibling query in this handler
+        // has (transactions/products/customers all add this) — inventory
+        // rows with tenant_id NULL (see inventory/presentation/routes.ts
+        // transfer/PO-receive fixes) were RLS-visible as "globally shared,"
+        // so this leaked other tenants' orphaned rows into this count, and
+        // for tenant-admin/HQ users (no branch scope) this query previously
+        // ran with the tenant boundary enforced by RLS alone.
+        if (tenantId && !req.authUser?.isSuperAdmin) invConds.push(eq(inventory.tenantId, tenantId));
         const invScope = buildScopeCondition(filter, { branchId: inventory.branchId }, 'branchId');
         if (invScope) invConds.push(invScope);
         if (!filter && branchId)invConds.push(eq(inventory.branchId, branchId));
@@ -238,6 +246,12 @@ reportRoutes.get('/inventory', authenticate, withTenantTx(), branchFilter(), asy
         const skip = (pageNum - 1) * limitNum;
 
         const invConds2: any[] = [];
+        // Was missing the tenant filter entirely — for tenant-admin/HQ-level
+        // users (roleLevel <= 2, branchFilter() intentionally returns no
+        // branch scope for them) this query could run with zero WHERE
+        // conditions, returning every tenant's inventory rows.
+        const invTenantId = req.authUser?.tenantId;
+        if (invTenantId && !req.authUser?.isSuperAdmin) invConds2.push(eq(inventory.tenantId, invTenantId));
         const invScope2 = buildScopeCondition(filter, { branchId: inventory.branchId }, 'branchId');
         if (invScope2) invConds2.push(invScope2);
         if (!filter && branchId)invConds2.push(eq(inventory.branchId, branchId));

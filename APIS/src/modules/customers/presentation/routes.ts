@@ -5,7 +5,7 @@
 import { Router } from 'express';
 import { authenticate, authorize, branchFilter, buildScopeCondition, ensureScopeAccess, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
-import { setRequestContext } from '@/db/set-tenant-context';
+import { setRequestContext, setSuperAdminBypassContext } from '@/db/set-tenant-context';
 import { db as globalDb } from '@/config/database.config';
 import { customers, membershipTiers, settings, pointsHistory, transactions } from '@/db/schema/tables';
 import { eq, and, or, ilike, desc, asc, count, sql } from 'drizzle-orm';
@@ -18,7 +18,9 @@ export const customerRoutes = Router();
 async function scopedTransaction(req, callback) {
     return globalDb.transaction(async (tx) => {
         const { tenantId, isSuperAdmin, activeBranchPath } = req.authUser ?? {};
-        if (tenantId && !isSuperAdmin) {
+        if (isSuperAdmin) {
+            await setSuperAdminBypassContext(tx, { local: true });
+        } else if (tenantId) {
             await setRequestContext(tx, { tenantId, branchPath: activeBranchPath }, { local: true });
         }
         return callback(tx);
@@ -512,8 +514,11 @@ customerRoutes.put('/:id', authenticate, withTenantTx(), authorize('customers:up
         if (birthDate !== undefined) updateData.birthDate = birthDate ? new Date(birthDate) : null;
         if (gender !== undefined) updateData.gender = gender || null;
         if (notes !== undefined) updateData.notes = notes?.trim() || null;
-        if (points !== undefined) updateData.points = Number(points) || 0;
-        if (totalSpent !== undefined) updateData.totalSpent = Number(totalSpent) || 0;
+        // points/totalSpent are intentionally NOT settable here — use the
+        // dedicated /:id/points and /:id/points/adjust endpoints, which
+        // write a pointsHistory audit record. This generic update route was
+        // letting any staff with plain customers:update grant free loyalty
+        // points with zero audit trail.
         if (isActive !== undefined) updateData.isActive = Boolean(isActive);
         if (priceLevelId !== undefined) updateData.priceLevelId = priceLevelId || null;
 
@@ -581,8 +586,11 @@ customerRoutes.post('/:id/points', authenticate, withTenantTx(), authorize('cust
         const adjustUserId = req.authUser?.userId;
 
         const customer = await scopedTransaction(req, async (tx) => {
+            // GREATEST floors at 0 — previously an unbounded negative
+            // adjustment (or two racing deductions each individually valid
+            // but not together) could drive points negative with no backstop.
             const [updated] = await tx.update(customers)
-                .set({ points: sql`${customers.points} + ${points}`, updatedAt: new Date() })
+                .set({ points: sql`GREATEST(0, ${customers.points} + ${points})`, updatedAt: new Date() })
                 .where(eq(customers.id, req.params.id))
                 .returning();
             await tx.insert(pointsHistory).values({
@@ -695,8 +703,9 @@ customerRoutes.post('/:id/points/adjust', authenticate, withTenantTx(), authoriz
         // Update customer points and create history record in a transaction
         const adjustTenantId = req.authUser?.tenantId;
         const { updatedCustomer, historyRecord } = await scopedTransaction(req, async (tx) => {
+            // GREATEST floors at 0 — see /:id/points for why.
             const [updatedCustomer] = await tx.update(customers)
-                .set({ points: sql`${customers.points} + ${points}`, updatedAt: new Date() })
+                .set({ points: sql`GREATEST(0, ${customers.points} + ${points})`, updatedAt: new Date() })
                 .where(eq(customers.id, customerId))
                 .returning();
 

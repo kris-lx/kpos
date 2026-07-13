@@ -77,4 +77,24 @@ describe.skipIf(!SUPERUSER_URL || !APP_URL)('RLS tenant isolation (live DB)', ()
         const rows = await superSql`select id from products where id = ${productId}`;
         expect(rows.length).toBe(1);
     });
+
+    it('kpos_app with app.bypass_rls=true sees the row with NO tenant context set at all (drizzle/0020)', async () => {
+        await appSql.unsafe(`SET app.bypass_rls = 'true'`);
+        const rows = await appSql`select id from products where id = ${productId}`;
+        expect(rows.length).toBe(1);
+        await appSql`RESET ALL`;
+    });
+
+    it('kpos_app with app.bypass_rls=true also sees it across an UNRELATED tenant context', async () => {
+        await appSql.unsafe(`SET app.current_tenant_id = '${tenantBId}'`);
+        await appSql.unsafe(`SET app.bypass_rls = 'true'`);
+        const rows = await appSql`select id from products where id = ${productId}`;
+        expect(rows.length).toBe(1);
+        await appSql`RESET ALL`;
+    });
+
+    it('kpos_app with app.bypass_rls unset (default) still denies by default', async () => {
+        const rows = await appSql`select id from products where id = ${productId}`;
+        expect(rows.length).toBe(0);
+    });
 });

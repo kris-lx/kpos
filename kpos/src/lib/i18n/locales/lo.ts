@@ -137,6 +137,14 @@ export const lo = {
     'auth.logoutSuccess': 'ອອກຈາກລະບົບສຳເລັດ',
     'auth.noAccount': 'ຍັງບໍ່ມີບັນຊີບໍ່?',
     'auth.registerNow': 'ລົງທະບຽນດຽວນີ້',
+    'auth.signInWithSso': 'ເຂົ້າສູ່ລະບົບດ້ວຍ SSO',
+    'auth.ssoOrgCode': 'ລະຫັດອົງກອນ',
+    'auth.ssoOrgCodePrompt': 'ປ້ອນລະຫັດອົງກອນຂອງທ່ານ',
+    'auth.signingIn': 'ກຳລັງເຂົ້າສູ່ລະບົບ...',
+    'auth.ssoErrorUnknownOrg': 'ບໍ່ພົບລະຫັດອົງກອນນີ້',
+    'auth.ssoErrorNotConfigured': 'SSO ບໍ່ໄດ້ຖືກຕັ້ງຄ່າສຳລັບອົງກອນນີ້',
+    'auth.ssoErrorNoAccount': 'ບໍ່ພົບບັນຊີສຳລັບອີເມວຂອງທ່ານ. ກະລຸນາຕິດຕໍ່ຜູ້ດູແລລະບົບ.',
+    'auth.ssoErrorGeneric': 'ເຂົ້າສູ່ລະບົບຜ່ານ SSO ບໍ່ສຳເລັດ. ກະລຸນາລອງໃໝ່.',
 
     // Register Store/Branch
     'register.storeTitle': 'ຂໍເປີດຮ້ານ/ສາຂາ',
@@ -209,6 +217,8 @@ export const lo = {
     'pos.outOfStock': 'ໝົດ',
     'pos.memberCustomer': 'ລູກຄ້າສະມາຊິກ',
     'pos.selectCustomer': 'ເລືອກລູກຄ້າ (ບໍ່ບັງຄັບ)',
+    'pos.openCustomerDisplay': 'ເປີດໜ້າຈໍລູກຄ້າ',
+    'pos.customerDisplayBlocked': 'ໜ້າຈໍລູກຄ້າຖືກບລັອກໂດຍ browser (popup blocker) — ກະລຸນາຄລິກໄອຄອນໜ້າຈໍລູກຄ້າຂ້າງປຸ່ມ "ເລືອກລູກຄ້າ" ເພື່ອເປີດເອງ, ແລ້ວອະນຸຍາດ popup ສຳລັບເວັບໄຊນີ້.',
     'pos.discountPromotion': 'ສ່ວນຫຼຸດ / ໂປຣໂມຊັ່ນ',
     'pos.amountDue': 'ຍອດທີ່ຕ້ອງຊຳລະ',
     'pos.cash': 'ເງິນສົດ',

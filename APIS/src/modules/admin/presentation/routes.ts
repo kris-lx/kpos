@@ -8,7 +8,7 @@ import { authenticate, authorize, requireSuperAdmin, requireAdmin, requireTenant
 import { permissionsToMask } from '@/infrastructure/permissions';
 import { invalidateAllTenantPermissions } from '@/infrastructure/services/permission.service';
 import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
-import { setRequestContext } from '@/db/set-tenant-context';
+import { setRequestContext, setSuperAdminBypassContext } from '@/db/set-tenant-context';
 import { db as globalDb } from '@/config/database.config';
 import { writePlatformAuditLog } from '@/infrastructure/helpers/platform-audit.helper';
 import { publish, QUEUES, isRabbitMQConnected } from '@/config/rabbitmq.config';
@@ -30,7 +30,9 @@ export const adminRoutes = Router();
 async function scopedTransaction(req, callback) {
     return globalDb.transaction(async (tx) => {
         const { tenantId, isSuperAdmin, activeBranchPath } = req.authUser ?? {};
-        if (tenantId && !isSuperAdmin) {
+        if (isSuperAdmin) {
+            await setSuperAdminBypassContext(tx, { local: true });
+        } else if (tenantId) {
             await setRequestContext(tx, { tenantId, branchPath: activeBranchPath }, { local: true });
         }
         return callback(tx);

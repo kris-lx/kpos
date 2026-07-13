@@ -6,6 +6,7 @@ import { db } from '@/config/database.config';
 import { orders, orderItems, tables } from '@/db/schema/tables';
 import { eq, and, inArray, gte, count } from 'drizzle-orm';
 import { Order, OrderStatus, OrderType, OrderItem, OrderItemStatus, TableStatus } from '../../domain/entities';
+import { setRequestContext, setSuperAdminBypassContext } from '@/db/set-tenant-context';
 
 export interface CreateOrderItemDTO {
     productId: string;
@@ -110,24 +111,42 @@ export class OrderService {
 
         const subtotal = itemsData.reduce((sum, item) => sum + item.total, 0);
 
-        const [order] = await db.insert(orders).values({
-            tenantId,
-            orderNo, branchId: data.branchId, tableId: data.tableId,
-            type: data.type || OrderType.DINE_IN, guestCount: data.guestCount || 1,
-            note: data.note, kitchenNote: data.kitchenNote, subtotal, total: subtotal,
-        }).returning();
+        // Whole order + items + table-status update now run in one transaction
+        // with the RLS context actually set — previously this ran as
+        // sequential unwrapped statements on the plain `db` handle with NO
+        // tenant_id GUC set at all, so under FORCE ROW LEVEL SECURITY every
+        // insert with a non-null tenantId failed outright (42501), and any
+        // that did succeed left the order/items inconsistent if a later step
+        // in the loop threw (e.g. the public e-menu route, reachable with no
+        // auth and thus more exposed to aborted/retried requests).
+        const completeOrder = await db.transaction(async (tx) => {
+            if (tenantId) {
+                await setRequestContext(tx, { tenantId }, { local: true });
+            } else {
+                // No tenantId resolved (e.g. public e-menu order before the
+                // branch's tenant is known) — same controlled, policy-level
+                // bypass used for superadmin (drizzle/0020), scoped by the
+                // explicit branchId in every query below.
+                await setSuperAdminBypassContext(tx, { local: true });
+            }
 
-        for (const item of itemsData) {
-            await db.insert(orderItems).values({ ...item, orderId: order.id });
-        }
+            const [order] = await tx.insert(orders).values({
+                tenantId,
+                orderNo, branchId: data.branchId, tableId: data.tableId,
+                type: data.type || OrderType.DINE_IN, guestCount: data.guestCount || 1,
+                note: data.note, kitchenNote: data.kitchenNote, subtotal, total: subtotal,
+            }).returning();
 
-        const completeOrder = await db.query.orders.findFirst({
-            where: eq(orders.id, order.id), with: { items: true },
+            for (const item of itemsData) {
+                await tx.insert(orderItems).values({ ...item, orderId: order.id });
+            }
+
+            if (data.tableId) {
+                await tx.update(tables).set({ status: TableStatus.OCCUPIED }).where(eq(tables.id, data.tableId));
+            }
+
+            return tx.query.orders.findFirst({ where: eq(orders.id, order.id), with: { items: true } });
         });
-
-        if (data.tableId) {
-            await db.update(tables).set({ status: TableStatus.OCCUPIED }).where(eq(tables.id, data.tableId));
-        }
 
         return new Order({
             ...completeOrder,

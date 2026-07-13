@@ -543,7 +543,7 @@
                     href="/display/customer"
                     target="_blank"
                     aria-label={t("nav.customerDisplay")}
-                    class="hidden md:flex p-2 rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                    class="flex p-2 rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
                 >
                     <Monitor class="w-5 h-5" />
                 </a>

@@ -1,6 +1,6 @@
 ﻿<script lang="ts">
     import { onMount } from "svelte";
-    import { cn } from "$utils";
+    import { cn, escapeHtml } from "$utils";
     import { api } from "$api";
     import QRCode from 'qrcode';
     import { t } from "$lib/i18n/index.svelte";
@@ -736,36 +736,36 @@
             const fs = el.fontSize;
             const cls = [el.align, el.bold ? 'bold' : '', el.italic ? 'italic' : ''].filter(Boolean).join(' ');
             if (el.type === 'divider') {
-                html += `<div class="divider" style="font-size:${fs}px">${el.content.repeat(50)}</div>`;
+                html += `<div class="divider" style="font-size:${fs}px">${escapeHtml(el.content.repeat(50))}</div>`;
             } else if (el.type === 'items') {
                 for (const item of sampleData.items) {
-                    html += `<div class="item-row" style="font-size:${fs}px"><span>${item.name} x${item.qty}</span><span>${formatCurrency(item.total)}</span></div>`;
+                    html += `<div class="item-row" style="font-size:${fs}px"><span>${escapeHtml(item.name)} x${item.qty}</span><span>${formatCurrency(item.total)}</span></div>`;
                 }
             } else if (el.type === 'logo') {
                 html += logoUrl
-                    ? `<div class="logo"><img src="${logoUrl}" style="max-width:80px;max-height:80px;object-fit:contain" alt="Logo"/></div>`
+                    ? `<div class="logo"><img src="${escapeHtml(logoUrl)}" style="max-width:80px;max-height:80px;object-fit:contain" alt="Logo"/></div>`
                     : `<div class="logo"><div class="logo-box">LOGO</div></div>`;
             } else if (el.type === 'image') {
                 html += el.content
-                    ? `<div class="center" style="padding:8px 0"><img src="${el.content}" style="max-width:70%;max-height:100px;object-fit:contain"/></div>`
+                    ? `<div class="center" style="padding:8px 0"><img src="${escapeHtml(el.content)}" style="max-width:70%;max-height:100px;object-fit:contain"/></div>`
                     : '';
             } else if (el.type === 'qrcode') {
                 const qrSrc = qrDataUrl || '';
                 html += qrSrc
-                    ? `<div class="qr"><img src="${qrSrc}" style="width:80px;height:80px" alt="QR Code"/></div>`
+                    ? `<div class="qr"><img src="${escapeHtml(qrSrc)}" style="width:80px;height:80px" alt="QR Code"/></div>`
                     : `<div class="qr"><div class="qr-box">QR Code</div></div>`;
             } else if (el.type === 'barcode') {
                 html += `<div class="barcode"><div class="barcode-box">Barcode</div></div>`;
             } else if (el.type === 'storeName') {
-                html += `<div class="${cls}" style="font-size:${fs}px">${storeName}</div>`;
+                html += `<div class="${cls}" style="font-size:${fs}px">${escapeHtml(storeName)}</div>`;
             } else if (el.type === 'address') {
-                html += `<div class="${cls}" style="font-size:${fs}px">${address}</div>`;
+                html += `<div class="${cls}" style="font-size:${fs}px">${escapeHtml(address)}</div>`;
             } else if (el.type === 'phone') {
-                html += `<div class="${cls}" style="font-size:${fs}px">${phone}</div>`;
+                html += `<div class="${cls}" style="font-size:${fs}px">${escapeHtml(phone)}</div>`;
             } else if (el.type === 'taxId') {
-                html += `<div class="${cls}" style="font-size:${fs}px">${taxId}</div>`;
+                html += `<div class="${cls}" style="font-size:${fs}px">${escapeHtml(taxId)}</div>`;
             } else {
-                html += `<div class="${cls}" style="font-size:${fs}px">${renderContent(el)}</div>`;
+                html += `<div class="${cls}" style="font-size:${fs}px">${escapeHtml(renderContent(el))}</div>`;
             }
         }
 

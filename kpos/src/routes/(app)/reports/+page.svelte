@@ -1,7 +1,7 @@
 ﻿<script lang="ts">
     import { t } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
-    import { cn, formatCurrency, formatDateTime } from "$lib/utils";
+    import { cn, formatCurrency, formatDateTime, escapeHtml, escapeCsvCell } from "$lib/utils";
     import { onMount } from "svelte";
     import { toast } from "svelte-sonner";
     import { auth } from "$stores";
@@ -123,10 +123,7 @@
             let csv = '\ufeff'; // BOM for UTF-8
             csv += headers.join(',') + '\n';
             data.forEach(row => {
-                csv += headers.map(h => {
-                    const val = row[h] ?? '';
-                    return `"${String(val).replace(/"/g, '""')}"`;
-                }).join(',') + '\n';
+                csv += headers.map(h => escapeCsvCell(row[h])).join(',') + '\n';
             });
             
             downloadFile(csv, `report-${selectedReport}-${dateRange}.csv`, 'text/csv;charset=utf-8');
@@ -168,15 +165,15 @@
     <p class="header-info">${dateRangeLabels[dateRange]} - ${new Date().toLocaleDateString('lo-LA')}</p>
     <table>
         <thead>
-            <tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr>
+            <tr>${headers.map(h => `<th>${escapeHtml(h)}</th>`).join('')}</tr>
         </thead>
         <tbody>
-            ${data.map(row => `<tr>${headers.map(h => `<td>${row[h] ?? ''}</td>`).join('')}</tr>`).join('')}
+            ${data.map(row => `<tr>${headers.map(h => `<td>${escapeHtml(row[h])}</td>`).join('')}</tr>`).join('')}
         </tbody>
     </table>
 </body>
 </html>`;
-            
+
             const printWindow = window.open('', '_blank');
             if (printWindow) {
                 printWindow.document.write(html);
@@ -221,12 +218,12 @@
     <h1>${t("reports.title")} - ${dateRangeLabels[dateRange]}</h1>
     <p style="text-align:center">${new Date().toLocaleDateString('lo-LA')}</p>
     <table>
-        <tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr>
-        ${data.map(row => `<tr>${headers.map(h => `<td>${row[h] ?? ''}</td>`).join('')}</tr>`).join('')}
+        <tr>${headers.map(h => `<th>${escapeHtml(h)}</th>`).join('')}</tr>
+        ${data.map(row => `<tr>${headers.map(h => `<td>${escapeHtml(row[h])}</td>`).join('')}</tr>`).join('')}
     </table>
 </body>
 </html>`;
-            
+
             downloadFile(html, `report-${selectedReport}-${dateRange}.doc`, 'application/msword');
             toast.success(t("reports.exportSuccess"));
         } catch (e) {
@@ -312,7 +309,7 @@
         ];
 
         data.forEach((row, i) => {
-            const vals = headers.map(h => `${h}: ${row[h] ?? ''}`);
+            const vals = headers.map(h => `${escapeHtml(h)}: ${escapeHtml(row[h])}`);
             lines.push(`${i + 1}. ${vals.join(' | ')}`);
         });
 

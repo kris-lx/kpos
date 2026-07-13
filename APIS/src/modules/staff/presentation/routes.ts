@@ -6,7 +6,7 @@ import { Router } from 'express';
 import { authenticate, authorize, branchFilter, getRoleLevel, ROLE_LEVELS, ensureScopeAccess, invalidateUserStoreCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
 import { db as globalDb } from '@/config/database.config';
-import { users, userStores, roles, branches } from '@/db/schema/tables';
+import { users, userStores, roles, branches, stores } from '@/db/schema/tables';
 import { eq, and, or, ilike, inArray, notInArray, isNull, desc, asc, count } from 'drizzle-orm';
 import argon2 from 'argon2';
 import { invalidateUserPermissions } from '@/infrastructure/services/permission.service';
@@ -102,6 +102,7 @@ staffRoutes.get('/', authenticate, withTenantTx(), authorize('staff:read'), bran
                 offset: skip,
                 limit: Number(limit),
                 orderBy: desc(users.createdAt),
+                columns: { password: false, twoFASecret: false },
                 with: { branch: true, roleRelation: true },
             }),
             db.select({ value: count() }).from(users).where(whereClause),
@@ -209,6 +210,7 @@ staffRoutes.get('/:id', authenticate, withTenantTx(), authorize('staff:read'), a
 
         const staff = await db.query.users.findFirst({
             where: and(...staffConds),
+            columns: { password: false, twoFASecret: false },
             with: { branch: true, roleRelation: true },
         });
 
@@ -248,7 +250,6 @@ staffRoutes.post('/', authenticate, withTenantTx(), branchFilter(), authorize('s
         const db = req.tx ?? globalDb;
         const { email, password, name, phone, role, branchId, storeId, roleId, isActive, permissions } = req.body;
         const authUser = req.authUser;
-        const creatorStoreId = storeId || authUser?.activeStoreId || undefined;
 
         if (!email || !password || !name) {
             res.status(400).json({ success: false, error: { code: 'VAL_001', message: 'Email, password, and name are required' } });
@@ -286,7 +287,23 @@ staffRoutes.post('/', authenticate, withTenantTx(), branchFilter(), authorize('s
                 return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot create staff in a branch outside your scope' } });
             }
         }
-        const sanitizedStoreId = creatorStoreId && creatorStoreId.trim() !== '' ? creatorStoreId : undefined;
+        // Resolve the store to scope this staff member to: explicit storeId >
+        // creator's own active store > branch's default store. Without this
+        // fallback, an owner with no activeStoreId (no userStores row of their
+        // own) would create staff with no userStores mapping at all, making
+        // the new staff member invisible in list/detail views that scope by
+        // userStores membership — even to the owner who just created them.
+        let sanitizedStoreId = storeId && String(storeId).trim() !== '' ? String(storeId) : (authUser?.activeStoreId || undefined);
+        if (!sanitizedStoreId && sanitizedBranchId) {
+            const branchStore = await db.query.stores.findFirst({
+                where: and(eq(stores.branchId, sanitizedBranchId), eq(stores.isDefault, true)),
+                columns: { id: true },
+            }) ?? await db.query.stores.findFirst({
+                where: eq(stores.branchId, sanitizedBranchId),
+                columns: { id: true },
+            });
+            if (branchStore) sanitizedStoreId = branchStore.id;
+        }
 
         const [staff] = await db.insert(users).values({
             tenantId,
@@ -299,7 +316,25 @@ staffRoutes.post('/', authenticate, withTenantTx(), branchFilter(), authorize('s
             roleId: sanitizedRoleId,
             isActive: isActive !== undefined ? isActive : true,
             permissions: Array.isArray(permissions) ? permissions : [],
-        }).returning();
+        }).returning({
+            id: users.id,
+            tenantId: users.tenantId,
+            email: users.email,
+            name: users.name,
+            phone: users.phone,
+            avatar: users.avatar,
+            role: users.role,
+            roleId: users.roleId,
+            branchId: users.branchId,
+            permissions: users.permissions,
+            isActive: users.isActive,
+            isSuperAdmin: users.isSuperAdmin,
+            emailVerified: users.emailVerified,
+            twoFAEnabled: users.twoFAEnabled,
+            lastLoginAt: users.lastLoginAt,
+            createdAt: users.createdAt,
+            updatedAt: users.updatedAt,
+        });
 
         // Auto-create UserStore record so staff is scoped to the store
         if (sanitizedStoreId && sanitizedBranchId) {
@@ -389,7 +424,25 @@ staffRoutes.put('/:id', authenticate, withTenantTx(), authorize('staff:update'),
         const [staff] = await db.update(users)
             .set(updateData)
             .where(and(...targetConds))
-            .returning();
+            .returning({
+                id: users.id,
+                tenantId: users.tenantId,
+                email: users.email,
+                name: users.name,
+                phone: users.phone,
+                avatar: users.avatar,
+                role: users.role,
+                roleId: users.roleId,
+                branchId: users.branchId,
+                permissions: users.permissions,
+                isActive: users.isActive,
+                isSuperAdmin: users.isSuperAdmin,
+                emailVerified: users.emailVerified,
+                twoFAEnabled: users.twoFAEnabled,
+                lastLoginAt: users.lastLoginAt,
+                createdAt: users.createdAt,
+                updatedAt: users.updatedAt,
+            });
 
         await invalidateStaffAuthCaches(req.params.id, target.tenantId);
         res.json({ success: true, data: staff });
@@ -551,7 +604,16 @@ staffRoutes.put('/:id/permissions', authenticate, withTenantTx(), authorize('sta
         const [user] = await db.update(users)
             .set({ permissions: scopedPermissions, updatedAt: new Date() })
             .where(and(...targetConds))
-            .returning();
+            .returning({
+                id: users.id,
+                tenantId: users.tenantId,
+                email: users.email,
+                name: users.name,
+                role: users.role,
+                permissions: users.permissions,
+                isActive: users.isActive,
+                updatedAt: users.updatedAt,
+            });
 
         await invalidateStaffAuthCaches(req.params.id, targetUser.tenantId);
         res.json({ success: true, data: user, message: 'Staff permissions updated successfully' });

@@ -9,7 +9,7 @@ import { authController } from './controllers/auth.controller';
 import { authenticate, invalidateUserStoreCache } from '@/infrastructure/http/middleware/auth.middleware';
 import { validateBody } from '@/infrastructure/http/middleware/validation.middleware';
 import { authRateLimiter } from '@/infrastructure/http/middleware/rateLimit.middleware';
-import { LoginDto, RegisterDto, RefreshTokenDto } from '../application/dtos/auth.dto';
+import { LoginDto, RegisterDto } from '../application/dtos/auth.dto';
 import { db } from '@/config/database.config';
 import { cache } from '@/config/redis.config';
 import { users } from '@/db/schema/tables';
@@ -17,8 +17,11 @@ import { eq } from 'drizzle-orm';
 import { sendPasswordResetEmail } from '@/infrastructure/services/email.service';
 import { getActiveAdapter, sendEmailWithRetry } from '@/infrastructure/services/email/email.service';
 import { emailConfig } from '@/config/app.config';
+import { ssoRoutes } from './sso.routes';
 
 export const authRoutes = Router();
+
+authRoutes.use(ssoRoutes);
 
 // Public routes
 authRoutes.post('/login',
@@ -35,7 +38,14 @@ authRoutes.post('/register',
 
 authRoutes.post('/refresh',
     authRateLimiter,                 // Prevent refresh token brute-force
-    validateBody(RefreshTokenDto),
+    // No validateBody here on purpose: the browser refresh call sends no
+    // body at all (relies solely on the HttpOnly cookie — see
+    // authClient.post('auth/refresh') in the frontend), so express.json()
+    // never populates req.body (no Content-Type header), and
+    // RefreshTokenDto.parse(undefined) threw a 400 on every single refresh
+    // call, valid session or not — refresh never actually worked in the
+    // browser. The controller already safely reads req.body?.refreshToken
+    // as a legacy-fallback optional field.
     (req, res, next) => authController.refresh(req, res, next)
 );
 

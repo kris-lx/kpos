@@ -393,6 +393,7 @@ productRoutes.post('/skus', authenticate, withTenantTx(), authorize('products:cr
         const skuData: any = {
             name: variant || productName || 'Default',
             sku,
+            tenantId: req.authUser?.tenantId || req.user?.tenantId,
             cost: unitCost ? Number(unitCost) : 0,
             price: sellingPrice ? Number(sellingPrice) : 0,
             isActive: isActive !== false,
@@ -803,6 +804,7 @@ productRoutes.post('/', authenticate, withTenantTx(), branchFilter(), authorize(
             try {
                 await db.insert(skuVariants).values({
                     productId: product.id,
+                    tenantId: product.tenantId,
                     sku: product.sku,
                     barcode: product.barcode || undefined,
                     name: product.name,

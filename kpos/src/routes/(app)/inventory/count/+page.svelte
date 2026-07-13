@@ -1,7 +1,7 @@
 ﻿<script lang="ts">
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
-    import { cn } from "$utils";
+    import { cn, escapeCsvCell } from "$utils";
     import { api } from "$api";
     import { formatDate } from "$lib/utils";
     import { toast } from "svelte-sonner";
@@ -218,7 +218,7 @@
             for (const item of rows) {
                 const statusLabel = item.status === 'completed' ? 'ສຳເລັດ' : item.status === 'pending' ? 'ລໍຖ້າ' : item.status;
                 const date = item.createdAt ? new Date(item.createdAt).toLocaleDateString('lo-LA') : '';
-                csv += `"${date}","${item.countNo || ''}","${item.items?.length || 0}","${item.hasDiscrepancy ? 'ມີ' : 'ບໍ່ມີ'}","${statusLabel}"\n`;
+                csv += `"${date}",${escapeCsvCell(item.countNo || '')},"${item.items?.length || 0}","${item.hasDiscrepancy ? 'ມີ' : 'ບໍ່ມີ'}","${statusLabel}"\n`;
             }
             downloadFile(csv, `stock-counts-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
             toast.success(t('common.exportSuccess'));

@@ -1,7 +1,7 @@
 ﻿<script lang="ts">
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
-    import { cn } from "$utils";
+    import { cn, escapeCsvCell } from "$utils";
     import { api } from "$api";
     import { formatDate } from "$lib/utils";
     import { toast } from "svelte-sonner";
@@ -180,7 +180,7 @@
                 const typeLabel = item.adjustmentType === 'increase' ? 'ເພີ່ມ' : 'ຫຼຸດ';
                 const reasonLabel = adjustReasons.find((r: any) => r.value === item.reason)?.labelLao || item.reason || '';
                 const date = item.createdAt ? new Date(item.createdAt).toLocaleDateString('lo-LA') : '';
-                csv += `"${date}","${productName}","${typeLabel}","${item.quantity || 0}","${reasonLabel}","${item.reference || ''}"\n`;
+                csv += `"${date}",${escapeCsvCell(productName)},"${typeLabel}","${item.quantity || 0}","${reasonLabel}",${escapeCsvCell(item.reference || '')}\n`;
             }
             downloadFile(csv, `adjustments-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
             toast.success(t('common.exportSuccess'));

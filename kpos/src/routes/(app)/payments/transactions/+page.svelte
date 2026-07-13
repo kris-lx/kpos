@@ -1,7 +1,7 @@
 ﻿<script lang="ts">
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
-    import { cn, formatCurrency, formatDate } from "$utils";
+    import { cn, formatCurrency, formatDate, escapeCsvCell, escapeHtml } from "$utils";
     import { api } from "$api";
     import { toast } from "svelte-sonner";
     import {
@@ -150,7 +150,7 @@
         let csv = '\ufeff';
         csv += 'ວັນທີ,ລະຫັດ,ລູກຄ້າ,ວິທີຊຳລະ,ຍອດເງິນ,ສະຖານະ\n';
         for (const tx of filteredTransactions) {
-            csv += `"${formatDate(tx.createdAt)}","${tx.reference}","${tx.customerName}","${getMethodConfig(tx.paymentMethod).label}","${formatCurrency(tx.amount)}","${getStatusConfig(tx.status).label}"\n`;
+            csv += `"${formatDate(tx.createdAt)}",${escapeCsvCell(tx.reference)},${escapeCsvCell(tx.customerName)},"${getMethodConfig(tx.paymentMethod).label}","${formatCurrency(tx.amount)}","${getStatusConfig(tx.status).label}"\n`;
         }
         downloadFile(csv, `transactions-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
         toast.success(t('common.exportSuccess'));
@@ -158,7 +158,7 @@
 
     function exportToPdf() {
         const rows = filteredTransactions.map(tx =>
-            `<tr><td>${formatDate(tx.createdAt)}</td><td>${tx.reference}</td><td>${tx.customerName}</td><td>${getMethodConfig(tx.paymentMethod).label}</td><td class="text-right">${formatCurrency(tx.amount)}</td><td>${getStatusConfig(tx.status).label}</td></tr>`
+            `<tr><td>${formatDate(tx.createdAt)}</td><td>${escapeHtml(tx.reference)}</td><td>${escapeHtml(tx.customerName)}</td><td>${getMethodConfig(tx.paymentMethod).label}</td><td class="text-right">${formatCurrency(tx.amount)}</td><td>${getStatusConfig(tx.status).label}</td></tr>`
         ).join('');
         const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>ລາຍການຊຳລະ</title>
 <style>body{font-family:'Noto Sans Lao',sans-serif;padding:20px}h1{text-align:center}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ddd;padding:8px;font-size:12px}th{background:#f5f5f5}.text-right{text-align:right}</style></head>
@@ -173,7 +173,7 @@
 
     function exportToWord() {
         const rows = filteredTransactions.map(tx =>
-            `<tr><td>${formatDate(tx.createdAt)}</td><td>${tx.reference}</td><td>${tx.customerName}</td><td>${getMethodConfig(tx.paymentMethod).label}</td><td>${formatCurrency(tx.amount)}</td><td>${getStatusConfig(tx.status).label}</td></tr>`
+            `<tr><td>${formatDate(tx.createdAt)}</td><td>${escapeHtml(tx.reference)}</td><td>${escapeHtml(tx.customerName)}</td><td>${getMethodConfig(tx.paymentMethod).label}</td><td>${formatCurrency(tx.amount)}</td><td>${getStatusConfig(tx.status).label}</td></tr>`
         ).join('');
         const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office"><head><meta charset="utf-8"><style>table{width:100%;border-collapse:collapse}th,td{border:1px solid #000;padding:8px}th{background:#f0f0f0}</style></head>
 <body><h1 style="text-align:center">ລາຍການຊຳລະ</h1><p style="text-align:center">${new Date().toLocaleDateString('lo-LA')}</p>

@@ -12,6 +12,47 @@ export function cn(...inputs: ClassValue[]): string {
     return twMerge(clsx(inputs));
 }
 
+/**
+ * Escape a value for safe interpolation into an HTML string built via
+ * template literals (e.g. `document.write()`/Blob-based print & export
+ * views, which bypass Svelte's automatic escaping entirely). Use this on
+ * every tenant/user-controlled value (product/customer/vendor names, notes,
+ * addresses, etc.) before concatenating it into raw HTML — otherwise a
+ * product named `<img src=x onerror=...>` executes in the same-origin
+ * window of whoever opens the export/print view next.
+ */
+export function escapeHtml(value: unknown): string {
+    if (value === null || value === undefined) return '';
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+/**
+ * Escape a value for safe inclusion as one CSV cell. Handles two distinct
+ * risks:
+ *  1. Standard CSV quoting (wraps in quotes, doubles embedded quotes) when
+ *     the value contains a comma, quote, or newline.
+ *  2. Formula/DDE injection: a cell value starting with `=`, `+`, `-`, `@`,
+ *     tab, or CR is prefixed with a leading `'` so spreadsheet apps
+ *     (Excel/Google Sheets) treat it as literal text instead of auto-running
+ *     it as a formula when a user opens the exported file. See OWASP's CSV
+ *     Injection guidance.
+ */
+export function escapeCsvCell(value: unknown): string {
+    let str = value === null || value === undefined ? '' : String(value);
+    if (/^[=+\-@\t\r]/.test(str)) {
+        str = `'${str}`;
+    }
+    if (/[",\n\r]/.test(str)) {
+        str = `"${str.replace(/"/g, '""')}"`;
+    }
+    return str;
+}
+
 // Lazy import to avoid circular dependency — settings store imports api which imports utils
 function getCurrencySymbol(): string {
     if (typeof window === 'undefined') return '₭';

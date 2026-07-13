@@ -127,7 +127,11 @@
             params.append("page", String(currentPage));
             params.append("limit", String(pageSize));
             if (activeTab !== "all") {
-                params.append("isActive", activeTab === "active" ? "true" : "false");
+                // Backend reads `status` (active|inactive), not `isActive` —
+                // this was previously sending a param name the backend never
+                // read, silently no-op'ing every tab filter (deactivated
+                // staff always stayed visible, making "delete" look broken).
+                params.append("status", activeTab === "active" ? "active" : "inactive");
             }
             if (searchQuery) {
                 params.append("search", searchQuery);

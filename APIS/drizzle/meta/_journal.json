@@ -127,6 +127,48 @@
       "when": 1783742640000,
       "tag": "0017_reenable_rls_enforcement",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1783756265824,
+      "tag": "0018_shocking_ultimates",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1783768392990,
+      "tag": "0019_skinny_midnight",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1783776000000,
+      "tag": "0020_superadmin_rls_bypass",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1783776060000,
+      "tag": "0021_fix_branches_path_scope_tenant_leak",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1783776120000,
+      "tag": "0022_shifts_one_open_per_user",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1783776180000,
+      "tag": "0023_settlements_one_per_branch_day",
+      "breakpoints": true
     }
   ]
 }

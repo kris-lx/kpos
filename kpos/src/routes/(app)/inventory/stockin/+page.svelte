@@ -2,7 +2,7 @@
     import { onMount } from "svelte";
     import { i18n } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
-    import { formatCurrency, formatDate, formatDateTime } from "$lib/utils";
+    import { formatCurrency, formatDate, formatDateTime, escapeCsvCell } from "$lib/utils";
     import { toast } from "svelte-sonner";
     import { auth } from "$stores";
     import { Plus, Search, Package, X, ChevronLeft, ChevronRight, Loader2, Trash2, AlertCircle, ChevronsLeft, ChevronsRight, Pencil, Download } from "lucide-svelte";
@@ -219,7 +219,7 @@
             for (const item of rows) {
                 const productName = products.find((p: any) => p.id === item.productId)?.name || item.productId;
                 const date = item.createdAt ? new Date(item.createdAt).toLocaleDateString('lo-LA') : '';
-                csv += `"${date}","${productName}","${item.quantity || 0}","${item.unitCost || 0}","${item.supplier || ''}","${item.reference || ''}","${item.batchNumber || ''}"\n`;
+                csv += `"${date}",${escapeCsvCell(productName)},"${item.quantity || 0}","${item.unitCost || 0}",${escapeCsvCell(item.supplier || '')},${escapeCsvCell(item.reference || '')},${escapeCsvCell(item.batchNumber || '')}\n`;
             }
             downloadFile(csv, `stockin-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
             toast.success(t('reports.exportSuccess'));

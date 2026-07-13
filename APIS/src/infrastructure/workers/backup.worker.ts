@@ -8,12 +8,13 @@ import cron from 'node-cron';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { randomUUID } from 'crypto';
 import { db } from '@/config/database.config';
 import { settings } from '@/db/schema/tables';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, type SQL } from 'drizzle-orm';
+import type { PgColumn } from 'drizzle-orm/pg-core';
 import * as tables from '@/db/schema/tables';
-import { getRedisClient } from '@/config/redis.config';
+import { acquireLock, releaseLock } from '@/shared/distributed-lock';
+import { setRequestContext, setSuperAdminBypassContext } from '@/db/set-tenant-context';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BACKUP_DIR = path.resolve(__dirname, '../../../backups');
@@ -23,42 +24,18 @@ let currentSchedule = '';
 
 // Scaling audit (2026-07-11): startScheduledJobs() runs in every API process
 // with no coordination, so with N horizontally-scaled instances the backup
-// cron fires N times concurrently. A Redis SET-NX-with-expiry lock ensures
-// only one instance actually runs it per scheduled tick. TTL is a safety net
-// so a crashed instance can't permanently block future backups; the token
-// check on release prevents releasing a lock a *different* instance has
-// since acquired (e.g. after this instance's lock already expired).
+// cron fires N times concurrently. A Redis-backed lock (see
+// shared/distributed-lock.ts) ensures only one instance actually runs it per
+// scheduled tick.
 const BACKUP_LOCK_KEY = 'kpos:backup-lock';
 const BACKUP_LOCK_TTL_MS = 5 * 60 * 1000; // generous vs. typical backup duration
 
-const NO_REDIS_TOKEN = '__no-redis__';
-const REDIS_ERROR_TOKEN = '__redis-error__';
-
 export async function acquireBackupLock(): Promise<string | null> {
-    const client = getRedisClient();
-    if (!client) return NO_REDIS_TOKEN; // no Redis configured — assume single instance, run unconditionally
-    const token = randomUUID();
-    try {
-        const result = await client.set(BACKUP_LOCK_KEY, token, 'PX', BACKUP_LOCK_TTL_MS, 'NX');
-        return result === 'OK' ? token : null;
-    } catch {
-        // Redis error acquiring the lock — fail open (run the backup) rather
-        // than risk silently never backing up again; a duplicate run here is
-        // wasteful, not dangerous, unlike the revocation/rate-limit cases.
-        return REDIS_ERROR_TOKEN;
-    }
+    return acquireLock(BACKUP_LOCK_KEY, BACKUP_LOCK_TTL_MS);
 }
 
 export async function releaseBackupLock(token: string): Promise<void> {
-    if (token === NO_REDIS_TOKEN || token === REDIS_ERROR_TOKEN) return;
-    const client = getRedisClient();
-    if (!client) return;
-    try {
-        const current = await client.get(BACKUP_LOCK_KEY);
-        if (current === token) await client.del(BACKUP_LOCK_KEY);
-    } catch {
-        // Ignore — the TTL will clean it up regardless.
-    }
+    return releaseLock(BACKUP_LOCK_KEY, token);
 }
 
 export async function runBackup(tenantId?: string): Promise<string> {
@@ -68,26 +45,53 @@ export async function runBackup(tenantId?: string): Promise<string> {
     const filename = `kpos-backup-${timestamp}.json`;
     const filepath = path.join(BACKUP_DIR, filename);
 
+    // tenantId undefined = full-platform backup (only the unattended cron job
+    // and superadmin's manual trigger should ever reach this with no scope —
+    // see the tenant/superadmin split enforced at the route in
+    // settings/presentation/routes.ts POST /backup/run). Every ordinary
+    // tenant-admin-triggered backup MUST filter by tenantId — previously this
+    // ran completely unfiltered regardless of caller, dumping every tenant's
+    // branches/users/customers/transactions into one file any tenant admin
+    // with `settings:update` could trigger.
+    //
+    // The app-layer WHERE filter alone isn't enough: this runs on the plain
+    // pooled `db` (kpos_app role, FORCE ROW LEVEL SECURITY, no BYPASSRLS),
+    // so without the matching RLS GUC set on the connection, RLS's own
+    // deny-by-default silently drops tenant-owned rows regardless of what
+    // the WHERE clause asks for — same class of bug fixed elsewhere this
+    // session (drizzle/0020). Run the whole export inside a transaction with
+    // the RLS context explicitly set: tenant-scoped for ordinary backups,
+    // app.bypass_rls for the full-platform case.
+    const scope = (col: PgColumn): SQL | undefined =>
+        tenantId ? eq(col, tenantId) : undefined;
+
     const [
         branchRows, storeRows, userRows, roleRows, ruleRows, roleRuleRows,
         categoryRows, productRows, inventoryRows, customerRows, memberRows,
         transactionRows, transactionItemRows, settingRows,
-    ] = await Promise.all([
-        db.select().from(tables.branches),
-        db.select().from(tables.stores),
-        db.select({ id: tables.users.id, email: tables.users.email, name: tables.users.name, role: tables.users.role, branchId: tables.users.branchId, isActive: tables.users.isActive }).from(tables.users),
-        db.select().from(tables.roles),
-        db.select().from(tables.rules),
-        db.select().from(tables.roleRules),
-        db.select().from(tables.categories),
-        db.select().from(tables.products),
-        db.select().from(tables.inventory),
-        db.select().from(tables.customers),
-        db.select().from(tables.members),
-        db.select().from(tables.transactions),
-        db.select().from(tables.transactionItems),
-        db.select().from(tables.settings),
-    ]);
+    ] = await db.transaction(async (tx) => {
+        if (tenantId) {
+            await setRequestContext(tx, { tenantId }, { local: true });
+        } else {
+            await setSuperAdminBypassContext(tx, { local: true });
+        }
+        return Promise.all([
+            tx.select().from(tables.branches).where(scope(tables.branches.tenantId)),
+            tx.select().from(tables.stores).where(scope(tables.stores.tenantId)),
+            tx.select({ id: tables.users.id, email: tables.users.email, name: tables.users.name, role: tables.users.role, branchId: tables.users.branchId, isActive: tables.users.isActive }).from(tables.users).where(scope(tables.users.tenantId)),
+            tx.select().from(tables.roles).where(scope(tables.roles.tenantId)),
+            tx.select().from(tables.rules).where(scope(tables.rules.tenantId)),
+            tx.select().from(tables.roleRules).where(scope(tables.roleRules.tenantId)),
+            tx.select().from(tables.categories).where(scope(tables.categories.tenantId)),
+            tx.select().from(tables.products).where(scope(tables.products.tenantId)),
+            tx.select().from(tables.inventory).where(scope(tables.inventory.tenantId)),
+            tx.select().from(tables.customers).where(scope(tables.customers.tenantId)),
+            tx.select().from(tables.members).where(scope(tables.members.tenantId)),
+            tx.select().from(tables.transactions).where(scope(tables.transactions.tenantId)),
+            tx.select().from(tables.transactionItems).where(scope(tables.transactionItems.tenantId)),
+            tx.select().from(tables.settings).where(scope(tables.settings.tenantId)),
+        ]);
+    });
 
     const backup = {
         version: 2,
@@ -103,7 +107,9 @@ export async function runBackup(tenantId?: string): Promise<string> {
         },
     };
 
-    fs.writeFileSync(filepath, JSON.stringify(backup, null, 2), 'utf-8');
+    // Some numeric columns (e.g. large counters) come back as native BigInt
+    // from postgres.js, which JSON.stringify can't serialize by default.
+    fs.writeFileSync(filepath, JSON.stringify(backup, (_key, value) => typeof value === 'bigint' ? value.toString() : value, 2), 'utf-8');
     console.log(`[Backup] Saved: ${filepath}`);
     return filepath;
 }

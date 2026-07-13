@@ -9,12 +9,13 @@ import { isSessionExpired } from '@/shared/session-cap';
 import { ApiError } from './error.middleware';
 import { db } from '@/config/database.config';
 import { cache } from '@/config/redis.config';
-import { eq, inArray, and, isNull, sql, type SQL } from 'drizzle-orm';
+import { eq, inArray, and, or, like, isNull, sql, type SQL } from 'drizzle-orm';
 import { users, userStores, tenants, roles, branches } from '@/db/schema/tables';
 import { SYSTEM_ROLE_PERMISSIONS } from '@/shared/systemRolePermissions';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import { hasPerm, permissionsToMask, maskToStrings, stringsToMask, legacyPermTobit, type PermBit } from '@/infrastructure/permissions';
 import { getUserMask, invalidateUserPermissions } from '@/infrastructure/services/permission.service';
+import { runWithTenantContext } from '@/shared/tenant-context';
 
 /** Legacy JWT payload shape — kept for backward compat on req.user */
 export interface JwtPayload {
@@ -221,18 +222,28 @@ async function loadAccessibleBranchPaths(
 }
 
 // Load user's store access from database (with Redis cache)
-async function loadUserStoreAccess(userId: string): Promise<UserStoreAccess[]> {
+async function loadUserStoreAccess(userId: string, tenantId: string | null): Promise<UserStoreAccess[]> {
     const cacheKey = `${CACHE_PREFIX}:stores:${userId}`;
     const cached = await cache.get<UserStoreAccess[]>(cacheKey);
     if (cached) return cached;
 
-    const userStoreRows = await db.query.userStores.findMany({
-        where: eq(userStores.userId, userId),
-        with: {
-            store: true,
-            branch: true,
-        },
-    });
+    // user_stores/stores/branches are all RLS-protected tenant tables — the
+    // plain `db` handle has no GUC context set here (this runs in JWT
+    // middleware, before any req.tx reservation), so under FORCE ROW LEVEL
+    // SECURITY this previously always returned zero rows for every real
+    // (non-null-tenant) user_stores row, regardless of what was actually
+    // assigned. Every non-admin user with genuine store access still got
+    // redirected to /store-request as if they had none. Same bug class
+    // fixed elsewhere this session (restaurant orders, e-menu, backup).
+    const userStoreRows = tenantId
+        ? await runWithTenantContext(tenantId, (tx) => tx.query.userStores.findMany({
+            where: eq(userStores.userId, userId),
+            with: { store: true, branch: true },
+        }))
+        : await db.query.userStores.findMany({
+            where: eq(userStores.userId, userId),
+            with: { store: true, branch: true },
+        });
 
     const result = userStoreRows
         .filter(us => us.store != null && us.branch != null && us.store.isActive && us.branch.isActive)
@@ -393,7 +404,7 @@ export async function authenticate(
             // BE-10 Step 3: Load user + store access in parallel (both Redis-cached)
             const [user, accessibleStores] = await Promise.all([
                 loadCachedAuthUser(userId),
-                loadUserStoreAccess(userId),
+                loadUserStoreAccess(userId, tenantId),
             ]);
 
             if (!user) {
@@ -840,12 +851,21 @@ export function buildBranchIdScope(
     // Tenant/system admins: no branch restriction
     if (roleLevel <= 2) return undefined;
 
-    // HQ level (3-4): path-prefix sub-select against branches table
+    // HQ level (3-4): path-prefix sub-select against branches table.
+    // Parameterized (matches buildBranchPathScope's safe pattern) — this used
+    // to build the WHERE clause via manual quote-escaping + sql.raw(), which
+    // is correct today only because branches.branchPath happens to be
+    // escaped consistently, but is fragile: branchPath is derived from
+    // branches.code, a plain user-supplied field with no format validation
+    // (see branches/presentation/routes.ts) — any future edit to this
+    // escaping logic, or a code path that bypasses it, would be a real SQL
+    // injection. Parameterized bind values remove the risk entirely.
     if (roleLevel <= 4 && branchPaths && branchPaths.length > 0) {
-        const pathClauses = branchPaths
-            .map(p => `(branch_path = '${p.replace(/'/g, "''")}' OR branch_path LIKE '${p.replace(/'/g, "''")}' || '.%')`)
-            .join(' OR ');
-        return sql`${branchIdColumn} IN (SELECT id FROM branches WHERE ${sql.raw(pathClauses)})`;
+        const pathConds: SQL[] = branchPaths.map(
+            (p) => sql`(${branches.branchPath} = ${p} OR ${branches.branchPath} LIKE ${p + '.%'})`
+        );
+        const whereClause = pathConds.length === 1 ? pathConds[0] : sql.join(pathConds, sql` OR `);
+        return sql`${branchIdColumn} IN (SELECT id FROM branches WHERE ${whereClause})`;
     }
 
     // Branch-level (5-7): exact IN list

@@ -167,6 +167,18 @@ export class AuthService {
             console.warn('[Auth] Failed to update lastLoginAt:', error instanceof Error ? error.message : error);
         }
 
+        return this.issueSession(user, res);
+    }
+
+    /**
+     * Issues an identity-only JWT + refresh cookie + session row for an
+     * already-authenticated local user — shared by password login and SSO
+     * login (both resolve to a local `users` row first, then converge here).
+     */
+    private async issueSession(
+        user: { id: string; email: string; name: string; role: string; branchId: string | null; tenantId: string | null; isSuperAdmin: boolean | null; avatar: string | null },
+        res?: Response,
+    ): Promise<LoginResponse> {
         const scope = user.isSuperAdmin ? 'platform' : 'tenant';
         const tokens = this.generateTokens(user.id, user.branchId || '', user.tenantId || '', scope);
 
@@ -205,6 +217,30 @@ export class AuthService {
                 avatar: user.avatar || null,
             },
         };
+    }
+
+    /**
+     * SSO login: resolve a local user by (tenantId, email) and issue a
+     * session exactly as password login would. No JIT provisioning — the
+     * user must already exist and be active (admin-created ahead of time).
+     * Throws NO_ACCOUNT if no matching local user is found.
+     */
+    async loginWithSso(tenantId: string, email: string, res?: Response): Promise<LoginResponse> {
+        const user = await db.query.users.findFirst({
+            where: and(eq(users.tenantId, tenantId), eq(users.email, email.toLowerCase())),
+        });
+
+        if (!user || !user.isActive) {
+            throw Object.assign(new Error('No matching account found for this email in this organization.'), { code: 'NO_ACCOUNT' });
+        }
+
+        try {
+            await db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id));
+        } catch (error) {
+            console.warn('[Auth] Failed to update lastLoginAt (SSO):', error instanceof Error ? error.message : error);
+        }
+
+        return this.issueSession(user, res);
     }
 
     /** Register with tenant-scoped email uniqueness (BE-09) */

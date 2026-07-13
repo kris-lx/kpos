@@ -5,11 +5,30 @@
 import { Router } from 'express';
 import { authenticate, authorize, branchFilter, applyScopeFilter, ensureScopeAccess, buildScopeCondition, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
+import { setRequestContext, setSuperAdminBypassContext } from '@/db/set-tenant-context';
 import { db as globalDb } from '@/config/database.config';
 import { transactions, transactionPayments, paymentMethods, settlements } from '@/db/schema/tables';
-import { eq, and, or, ilike, inArray, gte, lte, lt, desc, asc, count, sum, sql, isNull } from 'drizzle-orm';
+import { eq, and, or, ilike, inArray, gte, lte, lt, desc, asc, count, sum, sql, isNull, ne } from 'drizzle-orm';
 
 export const paymentRoutes = Router();
+
+// req.tx (a reserved connection) doesn't support .transaction() — see
+// tenant-tx.middleware.ts. Handlers that need real atomicity go through the
+// pooled globalDb instead, setting the RLS context with SET LOCAL inside.
+async function scopedTransaction<T>(
+    req: { authUser?: { tenantId?: string | null; isSuperAdmin?: boolean; activeBranchPath?: string } },
+    callback: (tx: Parameters<Parameters<typeof globalDb.transaction>[0]>[0]) => Promise<T>,
+): Promise<T> {
+    return globalDb.transaction(async (tx) => {
+        const { tenantId, isSuperAdmin, activeBranchPath } = req.authUser ?? {};
+        if (isSuperAdmin) {
+            await setSuperAdminBypassContext(tx, { local: true });
+        } else if (tenantId) {
+            await setRequestContext(tx, { tenantId, branchPath: activeBranchPath }, { local: true });
+        }
+        return callback(tx);
+    });
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TRANSACTIONS
@@ -284,8 +303,15 @@ paymentRoutes.delete('/methods/:id', authenticate, withTenantTx(), authorize('pa
 paymentRoutes.post('/refunds', authenticate, withTenantTx(), authorize('payments:refund'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
-        const { transactionId, amount, reason, items } = req.body;
-        const user = (req as unknown as { user: { id: string; branchId: string } }).user;
+        const { transactionId, amount, reason } = req.body;
+        // Bug fix: req.user's field is `userId`, not `id` — the old `user.id`
+        // read was always undefined here, so every refund inserted a NULL
+        // transactions.userId and hit a NOT NULL constraint violation.
+        const userId = req.authUser?.userId || req.user?.userId;
+        if (!userId) {
+            res.status(400).json({ success: false, error: { code: 'AUTH_001', message: 'User not resolved' } });
+            return;
+        }
 
         // BE-73: Tenant-scoped refund
         const tenantId = req.authUser?.tenantId;
@@ -306,26 +332,48 @@ paymentRoutes.post('/refunds', authenticate, withTenantTx(), authorize('payments
             return;
         }
 
+        // Never trust a client-supplied refund amount — must not exceed what
+        // was actually paid on the original transaction.
+        const refundAmount = Number(amount);
+        if (!refundAmount || refundAmount <= 0 || refundAmount > originalTx.total) {
+            res.status(400).json({ success: false, error: { code: 'INVALID_AMOUNT', message: 'Refund amount must be positive and not exceed the original transaction total' } });
+            return;
+        }
+
         // Generate refund transaction number
         const refundNo = `REF-${Date.now()}`;
-
-        // Create refund transaction
         const refTenantId = req.authUser?.tenantId || req.user?.tenantId;
-        const [refund] = await db.insert(transactions).values({
-            tenantId: refTenantId,
-            transactionNo: refundNo,
-            type: 'REFUND',
-            status: 'COMPLETED',
-            branchId: originalTx.branchId,
-            userId: user.id,
-            customerId: originalTx.customerId,
-            subtotal: -amount,
-            total: -amount,
-            refundReason: reason,
-            parentId: transactionId,
-        }).returning();
 
-        await db.update(transactions).set({ status: 'REFUNDED', updatedAt: new Date() }).where(eq(transactions.id, transactionId));
+        // Atomic claim (status COMPLETED -> REFUNDED, only if still COMPLETED)
+        // wrapped in a transaction with the refund-record insert — previously
+        // this checked status with a plain read, then unconditionally inserted
+        // the refund row and set status with a separate, unguarded UPDATE, so
+        // two concurrent refund requests for the same transaction both passed
+        // the check and both posted a full refund.
+        const refund = await scopedTransaction(req, async (tx) => {
+            const [claimed] = await tx.update(transactions)
+                .set({ status: 'REFUNDED', updatedAt: new Date() })
+                .where(and(eq(transactions.id, transactionId), eq(transactions.status, 'COMPLETED')))
+                .returning({ id: transactions.id });
+            if (!claimed) {
+                throw Object.assign(new Error('Transaction not in COMPLETED state — already refunded?'), { statusCode: 409, code: 'CONFLICT' });
+            }
+
+            const [refundRow] = await tx.insert(transactions).values({
+                tenantId: refTenantId,
+                transactionNo: refundNo,
+                type: 'REFUND',
+                status: 'COMPLETED',
+                branchId: originalTx.branchId,
+                userId,
+                customerId: originalTx.customerId,
+                subtotal: -refundAmount,
+                total: -refundAmount,
+                refundReason: reason,
+                parentId: transactionId,
+            }).returning();
+            return refundRow;
+        });
 
         res.status(201).json({ success: true, data: refund });
     } catch (error) {
@@ -359,10 +407,17 @@ paymentRoutes.post('/void/:id', authenticate, withTenantTx(), authorize('payment
             return;
         }
 
+        // Atomic claim, same pattern as /refunds — the plain read-then-write
+        // here let two concurrent void requests both pass the status check.
         const [voided] = await db.update(transactions)
             .set({ status: 'VOIDED', voidReason: reason, updatedAt: new Date() })
-            .where(and(...voidConds))
+            .where(and(...voidConds, eq(transactions.status, 'COMPLETED')))
             .returning();
+
+        if (!voided) {
+            res.status(409).json({ success: false, error: { code: 'CONFLICT', message: 'Transaction not in COMPLETED state — already voided?' } });
+            return;
+        }
 
         res.json({ success: true, data: voided });
     } catch (error) {
@@ -454,19 +509,35 @@ paymentRoutes.post('/settlements', authenticate, withTenantTx(), authorize('paym
         const stlTenantId = req.authUser?.tenantId || req.user?.tenantId;
         const stlBranchId = req.authUser?.activeBranchId || req.user?.branchId || (branchId ? String(branchId) : undefined);
         const stlStoreId = req.authUser?.activeStoreId || undefined;
-        const [settlement] = await db.insert(settlements).values({
-            tenantId: stlTenantId,
-            branchId: stlBranchId,
-            storeId: stlStoreId,
-            settlementDate,
-            totalAmount,
-            cashAmount: totalCash,
-            cardAmount: totalCard,
-            otherAmount: totalOther,
-            transactionCount: txList.length,
-            status: 'completed',
-            settledBy: userId,
-        }).returning();
+        let settlement;
+        try {
+            [settlement] = await db.insert(settlements).values({
+                tenantId: stlTenantId,
+                branchId: stlBranchId,
+                storeId: stlStoreId,
+                // Normalized to midnight so settlements_branch_date_idx
+                // (drizzle/0023) actually catches same-day duplicates
+                // regardless of what time-of-day each request landed at.
+                settlementDate: startOfDay,
+                totalAmount,
+                cashAmount: totalCash,
+                cardAmount: totalCard,
+                otherAmount: totalOther,
+                transactionCount: txList.length,
+                status: 'completed',
+                settledBy: userId,
+            }).returning();
+        } catch (err: any) {
+            // Backstops the race where a double-submit (network retry,
+            // double-click "settle") both compute totals before either
+            // INSERT commits, previously producing two settlement rows for
+            // the same branch+day and double-counting downstream.
+            if (err?.code === '23505' && String(err?.constraint_name || err?.constraint || '').includes('branch_date')) {
+                res.status(409).json({ success: false, error: { code: 'ALREADY_SETTLED', message: 'A settlement for this branch and date already exists' } });
+                return;
+            }
+            throw err;
+        }
 
         res.status(201).json({ success: true, data: settlement });
     } catch (error) {

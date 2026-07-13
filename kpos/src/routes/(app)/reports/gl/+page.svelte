@@ -1,6 +1,6 @@
 <script lang="ts">
     import { onMount } from "svelte";
-    import { cn, formatCurrency } from "$utils";
+    import { cn, formatCurrency, escapeCsvCell } from "$utils";
     import { api } from "$api";
     import { auth } from "$stores";
     import { toast } from "svelte-sonner";
@@ -150,7 +150,11 @@
             r.branchName, r.revenue, r.discount, r.netRevenue, r.tax, r.cogs, r.grossProfit, r.grossMargin, r.txCount,
         ]);
         rows.push(['ລວມ', plTotals.revenue, plTotals.discount, plTotals.netRevenue, plTotals.tax, plTotals.cogs, plTotals.grossProfit, '', plTotals.txCount]);
-        const csv = bom + [headers, ...rows].map(r => r.join(',')).join('\n');
+        // Only escape string cells — escapeCsvCell prefixes values starting
+        // with '-' (e.g. a negative discount/revenue number) with a literal
+        // quote to defeat formula injection, which is correct for text but
+        // turns numeric cells into text in Excel/Sheets.
+        const csv = bom + [headers, ...rows].map(r => r.map(v => typeof v === 'number' ? v : escapeCsvCell(v)).join(',')).join('\n');
         const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
         const a = document.createElement('a'); a.href = url; a.download = `pl_${dateFrom}_${dateTo}.csv`; a.click();
         setTimeout(() => URL.revokeObjectURL(url), 0);
@@ -164,7 +168,7 @@
             new Date(r.createdAt).toLocaleString(), r.userName || '', r.userEmail || '', r.userRole || '',
             r.action, r.description || '', r.entity || '', r.ip || '',
         ]);
-        const csv = bom + [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+        const csv = bom + [headers, ...rows].map(r => r.map(v => escapeCsvCell(v)).join(',')).join('\n');
         const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
         const a = document.createElement('a'); a.href = url; a.download = `audit_trail_${dateFrom}_${dateTo}.csv`; a.click();
         setTimeout(() => URL.revokeObjectURL(url), 0);

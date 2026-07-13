@@ -1,5 +1,5 @@
 ﻿<script lang="ts">
-    import { cn, formatCurrency } from "$utils";
+    import { cn, formatCurrency, escapeHtml, escapeCsvCell } from "$utils";
     import { api } from "$api";
     import { t } from "$lib/i18n/index.svelte";
     import { auth } from "$stores";
@@ -119,7 +119,7 @@
             let csv = '\ufeff';
             csv += `${t("common.rank")},${t("products.title")},SKU,${t("reports.salesCount")},${t("reports.revenue")}\n`;
             filteredProducts.forEach((p, i) => {
-                csv += `${i + 1},"${p.name || ''}","${p.sku || ''}",${p.totalSales || 0},"${formatCurrency(p.revenue || 0)}"\n`;
+                csv += `${i + 1},${escapeCsvCell(p.name || '')},${escapeCsvCell(p.sku || '')},${p.totalSales || 0},"${formatCurrency(p.revenue || 0)}"\n`;
             });
             downloadFile(csv, `products-report-${periodFilter}.csv`, 'text/csv;charset=utf-8');
             toast.success(t("reports.exportSuccess"));
@@ -137,7 +137,7 @@
 <style>body{font-family:'Noto Sans Lao','Phetsarath OT',sans-serif;padding:20px}h1{text-align:center}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ddd;padding:8px}th{background:#f5f5f5}.text-right{text-align:right}</style></head>
 <body><h1>${t("reports.inventory")}</h1><p style="text-align:center">${new Date().toLocaleDateString('lo-LA')}</p>
 <table><tr><th>${t("common.rank")}</th><th>${t("products.title")}</th><th>SKU</th><th>${t("reports.salesCount")}</th><th>${t("reports.revenue")}</th></tr>
-${filteredProducts.map((p, i) => `<tr><td>${i + 1}</td><td>${p.name || ''}</td><td>${p.sku || ''}</td><td class="text-right">${p.totalSales || 0}</td><td class="text-right">${formatCurrency(p.revenue || 0)}</td></tr>`).join('')}
+${filteredProducts.map((p, i) => `<tr><td>${i + 1}</td><td>${escapeHtml(p.name || '')}</td><td>${escapeHtml(p.sku || '')}</td><td class="text-right">${p.totalSales || 0}</td><td class="text-right">${formatCurrency(p.revenue || 0)}</td></tr>`).join('')}
 </table></body></html>`;
         const w = window.open('', '_blank');
         if (w) {
@@ -155,7 +155,7 @@ ${filteredProducts.map((p, i) => `<tr><td>${i + 1}</td><td>${p.name || ''}</td><
         const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office"><head><meta charset="utf-8"><style>table{width:100%;border-collapse:collapse}th,td{border:1px solid #000;padding:8px}th{background:#f0f0f0}</style></head>
 <body><h1 style="text-align:center">${t("reports.inventory")}</h1><p style="text-align:center">${new Date().toLocaleDateString('lo-LA')}</p>
 <table><tr><th>${t("common.rank")}</th><th>${t("products.title")}</th><th>SKU</th><th>${t("reports.salesCount")}</th><th>${t("reports.revenue")}</th></tr>
-${filteredProducts.map((p, i) => `<tr><td>${i + 1}</td><td>${p.name || ''}</td><td>${p.sku || ''}</td><td>${p.totalSales || 0}</td><td>${formatCurrency(p.revenue || 0)}</td></tr>`).join('')}
+${filteredProducts.map((p, i) => `<tr><td>${i + 1}</td><td>${escapeHtml(p.name || '')}</td><td>${escapeHtml(p.sku || '')}</td><td>${p.totalSales || 0}</td><td>${formatCurrency(p.revenue || 0)}</td></tr>`).join('')}
 </table></body></html>`;
         downloadFile(html, `products-report-${periodFilter}.doc`, 'application/msword');
         toast.success(t("reports.exportSuccess"));

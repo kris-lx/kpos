@@ -1,7 +1,7 @@
 <script lang="ts">
     import { api } from "$lib/api";
     import { t } from '$lib/i18n/index.svelte';
-    import { formatCurrency } from "$lib/utils";
+    import { formatCurrency, escapeCsvCell } from "$lib/utils";
     import { cn } from "$lib/utils";
     import { ArrowUpRight, ArrowDownRight, Minus, Calendar, RefreshCw, Loader2, Building2, TrendingUp, ChevronLeft, ChevronRight, Download, FileSpreadsheet, FileText, ChevronDown } from "lucide-svelte";
 
@@ -54,7 +54,12 @@
     }
 
     function csvValue(value: unknown) {
-        return `"${String(value ?? "").replace(/"/g, '""')}"`;
+        // Numbers never need CSV/formula escaping — escapeCsvCell's '-'
+        // prefix rule (defeats formula injection in text cells) would
+        // otherwise turn a negative discount/revenue into a text cell in
+        // Excel/Sheets.
+        if (typeof value === "number") return String(value);
+        return escapeCsvCell(value ?? "");
     }
 
     async function getExportData() {

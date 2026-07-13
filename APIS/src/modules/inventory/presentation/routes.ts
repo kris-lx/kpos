@@ -6,7 +6,7 @@ import { Router } from 'express';
 import { authenticate, authorize, branchFilter, ensureScopeAccess, buildScopeCondition, buildBranchIdScope, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { queryCache } from '@/infrastructure/http/middleware/cache.middleware';
 import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
-import { setRequestContext } from '@/db/set-tenant-context';
+import { setRequestContext, setSuperAdminBypassContext } from '@/db/set-tenant-context';
 import { db as globalDb } from '@/config/database.config';
 import { products, categories, inventory, stockMovements, vendors, purchaseOrders, purchaseOrderItems, stockTransfers, stockTransferItems, stockCounts, stockCountItems, branches, stores } from '@/db/schema/tables';
 import { eq, and, or, ne, ilike, inArray, isNotNull, isNull, gte, lte, gt, lt, desc, asc, count, sum, sql } from 'drizzle-orm';
@@ -20,11 +20,28 @@ export const inventoryRoutes = Router();
 async function scopedTransaction(req, callback) {
     return globalDb.transaction(async (tx) => {
         const { tenantId, isSuperAdmin, activeBranchPath } = req.authUser ?? {};
-        if (tenantId && !isSuperAdmin) {
+        if (isSuperAdmin) {
+            await setSuperAdminBypassContext(tx, { local: true });
+        } else if (tenantId) {
             await setRequestContext(tx, { tenantId, branchPath: activeBranchPath }, { local: true });
         }
         return callback(tx);
     });
+}
+
+// Row-locked inventory read. IMPORTANT: `db.query.inventory.findFirst({ ...,
+// for: 'update' })` (the relational query API) silently does NOT apply a
+// row lock — `for` is not a field that API recognizes, so spreading
+// `{ for: 'update' } as any` into its options is a no-op the `any` cast was
+// hiding. Only the query-builder API's `.for('update')` actually emits
+// `FOR UPDATE` SQL. Verified live: without this fix, 5 concurrent
+// /inventory/adjust +10 calls on the same row landed as 130 instead of 150
+// (lost updates); with it, exactly 150.
+async function lockInventoryRow(tx: any, productId: string, branchId: string) {
+    const rows = await tx.select().from(inventory)
+        .where(and(eq(inventory.productId, productId), eq(inventory.branchId, branchId)))
+        .for('update');
+    return rows[0];
 }
 
 // Get inventory status with pagination, search, and filters
@@ -264,23 +281,33 @@ inventoryRoutes.put('/adjust', authenticate, withTenantTx(), branchFilter(), aut
             });
         }
 
-        const currentInventory = await db.query.inventory.findFirst({ where: and(eq(inventory.productId, productId), eq(inventory.branchId, branchId)) });
-        const previousQty = currentInventory?.quantity || 0;
-        const newQty = Math.max(0, previousQty + quantity);
+        const invTenantId = req.authUser?.tenantId || req.user?.tenantId;
         const movementType = quantity > 0 ? 'IN' : 'OUT';
 
-        const invTenantId = req.authUser?.tenantId || req.user?.tenantId;
-        const [movement] = await db.insert(stockMovements).values({
-            tenantId: invTenantId,
-            productId, branchId, quantity: Math.abs(quantity), previousQty, newQty, type: movementType,
-            reason: reason || (type === 'add' ? 'Stock Addition' : 'Stock Reduction'), reference, referenceType: 'ADJUSTMENT', userId,
-        }).returning();
+        // Row-locked read + write inside a transaction — previously this read
+        // the row, computed newQty in JS, and wrote it back with a plain
+        // UPDATE with no lock, so two concurrent adjustments to the same
+        // product+branch (two staff correcting stock, or a double-click)
+        // silently lost one adjustment with no error.
+        const movement = await scopedTransaction(req, async (tx) => {
+            const currentInventory = await lockInventoryRow(tx, productId, branchId);
+            const previousQty = currentInventory?.quantity || 0;
+            const newQty = Math.max(0, previousQty + quantity);
 
-        if (currentInventory) {
-            await db.update(inventory).set({ quantity: newQty, available: Math.max(0, newQty - currentInventory.reserved) }).where(eq(inventory.id, currentInventory.id));
-        } else {
-            await db.insert(inventory).values({ tenantId: invTenantId, productId, branchId, quantity: newQty, available: newQty, reserved: 0 });
-        }
+            const [mv] = await tx.insert(stockMovements).values({
+                tenantId: invTenantId,
+                productId, branchId, quantity: Math.abs(quantity), previousQty, newQty, type: movementType,
+                reason: reason || (type === 'add' ? 'Stock Addition' : 'Stock Reduction'), reference, referenceType: 'ADJUSTMENT', userId,
+            }).returning();
+
+            if (currentInventory) {
+                await tx.update(inventory).set({ quantity: newQty, available: Math.max(0, newQty - currentInventory.reserved) }).where(eq(inventory.id, currentInventory.id));
+            } else {
+                await tx.insert(inventory).values({ tenantId: invTenantId || null, productId, branchId, quantity: newQty, available: newQty, reserved: 0 });
+            }
+
+            return mv;
+        });
 
         // Invalidate inventory cache after adjustment
         invalidateQueryCache('inventory*').catch(() => {});
@@ -348,28 +375,33 @@ inventoryRoutes.post('/transfer', authenticate, withTenantTx(), authorize('inven
             }
         }
 
-        const fromInventory = await db.query.inventory.findFirst({ where: and(eq(inventory.productId, productId), eq(inventory.branchId, fromBranchId)) });
-
-        // Validate stock availability at source
-        if (!fromInventory || fromInventory.quantity < quantity) {
-            return res.status(400).json({
-                success: false,
-                error: { 
-                    code: 'INSUFFICIENT_STOCK', 
-                    message: `ສະຕອກບໍ່ພຽງພໍ (ມີ: ${fromInventory?.quantity || 0}, ຕ້ອງການ: ${quantity})` 
-                }
-            });
-        }
-
-        const toInventory = await db.query.inventory.findFirst({ where: and(eq(inventory.productId, productId), eq(inventory.branchId, toBranchId)) });
-
-        const fromPreviousQty = fromInventory.quantity;
-        const toPreviousQty = toInventory?.quantity || 0;
-        const fromNewQty = fromPreviousQty - quantity;
-        const toNewQty = toPreviousQty + quantity;
         const transferReason = reason || `ໂອນຈາກ ${fromBranch.name} ໄປ ${toBranch.name}`;
 
+        // Read + validate + write all inside one transaction with row-level
+        // locks on both inventory rows — previously these were read outside
+        // the transaction with no lock, then written with values computed
+        // from that stale read. Two concurrent transfers of the same
+        // product out of the same source branch would both pass the
+        // stock-availability check and both write their own stale
+        // fromNewQty/toNewQty, silently losing one transfer's decrement
+        // (lost update — net effect is stock created or destroyed from
+        // nothing). `for: 'update'` blocks the second transaction's read
+        // until the first commits, so it sees the already-decremented
+        // quantity and re-validates against it.
         const result = await scopedTransaction(req, async (tx) => {
+            const fromInventory = await lockInventoryRow(tx, productId, fromBranchId);
+
+            if (!fromInventory || fromInventory.quantity < quantity) {
+                throw Object.assign(new Error(`ສະຕອກບໍ່ພຽງພໍ (ມີ: ${fromInventory?.quantity || 0}, ຕ້ອງການ: ${quantity})`), { statusCode: 400, code: 'INSUFFICIENT_STOCK' });
+            }
+
+            const toInventory = await lockInventoryRow(tx, productId, toBranchId);
+
+            const fromPreviousQty = fromInventory.quantity;
+            const toPreviousQty = toInventory?.quantity || 0;
+            const fromNewQty = fromPreviousQty - quantity;
+            const toNewQty = toPreviousQty + quantity;
+
             // BE-43: Inject tenantId into stock movement inserts
             const [outMovement] = await tx.insert(stockMovements).values({
                 tenantId: tenantId || null,
@@ -388,10 +420,14 @@ inventoryRoutes.post('/transfer', authenticate, withTenantTx(), authorize('inven
             if (toInventory) {
                 await tx.update(inventory).set({ quantity: toNewQty, available: Math.max(0, toNewQty - toInventory.reserved) }).where(eq(inventory.id, toInventory.id));
             } else {
-                await tx.insert(inventory).values({ productId, branchId: toBranchId, quantity: toNewQty, available: toNewQty, reserved: 0 });
+                // Was missing tenantId — orphaned NULL-tenant rows are
+                // treated as globally shared by the RLS policy (`tenant_id
+                // IS NULL OR ...`), so they leaked into every other
+                // tenant's inventory reports.
+                await tx.insert(inventory).values({ tenantId: tenantId || null, productId, branchId: toBranchId, quantity: toNewQty, available: toNewQty, reserved: 0 });
             }
 
-            return outMovement;
+            return { outMovement, fromPreviousQty, toPreviousQty, fromNewQty, toNewQty };
         });
 
         // Invalidate caches after transfer
@@ -401,15 +437,15 @@ inventoryRoutes.post('/transfer', authenticate, withTenantTx(), authorize('inven
         // Log activity async
         queueActivityLog(userId, 'inventory_transferred', 'inventory', `ໂອນ ${quantity} ຈາກ ${fromBranch.name} → ${toBranch.name}`, { productId, fromBranchId, toBranchId, quantity }, req).catch(() => {});
 
-        res.status(201).json({ 
-            success: true, 
-            data: { 
+        res.status(201).json({
+            success: true,
+            data: {
                 message: 'ໂອນສິນຄ້າສຳເລັດ',
-                transferId: result.id,
-                from: { branchId: fromBranchId, branchName: fromBranch.name, previousQty: fromPreviousQty, newQty: fromNewQty },
-                to: { branchId: toBranchId, branchName: toBranch.name, previousQty: toPreviousQty, newQty: toNewQty },
+                transferId: result.outMovement.id,
+                from: { branchId: fromBranchId, branchName: fromBranch.name, previousQty: result.fromPreviousQty, newQty: result.fromNewQty },
+                to: { branchId: toBranchId, branchName: toBranch.name, previousQty: result.toPreviousQty, newQty: result.toNewQty },
                 quantity,
-            } 
+            }
         });
     } catch (error) {
         next(error);
@@ -803,10 +839,9 @@ inventoryRoutes.put('/purchase-orders/:id', authenticate, withTenantTx(), author
 // Update purchase order status
 inventoryRoutes.patch('/purchase-orders/:id/status', authenticate, withTenantTx(), authorize('inventory:update'), async (req, res, next) => {
     try {
-        const db = req.tx ?? globalDb;
-        const dbRead = db;
         const { status } = req.body;
         const userId = req.user!.userId;
+        const poTenantId = req.authUser?.tenantId;
 
         const updateData: Record<string, unknown> = { status };
         if (status === 'APPROVED') {
@@ -817,33 +852,58 @@ inventoryRoutes.patch('/purchase-orders/:id/status', authenticate, withTenantTx(
             updateData.receivedDate = new Date();
         }
 
-        // BE-76: Tenant-scoped PO status update
-        const poStTenantId = req.authUser?.tenantId;
-        const poStConds: any[] = [eq(purchaseOrders.id, req.params.id)];
-        if (poStTenantId && !req.authUser?.isSuperAdmin) poStConds.push(eq(purchaseOrders.tenantId, poStTenantId));
-        await db.update(purchaseOrders).set(updateData).where(and(...poStConds));
-        const order = await db.query.purchaseOrders.findFirst({ where: and(...poStConds), with: { items: true } });
+        // Whole status transition (including the stock-in loop below) is now
+        // one transaction with an atomic status-claim guard — previously
+        // this read the PO's current status with a plain SELECT, then
+        // unconditionally applied the stock increment with no re-check.
+        // Two concurrent PATCH .../status(RECEIVED) requests for the same PO
+        // (e.g. a double-click) both passed, both looped adding stock, so
+        // inventory was credited twice for one PO. `WHERE status != status`
+        // (only when transitioning TO 'RECEIVED') claims the row atomically:
+        // if another request already moved it to RECEIVED, this UPDATE
+        // matches zero rows and the stock loop is skipped.
+        const result = await scopedTransaction(req, async (tx) => {
+            const poConds: any[] = [eq(purchaseOrders.id, req.params.id)];
+            if (poTenantId && !req.authUser?.isSuperAdmin) poConds.push(eq(purchaseOrders.tenantId, poTenantId));
+            if (status === 'RECEIVED') poConds.push(ne(purchaseOrders.status, 'RECEIVED'));
 
-        if (status === 'RECEIVED' && order) {
-            for (const item of order.items) {
-                const inv = await db.query.inventory.findFirst({ where: and(eq(inventory.productId, item.productId), eq(inventory.branchId, order.branchId)) });
-                if (inv) {
-                    await db.update(inventory).set({ quantity: inv.quantity + item.quantity }).where(eq(inventory.id, inv.id));
-                } else {
-                    await db.insert(inventory).values({ productId: item.productId, branchId: order.branchId, quantity: item.quantity });
-                }
-                // BE-43: Inject tenantId into stock movement on PO receive
-                const poTenantId = req.authUser?.tenantId;
-                await db.insert(stockMovements).values({
-                    tenantId: poTenantId || null,
-                    productId: item.productId, branchId: order.branchId, type: 'IN', quantity: item.quantity,
-                    previousQty: inv?.quantity || 0, newQty: (inv?.quantity || 0) + item.quantity,
-                    reason: 'Purchase Order Received', reference: order.id, referenceType: 'PURCHASE', userId,
-                });
+            const [claimed] = await tx.update(purchaseOrders).set(updateData).where(and(...poConds)).returning({ id: purchaseOrders.id });
+            if (!claimed) {
+                return { order: null, alreadyProcessed: status === 'RECEIVED' };
             }
+
+            const order = await tx.query.purchaseOrders.findFirst({ where: eq(purchaseOrders.id, claimed.id), with: { items: true } });
+            if (!order) return { order: null, alreadyProcessed: false };
+
+            if (status === 'RECEIVED') {
+                for (const item of order.items) {
+                    const inv = await lockInventoryRow(tx, item.productId, order.branchId);
+                    if (inv) {
+                        await tx.update(inventory).set({ quantity: inv.quantity + item.quantity }).where(eq(inventory.id, inv.id));
+                    } else {
+                        await tx.insert(inventory).values({ tenantId: poTenantId || null, productId: item.productId, branchId: order.branchId, quantity: item.quantity });
+                    }
+                    // BE-43: Inject tenantId into stock movement on PO receive
+                    await tx.insert(stockMovements).values({
+                        tenantId: poTenantId || null,
+                        productId: item.productId, branchId: order.branchId, type: 'IN', quantity: item.quantity,
+                        previousQty: inv?.quantity || 0, newQty: (inv?.quantity || 0) + item.quantity,
+                        reason: 'Purchase Order Received', reference: order.id, referenceType: 'PURCHASE', userId,
+                    });
+                }
+            }
+
+            return { order, alreadyProcessed: false };
+        });
+
+        if (result.alreadyProcessed) {
+            return res.status(409).json({ success: false, error: { code: 'ALREADY_RECEIVED', message: 'This purchase order was already marked as received' } });
+        }
+        if (!result.order) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Purchase order not found or no access' } });
         }
 
-        res.json({ success: true, data: order });
+        res.json({ success: true, data: result.order });
     } catch (error) {
         next(error);
     }
@@ -994,82 +1054,87 @@ inventoryRoutes.post('/stock-transfers', authenticate, withTenantTx(), authorize
 // ─── Approve a stock transfer (deduct from source, add to destination) ───────
 inventoryRoutes.patch('/stock-transfers/:id/approve', authenticate, withTenantTx(), authorize('inventory:update'), branchFilter(), async (req, res, next) => {
     try {
-        const db = req.tx ?? globalDb;
-        const dbRead = db;
         const { id } = req.params;
         const userId = req.user!.userId;
         const tenantId = req.authUser?.tenantId;
         const filter = req.branchFilter;
 
-        const transfer = await db.query.stockTransfers.findFirst({
-            where: eq(stockTransfers.id, id),
-            with: { items: true },
+        // Whole approval (stock move + status transition) is one transaction
+        // with an atomic status-claim guard, same pattern as PO receive:
+        // previously this read status with a plain SELECT then unconditionally
+        // moved stock, so two concurrent approve clicks both moved stock.
+        const result = await scopedTransaction(req, async (tx) => {
+            const transfer = await tx.query.stockTransfers.findFirst({
+                where: eq(stockTransfers.id, id),
+                with: { items: true },
+            });
+
+            if (!transfer) return { code: 'NOT_FOUND' as const };
+            if (tenantId && transfer.tenantId && transfer.tenantId !== tenantId) return { code: 'FORBIDDEN' as const };
+            if (filter && filter.branchIds.length > 0) {
+                if (!filter.branchIds.includes(String(transfer.fromBranchId)) && !filter.branchIds.includes(String(transfer.toBranchId))) {
+                    return { code: 'FORBIDDEN' as const };
+                }
+            }
+
+            const [claimed] = await tx.update(stockTransfers)
+                .set({ status: 'COMPLETED', approvedBy: userId, approvedAt: new Date(), completedBy: userId, completedAt: new Date() })
+                .where(and(eq(stockTransfers.id, id), eq(stockTransfers.status, 'PENDING')))
+                .returning({ id: stockTransfers.id });
+            if (!claimed) return { code: 'INVALID_STATE' as const, status: transfer.status };
+
+            for (const item of transfer.items) {
+                const [fromInv, toInv] = await Promise.all([
+                    lockInventoryRow(tx, item.productId, transfer.fromBranchId),
+                    lockInventoryRow(tx, item.productId, transfer.toBranchId),
+                ]);
+                if (!fromInv || fromInv.quantity < item.quantity) {
+                    return { code: 'INSUFFICIENT_STOCK' as const, productName: item.productName, available: fromInv?.quantity || 0, required: item.quantity };
+                }
+
+                const qty = Number(item.quantity);
+                const fromPrev = fromInv.quantity;
+                const toPrev = toInv?.quantity || 0;
+
+                await tx.insert(stockMovements).values([
+                    { tenantId, productId: item.productId, branchId: transfer.fromBranchId, quantity: -qty, previousQty: fromPrev, newQty: fromPrev - qty, type: 'TRANSFER_OUT', reason: `ໂອນໄປ ${transfer.toBranchId}`, reference: transfer.transferNo, userId },
+                    { tenantId, productId: item.productId, branchId: transfer.toBranchId, quantity: qty, previousQty: toPrev, newQty: toPrev + qty, type: 'TRANSFER_IN', reason: `ໂອນຈາກ ${transfer.fromBranchId}`, reference: transfer.transferNo, userId },
+                ]);
+
+                await tx.update(inventory).set({ quantity: fromInv.quantity - qty }).where(eq(inventory.id, fromInv.id));
+                if (toInv) {
+                    await tx.update(inventory).set({ quantity: toInv.quantity + qty }).where(eq(inventory.id, toInv.id));
+                } else {
+                    await tx.insert(inventory).values({ tenantId: tenantId || null, productId: item.productId, branchId: transfer.toBranchId, quantity: qty });
+                }
+            }
+
+            const updated = await tx.query.stockTransfers.findFirst({ where: eq(stockTransfers.id, id), with: { items: true } });
+            return { code: 'OK' as const, transfer: updated };
         });
 
-        if (!transfer) {
+        if (result.code === 'NOT_FOUND') {
             return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Transfer not found' } });
         }
-        if (transfer.status !== 'PENDING') {
-            return res.status(400).json({ success: false, error: { code: 'INVALID_STATE', message: `Transfer is already ${transfer.status}` } });
+        if (result.code === 'FORBIDDEN') {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'ບໍ່ມີສິດອະນຸມັດການໂອນນີ້' } });
         }
-        // Tenant guard
-        if (tenantId && transfer.tenantId && transfer.tenantId !== tenantId) {
-            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Access denied' } });
+        if (result.code === 'INVALID_STATE') {
+            return res.status(400).json({ success: false, error: { code: 'INVALID_STATE', message: `Transfer is already ${result.status}` } });
         }
-        // Branch access guard: approver must have access to the source branch
-        if (filter && filter.branchIds.length > 0) {
-            if (!filter.branchIds.includes(String(transfer.fromBranchId)) && !filter.branchIds.includes(String(transfer.toBranchId))) {
-                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'ບໍ່ມີສິດອະນຸມັດການໂອນນີ້' } });
-            }
-        }
-
-        // Re-validate stock availability before committing
-        for (const item of transfer.items) {
-            const inv = await db.query.inventory.findFirst({
-                where: and(eq(inventory.productId, item.productId), eq(inventory.branchId, transfer.fromBranchId)),
+        if (result.code === 'INSUFFICIENT_STOCK') {
+            return res.status(400).json({
+                success: false,
+                error: {
+                    code: 'INSUFFICIENT_STOCK',
+                    message: `ສິນຄ້າ ${result.productName} ມີສະຕອກບໍ່ພຽງພໍ (ມີ: ${result.available}, ຕ້ອງການ: ${result.required})`,
+                },
             });
-            if (!inv || inv.quantity < item.quantity) {
-                return res.status(400).json({
-                    success: false,
-                    error: {
-                        code: 'INSUFFICIENT_STOCK',
-                        message: `ສິນຄ້າ ${item.productName} ມີສະຕອກບໍ່ພຽງພໍ (ມີ: ${inv?.quantity || 0}, ຕ້ອງການ: ${item.quantity})`,
-                    },
-                });
-            }
         }
 
-        // Move stock
-        for (const item of transfer.items) {
-            const qty = Number(item.quantity);
-            const [fromInv, toInv] = await Promise.all([
-                db.query.inventory.findFirst({ where: and(eq(inventory.productId, item.productId), eq(inventory.branchId, transfer.fromBranchId)) }),
-                db.query.inventory.findFirst({ where: and(eq(inventory.productId, item.productId), eq(inventory.branchId, transfer.toBranchId)) }),
-            ]);
-            const fromPrev = fromInv?.quantity || 0;
-            const toPrev = toInv?.quantity || 0;
-
-            await db.insert(stockMovements).values([
-                { tenantId, productId: item.productId, branchId: transfer.fromBranchId, quantity: -qty, previousQty: fromPrev, newQty: fromPrev - qty, type: 'TRANSFER_OUT', reason: `ໂອນໄປ ${transfer.toBranchId}`, reference: transfer.transferNo, userId },
-                { tenantId, productId: item.productId, branchId: transfer.toBranchId, quantity: qty, previousQty: toPrev, newQty: toPrev + qty, type: 'TRANSFER_IN', reason: `ໂອນຈາກ ${transfer.fromBranchId}`, reference: transfer.transferNo, userId },
-            ]);
-
-            if (fromInv) {
-                await db.update(inventory).set({ quantity: fromInv.quantity - qty }).where(eq(inventory.id, fromInv.id));
-            }
-            if (toInv) {
-                await db.update(inventory).set({ quantity: toInv.quantity + qty }).where(eq(inventory.id, toInv.id));
-            } else {
-                await db.insert(inventory).values({ tenantId, productId: item.productId, branchId: transfer.toBranchId, quantity: qty });
-            }
-        }
-
-        await db.update(stockTransfers).set({ status: 'COMPLETED', approvedBy: userId, approvedAt: new Date(), completedBy: userId, completedAt: new Date() }).where(eq(stockTransfers.id, id));
         invalidateQueryCache('inventory*').catch(() => {});
-        queueActivityLog(userId, 'transfer_approved', 'inventory', `ອະນຸມັດການໂອນ ${transfer.transferNo}`, { transferId: id }, req).catch(() => {});
-
-        const updated = await db.query.stockTransfers.findFirst({ where: eq(stockTransfers.id, id), with: { items: true } });
-        res.json({ success: true, data: updated });
+        queueActivityLog(userId, 'transfer_approved', 'inventory', `ອະນຸມັດການໂອນ ${result.transfer?.transferNo}`, { transferId: id }, req).catch(() => {});
+        res.json({ success: true, data: result.transfer });
     } catch (error) {
         next(error);
     }
@@ -1655,45 +1720,60 @@ inventoryRoutes.post('/transfers', authenticate, withTenantTx(), authorize('inve
 // Approve a simple transfer (deduct from source, credit destination)
 inventoryRoutes.patch('/transfers/:id/approve', authenticate, withTenantTx(), authorize('inventory:update'), async (req, res, next) => {
     try {
-        const db = req.tx ?? globalDb;
-        const dbRead = db;
         const { id } = req.params;
         const userId = req.user!.userId;
         const tenantId = req.authUser?.tenantId;
 
-        const transfer = await db.query.stockTransfers.findFirst({ where: eq(stockTransfers.id, id), with: { items: true } });
-        if (!transfer) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Transfer not found' } });
-        if (transfer.status !== 'PENDING') return res.status(400).json({ success: false, error: { code: 'INVALID_STATE', message: `Transfer is already ${transfer.status}` } });
-        if (tenantId && transfer.tenantId && transfer.tenantId !== tenantId) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Access denied' } });
+        // Same atomic-claim + row-locking pattern as /stock-transfers/:id/approve
+        // (this is a duplicate implementation of the same feature).
+        const result = await scopedTransaction(req, async (tx) => {
+            const transfer = await tx.query.stockTransfers.findFirst({ where: eq(stockTransfers.id, id), with: { items: true } });
+            if (!transfer) return { code: 'NOT_FOUND' as const };
+            if (tenantId && transfer.tenantId && transfer.tenantId !== tenantId) return { code: 'FORBIDDEN' as const };
 
-        for (const item of transfer.items) {
-            const qty = Number(item.quantity);
-            const [fromInv, toInv] = await Promise.all([
-                db.query.inventory.findFirst({ where: and(eq(inventory.productId, item.productId), eq(inventory.branchId, transfer.fromBranchId)) }),
-                db.query.inventory.findFirst({ where: and(eq(inventory.productId, item.productId), eq(inventory.branchId, transfer.toBranchId)) }),
-            ]);
-            if (!fromInv || fromInv.quantity < qty) {
-                return res.status(400).json({ success: false, error: { code: 'INSUFFICIENT_STOCK', message: `ສິນຄ້າ ${item.productName} ສະຕອກບໍ່ພຽງພໍ (ມີ: ${fromInv?.quantity || 0}, ຕ້ອງການ: ${qty})` } });
+            const [claimed] = await tx.update(stockTransfers)
+                .set({ status: 'COMPLETED', approvedBy: userId, approvedAt: new Date(), completedBy: userId, completedAt: new Date() })
+                .where(and(eq(stockTransfers.id, id), eq(stockTransfers.status, 'PENDING')))
+                .returning({ id: stockTransfers.id });
+            if (!claimed) return { code: 'INVALID_STATE' as const, status: transfer.status };
+
+            for (const item of transfer.items) {
+                const qty = Number(item.quantity);
+                const [fromInv, toInv] = await Promise.all([
+                    lockInventoryRow(tx, item.productId, transfer.fromBranchId),
+                    lockInventoryRow(tx, item.productId, transfer.toBranchId),
+                ]);
+                if (!fromInv || fromInv.quantity < qty) {
+                    return { code: 'INSUFFICIENT_STOCK' as const, productName: item.productName, available: fromInv?.quantity || 0, required: qty };
+                }
+                const fromPrev = fromInv.quantity;
+                const toPrev = toInv?.quantity || 0;
+                await tx.insert(stockMovements).values([
+                    { tenantId, productId: item.productId, branchId: transfer.fromBranchId, quantity: -qty, previousQty: fromPrev, newQty: fromPrev - qty, type: 'TRANSFER_OUT', reason: `ໂອນໄປ ${transfer.toBranchId}`, reference: transfer.transferNo, userId },
+                    { tenantId, productId: item.productId, branchId: transfer.toBranchId, quantity: qty, previousQty: toPrev, newQty: toPrev + qty, type: 'TRANSFER_IN', reason: `ໂອນຈາກ ${transfer.fromBranchId}`, reference: transfer.transferNo, userId },
+                ]);
+                await tx.update(inventory).set({ quantity: fromInv.quantity - qty }).where(eq(inventory.id, fromInv.id));
+                if (toInv) {
+                    await tx.update(inventory).set({ quantity: toInv.quantity + qty }).where(eq(inventory.id, toInv.id));
+                } else {
+                    await tx.insert(inventory).values({ tenantId: tenantId || null, productId: item.productId, branchId: transfer.toBranchId, quantity: qty });
+                }
             }
-            const fromPrev = fromInv.quantity;
-            const toPrev = toInv?.quantity || 0;
-            await db.insert(stockMovements).values([
-                { tenantId, productId: item.productId, branchId: transfer.fromBranchId, quantity: -qty, previousQty: fromPrev, newQty: fromPrev - qty, type: 'TRANSFER_OUT', reason: `ໂອນໄປ ${transfer.toBranchId}`, reference: transfer.transferNo, userId },
-                { tenantId, productId: item.productId, branchId: transfer.toBranchId, quantity: qty, previousQty: toPrev, newQty: toPrev + qty, type: 'TRANSFER_IN', reason: `ໂອນຈາກ ${transfer.fromBranchId}`, reference: transfer.transferNo, userId },
-            ]);
-            await db.update(inventory).set({ quantity: fromInv.quantity - qty }).where(eq(inventory.id, fromInv.id));
-            if (toInv) {
-                await db.update(inventory).set({ quantity: toInv.quantity + qty }).where(eq(inventory.id, toInv.id));
-            } else {
-                await db.insert(inventory).values({ tenantId, productId: item.productId, branchId: transfer.toBranchId, quantity: qty });
-            }
+
+            const updated = await tx.query.stockTransfers.findFirst({ where: eq(stockTransfers.id, id), with: { items: true } });
+            return { code: 'OK' as const, transfer: updated };
+        });
+
+        if (result.code === 'NOT_FOUND') return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Transfer not found' } });
+        if (result.code === 'FORBIDDEN') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Access denied' } });
+        if (result.code === 'INVALID_STATE') return res.status(400).json({ success: false, error: { code: 'INVALID_STATE', message: `Transfer is already ${result.status}` } });
+        if (result.code === 'INSUFFICIENT_STOCK') {
+            return res.status(400).json({ success: false, error: { code: 'INSUFFICIENT_STOCK', message: `ສິນຄ້າ ${result.productName} ສະຕອກບໍ່ພຽງພໍ (ມີ: ${result.available}, ຕ້ອງການ: ${result.required})` } });
         }
 
-        await db.update(stockTransfers).set({ status: 'COMPLETED', approvedBy: userId, approvedAt: new Date(), completedBy: userId, completedAt: new Date() }).where(eq(stockTransfers.id, id));
         invalidateQueryCache('inventory*').catch(() => {});
-        queueActivityLog(userId, 'transfer_approved', 'inventory', `ອະນຸມັດ ${transfer.transferNo}`, { transferId: id }, req).catch(() => {});
-        const updated = await db.query.stockTransfers.findFirst({ where: eq(stockTransfers.id, id), with: { items: true } });
-        res.json({ success: true, data: updated });
+        queueActivityLog(userId, 'transfer_approved', 'inventory', `ອະນຸມັດ ${result.transfer?.transferNo}`, { transferId: id }, req).catch(() => {});
+        res.json({ success: true, data: result.transfer });
     } catch (error) { next(error); }
 });
 
@@ -1795,8 +1875,6 @@ inventoryRoutes.post('/stock-counts', authenticate, withTenantTx(), authorize('i
 // Approve stock count (maker/checker) — only roleLevel ≤ 4 (hq_admin, hq_manager) or admin
 inventoryRoutes.patch('/stock-counts/:id/approve', authenticate, withTenantTx(), authorize('inventory:adjust'), async (req, res, next) => {
     try {
-        const db = req.tx ?? globalDb;
-        const dbRead = db;
         const userId = req.authUser?.userId || req.user?.userId;
         const roleLevel = req.authUser?.roleLevel ?? 7;
         if (!userId) {
@@ -1807,39 +1885,56 @@ inventoryRoutes.patch('/stock-counts/:id/approve', authenticate, withTenantTx(),
         }
 
         const scTenantId = req.authUser?.tenantId;
-        const scConds: any[] = [eq(stockCounts.id, req.params.id)];
-        if (scTenantId && !req.authUser?.isSuperAdmin) scConds.push(eq(stockCounts.tenantId, scTenantId));
-        const sc = await db.query.stockCounts.findFirst({ where: and(...scConds), with: { items: true } });
 
-        if (!sc) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Stock count not found' } });
-        if (sc.status !== 'pending') {
-            return res.status(400).json({ success: false, error: { code: 'INVALID_STATE', message: `Stock count is already ${sc.status}` } });
-        }
+        // Atomic status-claim guard, same pattern as PO receive / transfer approve:
+        // previously a plain SELECT status check let two concurrent approvals both
+        // apply the inventory adjustment loop.
+        const result = await scopedTransaction(req, async (tx) => {
+            const scConds: any[] = [eq(stockCounts.id, req.params.id)];
+            if (scTenantId && !req.authUser?.isSuperAdmin) scConds.push(eq(stockCounts.tenantId, scTenantId));
 
-        // Apply inventory adjustments for items with discrepancies
-        for (const item of (sc.items || [])) {
-            if (item.difference === 0) continue;
-            const inv = await db.query.inventory.findFirst({ where: and(eq(inventory.productId, item.productId), eq(inventory.branchId, sc.branchId)) });
-            const prevQty = inv?.quantity || 0;
-            const newQty = Math.max(0, prevQty + item.difference);
-            if (inv) {
-                await db.update(inventory).set({ quantity: newQty, available: Math.max(0, newQty - (inv.reserved || 0)) }).where(eq(inventory.id, inv.id));
-            } else {
-                await db.insert(inventory).values({ tenantId: scTenantId, productId: item.productId, branchId: sc.branchId, quantity: newQty, available: newQty, reserved: 0 });
+            const claimConds = [...scConds, eq(stockCounts.status, 'pending')];
+            const [claimed] = await tx.update(stockCounts)
+                .set({ status: 'approved', approvedBy: userId, approvedAt: new Date() })
+                .where(and(...claimConds))
+                .returning({ id: stockCounts.id });
+            if (!claimed) {
+                const sc = await tx.query.stockCounts.findFirst({ where: and(...scConds) });
+                if (!sc) return { code: 'NOT_FOUND' as const };
+                return { code: 'INVALID_STATE' as const, status: sc.status };
             }
-            await db.insert(stockMovements).values({
-                tenantId: scTenantId, productId: item.productId, branchId: sc.branchId,
-                quantity: Math.abs(item.difference), previousQty: prevQty, newQty,
-                type: 'ADJUSTMENT', reason: `Stock count ${sc.countNo} approved`, referenceType: 'STOCK_COUNT',
-                reference: sc.countNo, userId,
-            });
-        }
 
-        await db.update(stockCounts).set({ status: 'approved', approvedBy: userId, approvedAt: new Date() }).where(and(...scConds));
-        queueActivityLog(userId!, 'stock_count_approved', 'inventory', `ອະນຸມັດການນັບສະຕອກ ${sc.countNo}`, { countId: sc.id }, req).catch(() => {});
+            const sc = await tx.query.stockCounts.findFirst({ where: eq(stockCounts.id, claimed.id), with: { items: true } });
+            if (!sc) return { code: 'NOT_FOUND' as const };
+
+            for (const item of (sc.items || [])) {
+                if (item.difference === 0) continue;
+                const inv = await lockInventoryRow(tx, item.productId, sc.branchId);
+                const prevQty = inv?.quantity || 0;
+                const newQty = Math.max(0, prevQty + item.difference);
+                if (inv) {
+                    await tx.update(inventory).set({ quantity: newQty, available: Math.max(0, newQty - (inv.reserved || 0)) }).where(eq(inventory.id, inv.id));
+                } else {
+                    await tx.insert(inventory).values({ tenantId: scTenantId || null, productId: item.productId, branchId: sc.branchId, quantity: newQty, available: newQty, reserved: 0 });
+                }
+                await tx.insert(stockMovements).values({
+                    tenantId: scTenantId || null, productId: item.productId, branchId: sc.branchId,
+                    quantity: Math.abs(item.difference), previousQty: prevQty, newQty,
+                    type: 'ADJUSTMENT', reason: `Stock count ${sc.countNo} approved`, referenceType: 'STOCK_COUNT',
+                    reference: sc.countNo, userId,
+                });
+            }
+
+            return { code: 'OK' as const, countNo: sc.countNo, countId: sc.id };
+        });
+
+        if (result.code === 'NOT_FOUND') return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Stock count not found' } });
+        if (result.code === 'INVALID_STATE') return res.status(400).json({ success: false, error: { code: 'INVALID_STATE', message: `Stock count is already ${result.status}` } });
+
+        queueActivityLog(userId!, 'stock_count_approved', 'inventory', `ອະນຸມັດການນັບສະຕອກ ${result.countNo}`, { countId: result.countId }, req).catch(() => {});
         invalidateQueryCache('inventory*').catch(() => {});
 
-        res.json({ success: true, data: { message: 'Stock count approved', countNo: sc.countNo } });
+        res.json({ success: true, data: { message: 'Stock count approved', countNo: result.countNo } });
     } catch (error) {
         next(error);
     }

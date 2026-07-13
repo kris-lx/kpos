@@ -441,6 +441,47 @@ function createAuthStore() {
     // Get all accessible routes
     const accessibleRoutes = $derived(userRules.flatMap(r => r.routes));
 
+    // Bootstraps session state after an SSO redirect lands on the callback
+    // page. The backend has already set the HttpOnly refresh cookie (same
+    // one password login sets) — this exchanges it for an access token, then
+    // loads the full profile from scratch since (unlike refreshProfile())
+    // there's no pre-existing `user` object to merge into on a first-ever
+    // SSO login on this device.
+    async function completeSsoLogin(): Promise<boolean> {
+        try {
+            isLoading = true;
+            const ok = await refresh();
+            if (!ok) return false;
+
+            const res = await api.get('auth/me').json<{ success: boolean; data?: any }>();
+            if (!res.success || !res.data) return false;
+
+            user = {
+                id: res.data.id,
+                email: res.data.email,
+                name: res.data.name,
+                role: res.data.role,
+                branchId: res.data.branchId,
+                tenantId: res.data.tenantId,
+                avatar: res.data.avatar,
+                isSuperAdmin: res.data.isSuperAdmin,
+                permissions: res.data.permissions || [],
+            };
+
+            if (browser) {
+                localStorage.setItem(USER_KEY, JSON.stringify(user));
+            }
+
+            await Promise.all([loadStoreContext(), loadRules(), tenantSettings.load()]);
+            return true;
+        } catch (error) {
+            console.error('SSO login completion failed:', error);
+            return false;
+        } finally {
+            isLoading = false;
+        }
+    }
+
     function logout(): void {
         const currentToken = accessToken;
         accessToken = null;
@@ -555,6 +596,7 @@ function createAuthStore() {
         // Auth methods
         login,
         refresh,
+        completeSsoLogin,
         logout,
         hasPermission,
         hasAnyPermission,

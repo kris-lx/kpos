@@ -15,19 +15,41 @@ import * as schema from "@/db/schema";
 // bind the RLS session GUCs (app.current_tenant_id, ...) to one connection
 // for the request's DB work without pinning it across slow external I/O the
 // way wrapping the whole request in db.transaction() would.
+// `connection.statement_timeout` is load-bearing, not just defense-in-depth:
+// without it, any single query that hangs server-side (a stuck TCP path
+// after a Docker network restart, a runaway lock wait, etc.) never releases
+// its pool slot back — postgres.js has no separate "give up waiting for a
+// response" timeout of its own once a connection is established. A handful
+// of hung requests would permanently wedge every subsequent query,
+// including unrelated ones on other connections, once the pool is fully
+// checked out. `max_lifetime` additionally recycles connections
+// periodically so any connection-level staleness self-heals.
+//
+// Dev pool bumped 5 → 15: a single login does 4 concurrent DB-touching
+// requests client-side (loadStoreContext/loadRules/refreshProfile/
+// tenantSettings.load — see auth.svelte.ts login()), and each of those can
+// itself need more than one pooled connection (withTenantTx()'s per-request
+// reservation, plus any RLS-scoped sub-query run via a separate
+// db.transaction(), e.g. loadUserStoreAccess()'s runWithTenantContext call).
+// 5 was tight enough that ordinary concurrent page-load traffic — not just
+// pathological hangs — could genuinely exhaust it.
 export const primaryClient = postgres(dbConfig.url, {
-  max: appConfig.isProduction ? 20 : 5,
+  max: appConfig.isProduction ? 20 : 15,
   idle_timeout: 20,
   connect_timeout: 10,
+  max_lifetime: 60 * 30, // recycle every 30 minutes
+  connection: { statement_timeout: 30_000 },
   onnotice: () => {},
 });
 
 // Read replica pool (falls back to primary if not configured)
 const readClient = dbConfig.readUrl
   ? postgres(dbConfig.readUrl, {
-      max: appConfig.isProduction ? 30 : 5,
+      max: appConfig.isProduction ? 30 : 15,
       idle_timeout: 20,
       connect_timeout: 10,
+      max_lifetime: 60 * 30,
+      connection: { statement_timeout: 30_000 },
       onnotice: () => {},
     })
   : primaryClient;

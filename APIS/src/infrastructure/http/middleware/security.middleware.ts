@@ -44,12 +44,50 @@ function containsXSS(value: string): boolean {
 
 // ─── Deep Sanitize Object ────────────────────────────────────────────────
 
+// Fields carrying opaque credential/secret blobs (PEM private keys,
+// JSON-encoded service account keys, API tokens, signing keys, passwords) —
+// never rendered back as HTML, so no XSS risk from leaving them unescaped.
+// PEM keys always contain `-----BEGIN` (trips the SQLi heuristic's `--`
+// pattern), and random base64/hex secrets frequently contain `/` or trip the
+// XSS heuristic's `on\w+\s*=` pattern near padding — either way, silent
+// corruption before the value is ever validated, hashed, or encrypted.
+// Audited 2026-07-11 against every credential-shaped field across auth,
+// settings (email/SSO/api-keys), and payment-gateways routes — see
+// memory/line-google-sheets-integrations.md for the fields that motivated
+// this. Exempt by field name, same pattern as the base64-image exemption
+// below (checked against only the last path segment, so this also covers
+// nested fields like `config.signKey`).
+const CREDENTIAL_BLOB_FIELDS = [
+    // Integration credential blobs (found 2026-07-11)
+    'serviceaccountjson', 'channelaccesstoken', 'privatekey', 'private_key',
+    // Payment gateway config (SwiftPass RSA signKey is a PEM blob; JDB/others are secrets)
+    'signkey', 'clientsecret', 'clientscret', // "clientScret" — matches JDB vendor spec's field-name typo verbatim
+    // Email provider config (SMTP password, Brevo/SendGrid/Mailgun API keys)
+    'pass', 'apikey',
+    // Generic API Keys tab
+    'secretkey',
+    // Auth passwords — deterministic sanitizer transform means login still
+    // works even if corrupted (same transform applies at register and
+    // login), but exempting avoids silently storing a mutated credential
+    // for any password containing `--`/`;`/`<`/`>`/`"`/`'`/`/`.
+    'password', 'currentpassword', 'newpassword',
+];
+
+function isCredentialBlobField(path: string): boolean {
+    const lastSegment = path.split(/[.[]/).pop()?.toLowerCase() ?? '';
+    return CREDENTIAL_BLOB_FIELDS.includes(lastSegment);
+}
+
 function deepSanitize(obj: unknown, path = ''): unknown {
     // Skip base64 image strings which can false-positive SQLi detectors
     if (path.endsWith('.image') || path.endsWith('.images') || path.endsWith('.avatar') || path.endsWith('.photo')) {
         if (typeof obj === 'string' && obj.startsWith('data:image/')) {
             return obj; // Let it through
         }
+    }
+
+    if (typeof obj === 'string' && isCredentialBlobField(path)) {
+        return obj; // Let opaque credential blobs through unescaped — see CREDENTIAL_BLOB_FIELDS comment
     }
 
     if (typeof obj === 'string') {

@@ -94,6 +94,14 @@ export const zh = {
     'auth.loginFailed': '邮箱或密码不正确',
     'auth.loginError': '登录时发生错误',
     'auth.logoutSuccess': '退出成功',
+    'auth.signInWithSso': '使用SSO登录',
+    'auth.ssoOrgCode': '组织代码',
+    'auth.ssoOrgCodePrompt': '请输入您的组织代码',
+    'auth.signingIn': '正在登录...',
+    'auth.ssoErrorUnknownOrg': '未找到该组织代码',
+    'auth.ssoErrorNotConfigured': '该组织尚未配置SSO',
+    'auth.ssoErrorNoAccount': '未找到与您邮箱匹配的账户，请联系管理员。',
+    'auth.ssoErrorGeneric': 'SSO登录失败，请重试。',
 
     // POS
     'pos.title': '销售',
@@ -1456,6 +1464,8 @@ export const zh = {
     'pos.noItemsToHold': 'No items to hold',
     'pos.scanQrToPay': 'Scan QR Code to pay',
     'pos.selectCustomer': 'Select customer (optional)',
+    'pos.openCustomerDisplay': 'Open customer display',
+    'pos.customerDisplayBlocked': 'Customer display was blocked by your browser\'s popup blocker — click the display icon next to "Select customer" to open it manually.',
     'pos.tryAnotherSearch': 'Try searching with different keywords',
     'pos.waitingForCard': 'Waiting for card from customer',
     'product.unit.piece': 'pcs',

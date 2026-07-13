@@ -1,6 +1,6 @@
 ﻿<script lang="ts">
     import { onMount } from "svelte";
-    import { cn, formatCurrency } from "$utils";
+    import { cn, formatCurrency, escapeHtml, escapeCsvCell } from "$utils";
     import { api } from "$api";
     import { t } from "$lib/i18n/index.svelte";
     import { auth } from "$stores";
@@ -127,7 +127,7 @@
             csv += 'ລຳດັບ,ສິນຄ້າ,SKU,ສະຕ໋ອກ,ສະຕ໋ອກຕໍ່າສຸດ,ລາຄາ,ມູນຄ່າ,ສະຖານະ\n';
             filteredInventory.forEach((p, i) => {
                 const status = getStockStatus(p.currentStock || 0, p.minStock || 10);
-                csv += `${i + 1},"${p.name || ''}","${p.sku || ''}",${p.currentStock || 0},${p.minStock || 0},"${formatCurrency(p.unitCost || 0)}","${formatCurrency((p.currentStock || 0) * (p.unitCost || 0))}","${status.label}"\n`;
+                csv += `${i + 1},${escapeCsvCell(p.name || '')},${escapeCsvCell(p.sku || '')},${p.currentStock || 0},${p.minStock || 0},"${formatCurrency(p.unitCost || 0)}","${formatCurrency((p.currentStock || 0) * (p.unitCost || 0))}","${status.label}"\n`;
             });
             downloadFile(csv, `inventory-report.csv`, 'text/csv;charset=utf-8');
             toast.success(t("reports.exportSuccess"));
@@ -145,7 +145,7 @@
 <style>body{font-family:'Noto Sans Lao','Phetsarath OT',sans-serif;padding:20px}h1{text-align:center}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ddd;padding:6px;font-size:12px}th{background:#f5f5f5}.text-right{text-align:right}.low{color:#d97706}.out{color:#dc2626}.ok{color:#16a34a}</style></head>
 <body><h1>${t("reports.warehouse")}</h1><p style="text-align:center">${new Date().toLocaleDateString('lo-LA')}</p>
 <table><tr><th>ລຳດັບ</th><th>ສິນຄ້າ</th><th>SKU</th><th>ສະຕ໋ອກ</th><th>ຕໍ່າສຸດ</th><th>ລາຄາ</th><th>ມູນຄ່າ</th><th>ສະຖານະ</th></tr>
-${filteredInventory.map((p, i) => { const st = getStockStatus(p.currentStock || 0, p.minStock || 10); const cls = st.label === 'ໝົດສາງ' ? 'out' : st.label === 'ຕໍ່າ' ? 'low' : 'ok'; return `<tr><td>${i + 1}</td><td>${p.name || ''}</td><td>${p.sku || ''}</td><td class="text-right">${p.currentStock || 0}</td><td class="text-right">${p.minStock || 0}</td><td class="text-right">${formatCurrency(p.unitCost || 0)}</td><td class="text-right">${formatCurrency((p.currentStock || 0) * (p.unitCost || 0))}</td><td class="${cls}">${st.label}</td></tr>`; }).join('')}
+${filteredInventory.map((p, i) => { const st = getStockStatus(p.currentStock || 0, p.minStock || 10); const cls = st.label === 'ໝົດສາງ' ? 'out' : st.label === 'ຕໍ່າ' ? 'low' : 'ok'; return `<tr><td>${i + 1}</td><td>${escapeHtml(p.name || '')}</td><td>${escapeHtml(p.sku || '')}</td><td class="text-right">${p.currentStock || 0}</td><td class="text-right">${p.minStock || 0}</td><td class="text-right">${formatCurrency(p.unitCost || 0)}</td><td class="text-right">${formatCurrency((p.currentStock || 0) * (p.unitCost || 0))}</td><td class="${cls}">${st.label}</td></tr>`; }).join('')}
 </table></body></html>`;
         const w = window.open('', '_blank');
         if (w) {
@@ -163,7 +163,7 @@ ${filteredInventory.map((p, i) => { const st = getStockStatus(p.currentStock || 
         const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office"><head><meta charset="utf-8"><style>table{width:100%;border-collapse:collapse}th,td{border:1px solid #000;padding:6px;font-size:11px}th{background:#f0f0f0}</style></head>
 <body><h1 style="text-align:center">${t("reports.warehouse")}</h1><p style="text-align:center">${new Date().toLocaleDateString('lo-LA')}</p>
 <table><tr><th>ລຳດັບ</th><th>ສິນຄ້າ</th><th>SKU</th><th>ສະຕ໋ອກ</th><th>ຕໍ່າສຸດ</th><th>ລາຄາ</th><th>ມູນຄ່າ</th><th>ສະຖານະ</th></tr>
-${filteredInventory.map((p, i) => { const st = getStockStatus(p.currentStock || 0, p.minStock || 10); return `<tr><td>${i + 1}</td><td>${p.name || ''}</td><td>${p.sku || ''}</td><td>${p.currentStock || 0}</td><td>${p.minStock || 0}</td><td>${formatCurrency(p.unitCost || 0)}</td><td>${formatCurrency((p.currentStock || 0) * (p.unitCost || 0))}</td><td>${st.label}</td></tr>`; }).join('')}
+${filteredInventory.map((p, i) => { const st = getStockStatus(p.currentStock || 0, p.minStock || 10); return `<tr><td>${i + 1}</td><td>${escapeHtml(p.name || '')}</td><td>${escapeHtml(p.sku || '')}</td><td>${p.currentStock || 0}</td><td>${p.minStock || 0}</td><td>${formatCurrency(p.unitCost || 0)}</td><td>${formatCurrency((p.currentStock || 0) * (p.unitCost || 0))}</td><td>${st.label}</td></tr>`; }).join('')}
 </table></body></html>`;
         downloadFile(html, `inventory-report.doc`, 'application/msword');
         toast.success(t("reports.exportSuccess"));

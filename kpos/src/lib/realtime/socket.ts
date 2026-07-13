@@ -5,8 +5,13 @@ import { getToken } from '$lib/api/token';
 let socket: Socket | null = null;
 
 function getSocketOrigin(): string {
-    const apiUrl = new URL(PUBLIC_API_URL);
-    return apiUrl.origin;
+    try {
+        return new URL(PUBLIC_API_URL).origin;
+    } catch {
+        // PUBLIC_API_URL is a relative path (e.g. "/api/v1") — same-origin
+        // as the page itself, so there's no separate host to parse out.
+        return window.location.origin;
+    }
 }
 
 export function getRealtimeSocket(): Socket | null {

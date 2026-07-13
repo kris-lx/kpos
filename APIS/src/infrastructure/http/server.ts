@@ -12,10 +12,12 @@ import { createAdapter } from '@socket.io/redis-adapter';
 import { appConfig } from '@/config/app.config';
 import { isDatabaseConnected } from '@/config/database.config';
 import { isRedisAvailable, getRedisClient } from '@/config/redis.config';
+import { isRabbitMQConnected } from '@/config/rabbitmq.config';
 import { errorHandler, notFoundHandler } from './middleware/error.middleware';
 import { requestLogger } from './middleware/logger.middleware';
 import { rateLimiter } from './middleware/rateLimit.middleware';
 import { inputSanitizer, noCacheHeaders } from './middleware/security.middleware';
+import { metricsMiddleware, metricsHandler } from './middleware/metrics.middleware';
 import { setupRoutes } from './routes';
 import { setupSocketHandlers, SocketEventEmitter } from './socket';
 
@@ -71,6 +73,11 @@ export class AppServer {
         // Rate limiting
         this.app.use(rateLimiter);
 
+        // Prometheus scrape target — see metrics.middleware.ts for why this
+        // exists alongside the OTel Collector (traces only) rather than
+        // going through OTLP for metrics too.
+        this.app.use(metricsMiddleware);
+
         // Body parsing + cookies — tight global limit; upload routes override per-route
         this.app.use(express.json({ limit: '2mb' }));
         this.app.use(express.urlencoded({ extended: true, limit: '2mb' }));
@@ -85,9 +92,10 @@ export class AppServer {
 
         // Health check — includes Redis; load balancers use this
         this.app.get('/health', (_, res) => {
-            const dbOk    = isDatabaseConnected();
-            const redisOk = isRedisAvailable();
-            const allOk   = dbOk && redisOk;
+            const dbOk      = isDatabaseConnected();
+            const redisOk   = isRedisAvailable();
+            const rabbitOk  = isRabbitMQConnected();
+            const allOk     = dbOk && redisOk;
             res.status(allOk ? 200 : 503).json({
                 status:      allOk ? 'ok' : 'degraded',
                 timestamp:   new Date().toISOString(),
@@ -95,9 +103,18 @@ export class AppServer {
                 services: {
                     database: dbOk    ? 'connected' : 'disconnected',
                     redis:    redisOk ? 'connected' : 'disconnected',
+                    // Informational only — not folded into `allOk`. RabbitMQ
+                    // has a documented sync-fallback (see rabbitmq.config.ts)
+                    // the app tolerates losing; failing health checks over it
+                    // would flag an outage the app is designed to survive.
+                    rabbitmq: rabbitOk ? 'connected' : 'disconnected (sync fallback active)',
                 },
             });
         });
+
+        // Prometheus scrape endpoint — unauthenticated, matching /health
+        // (same trust boundary: infra-internal, not customer-facing data).
+        this.app.get('/metrics', metricsHandler);
     }
 
     private setupRoutes(): void {

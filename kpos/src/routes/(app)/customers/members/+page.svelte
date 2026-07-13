@@ -1,7 +1,7 @@
 ﻿<script lang="ts">
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
-    import { cn } from "$utils";
+    import { cn, escapeCsvCell } from "$utils";
     import { api } from "$api";
     import { formatCurrency, formatDate } from "$lib/utils";
     import { toast } from "svelte-sonner";
@@ -289,7 +289,7 @@
                 m.isActive ? "ໃຊ້ງານ" : "ປິດ",
             ]),
         ];
-        const csv = rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+        const csv = rows.map((r) => r.map((v) => (typeof v === "number" ? String(v) : escapeCsvCell(v))).join(",")).join("\n");
         const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");

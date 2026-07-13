@@ -190,6 +190,14 @@ export const th = {
     'auth.loginFailed': 'อีเมลหรือรหัสผ่านไม่ถูกต้อง',
     'auth.loginError': 'เกิดข้อผิดพลาดในการเข้าสู่ระบบ',
     'auth.logoutSuccess': 'ออกจากระบบสำเร็จ',
+    'auth.signInWithSso': 'เข้าสู่ระบบด้วย SSO',
+    'auth.ssoOrgCode': 'รหัสองค์กร',
+    'auth.ssoOrgCodePrompt': 'กรอกรหัสองค์กรของคุณ',
+    'auth.signingIn': 'กำลังเข้าสู่ระบบ...',
+    'auth.ssoErrorUnknownOrg': 'ไม่พบรหัสองค์กรนี้',
+    'auth.ssoErrorNotConfigured': 'ยังไม่ได้ตั้งค่า SSO สำหรับองค์กรนี้',
+    'auth.ssoErrorNoAccount': 'ไม่พบบัญชีที่ตรงกับอีเมลของคุณ กรุณาติดต่อผู้ดูแลระบบ',
+    'auth.ssoErrorGeneric': 'เข้าสู่ระบบด้วย SSO ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง',
 
     // POS
     'pos.title': 'ขายสินค้า',
@@ -222,6 +230,8 @@ export const th = {
     'pos.outOfStock': 'หมดสต็อก',
     'pos.memberCustomer': 'สมาชิก',
     'pos.selectCustomer': 'เลือกลูกค้า (ไม่บังคับ)',
+    'pos.openCustomerDisplay': 'เปิดหน้าจอลูกค้า',
+    'pos.customerDisplayBlocked': 'หน้าจอลูกค้าถูกบล็อกโดยตัวบล็อกป๊อปอัปของเบราว์เซอร์ — คลิกไอคอนหน้าจอลูกค้าข้างปุ่ม "เลือกลูกค้า" เพื่อเปิดด้วยตนเอง แล้วอนุญาตป๊อปอัปสำหรับเว็บไซต์นี้',
     'pos.discountPromotion': 'ส่วนลด / โปรโมชั่น',
     'pos.amountDue': 'ยอดชำระ',
     'pos.cash': 'เงินสด',

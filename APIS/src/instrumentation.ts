@@ -11,29 +11,37 @@
 // configured, spans/metrics print to the console instead — inspectable
 // today without waiting on a vendor decision.
 //
-// VERIFIED WORKING (2026-07-11), under the normal `npm run dev` (tsx, no
-// extra flags): HTTP + Express request spans, with route, method, status,
-// duration — confirmed against real requests, spans genuinely appear.
+// VERIFIED WORKING (2026-07-11): HTTP + Express request spans, with route,
+// method, status, duration — confirmed against real requests, both under
+// `npm run dev` (tsx, no extra flags) AND under the compiled dist/ build run
+// with plain `node dist/index.js` (see below) — no experimental loader
+// needed for these.
 //
-// KNOWN GAP, not silently broken: full package-level auto-instrumentation
-// (ioredis command spans, pino log-trace correlation, socket.io event spans)
-// needs Node's ESM instrumentation loader
-// (--experimental-loader=@opentelemetry/instrumentation/hook.mjs or the
-// newer --import+register() form) active, because this is an ESM project
-// ("type": "module") and only core-module patching (http) works without it —
-// third-party ESM package imports (ioredis, etc.) need the loader hook to be
-// intercepted at all. Tried wiring that loader into the tsx-based dev
-// workflow directly: it breaks tsx's own TypeScript module resolution
-// entirely (conflicting loader chains). Tried the compiled dist/ + plain
-// `node` path instead: hit a *separate*, pre-existing bug — tsc's output
-// (moduleResolution: "bundler") doesn't add the .js extensions plain Node
-// ESM needs to resolve relative imports, so `node dist/index.js` doesn't run
-// at all today regardless of OpenTelemetry. Fixing that build gap is a
-// separate, unrelated task from observability — not done here. Until one of
-// these is resolved, DB query-level spans (no official postgres.js
-// instrumentation exists either way — see below) and Redis/socket.io
-// command-level spans are not available; HTTP-level spans still show overall
-// request latency including that time, just not broken down further.
+// The dist/ build ESM gap (tsc's `moduleResolution: "bundler"` output doesn't
+// add the .js extensions or rewrite path-alias imports plain Node ESM needs
+// to resolve modules — `node dist/index.js` used to fail immediately with
+// ERR_MODULE_NOT_FOUND) is FIXED: `npm run build` now runs `tsc-alias`
+// (rewrites @/... alias imports to relative paths) followed by
+// `scripts/fix-esm-extensions.mjs` (adds .js to the remaining plain relative
+// imports) as post-build steps. `node dist/index.js` now boots end-to-end
+// against the real DB/Redis/RabbitMQ and serves real HTTP requests.
+//
+// KNOWN GAP, verified NOT fixed by the above: package-level auto-
+// instrumentation for ioredis and socket.io still produces zero spans, even
+// against the fixed dist/ build, even with Node's ESM instrumentation loader
+// (--experimental-loader=@opentelemetry/instrumentation/hook.mjs) wired in.
+// Tested in isolation (bare script: import instrumentation, then `new
+// Redis().set/get()`) under the loader — still zero ioredis spans. This is a
+// genuine incompatibility between this instrumentation package and this
+// ESM/Node version combination, not something the dist/ build gap was
+// blocking. Since the loader gives no benefit here (HTTP/Express spans work
+// fine without it, on both tsx and dist/) and does carry cost (an
+// experimental Node flag, a Node deprecation warning, and it broke tsx's own
+// module resolution when tried in dev), it is deliberately NOT wired into
+// `start:prod`. DB query-level spans remain unavailable either way (no
+// official postgres.js OpenTelemetry instrumentation exists — see below).
+// HTTP-level spans still show overall request latency including
+// Redis/socket.io time, just not broken down further.
 //
 // Does NOT cover, independent of the above: DB query-level spans. This app
 // uses `postgres` (porsager's postgres.js), which has no official

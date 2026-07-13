@@ -5,7 +5,7 @@
         useQueryClient,
     } from "@tanstack/svelte-query";
     import { api } from "$api";
-    import { cn, formatCurrency, formatDate } from "$utils";
+    import { cn, formatCurrency, formatDate, escapeCsvCell } from "$utils";
     import { toast } from "svelte-sonner";
     import { t } from "$lib/i18n/index.svelte";
     import StoreBranchSelector from "$lib/components/StoreBranchSelector.svelte";
@@ -240,7 +240,7 @@
                 const qty = item.quantity ?? 0;
                 const min = item.minStock ?? item.product?.minStock ?? 0;
                 const status = qty <= 0 ? t("inventory.outOfStock") : qty <= min ? t("inventory.lowStock") : t("inventory.statusNormal");
-                csv += `"${item.product?.name || item.name || ''}","${item.product?.sku || item.sku || ''}","${item.branch?.name || ''}","${qty}","${item.reserved ?? 0}","${item.available ?? qty}","${item.location || ''}","${status}"\n`;
+                csv += `${escapeCsvCell(item.product?.name || item.name || '')},${escapeCsvCell(item.product?.sku || item.sku || '')},${escapeCsvCell(item.branch?.name || '')},"${qty}","${item.reserved ?? 0}","${item.available ?? qty}",${escapeCsvCell(item.location || '')},"${status}"\n`;
             }
             downloadFile(csv, `inventory-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
             toast.success(t("reports.exportSuccess"));

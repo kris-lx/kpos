@@ -5,8 +5,7 @@
 import { Router } from 'express';
 import { authenticate, authorize, branchFilter, applyScopeFilter, ensureScopeAccess, buildScopeCondition, tenantScope, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
-import { setRequestContext } from '@/db/set-tenant-context';
-import { publish, QUEUES } from '@/config/rabbitmq.config';
+import { setRequestContext, setSuperAdminBypassContext } from '@/db/set-tenant-context';
 import { db as globalDb } from '@/config/database.config';
 import { transactions, transactionItems, transactionPayments, products, inventory, stockMovements, paymentMethods, shifts, cashRegisters, cashMovements, heldSales, customers, members, membershipTiers, pointsHistory, pointHistory, settings, coupons, promotions, discounts } from '@/db/schema/tables';
 import { eq, and, or, isNull, ne, ilike, inArray, gte, lte, desc, asc, count, sum, sql } from 'drizzle-orm';
@@ -26,11 +25,27 @@ async function scopedTransaction<T>(
 ): Promise<T> {
     return globalDb.transaction(async (tx) => {
         const { tenantId, isSuperAdmin, activeBranchPath } = req.authUser ?? {};
-        if (tenantId && !isSuperAdmin) {
+        if (isSuperAdmin) {
+            await setSuperAdminBypassContext(tx, { local: true });
+        } else if (tenantId) {
             await setRequestContext(tx, { tenantId, branchPath: activeBranchPath }, { local: true });
         }
         return callback(tx);
     });
+}
+
+// Row-locked inventory read. `db.query.inventory.findFirst({ ..., for:
+// 'update' })` (the relational query API) silently does NOT apply a row
+// lock — `for` isn't a field that API recognizes, so spreading
+// `{ for: 'update' } as any` into its options was a no-op the `any` cast
+// was hiding. Only the query-builder API's `.for('update')` actually emits
+// `FOR UPDATE` SQL — see inventory/presentation/routes.ts for the live
+// concurrency test that caught this.
+async function lockInventoryRow(tx: any, productId: string, branchId: string) {
+    const rows = await tx.select().from(inventory)
+        .where(and(eq(inventory.productId, productId), eq(inventory.branchId, branchId)))
+        .for('update');
+    return rows[0];
 }
 
 // Generates a collision-resistant display number without a DB count query.
@@ -311,11 +326,7 @@ salesRoutes.post('/', authenticate, withTenantTx(), authorize('sales:create'), a
             for (const item of items) {
                 const product = txItems.find(t => t.productId === item.productId);
                 if (!product) continue;
-                const inv = await tx.query.inventory.findFirst({
-                    where: and(eq(inventory.productId, item.productId), eq(inventory.branchId, branchId)),
-                    // Acquire row-level lock to prevent concurrent oversell
-                    ...({ for: 'update' } as any),
-                });
+                const inv = await lockInventoryRow(tx, item.productId, branchId);
                 if (inv && inv.quantity < item.quantity) {
                     throw Object.assign(new Error(`Insufficient stock for product ${item.productId}`), { statusCode: 400, code: 'INSUFFICIENT_STOCK' });
                 }
@@ -428,14 +439,17 @@ salesRoutes.post('/', authenticate, withTenantTx(), authorize('sales:create'), a
             return newTransaction;
         });
 
-        // Publish async events after commit (best-effort, non-blocking)
-        for (const item of items) {
-            publish(QUEUES.STOCK_MOVEMENT, {
-                productId: item.productId, branchId, storeId, type: 'OUT',
-                quantity: item.quantity, reason: 'Sale', reference: transaction.id,
-                referenceType: 'SALE', userId,
-            });
-        }
+        // Inventory was already deducted synchronously and atomically inside
+        // the transaction above (step 5) — do NOT also publish to
+        // QUEUES.STOCK_MOVEMENT here. This route used to do both: the
+        // worker's processStockMovement() re-reads inventory and applies the
+        // exact same OUT deduction a second time (with no idempotency check
+        // against reference/referenceType), so every sale silently deducted
+        // stock twice whenever RabbitMQ was connected — the default/
+        // production configuration. This is the only publisher of
+        // QUEUES.STOCK_MOVEMENT in the codebase, so removing it is safe;
+        // cache invalidation (the queue consumer's other job) is done
+        // directly below instead.
 
         // Fetch full transaction with relations
         const fullTransaction = await db.query.transactions.findFirst({
@@ -695,11 +709,23 @@ salesRoutes.post('/shifts/open', authenticate, withTenantTx(), authorize('sales:
         const shiftNo = `SFT-${today}-${String(shiftCount + 1).padStart(3, '0')}`;
 
         const shiftTenantId = req.authUser?.tenantId || req.user?.tenantId;
-        const [newShift] = await db.insert(shifts).values({
-            tenantId: shiftTenantId,
-            shiftNo, branchId, userId, registerId, openingBalance: openingBalance || 0, notes,
-            storeId: req.authUser?.activeStoreId || undefined,
-        }).returning();
+        let newShift;
+        try {
+            [newShift] = await db.insert(shifts).values({
+                tenantId: shiftTenantId,
+                shiftNo, branchId, userId, registerId, openingBalance: openingBalance || 0, notes,
+                storeId: req.authUser?.activeStoreId || undefined,
+            }).returning();
+        } catch (err: any) {
+            // shifts_one_open_per_user_idx (drizzle/0022) backstops the
+            // check above against the race where two concurrent opens both
+            // pass the plain SELECT before either INSERT commits.
+            if (err?.code === '23505' && String(err?.constraint_name || err?.constraint || '').includes('one_open_per_user')) {
+                res.status(400).json({ success: false, error: { code: 'SHIFT_001', message: 'You already have an open shift' } });
+                return;
+            }
+            throw err;
+        }
 
         const shift = await db.query.shifts.findFirst({
             where: eq(shifts.id, newShift.id),
@@ -1148,33 +1174,50 @@ salesRoutes.post('/credit', authenticate, withTenantTx(), authorize('pos:credit'
         if (initialPayment >= totalAmount) creditStatus = 'PAID';
         else if (initialPayment > 0) creditStatus = 'PARTIAL';
 
-        const [txn] = await db.insert(transactions).values({
-            tenantId: creditTenantId,
-            transactionNo, type: 'SALE', status: 'COMPLETED', branchId, storeId: creditStoreId, userId, customerId, memberId,
-            orderType: 'CREDIT', subtotal, discountType, discountValue, discountAmount, taxAmount,
-            total: totalAmount, received: initialPayment, change: 0, note: notes,
-            isCredit: true, creditStatus, dueDate: dueDate ? new Date(dueDate) : null, paidAmount: initialPayment,
-        }).returning();
-
-        if (txItems2.length > 0) {
-            await db.insert(transactionItems).values(txItems2.map(ti => ({ ...ti, transactionId: txn.id })));
-        }
-
-        for (const item of items) {
-            const inv = await db.query.inventory.findFirst({ where: and(eq(inventory.productId, item.productId), eq(inventory.branchId, branchId)) });
-            if (inv) {
-                const previousQty = inv.quantity;
-                const newQty = previousQty - item.quantity;
-                await db.update(inventory).set({ quantity: newQty, available: newQty - inv.reserved }).where(eq(inventory.id, inv.id));
-                await db.insert(stockMovements).values({
-                    productId: item.productId, branchId, type: 'OUT', quantity: item.quantity, previousQty, newQty,
-                    reason: 'Credit Sale', reference: txn.id, referenceType: 'CREDIT_SALE', userId,
-                });
+        // Atomic write: transaction + items + inventory deduction, with row-level
+        // stock locking — previously each insert/update ran on its own connection
+        // outside any transaction, so a crash mid-loop left a transaction with no
+        // items/no stock deduction, and concurrent credit sales of the same
+        // product could both pass the (nonexistent) stock check and oversell.
+        const txnId = await scopedTransaction(req, async (tx) => {
+            for (const item of items) {
+                const inv = await lockInventoryRow(tx, item.productId, branchId);
+                if (inv && inv.quantity < item.quantity) {
+                    throw Object.assign(new Error(`Insufficient stock for product ${item.productId}`), { statusCode: 400, code: 'INSUFFICIENT_STOCK' });
+                }
             }
-        }
+
+            const [txn] = await tx.insert(transactions).values({
+                tenantId: creditTenantId,
+                transactionNo, type: 'SALE', status: 'COMPLETED', branchId, storeId: creditStoreId, userId, customerId, memberId,
+                orderType: 'CREDIT', subtotal, discountType, discountValue, discountAmount, taxAmount,
+                total: totalAmount, received: initialPayment, change: 0, note: notes,
+                isCredit: true, creditStatus, dueDate: dueDate ? new Date(dueDate) : null, paidAmount: initialPayment,
+            }).returning();
+
+            if (txItems2.length > 0) {
+                await tx.insert(transactionItems).values(txItems2.map(ti => ({ ...ti, transactionId: txn.id, tenantId: creditTenantId })));
+            }
+
+            for (const item of items) {
+                const inv = await tx.query.inventory.findFirst({ where: and(eq(inventory.productId, item.productId), eq(inventory.branchId, branchId)) });
+                if (inv) {
+                    const previousQty = inv.quantity;
+                    const newQty = previousQty - item.quantity;
+                    await tx.update(inventory).set({ quantity: newQty, available: newQty - inv.reserved }).where(eq(inventory.id, inv.id));
+                    await tx.insert(stockMovements).values({
+                        tenantId: creditTenantId || null,
+                        productId: item.productId, branchId, type: 'OUT', quantity: item.quantity, previousQty, newQty,
+                        reason: 'Credit Sale', reference: txn.id, referenceType: 'CREDIT_SALE', userId,
+                    });
+                }
+            }
+
+            return txn.id;
+        });
 
         const transaction = await db.query.transactions.findFirst({
-            where: eq(transactions.id, txn.id),
+            where: eq(transactions.id, txnId),
             with: { items: { with: { product: true } }, customer: true },
         });
 
@@ -1200,9 +1243,6 @@ salesRoutes.post('/credit/:id/payment', authenticate, withTenantTx(), authorize(
         // Validate payment amount
         if (!amount || amount <= 0) return res.status(400).json({ success: false, error: { code: 'INVALID_AMOUNT', message: 'Payment amount must be greater than 0' } });
 
-        const remaining = Math.round((transaction.total - transaction.paidAmount) * 100) / 100;
-        if (amount > remaining) return res.status(400).json({ success: false, error: { code: 'AMOUNT_EXCEEDS', message: 'Payment amount exceeds remaining balance' } });
-
         // Idempotency: reject duplicate reference within the same transaction
         if (reference) {
             const dup = await db.query.transactionPayments.findFirst({
@@ -1210,11 +1250,6 @@ salesRoutes.post('/credit/:id/payment', authenticate, withTenantTx(), authorize(
             });
             if (dup) return res.json({ success: true, data: dup, idempotent: true });
         }
-
-        const newPaidAmount = Math.round((transaction.paidAmount + amount) * 100) / 100;
-        const newStatus = newPaidAmount >= transaction.total ? 'PAID' : 'PARTIAL';
-
-        const [updated] = await db.update(transactions).set({ paidAmount: newPaidAmount, creditStatus: newStatus }).where(eq(transactions.id, transactionId)).returning();
 
         let methodId = paymentMethodId;
         let methodName = 'CASH';
@@ -1231,9 +1266,35 @@ salesRoutes.post('/credit/:id/payment', authenticate, withTenantTx(), authorize(
             }
         }
 
-        await db.insert(transactionPayments).values({
-            transactionId, methodId, methodName, amount,
-            reference: reference || `Credit Payment - ${new Date().toISOString()}`,
+        // Read paidAmount with a row lock and recompute inside the transaction —
+        // previously this read paidAmount outside any lock, computed newPaidAmount
+        // in JS, then wrote it back with a plain UPDATE, so two concurrent payment
+        // requests could both read the same stale paidAmount and the second
+        // write would silently clobber the first payment's balance update
+        // (the transactionPayments row itself was still inserted for both,
+        // so the ledger and the running balance would disagree).
+        const updated = await scopedTransaction(req, async (tx) => {
+            const [locked] = await tx.select({ paidAmount: transactions.paidAmount, total: transactions.total })
+                .from(transactions)
+                .where(eq(transactions.id, transactionId))
+                .for('update');
+
+            const remaining = Math.round((locked.total - locked.paidAmount) * 100) / 100;
+            if (amount > remaining) {
+                throw Object.assign(new Error('Payment amount exceeds remaining balance'), { statusCode: 400, code: 'AMOUNT_EXCEEDS' });
+            }
+
+            const newPaidAmount = Math.round((locked.paidAmount + amount) * 100) / 100;
+            const newStatus = newPaidAmount >= locked.total ? 'PAID' : 'PARTIAL';
+
+            const [row] = await tx.update(transactions).set({ paidAmount: newPaidAmount, creditStatus: newStatus }).where(eq(transactions.id, transactionId)).returning();
+
+            await tx.insert(transactionPayments).values({
+                transactionId, methodId, methodName, amount,
+                reference: reference || `Credit Payment - ${new Date().toISOString()}`,
+            });
+
+            return row;
         });
 
         res.json({
@@ -1461,9 +1522,38 @@ salesRoutes.post('/:id/refund', authenticate, withTenantTx(), authorize('sales:d
             return res.status(400).json({ success: false, error: { code: 'INVALID_STATUS', message: 'Can only refund completed transactions' } });
         }
 
+        // Never trust client-supplied productId/quantity/unitPrice/total for the
+        // refund amount — previously `refundItems` (when the caller passed
+        // partial-refund items) was used verbatim, so any staff user with
+        // sales:delete could refund an inflated amount and credit inventory
+        // that was never actually returned by requesting a refund for
+        // products/quantities/prices that don't match the original sale.
+        // Only the productId + requested quantity come from the client; the
+        // price and product identity are always resolved from the original
+        // transaction's own items, and quantity is capped at what was
+        // originally sold.
         let refundAmount = 0;
-        const itemsToRefund = refundItems || transaction.items;
-        for (const item of itemsToRefund) { refundAmount += item.total || (item.unitPrice * item.quantity); }
+        let itemsToRefund: typeof transaction.items;
+        if (Array.isArray(refundItems) && refundItems.length > 0) {
+            const resolved: typeof transaction.items = [];
+            for (const ri of refundItems) {
+                const original = transaction.items.find((oi) => oi.productId === ri.productId);
+                if (!original) {
+                    return res.status(400).json({ success: false, error: { code: 'INVALID_ITEM', message: `Product ${ri.productId} was not part of this sale` } });
+                }
+                const qty = Number(ri.quantity);
+                if (!qty || qty <= 0 || qty > original.quantity) {
+                    return res.status(400).json({ success: false, error: { code: 'INVALID_QUANTITY', message: `Invalid refund quantity for ${original.productName}` } });
+                }
+                const total = Math.round(original.unitPrice * qty * 100) / 100;
+                resolved.push({ ...original, quantity: qty, total });
+                refundAmount += total;
+            }
+            itemsToRefund = resolved;
+        } else {
+            itemsToRefund = transaction.items;
+            for (const item of itemsToRefund) { refundAmount += item.total || (item.unitPrice * item.quantity); }
+        }
 
         const transactionNo = genTxnNo('REF', transaction.branchId);
 

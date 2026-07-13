@@ -1,7 +1,7 @@
 ﻿<script lang="ts">
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
-    import { cn } from "$utils";
+    import { cn, escapeCsvCell } from "$utils";
     import { api } from "$api";
     import { auth } from "$stores";
     import { formatCurrency } from "$lib/utils";
@@ -486,7 +486,7 @@
         for (const p of filteredProducts) {
             const status = getStockStatus(p);
             const statusLabel = status === 'outofstock' ? 'ໝົດສິນຄ້າ' : status === 'lowstock' ? 'ໃກ້ໝົດ' : 'ມີສິນຄ້າ';
-            csv += `"${p.name || ''}","${p.sku || ''}","${p.barcode || ''}","${getCategoryName(p.categoryId)}","${p.price || 0}","${p.cost || 0}","${p.stock ?? 0}","${statusLabel}"\n`;
+            csv += `${escapeCsvCell(p.name || '')},${escapeCsvCell(p.sku || '')},${escapeCsvCell(p.barcode || '')},"${getCategoryName(p.categoryId)}","${p.price || 0}","${p.cost || 0}","${p.stock ?? 0}","${statusLabel}"\n`;
         }
         downloadFile(csv, `products-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8');
         toast.success(t('common.exportSuccess'));

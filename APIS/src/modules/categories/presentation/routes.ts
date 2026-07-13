@@ -37,13 +37,13 @@ categoryRoutes.get('/', authenticate, withTenantTx(), branchFilter(), async (req
             });
             const branchStoreIds = branchStores.map((s: any) => s.id);
             conditions.push(eq(categories.tenantId, filter.tenantId));
+            // Scope to this branch's stores, plus tenant-global categories
+            // (storeId=NULL) — owners often create categories with no store
+            // assignment, and those must still be visible at the branch/POS level.
             if (branchStoreIds.length > 0) {
-                // Scope to this branch's stores only — do NOT include storeId=null (tenant-global)
-                // Tenant-global categories are for HQ/tenant_admin level, not branch level
-                conditions.push(inArray(categories.storeId, branchStoreIds));
+                conditions.push(or(inArray(categories.storeId, branchStoreIds), isNull(categories.storeId)));
             } else {
-                // Branch has no stores yet — show nothing (empty is safe)
-                conditions.push(eq(categories.id, 'no-match'));
+                conditions.push(isNull(categories.storeId));
             }
         } else if (filter?.tenantId) {
             // HQ/tenant admin: sees all tenant categories

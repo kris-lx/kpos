@@ -1,7 +1,7 @@
 // Service Worker for KPOS PWA
 // @ts-nocheck
 
-const CACHE_NAME = 'kpos-v3';
+const CACHE_NAME = 'kpos-v4';
 const STATIC_ASSETS = [
     '/',
     '/login',

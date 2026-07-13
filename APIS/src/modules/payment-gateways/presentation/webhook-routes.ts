@@ -50,16 +50,24 @@ async function handleSwiftPassNotify(provider: 'swiftpass_alipay' | 'swiftpass_w
 
         if (fields.pay_result === '0' || fields.result_code === '0') {
             const outTradeNo = fields.out_trade_no;
-            const request = await db.query.qrPaymentRequests.findFirst({
-                where: and(eq(qrPaymentRequests.tenantId, matched.row.tenantId), eq(qrPaymentRequests.outTradeNo, outTradeNo)),
-            });
-            if (request && request.status === 'pending') {
-                await db.update(qrPaymentRequests).set({
+            // Atomic claim (status pending -> paid, only if still pending) —
+            // previously a plain read-then-write, so duplicate notify
+            // deliveries (SwiftPass retries on any non-"success" response,
+            // and duplicate deliveries are possible per their own retry
+            // spec) could both pass the pending check and both write. Same
+            // TOCTOU pattern already fixed elsewhere this session for
+            // PO-receive/stock-transfer/stock-count.
+            await db.update(qrPaymentRequests)
+                .set({
                     status: 'paid',
                     gatewayRef: fields.transaction_id || fields.out_transaction_id,
                     confirmedAt: new Date(),
-                }).where(eq(qrPaymentRequests.id, request.id));
-            }
+                })
+                .where(and(
+                    eq(qrPaymentRequests.tenantId, matched.row.tenantId),
+                    eq(qrPaymentRequests.outTradeNo, outTradeNo),
+                    eq(qrPaymentRequests.status, 'pending'),
+                ));
         }
 
         res.status(200).send('success');

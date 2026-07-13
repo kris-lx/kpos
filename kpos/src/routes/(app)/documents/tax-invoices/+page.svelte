@@ -1,7 +1,7 @@
 ﻿<script lang="ts">
     import { t } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
-    import { formatCurrency, formatDate, formatDateTime } from "$lib/utils";
+    import { formatCurrency, formatDate, formatDateTime, escapeHtml } from "$lib/utils";
     import { onMount } from "svelte";
     import { auth } from "$stores";
     import {
@@ -325,29 +325,29 @@
             if (!response?.success) throw new Error("print data fetch failed");
 
             const { invoice: inv, store } = response.data;
-            const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Tax Invoice - ${inv.invoiceNumber}</title>
+            const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Tax Invoice - ${escapeHtml(inv.invoiceNumber)}</title>
                 <style>
                     body{font-family:'Noto Sans Lao','Phetsarath OT',sans-serif;margin:0;padding:0}
                     @media print { body { margin: 0; } }
                 </style></head><body>
                 <div style="max-width:700px;margin:0 auto;padding:30px;">
                     <div style="display:flex;align-items:center;gap:16px;margin-bottom:20px;border-bottom:2px solid #ddd;padding-bottom:20px;">
-                        ${store.logo ? `<img src="${store.logo}" style="height:56px;width:auto;object-fit:contain" />` : ""}
+                        ${store.logo ? `<img src="${escapeHtml(store.logo)}" style="height:56px;width:auto;object-fit:contain" />` : ""}
                         <div>
-                            <h2 style="margin:0;font-size:18px;">${store.name}</h2>
-                            ${store.address ? `<p style="margin:2px 0;color:#666;font-size:13px;">${store.address}</p>` : ""}
-                            ${store.phone ? `<p style="margin:2px 0;color:#666;font-size:13px;">Tel: ${store.phone}</p>` : ""}
-                            ${store.taxId ? `<p style="margin:2px 0;color:#666;font-size:13px;">Tax ID: ${store.taxId}</p>` : ""}
+                            <h2 style="margin:0;font-size:18px;">${escapeHtml(store.name)}</h2>
+                            ${store.address ? `<p style="margin:2px 0;color:#666;font-size:13px;">${escapeHtml(store.address)}</p>` : ""}
+                            ${store.phone ? `<p style="margin:2px 0;color:#666;font-size:13px;">Tel: ${escapeHtml(store.phone)}</p>` : ""}
+                            ${store.taxId ? `<p style="margin:2px 0;color:#666;font-size:13px;">Tax ID: ${escapeHtml(store.taxId)}</p>` : ""}
                         </div>
                     </div>
                     <div style="text-align:center;margin-bottom:30px;">
                         <h1 style="margin:0;font-size:24px;">ໃບກຳກັບພາສີ / Tax Invoice</h1>
-                        <p style="color:#666;margin:5px 0;">ເລກທີ: ${inv.invoiceNumber}</p>
+                        <p style="color:#666;margin:5px 0;">ເລກທີ: ${escapeHtml(inv.invoiceNumber)}</p>
                         <p style="color:#666;margin:5px 0;">ວັນທີ: ${formatDate(inv.issuedAt || inv.createdAt)}</p>
                     </div>
                     <table style="width:100%;margin-bottom:20px;">
-                        <tr><td style="padding:4px 0;"><strong>ຊື່ລູກຄ້າ:</strong></td><td>${inv.customerName}</td></tr>
-                        <tr><td style="padding:4px 0;"><strong>ເລກປະຈຳຕົວຜູ້ເສຍອາກອນ:</strong></td><td>${inv.taxId}</td></tr>
+                        <tr><td style="padding:4px 0;"><strong>ຊື່ລູກຄ້າ:</strong></td><td>${escapeHtml(inv.customerName)}</td></tr>
+                        <tr><td style="padding:4px 0;"><strong>ເລກປະຈຳຕົວຜູ້ເສຍອາກອນ:</strong></td><td>${escapeHtml(inv.taxId)}</td></tr>
                     </table>
                     <table style="width:100%;border-collapse:collapse;margin-bottom:20px;">
                         <thead>
@@ -395,12 +395,12 @@
         <div style="max-width:700px;margin:0 auto;padding:30px;font-family:'Noto Sans Lao','Phetsarath OT',sans-serif;">
             <div style="text-align:center;margin-bottom:30px;">
                 <h1 style="margin:0;font-size:24px;">ໃບກຳກັບພາສີ / Tax Invoice</h1>
-                <p style="color:#666;margin:5px 0;">ເລກທີ: ${invoice.invoiceNumber}</p>
+                <p style="color:#666;margin:5px 0;">ເລກທີ: ${escapeHtml(invoice.invoiceNumber)}</p>
                 <p style="color:#666;margin:5px 0;">ວັນທີ: ${formatDate(invoice.issuedAt || invoice.createdAt)}</p>
             </div>
             <table style="width:100%;margin-bottom:20px;">
-                <tr><td style="padding:4px 0;"><strong>ຊື່ລູກຄ້າ:</strong></td><td>${invoice.customerName}</td></tr>
-                <tr><td style="padding:4px 0;"><strong>ເລກປະຈຳຕົວຜູ້ເສຍອາກອນ:</strong></td><td>${invoice.taxId}</td></tr>
+                <tr><td style="padding:4px 0;"><strong>ຊື່ລູກຄ້າ:</strong></td><td>${escapeHtml(invoice.customerName)}</td></tr>
+                <tr><td style="padding:4px 0;"><strong>ເລກປະຈຳຕົວຜູ້ເສຍອາກອນ:</strong></td><td>${escapeHtml(invoice.taxId)}</td></tr>
                 <tr><td style="padding:4px 0;"><strong>ສະຖານະ:</strong></td><td>${getStatusLabel(invoice.status)}</td></tr>
             </table>
             <table style="width:100%;border-collapse:collapse;margin-bottom:20px;">
@@ -420,7 +420,7 @@
     }
 
     function exportInvoiceToPdf(invoice: any) {
-        const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Tax Invoice - ${invoice.invoiceNumber}</title>
+        const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Tax Invoice - ${escapeHtml(invoice.invoiceNumber)}</title>
             <style>@media print { body { margin: 0; } }</style></head><body>${buildInvoiceHtml(invoice)}</body></html>`;
         const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
         const url = URL.createObjectURL(blob);
@@ -441,10 +441,10 @@
     function exportListToPdf() {
         const rows = filteredInvoices.map(inv => `
             <tr>
-                <td style="border:1px solid #ddd;padding:8px;">${inv.invoiceNumber}</td>
+                <td style="border:1px solid #ddd;padding:8px;">${escapeHtml(inv.invoiceNumber)}</td>
                 <td style="border:1px solid #ddd;padding:8px;">${formatDate(inv.issuedAt || inv.createdAt)}</td>
-                <td style="border:1px solid #ddd;padding:8px;">${inv.customerName}</td>
-                <td style="border:1px solid #ddd;padding:8px;">${inv.taxId}</td>
+                <td style="border:1px solid #ddd;padding:8px;">${escapeHtml(inv.customerName)}</td>
+                <td style="border:1px solid #ddd;padding:8px;">${escapeHtml(inv.taxId)}</td>
                 <td style="border:1px solid #ddd;padding:8px;text-align:right;">${formatCurrency(inv.subtotal)}</td>
                 <td style="border:1px solid #ddd;padding:8px;text-align:right;">${formatCurrency(inv.taxAmount)}</td>
                 <td style="border:1px solid #ddd;padding:8px;text-align:right;">${formatCurrency(inv.total)}</td>
@@ -479,10 +479,10 @@
     function exportListToWord() {
         const rows = filteredInvoices.map(inv => `
             <tr>
-                <td style="border:1px solid #000;padding:8px;">${inv.invoiceNumber}</td>
+                <td style="border:1px solid #000;padding:8px;">${escapeHtml(inv.invoiceNumber)}</td>
                 <td style="border:1px solid #000;padding:8px;">${formatDate(inv.issuedAt || inv.createdAt)}</td>
-                <td style="border:1px solid #000;padding:8px;">${inv.customerName}</td>
-                <td style="border:1px solid #000;padding:8px;">${inv.taxId}</td>
+                <td style="border:1px solid #000;padding:8px;">${escapeHtml(inv.customerName)}</td>
+                <td style="border:1px solid #000;padding:8px;">${escapeHtml(inv.taxId)}</td>
                 <td style="border:1px solid #000;padding:8px;text-align:right;">${formatCurrency(inv.subtotal)}</td>
                 <td style="border:1px solid #000;padding:8px;text-align:right;">${formatCurrency(inv.taxAmount)}</td>
                 <td style="border:1px solid #000;padding:8px;text-align:right;">${formatCurrency(inv.total)}</td>

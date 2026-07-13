@@ -10,18 +10,18 @@ import { connectRedis, disconnectRedis } from './config/redis.config';
 import { connectRabbitMQ, disconnectRabbitMQ } from './config/rabbitmq.config';
 import { startWorkers, startScheduledJobs } from './infrastructure/workers';
 import { ensureSystemEnums } from './db/ensure-enums';
-import { ensureDefaultTenant } from './db/ensure-tenant';
 import { patchSystemRolePermissions } from './db/ensure-roles';
 import { ensureDefaultEmailTemplates } from './db/ensure-email-templates';
+import { backfillVisibilityScoping } from './db/backfill-visibility-scoping';
 
 async function main(): Promise<void> {
     try {
         console.log('🔌 Connecting to database...');
         await connectDatabase();
 
-        await ensureDefaultTenant();
         await ensureSystemEnums();
         await ensureDefaultEmailTemplates();
+        await backfillVisibilityScoping();
 
         console.log('🔌 Connecting to Redis...');
         await connectRedis();
