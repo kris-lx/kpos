@@ -264,8 +264,24 @@ productRoutes.get('/skus', authenticate, withTenantTx(), branchFilter(), async (
 
             if (scopedProductIds.length > 0) {
                 skuConds.push(inArray(skuVariants.productId, scopedProductIds));
+            } else if (filter.branchIds.length > 0) {
+                // No explicit store-product mappings yet (common — productStores is
+                // only populated when the creator themselves is store-scoped). Fall
+                // back to this user's own branch's products, NOT all tenant SKUs —
+                // that would leak every other branch's SKUs to a store-scoped staff
+                // member the moment they have zero productStores rows, since
+                // scopeByStore now flips true for every staff member (userStores
+                // row created on staff:create).
+                const branchProds = await db.query.products.findMany({
+                    where: inArray(products.branchId, filter.branchIds),
+                    columns: { id: true }
+                });
+                const branchProdIds = branchProds.map(p => p.id);
+                skuConds.push(branchProdIds.length > 0 ? inArray(skuVariants.productId, branchProdIds) : sql`1 = 0`);
             } else if (filter.tenantId) {
-                // No store-product mappings yet — fall back to all tenant SKUs
+                // No store or branch context at all — safety-net fallback for
+                // tenant-level roles (owner/tenant_admin) that reach this branch
+                // only if they somehow also carry a userStores row.
                 skuConds.push(eq(skuVariants.tenantId, filter.tenantId));
             }
         } else if (filter) {
@@ -883,8 +899,13 @@ productRoutes.get('/barcodes', authenticate, withTenantTx(), branchFilter(), asy
 
             if (scopedProductIds.length > 0) {
                 conds.push(inArray(products.id, scopedProductIds));
+            } else if (filter.branchIds.length > 0) {
+                // No explicit store-product mappings yet — scope to this user's
+                // own branch, not the whole tenant (see products/skus route for
+                // the same fix and why: scopeByStore now flips true for every
+                // staff member once they have a userStores row).
+                conds.push(inArray(products.branchId, filter.branchIds));
             } else if (filter.tenantId) {
-                // No store-product mappings yet — fall back to all tenant products
                 conds.push(eq(products.tenantId, filter.tenantId));
             }
         } else if (filter) {
