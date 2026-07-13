@@ -16,7 +16,7 @@
         "test:e2e": "playwright test"
     },
     "dependencies": {
-        "@tanstack/svelte-query": "^5.17.19",
+        "@tanstack/svelte-query": "^6.1.36",
         "bits-ui": "^1.0.0",
         "chart.js": "^4.4.1",
         "clsx": "^2.1.0",
