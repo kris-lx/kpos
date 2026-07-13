@@ -1,7 +1,7 @@
 // Service Worker for KPOS PWA
 // @ts-nocheck
 
-const CACHE_NAME = 'kpos-v4';
+const CACHE_NAME = 'kpos-v5';
 const STATIC_ASSETS = [
     '/',
     '/login',
@@ -79,7 +79,14 @@ self.addEventListener('fetch', (event) => {
             .catch(async () => {
                 const cached = await caches.match(event.request);
                 if (cached) return cached;
-                if (isNavigation) return caches.match('/offline.html');
+                if (isNavigation) {
+                    const offline = await caches.match('/offline.html');
+                    if (offline) return offline;
+                }
+                // Nothing cached and not a navigation (or no offline.html cached
+                // either) — must still resolve to a Response, never undefined,
+                // or the browser throws "Failed to convert value to 'Response'".
+                return new Response('', { status: 504, statusText: 'Gateway Timeout' });
             })
     );
 });
