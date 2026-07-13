@@ -287,50 +287,74 @@ async function loadCachedAuthUser(userId: string): Promise<CachedAuthUser | null
 
     const user = await db.query.users.findFirst({
         where: eq(users.id, userId),
-        with: {
-            roleRelation: true,
-        },
     });
 
     if (!user || !user.isActive) return null;
 
-    let rolePerms = user.roleRelation?.permissions || [];
+    // roles/role_rules are RLS-protected tenant tables (FORCE ROW LEVEL
+    // SECURITY) — the plain `db` handle used above has no GUC context (this
+    // runs in JWT middleware, before any req.tx reservation). Without scoping
+    // this lookup to the user's own tenant, every tenant-scoped custom role
+    // (the normal case — only super-admin-created roles have tenantId=null)
+    // silently resolves to zero permissions here, regardless of what's
+    // actually assigned in the DB. Same bug class as loadUserStoreAccess
+    // above; that one already got this fix, this one didn't.
     const userPerms = user.permissions || [];
+    let rolePerms: string[] = [];
 
-    // Fallback: if no roleId/permissions loaded, find role by name within the tenant
-    if (rolePerms.length === 0 && user.role && !user.isSuperAdmin) {
-        // Primary: tenant-specific role
-        let fallbackRole = await db.query.roles.findFirst({
-            where: user.tenantId
-                ? and(eq(roles.name, user.role), eq(roles.tenantId, user.tenantId))
-                : and(eq(roles.name, user.role), isNull(roles.tenantId)),
-            columns: { permissions: true },
-        });
-        // Secondary: global system role (tenantId = null)
-        if (!fallbackRole?.permissions?.length && user.tenantId) {
-            fallbackRole = await db.query.roles.findFirst({
-                where: and(eq(roles.name, user.role), isNull(roles.tenantId)),
+    const loadRolePerms = async (tx: typeof db) => {
+        let perms: string[] = [];
+        if (user.roleId) {
+            const roleRow = await tx.query.roles.findFirst({
+                where: eq(roles.id, user.roleId),
                 columns: { permissions: true },
             });
-        }
-        if (fallbackRole?.permissions?.length) {
-            rolePerms = fallbackRole.permissions as string[];
+            perms = (roleRow?.permissions as string[]) || [];
         }
 
-        // Final fallback: use hardcoded system role permissions if DB role has empty permissions.
-        // This self-heals tenants whose roles were seeded before DEFAULT_ROLES was fully populated.
-        if (rolePerms.length === 0 && SYSTEM_ROLE_PERMISSIONS[user.role]) {
-            rolePerms = SYSTEM_ROLE_PERMISSIONS[user.role];
-            // Asynchronously update the DB role + clear auth cache so next request is correct
-            if (user.roleId) {
-                db.update(roles)
-                    .set({ permissions: rolePerms })
-                    .where(eq(roles.id, user.roleId))
-                    .then(() => cache.del(`${CACHE_PREFIX}:auth:${userId}`))
-                    .catch(() => {});
+        // Fallback: if no roleId/permissions loaded, find role by name within the tenant
+        if (perms.length === 0 && user.role && !user.isSuperAdmin) {
+            // Primary: tenant-specific role
+            let fallbackRole = await tx.query.roles.findFirst({
+                where: user.tenantId
+                    ? and(eq(roles.name, user.role), eq(roles.tenantId, user.tenantId))
+                    : and(eq(roles.name, user.role), isNull(roles.tenantId)),
+                columns: { permissions: true },
+            });
+            // Secondary: global system role (tenantId = null)
+            if (!fallbackRole?.permissions?.length && user.tenantId) {
+                fallbackRole = await tx.query.roles.findFirst({
+                    where: and(eq(roles.name, user.role), isNull(roles.tenantId)),
+                    columns: { permissions: true },
+                });
+            }
+            if (fallbackRole?.permissions?.length) {
+                perms = fallbackRole.permissions as string[];
+            }
+
+            // Final fallback: use hardcoded system role permissions if DB role has empty permissions.
+            // This self-heals tenants whose roles were seeded before DEFAULT_ROLES was fully populated.
+            if (perms.length === 0 && SYSTEM_ROLE_PERMISSIONS[user.role]) {
+                perms = SYSTEM_ROLE_PERMISSIONS[user.role];
+                // Asynchronously update the DB role + clear auth cache so next request is
+                // correct. Deliberately NOT awaited, and deliberately NOT using `tx` — this
+                // fires after the function returns, and `tx`'s transaction may already have
+                // committed and released its connection by then. Runs in its own tenant
+                // context instead (still fire-and-forget).
+                if (user.roleId) {
+                    const heal = user.tenantId
+                        ? runWithTenantContext(user.tenantId, (t) => t.update(roles).set({ permissions: perms }).where(eq(roles.id, user.roleId!)))
+                        : db.update(roles).set({ permissions: perms }).where(eq(roles.id, user.roleId));
+                    heal.then(() => cache.del(`${CACHE_PREFIX}:auth:${userId}`)).catch(() => {});
+                }
             }
         }
-    }
+        return perms;
+    };
+
+    rolePerms = user.tenantId && !user.isSuperAdmin
+        ? await runWithTenantContext(user.tenantId, (tx) => loadRolePerms(tx as unknown as typeof db))
+        : await loadRolePerms(db);
 
     const mergedPermissions = [...new Set([...rolePerms, ...userPerms])];
     // Compute bitmask from merged permission strings — O(n) once, then O(1) per check

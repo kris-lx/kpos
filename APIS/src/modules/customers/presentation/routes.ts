@@ -425,19 +425,39 @@ customerRoutes.get('/:id', authenticate, withTenantTx(), async (req, res, next) 
 });
 
 // Create customer
-customerRoutes.post('/', authenticate, withTenantTx(), authorize('customers:create'), async (req, res, next) => {
+customerRoutes.post('/', authenticate, withTenantTx(), branchFilter(), authorize('customers:create'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const dbRead = db;
-        const branchId = req.user!.branchId;
         const authUser = req.authUser!;
-        const { name, email, phone, address, taxId, birthDate, gender, notes, points, storeId, priceLevelId } = req.body;
+        const { name, email, phone, address, taxId, birthDate, gender, notes, points, storeId, priceLevelId, branchId: bodyBranchId } = req.body;
 
         if (!name || !name.trim()) {
             return res.status(400).json({
                 success: false,
                 error: { code: 'VAL_001', message: 'ກະລຸນາປ້ອນຊື່ລູກຄ້າ' }
             });
+        }
+
+        // Resolve branchId: explicit body param > user's active branch > JWT
+        // branchId. A tenant-level owner/admin (no branchId of their own) has
+        // none of these unless they pass one explicitly — previously this fell
+        // straight through to req.user!.branchId with no fallback, which threw
+        // on branchId.slice(-4) below for exactly that user.
+        const branchId = (bodyBranchId && String(bodyBranchId).trim() !== '')
+            ? String(bodyBranchId)
+            : (authUser.activeBranchId || req.user?.branchId || undefined);
+
+        if (!branchId) {
+            return res.status(400).json({
+                success: false,
+                error: { code: 'VALIDATION_001', message: 'Branch ID is required. Please select an active store/branch.' }
+            });
+        }
+
+        const filter = req.branchFilter;
+        if (filter && filter.branchIds.length > 0 && !filter.branchIds.includes(branchId)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
         }
 
         // Prevent scope spoofing: enforce user's active store unless they are a super admin
