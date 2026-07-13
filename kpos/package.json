@@ -30,7 +30,7 @@
         "qrcode": "^1.5.4",
         "socket.io-client": "^4.7.4",
         "svelte-sonner": "^0.3.19",
-        "tailwind-merge": "^2.2.1",
+        "tailwind-merge": "^3.6.0",
         "tailwind-variants": "^0.2.0",
         "zod": "^3.22.4"
     },
