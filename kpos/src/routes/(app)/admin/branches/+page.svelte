@@ -83,6 +83,16 @@
 
     $effect(() => { void searchQuery; void currentPage; void pageSize; $branchesQuery.refetch(); });
 
+    // Stores are the top-level tier now — every branch belongs to exactly one
+    // store, so creating a branch requires picking that store.
+    const storesQuery = createQuery({
+        queryKey: ["admin-branches-stores-list"],
+        queryFn: async () => {
+            const response = await api.get("stores?limit=200").json<any>();
+            return response.data || [];
+        },
+    });
+
     const createMutationFn = createMutation({
         mutationFn: async (data: any) => {
             return api.post("admin/branches", { json: data }).json();
@@ -128,6 +138,7 @@
     let formData = $state({
         name: "",
         code: "",
+        storeId: "",
         address: "",
         phone: "",
         email: "",
@@ -136,7 +147,7 @@
 
     function openCreateModal() {
         isEditing = false;
-        formData = { name: "", code: "", address: "", phone: "", email: "", isActive: true };
+        formData = { name: "", code: "", storeId: "", address: "", phone: "", email: "", isActive: true };
         showFormModal = true;
     }
 
@@ -146,6 +157,7 @@
         formData = {
             name: branch.name || "",
             code: branch.code || "",
+            storeId: branch.storeId || "",
             address: branch.address || "",
             phone: branch.phone || "",
             email: branch.email || "",
@@ -302,10 +314,6 @@
                                     {/if}
 
                                     <div class="flex items-center gap-4 text-xs text-gray-400 dark:text-gray-500 mt-3 pt-3 border-t border-gray-200 dark:border-gray-600">
-                                        <span class="flex items-center gap-1">
-                                            <Store class="w-3.5 h-3.5" />
-                                            {branch._count?.stores ?? 0} ຮ້ານ
-                                        </span>
                                         <span class="flex items-center gap-1">
                                             <Package class="w-3.5 h-3.5" />
                                             {branch._count?.products ?? 0} ສິນຄ້າ
@@ -509,6 +517,25 @@
                                 class="w-full px-4 py-3 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 dark:text-white"
                             />
                         </div>
+                    </div>
+
+                    <div>
+                        <label for="a11y-app-admin-branches-page-svelte-store" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ຮ້ານ (Store)</label>
+                        <select id="a11y-app-admin-branches-page-svelte-store"
+                            bind:value={formData.storeId}
+                            disabled={isEditing}
+                            class="w-full px-4 py-3 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 dark:text-white disabled:opacity-60"
+                        >
+                            <option value="">-- ໃຊ້ຮ້ານປັດຈຸບັນ/ຮ້ານຫຼັກ --</option>
+                            {#if $storesQuery.data}
+                                {#each $storesQuery.data as store (store.id)}
+                                    <option value={store.id}>{store.name}</option>
+                                {/each}
+                            {/if}
+                        </select>
+                        {#if isEditing}
+                            <p class="text-xs text-gray-400 mt-1">ບໍ່ສາມາດປ່ຽນຮ້ານຫຼັງຈາກສ້າງສາຂາແລ້ວ</p>
+                        {/if}
                     </div>
 
                     <div>

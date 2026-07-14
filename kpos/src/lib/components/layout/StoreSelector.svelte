@@ -19,30 +19,19 @@
     let isOpen = $state(false);
     let searchQuery = $state('');
 
-    // Filtered stores based on search
+    // Filtered stores based on search. Stores are the top-level tier now — a
+    // store's `branchId`/`branchName` (when set) means this particular grant
+    // is narrowed to one branch WITHIN that store, not "the branch this store
+    // belongs to". So this is a flat list of stores, not stores grouped under
+    // branch headers.
     const filteredStores = $derived.by(() => {
         if (!searchQuery) return auth.accessibleStores;
         const query = searchQuery.toLowerCase();
         return auth.accessibleStores.filter(
             (s) =>
                 s.storeName.toLowerCase().includes(query) ||
-                s.branchName.toLowerCase().includes(query)
+                (s.branchName ?? '').toLowerCase().includes(query)
         );
-    });
-
-    // Group stores by branch
-    const groupedStores = $derived.by(() => {
-        const grouped: Record<string, { branchName: string; stores: StoreAccess[] }> = {};
-        for (const store of filteredStores) {
-            if (!grouped[store.branchId]) {
-                grouped[store.branchId] = {
-                    branchName: store.branchName,
-                    stores: []
-                };
-            }
-            grouped[store.branchId].stores.push(store);
-        }
-        return grouped;
     });
 
     function selectStore(storeId: string) {
@@ -85,7 +74,9 @@
         <div class="flex flex-col items-start">
             {#if auth.activeStore}
                 <span class="text-sm font-medium">{auth.activeStore.storeName}</span>
-                <span class="text-xs text-base-content/60">{auth.activeStore.branchName}</span>
+                {#if auth.activeStore.branchName}
+                    <span class="text-xs text-base-content/60">{auth.activeStore.branchName}</span>
+                {/if}
             {:else}
                 <span class="text-sm">{t('stores.selectStore')}</span>
             {/if}
@@ -121,48 +112,43 @@
                         <p class="text-sm">{t('stores.noAccessibleStores')}</p>
                     </div>
                 {:else}
-                    {#each Object.entries(groupedStores) as [branchId, group]}
-                        <div class="mb-3">
-                            <!-- Branch Header -->
-                            <div class="flex items-center gap-2 px-2 py-1.5 text-xs font-semibold text-base-content/70 uppercase">
-                                <Building2 class="h-3 w-3" />
-                                {group.branchName}
+                    {#each filteredStores as store}
+                        {@const accessBadge = getAccessBadge(store)}
+                        <button
+                            type="button"
+                            class={cn(
+                                'w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all',
+                                'hover:bg-base-200 text-left',
+                                auth.activeStoreId === store.storeId && 'bg-primary/10 border border-primary/30'
+                            )}
+                            onclick={() => selectStore(store.storeId)}
+                        >
+                            <div class="flex-1 min-w-0">
+                                <div class="flex items-center gap-2">
+                                    <span class="font-medium truncate">{store.storeName}</span>
+                                    {#if store.isDefault}
+                                        <span class="badge badge-xs badge-primary">{t('common.default')}</span>
+                                    {/if}
+                                </div>
+                                {#if store.branchName}
+                                    <div class="flex items-center gap-1 text-xs text-base-content/60 mt-0.5">
+                                        <Building2 class="h-3 w-3" />
+                                        <span class="truncate">{store.branchName}</span>
+                                    </div>
+                                {/if}
+                                <div class="flex items-center gap-1 text-xs text-base-content/60 mt-0.5">
+                                    {#if accessBadge.icon}
+                                        {@const IconComponent = accessBadge.icon}
+                                        <IconComponent class={cn('h-3 w-3', accessBadge.color)} />
+                                    {/if}
+                                    <span>{accessBadge.label}</span>
+                                </div>
                             </div>
 
-                            <!-- Stores in Branch -->
-                            {#each group.stores as store}
-                                {@const accessBadge = getAccessBadge(store)}
-                                <button
-                                    type="button"
-                                    class={cn(
-                                        'w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all',
-                                        'hover:bg-base-200 text-left',
-                                        auth.activeStoreId === store.storeId && 'bg-primary/10 border border-primary/30'
-                                    )}
-                                    onclick={() => selectStore(store.storeId)}
-                                >
-                                    <div class="flex-1 min-w-0">
-                                        <div class="flex items-center gap-2">
-                                            <span class="font-medium truncate">{store.storeName}</span>
-                                            {#if store.isDefault}
-                                                <span class="badge badge-xs badge-primary">{t('common.default')}</span>
-                                            {/if}
-                                        </div>
-                                        <div class="flex items-center gap-1 text-xs text-base-content/60 mt-0.5">
-                                            {#if accessBadge.icon}
-                                                {@const IconComponent = accessBadge.icon}
-                                                <IconComponent class={cn('h-3 w-3', accessBadge.color)} />
-                                            {/if}
-                                            <span>{accessBadge.label}</span>
-                                        </div>
-                                    </div>
-
-                                    {#if auth.activeStoreId === store.storeId}
-                                        <Check class="h-4 w-4 text-primary shrink-0" />
-                                    {/if}
-                                </button>
-                            {/each}
-                        </div>
+                            {#if auth.activeStoreId === store.storeId}
+                                <Check class="h-4 w-4 text-primary shrink-0" />
+                            {/if}
+                        </button>
                     {/each}
                 {/if}
             </div>
@@ -172,7 +158,7 @@
                 <div class="flex items-center gap-2">
                     <MapPin class="h-3 w-3" />
                     <span>
-                        {t('stores.summary', { stores: auth.accessibleStores.length, branches: auth.accessibleBranchIds.length })}
+                        {t('stores.summaryCount', { stores: auth.accessibleStores.length })}
                     </span>
                 </div>
             </div>

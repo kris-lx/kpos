@@ -174,7 +174,7 @@
             });
         }
 
-        // Bar chart — stores per branch
+        // Bar chart — branches per store (stores are the top-level tier now)
         barChart?.destroy();
         const barCtx = barCanvas.getContext('2d');
         if (barCtx) {
@@ -183,7 +183,7 @@
                 data: {
                     labels: data.storesByBranch.length > 0 ? data.storesByBranch.map((r: any) => r.branch) : ['ຍັງບໍ່ມີຂໍ້ມູນ'],
                     datasets: [{
-                        label: 'ຈຳນວນຮ້ານ',
+                        label: 'ຈຳນວນສາຂາ',
                         data: data.storesByBranch.length > 0 ? data.storesByBranch.map((r: any) => r.count) : [0],
                         backgroundColor: '#3b82f6',
                         borderRadius: 6,
@@ -883,11 +883,11 @@
                             {/if}
                         </div>
 
-                        <!-- Bar: Stores per Branch -->
+                        <!-- Bar: Branches per Store -->
                         <div class="bg-gray-50 dark:bg-gray-700/30 rounded-2xl p-4">
                             <div class="flex items-center gap-2 mb-3">
                                 <BarChart3 class="w-4 h-4 text-blue-500" />
-                                <span class="text-sm font-semibold text-gray-700 dark:text-gray-300">ຮ້ານຕໍ່ສາຂາ</span>
+                                <span class="text-sm font-semibold text-gray-700 dark:text-gray-300">ສາຂາຕໍ່ຮ້ານ</span>
                             </div>
                             <div class="h-48 relative">
                                 <canvas bind:this={barCanvas}></canvas>

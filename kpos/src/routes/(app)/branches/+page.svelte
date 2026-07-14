@@ -33,10 +33,12 @@
     let editingBranch = $state<any>(null);
     let deletingBranch = $state<any>(null);
     
-    // Form state
+    // Form state. Every branch belongs to exactly one store now (Tenant →
+    // Store → Branch) — storeId is required on create.
     let formData = $state({
         name: "",
         code: "",
+        storeId: "",
         address: "",
         phone: "",
         email: "",
@@ -91,7 +93,15 @@
     });
 
     $effect(() => { void searchQuery; $branchesQuery.refetch(); });
-    
+
+    const storesQuery = createQuery({
+        queryKey: ["branches-stores-list"],
+        queryFn: async () => {
+            const response = await api.get("stores?limit=200").json<any>();
+            return response.data || [];
+        },
+    });
+
     // Create mutation
     const createMut = createMutation({
         mutationFn: async (data: typeof formData) => {
@@ -142,7 +152,7 @@
     
     function openCreate() {
         editingBranch = null;
-        formData = { name: "", code: "", address: "", phone: "", email: "", taxId: "", logo: "", ownerName: "", ownerPhone: "", ownerEmail: "", registrationNo: "", website: "", isMain: false };
+        formData = { name: "", code: "", storeId: auth.activeStoreId || "", address: "", phone: "", email: "", taxId: "", logo: "", ownerName: "", ownerPhone: "", ownerEmail: "", registrationNo: "", website: "", isMain: false };
         showIdentitySection = false;
         showModal = true;
     }
@@ -152,6 +162,7 @@
         formData = {
             name: branch.name || "",
             code: branch.code || "",
+            storeId: branch.storeId || "",
             address: branch.address || "",
             phone: branch.phone || "",
             email: branch.email || "",
@@ -188,7 +199,11 @@
             toast.error("ກະລຸນາປ້ອນຊື່ ແລະ ລະຫັດສາຂາ");
             return;
         }
-        
+        if (!editingBranch && !formData.storeId) {
+            toast.error("ກະລຸນາເລືອກຮ້ານ");
+            return;
+        }
+
         if (editingBranch) {
             $updateMut.mutate({ id: editingBranch.id, data: formData });
         } else {
@@ -399,6 +414,28 @@
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800 focus:ring-2 focus:ring-primary-500"
                         placeholder="HQ" required />
                 </div>
+            </div>
+
+            <div>
+                <label for="a11y-app-branches-page-svelte-store" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    ຮ້ານ (Store) {#if !editingBranch}*{/if}
+                </label>
+                <select id="a11y-app-branches-page-svelte-store"
+                    bind:value={formData.storeId}
+                    disabled={!!editingBranch}
+                    class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800 focus:ring-2 focus:ring-primary-500 disabled:opacity-60"
+                    required={!editingBranch}
+                >
+                    <option value="">-- ເລືອກຮ້ານ --</option>
+                    {#if $storesQuery.data}
+                        {#each $storesQuery.data as store (store.id)}
+                            <option value={store.id}>{store.name}</option>
+                        {/each}
+                    {/if}
+                </select>
+                {#if editingBranch}
+                    <p class="text-xs text-gray-400 mt-1">ບໍ່ສາມາດປ່ຽນຮ້ານຫຼັງຈາກສ້າງສາຂາແລ້ວ</p>
+                {/if}
             </div>
 
             <div>

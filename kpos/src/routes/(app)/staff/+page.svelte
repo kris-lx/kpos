@@ -73,9 +73,12 @@
     let branches = $state<any[]>([]);
     let roles = $state<any[]>([]);
 
-    // No storeId on branches — branches are the parent; stores belong to branches.
-    // filteredBranches is just all accessible branches (branchId auto-filled from store selection).
-    let filteredBranches = $derived(branches);
+    // A store now has many branches (Tenant → Store → Branch) — when a store
+    // is picked, narrow the branch options to that store's own branches;
+    // with none picked (or only one store in scope), show every accessible branch.
+    let filteredBranches = $derived(
+        formData.storeId ? branches.filter((b) => b.storeId === formData.storeId) : branches
+    );
     
     // Load stores, branches and roles
     async function loadDropdownData() {
@@ -738,14 +741,18 @@
                         id="staffStore"
                         bind:value={formData.storeId}
                         onchange={() => {
-                            const s = stores.find(st => st.id === formData.storeId);
-                            formData.branchId = s?.branchId || "";
+                            // Stores are the top-level tier — a store has many
+                            // branches now, it doesn't belong to one. Reset the
+                            // branch pick so the (store-filtered) branch list
+                            // below forces an explicit choice instead of
+                            // silently reusing a branch from a different store.
+                            formData.branchId = "";
                         }}
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                     >
                         <option value="">-- {t("stores.allStores")} --</option>
-                        {#each stores as store (store.id)}
-                            <option value={store.id}>{store.name}</option>
+                        {#each stores as store (store.storeId)}
+                            <option value={store.storeId}>{store.storeName}</option>
                         {/each}
                     </select>
                 </div>

@@ -87,10 +87,12 @@
                             </div>
                             <div class="flex-1 min-w-0">
                                 <p class="font-medium truncate">{store.storeName}</p>
-                                <p class="text-xs text-gray-500 dark:text-gray-400 flex items-center gap-1">
-                                    <Building2 class="w-3 h-3" />
-                                    {store.branchName}
-                                </p>
+                                {#if store.branchName}
+                                    <p class="text-xs text-gray-500 dark:text-gray-400 flex items-center gap-1">
+                                        <Building2 class="w-3 h-3" />
+                                        {store.branchName}
+                                    </p>
+                                {/if}
                             </div>
                             {#if activeStore?.storeId === store.storeId}
                                 <Check class="w-5 h-5 text-primary-500" />

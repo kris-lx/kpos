@@ -36,7 +36,6 @@
 
     let searchQuery = $state("");
     let debouncedSearch = $state("");
-    let selectedBranchId = $state<string | null>(null);
     let showModal = $state(false);
     let editingStore = $state<any>(null);
     let searchTimeout: ReturnType<typeof setTimeout>;
@@ -55,11 +54,13 @@
         return () => clearTimeout(searchTimeout);
     });
 
-    // Form state
+    // Form state. Stores are the top-level tier now — parentStoreId (optional)
+    // nests this store under another (a sub-brand/concept), it no longer
+    // belongs to a branch.
     let formData = $state({
         name: "",
         code: "",
-        branchId: "",
+        parentStoreId: "",
         address: "",
         phone: "",
         email: "",
@@ -106,14 +107,13 @@
         queryFn: async () => {
             const params = new URLSearchParams();
             if (debouncedSearch) params.append("search", debouncedSearch);
-            if (selectedBranchId) params.append("branchId", selectedBranchId);
             const response = await api.get(`stores?${params}`).json<any>();
             return response.data || [];
         },
     });
 
-    // Refetch stores when search/filter changes
-    $effect(() => { void debouncedSearch; void selectedBranchId; get(storesQuery).refetch(); });
+    // Refetch stores when search changes
+    $effect(() => { void debouncedSearch; get(storesQuery).refetch(); });
 
     // Refetch stores after mutations. Also refresh the global auth store's
     // accessibleStores list — otherwise store dropdowns elsewhere in the app
@@ -177,7 +177,7 @@
         formData = {
             name: "",
             code: "",
-            branchId: "",
+            parentStoreId: "",
             address: "",
             phone: "",
             email: "",
@@ -193,7 +193,7 @@
             formData = {
                 name: store.name,
                 code: store.code,
-                branchId: store.branchId,
+                parentStoreId: store.parentStoreId || "",
                 address: store.address || "",
                 phone: store.phone || "",
                 email: store.email || "",
@@ -215,7 +215,7 @@
     }
 
     function handleSubmit() {
-        if (!formData.name || !formData.code || !formData.branchId) {
+        if (!formData.name || !formData.code) {
             toast.error(t("stores.fillRequired"));
             return;
         }
@@ -318,18 +318,6 @@
                 />
             </div>
 
-            <select
-                bind:value={selectedBranchId}
-                class="px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
-            >
-                <option value={null}>{t("stores.allBranches")}</option>
-                {#if $branchesQuery.data}
-                    {#each $branchesQuery.data as branch (branch.id)}
-                        <option value={branch.id}>{branch.name}</option>
-                    {/each}
-                {/if}
-            </select>
-
             <button
                 onclick={() => queryClient.invalidateQueries({ queryKey: ["stores"] })}
                 class="p-2.5 rounded-xl border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700"
@@ -381,10 +369,10 @@
 
                     <!-- Card Body -->
                     <div class="p-4 space-y-3">
-                        <!-- Branch -->
+                        <!-- Branches under this store -->
                         <div class="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
                             <Building2 class="w-4 h-4" />
-                            <span>{store.branch?.name || "-"}</span>
+                            <span>{t("stores.storeBranchesCount", { count: store.branches?.length || 0 })}</span>
                         </div>
 
                         <!-- Address -->
@@ -531,16 +519,15 @@
                 </div>
 
                 <div>
-                    <label for="a11y-app-management-stores-page-svelte-3" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("stores.branch")} *</label>
+                    <label for="a11y-app-management-stores-page-svelte-3" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("stores.parentStore")}</label>
                     <select id="a11y-app-management-stores-page-svelte-3"
-                        bind:value={formData.branchId}
-                        required
+                        bind:value={formData.parentStoreId}
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white"
                     >
-                        <option value="">{t("stores.selectBranch")}</option>
-                        {#if $branchesQuery.data}
-                            {#each $branchesQuery.data as branch (branch.id)}
-                                <option value={branch.id}>{branch.name}</option>
+                        <option value="">{t("stores.noParentStore")}</option>
+                        {#if $storesQuery.data}
+                            {#each $storesQuery.data.filter((s: any) => s.id !== editingStore?.id) as parentStore (parentStore.id)}
+                                <option value={parentStore.id}>{parentStore.name}</option>
                             {/each}
                         {/if}
                     </select>

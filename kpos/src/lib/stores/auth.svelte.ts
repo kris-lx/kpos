@@ -68,12 +68,16 @@ interface User {
     roleLevel?: number;
 }
 
-// Store access interface
+// Store access interface. Stores are the top-level tier now (Tenant → Store →
+// Branch) — branchId/branchName are null for a whole-store grant, or set when
+// this particular grant is narrowed to one specific branch WITHIN that store.
+// They are NOT "the branch this store belongs to" (that relationship no
+// longer exists — a branch belongs to a store, not the reverse).
 export interface StoreAccess {
     storeId: string;
-    branchId: string;
+    branchId: string | null;
     storeName: string;
-    branchName: string;
+    branchName: string | null;
     storeLogo?: string | null;
     canRead: boolean;
     canWrite: boolean;
@@ -163,23 +167,12 @@ function createAuthStore() {
 
     const isAuthenticated = $derived(!!accessToken && !!user);
     
-    // Derived: Get accessible branch IDs
-    const accessibleBranchIds = $derived([...new Set(accessibleStores.map(s => s.branchId))]);
-    
+    // Derived: Get accessible branch IDs (only rows narrowed to a specific
+    // branch — a whole-store grant has branchId=null and contributes none).
+    const accessibleBranchIds = $derived([...new Set(accessibleStores.map(s => s.branchId).filter((id): id is string => !!id))]);
+
     // Derived: Current active store object
     const activeStore = $derived(accessibleStores.find(s => s.storeId === activeStoreId) || null);
-    
-    // Derived: Get stores grouped by branch
-    const storesByBranch = $derived.by(() => {
-        const grouped: Record<string, StoreAccess[]> = {};
-        for (const store of accessibleStores) {
-            if (!grouped[store.branchId]) {
-                grouped[store.branchId] = [];
-            }
-            grouped[store.branchId].push(store);
-        }
-        return grouped;
-    });
 
     // Derived: numeric role level for the current user
     const roleLevel = $derived(
@@ -581,7 +574,6 @@ function createAuthStore() {
         get activeBranchId() { return activeBranchId; },
         get activeStore() { return activeStore; },
         get accessibleBranchIds() { return accessibleBranchIds; },
-        get storesByBranch() { return storesByBranch; },
 
         // Role hierarchy
         get isSuperAdmin() { return user?.isSuperAdmin === true; },
