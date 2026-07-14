@@ -41,19 +41,19 @@ async function call(method: string, path: string, token: string | undefined, bod
 async function main() {
     const stamp = Date.now();
     const tenantId = randomUUID();
+    const storeId = randomUUID();
     const branchId = randomUUID();
-    const store1Id = randomUUID();
-    const store2Id = randomUUID();
     const ownerId = randomUUID();
     const ownerEmail = `owner-${stamp}@retest.local`;
     const ownerPassword = 'TestPass123!';
     const hashed = await argon2.hash(ownerPassword);
 
-    console.log('--- Seeding tenant/branch/stores/owner directly via SQL ---');
+    // Hierarchy is Tenant → Store → Branch (store is the top-level tier —
+    // the "brand"/business-unit; branch is the physical outlet under it).
+    console.log('--- Seeding tenant/store/branch/owner directly via SQL ---');
     await sql`insert into tenants (id, name, code, plan, is_active, status) values (${tenantId}, 'Retest Tenant', ${'RETEST-' + stamp}, 'free', true, 'active')`;
-    await sql`insert into branches (id, tenant_id, name, code, branch_path, is_active, is_main) values (${branchId}, ${tenantId}, 'Retest Branch', ${'RB-' + stamp}, ${'RB-' + stamp}, true, true)`;
-    await sql`insert into stores (id, tenant_id, name, code, branch_id, is_active, is_default) values (${store1Id}, ${tenantId}, 'Store 1', ${'S1-' + stamp}, ${branchId}, true, true)`;
-    await sql`insert into stores (id, tenant_id, name, code, branch_id, is_active, is_default) values (${store2Id}, ${tenantId}, 'Store 2', ${'S2-' + stamp}, ${branchId}, true, false)`;
+    await sql`insert into stores (id, tenant_id, name, code, store_path, is_active, is_default) values (${storeId}, ${tenantId}, 'Retest Store', ${'RS-' + stamp}, ${'RS-' + stamp}, true, true)`;
+    await sql`insert into branches (id, tenant_id, store_id, name, code, branch_path, is_active, is_main) values (${branchId}, ${tenantId}, ${storeId}, 'Retest Branch', ${'RB-' + stamp}, ${'RB-' + stamp}, true, true)`;
 
     // Owner: tenantId set, but deliberately NO branchId and NO userStores row —
     // this is exactly the precondition the visibility bugs required (owner
@@ -71,6 +71,13 @@ async function main() {
                          'staff:create','staff:read','staff:update'], true)`;
     }
     await sql`update users set role_id = (select id from roles where name='store_owner' and tenant_id=${tenantId}) where id = ${ownerId}`;
+
+    // A 'staff' role must actually exist for this tenant now — permissions no
+    // longer materialize from a bare role-name string (see auth.middleware.ts
+    // loadCachedAuthUser / resolveAssignableRole). Staff created below pass
+    // role: 'staff', which resolveAssignableRole resolves against this row.
+    await sql`insert into roles (id, tenant_id, name, display_name, permissions, is_system)
+               values (${randomUUID()}, ${tenantId}, 'staff', 'Staff', ARRAY['pos:access','sales:create'], true)`;
 
     console.log('--- Logging in as owner ---');
     const login = await call('POST', '/auth/login', undefined, { email: ownerEmail, password: ownerPassword });

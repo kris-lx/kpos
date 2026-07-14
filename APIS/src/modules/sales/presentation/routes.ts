@@ -20,15 +20,15 @@ export const salesRoutes = Router();
 // pooled globalDb instead, setting the RLS context with SET LOCAL (auto-reset
 // on commit/rollback) directly on that transaction.
 async function scopedTransaction<T>(
-    req: { authUser?: { tenantId?: string | null; isSuperAdmin?: boolean; activeBranchPath?: string } },
+    req: { authUser?: { tenantId?: string | null; isSuperAdmin?: boolean; activeBranchPath?: string; activeStorePath?: string } },
     callback: (tx: Parameters<Parameters<typeof globalDb.transaction>[0]>[0]) => Promise<T>,
 ): Promise<T> {
     return globalDb.transaction(async (tx) => {
-        const { tenantId, isSuperAdmin, activeBranchPath } = req.authUser ?? {};
+        const { tenantId, isSuperAdmin, activeBranchPath, activeStorePath } = req.authUser ?? {};
         if (isSuperAdmin) {
             await setSuperAdminBypassContext(tx, { local: true });
         } else if (tenantId) {
-            await setRequestContext(tx, { tenantId, branchPath: activeBranchPath }, { local: true });
+            await setRequestContext(tx, { tenantId, branchPath: activeBranchPath, storePath: activeStorePath }, { local: true });
         }
         return callback(tx);
     });

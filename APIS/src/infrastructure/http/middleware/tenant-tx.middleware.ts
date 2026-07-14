@@ -56,7 +56,7 @@ export function withTenantTx() {
             return next();
         }
 
-        const { tenantId, activeBranchPath, isSuperAdmin } = req.authUser;
+        const { tenantId, activeBranchPath, activeStorePath, isSuperAdmin } = req.authUser;
 
         if (!isSuperAdmin && !tenantId) {
             res.status(403).json({
@@ -96,7 +96,7 @@ export function withTenantTx() {
                 // NOT a DB-role BYPASSRLS grant. See setSuperAdminBypassContext().
                 await setSuperAdminBypassContext(tx, { local: false });
             } else {
-                await setRequestContext(tx, { tenantId: tenantId!, branchPath: activeBranchPath }, { local: false });
+                await setRequestContext(tx, { tenantId: tenantId!, branchPath: activeBranchPath, storePath: activeStorePath }, { local: false });
             }
             req.tx = tx;
         } catch (err) {

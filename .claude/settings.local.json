@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "PowerShell(cd \"D:\\\\Project\\\\pos\\\\kpos_v2\\\\APIS\"; $output = npx tsc --noEmit 2>&1; $output | Where-Object { $_ -match \"email|reset.password|forgot.password|app\\\\.config\" } | Select-Object -First 20; Write-Host \"---DONE---\")"
+      "PowerShell(cd \"D:\\\\Project\\\\pos\\\\kpos_v2\\\\APIS\"; $output = npx tsc --noEmit 2>&1; $output | Where-Object { $_ -match \"email|reset.password|forgot.password|app\\\\.config\" } | Select-Object -First 20; Write-Host \"---DONE---\")",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:5000/health)"
     ]
   }
 }

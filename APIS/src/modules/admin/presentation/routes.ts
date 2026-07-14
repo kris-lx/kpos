@@ -4,7 +4,7 @@
 
 import { Router } from 'express';
 import { totalmem, freemem } from 'os';
-import { authenticate, authorize, requireSuperAdmin, requireAdmin, requireTenantAdmin, isSuperAdmin, isAdmin, invalidateRoleRulesCache, invalidateAllUserStoreCache, invalidateUserStoreCache, branchFilter, buildTenantCondition, tenantScope, ROLE_LEVELS } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, requireSuperAdmin, requireAdmin, requireTenantAdmin, isSuperAdmin, isAdmin, invalidateRoleRulesCache, invalidateAllUserStoreCache, invalidateUserStoreCache, branchFilter, buildTenantCondition, tenantScope, ensureScopeAccess, ROLE_LEVELS } from '@/infrastructure/http/middleware/auth.middleware';
 import { permissionsToMask } from '@/infrastructure/permissions';
 import { invalidateAllTenantPermissions } from '@/infrastructure/services/permission.service';
 import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
@@ -29,11 +29,11 @@ export const adminRoutes = Router();
 // pooled globalDb instead, setting the RLS context with SET LOCAL inside.
 async function scopedTransaction(req, callback) {
     return globalDb.transaction(async (tx) => {
-        const { tenantId, isSuperAdmin, activeBranchPath } = req.authUser ?? {};
+        const { tenantId, isSuperAdmin, activeBranchPath, activeStorePath } = req.authUser ?? {};
         if (isSuperAdmin) {
             await setSuperAdminBypassContext(tx, { local: true });
         } else if (tenantId) {
-            await setRequestContext(tx, { tenantId, branchPath: activeBranchPath }, { local: true });
+            await setRequestContext(tx, { tenantId, branchPath: activeBranchPath, storePath: activeStorePath }, { local: true });
         }
         return callback(tx);
     });
@@ -350,23 +350,41 @@ adminRoutes.post('/requests/:id/approve', authenticate, withTenantTx(), requireA
             // If the request already has a tenantId (e.g. existing merchant adding a branch), use that
             if (request.tenantId) tenantId = request.tenantId;
 
+            // A branch now belongs to a store (Tenant → Store → Branch) — target
+            // the tenant's default/root store since store_requests has no
+            // storeId field of its own (only the legacy branchId column).
+            let targetStoreId: string | null = null;
+            if (tenantId) {
+                const defaultStore = await db.query.stores.findFirst({
+                    where: and(eq(stores.tenantId, tenantId), eq(stores.isDefault, true)),
+                    columns: { id: true },
+                }) ?? await db.query.stores.findFirst({
+                    where: eq(stores.tenantId, tenantId),
+                    columns: { id: true },
+                });
+                targetStoreId = defaultStore?.id ?? null;
+            }
+            if (!targetStoreId) {
+                return res.status(400).json({ success: false, error: { code: 'NO_STORE', message: 'Tenant has no store to attach this branch to' } });
+            }
+
             // Compute materialized branchPath. A new branch is parented under the
-            // tenant's main (HQ) branch when one exists, else it becomes a root.
+            // store's main (HQ) branch when one exists, else it becomes a root
+            // within that store's own branch tree.
             let parentBranchId: string | null = null;
             let branchPath = request.branchCode;
-            if (tenantId) {
-                const mainBranch = await db.query.branches.findFirst({
-                    where: and(eq(branches.tenantId, tenantId), eq(branches.isMain, true)),
-                    columns: { id: true, branchPath: true },
-                });
-                if (mainBranch?.branchPath) {
-                    parentBranchId = mainBranch.id;
-                    branchPath = `${mainBranch.branchPath}.${request.branchCode}`;
-                }
+            const mainBranch = await db.query.branches.findFirst({
+                where: and(eq(branches.storeId, targetStoreId), eq(branches.isMain, true)),
+                columns: { id: true, branchPath: true },
+            });
+            if (mainBranch?.branchPath) {
+                parentBranchId = mainBranch.id;
+                branchPath = `${mainBranch.branchPath}.${request.branchCode}`;
             }
 
             const [br] = await db.insert(branches).values({
                 tenantId,
+                storeId: targetStoreId,
                 parentBranchId,
                 branchPath,
                 name: request.branchName, code: request.branchCode,
@@ -412,13 +430,27 @@ adminRoutes.post('/requests/:id/approve', authenticate, withTenantTx(), requireA
             });
             const tenantId = newTenant.id;
 
-            // Create default (HQ) branch under the new tenant. It is the root of the
-            // tenant's branch tree, so its materialized path is just its own code.
+            // Create the store — the tenant's root/default store. Its materialized
+            // path is just its own code, matching how the old default branch used
+            // to root the tenant's branch tree (Tenant → Store → Branch now).
+            const [store] = await db.insert(stores).values({
+                tenantId,
+                name: request.storeName, code: request.storeCode,
+                storePath: request.storeCode,
+                address: request.storeAddress, phone: request.storePhone, email: request.storeEmail,
+                isActive: true, isDefault: true,
+            }).returning();
+            createdEntity = store;
+
+            // Create the default (HQ) branch under the new store. It is the root
+            // of the store's own branch tree, so its materialized path is just
+            // its own code.
             let targetBranchId = request.branchId;
             if (!targetBranchId || targetBranchId === '') {
                 const hqCode = `BR-${request.storeCode}`;
                 const [defaultBranch] = await db.insert(branches).values({
                     tenantId,
+                    storeId: store.id,
                     name: `${request.storeName} - ສາຂາຫຼັກ`, code: hqCode,
                     branchPath: hqCode,
                     address: request.storeAddress, phone: request.storePhone, email: request.storeEmail,
@@ -427,19 +459,12 @@ adminRoutes.post('/requests/:id/approve', authenticate, withTenantTx(), requireA
                 targetBranchId = defaultBranch.id;
             }
 
-            // Create the store
-            const [store] = await db.insert(stores).values({
-                tenantId,
-                name: request.storeName, code: request.storeCode, branchId: targetBranchId,
-                address: request.storeAddress, phone: request.storePhone, email: request.storeEmail,
-                isActive: true, isDefault: true,
-            }).returning();
-            createdEntity = store;
-
-            // Link requester to the new store with full access
+            // Link requester to the new store with full access — a whole-store
+            // grant (branchId left NULL), so they see every branch under it,
+            // not just this first default one.
             await db.insert(userStores).values([{
                 tenantId,
-                userId: request.requesterId as string, storeId: store.id as string, branchId: targetBranchId as string,
+                userId: request.requesterId as string, storeId: store.id as string, branchId: null,
                 canRead: true, canWrite: true, canDelete: true, canManage: true, isDefault: true, assignedBy: reviewerId as string,
             }]);
 
@@ -488,12 +513,13 @@ adminRoutes.post('/requests/:id/approve', authenticate, withTenantTx(), requireA
                 }
             }
 
-            // Activate user + assign to new tenant + role + branch
+            // Activate user + assign to new tenant + role + store/branch anchors
             await db.update(users).set({
                 isActive: true,
                 tenantId,
                 roleId: storeOwnerRole.id,
                 role: 'store_owner',
+                storeId: store.id,
                 branchId: targetBranchId,
             }).where(eq(users.id, request.requesterId));
 
@@ -611,25 +637,26 @@ adminRoutes.get('/branches', authenticate, withTenantTx(), requireTenantAdmin(),
             db.select({ value: count() }).from(branches).where(brWhere),
         ]);
 
-        // Attach store, user, and product counts per branch
+        // Attach user and product counts per branch. Stores are no longer
+        // nested under a branch (a branch belongs to exactly one store now —
+        // Tenant → Store → Branch), so there's no per-branch store count
+        // anymore; each branch's own storeId (returned on `b` below) says
+        // which store it belongs to.
         const branchIds = branchList.map(b => b.id);
-        let storeCountMap: Record<string, number> = {};
         let userCountMap: Record<string, number> = {};
         let productCountMap: Record<string, number> = {};
         if (branchIds.length > 0) {
-            const [storeCounts, userCounts, productCounts] = await Promise.all([
-                db.select({ branchId: stores.branchId, cnt: count() }).from(stores).where(inArray(stores.branchId, branchIds)).groupBy(stores.branchId),
+            const [userCounts, productCounts] = await Promise.all([
                 db.select({ branchId: users.branchId, cnt: count() }).from(users).where(and(inArray(users.branchId, branchIds), eq(users.isActive, true))).groupBy(users.branchId),
                 db.select({ branchId: products.branchId, cnt: count() }).from(products).where(and(inArray(products.branchId, branchIds), eq(products.isActive, true))).groupBy(products.branchId),
             ]);
-            storeCounts.forEach(r => { if (r.branchId) storeCountMap[r.branchId] = Number(r.cnt); });
             userCounts.forEach(r => { if (r.branchId) userCountMap[r.branchId] = Number(r.cnt); });
             productCounts.forEach(r => { if (r.branchId) productCountMap[r.branchId] = Number(r.cnt); });
         }
 
         const dataWithCounts = branchList.map(b => ({
             ...b,
-            _count: { stores: storeCountMap[b.id] ?? 0, users: userCountMap[b.id] ?? 0, products: productCountMap[b.id] ?? 0 },
+            _count: { users: userCountMap[b.id] ?? 0, products: productCountMap[b.id] ?? 0 },
         }));
 
         res.json({
@@ -653,7 +680,7 @@ adminRoutes.get('/branches', authenticate, withTenantTx(), requireTenantAdmin(),
 adminRoutes.post('/branches', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
-        const { name, code, address, phone, email, taxId, logo, isMain, settings, parentBranchId } = req.body;
+        const { name, code, address, phone, email, taxId, logo, isMain, settings, parentBranchId, storeId: bodyStoreId } = req.body;
 
         if (!name || !String(name).trim()) {
             return res.status(400).json({ success: false, error: { code: 'VALIDATION', message: 'Branch name is required' } });
@@ -663,6 +690,26 @@ adminRoutes.post('/branches', authenticate, withTenantTx(), requireTenantAdmin()
         }
 
         const tenantId = req.authUser?.tenantId || req.user?.tenantId;
+
+        // A branch belongs to exactly one store (Tenant → Store → Branch).
+        // Resolve explicit storeId, else the caller's own active store, else
+        // the tenant's default store.
+        let storeId: string | undefined = bodyStoreId || req.authUser?.activeStoreId || undefined;
+        if (!storeId && tenantId) {
+            const defaultStore = await db.query.stores.findFirst({
+                where: and(eq(stores.tenantId, tenantId), eq(stores.isDefault, true)),
+                columns: { id: true },
+            }) ?? await db.query.stores.findFirst({ where: eq(stores.tenantId, tenantId), columns: { id: true } });
+            storeId = defaultStore?.id;
+        }
+        if (!storeId) {
+            return res.status(400).json({ success: false, error: { code: 'VALIDATION', message: 'storeId is required — no default store found for this tenant' } });
+        }
+        const targetStore = await db.query.stores.findFirst({ where: eq(stores.id, storeId), columns: { id: true, tenantId: true } });
+        if (!targetStore || (tenantId && targetStore.tenantId !== tenantId) || !ensureScopeAccess({ tenantId: targetStore.tenantId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Store not found or no access' } });
+        }
+
         const trimmedCode = String(code).trim();
 
         const dupConds: any[] = [eq(branches.code, trimmedCode)];
@@ -676,8 +723,10 @@ adminRoutes.post('/branches', authenticate, withTenantTx(), requireTenantAdmin()
         }
 
         if (isMain) {
+            // isMain now means "the main branch of THIS store" — scope the
+            // reset to branches within the same store, not the whole tenant.
             await db.update(branches).set({ isMain: false })
-                .where(and(eq(branches.isMain, true), ...(tenantId ? [eq(branches.tenantId, tenantId)] : [])));
+                .where(and(eq(branches.isMain, true), eq(branches.storeId, storeId)));
         }
 
         // Compute materialized branchPath: parent.path + '.' + code, or code for a root.
@@ -692,6 +741,7 @@ adminRoutes.post('/branches', authenticate, withTenantTx(), requireTenantAdmin()
 
         const [branch] = await db.insert(branches).values({
             tenantId,
+            storeId,
             parentBranchId: parentBranchId || null,
             branchPath,
             name: String(name).trim(), code: trimmedCode,
@@ -738,8 +788,9 @@ adminRoutes.put('/branches/:id', authenticate, withTenantTx(), requireTenantAdmi
         }
 
         if (isMain && !existing.isMain) {
-            const mainResetConds = branchTenantScope ? and(eq(branches.isMain, true), branchTenantScope) : eq(branches.isMain, true);
-            await db.update(branches).set({ isMain: false }).where(mainResetConds);
+            // isMain means "the main branch of THIS store" — scope the reset
+            // to branches within the same store, not the whole tenant.
+            await db.update(branches).set({ isMain: false }).where(and(eq(branches.isMain, true), eq(branches.storeId, existing.storeId)));
         }
 
         const [branch] = await db.update(branches).set({ name, code, address, phone, email, taxId, logo, isMain, isActive, settings }).where(eq(branches.id, id)).returning();
@@ -795,14 +846,14 @@ adminRoutes.delete('/branches/:id', authenticate, withTenantTx(), requireTenantA
 adminRoutes.get('/stores', authenticate, withTenantTx(), requireTenantAdmin(), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
-        const { search, branchId, isActive, page = 1, limit = 50 } = req.query;
+        const { search, parentStoreId, isActive, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
 
         const stConds: any[] = [];
         const tenantScope = buildTenantCondition(req.branchFilter, stores.tenantId);
         if (tenantScope) stConds.push(tenantScope);
         if (isActive !== undefined) stConds.push(eq(stores.isActive, isActive === 'true'));
-        if (branchId) stConds.push(eq(stores.branchId, String(branchId)));
+        if (parentStoreId) stConds.push(eq(stores.parentStoreId, String(parentStoreId)));
         if (search) {
             const s = String(search);
             stConds.push(or(ilike(stores.name, `%${s}%`), ilike(stores.code, `%${s}%`)));
@@ -810,7 +861,7 @@ adminRoutes.get('/stores', authenticate, withTenantTx(), requireTenantAdmin(), b
         const stWhere = stConds.length > 0 ? and(...stConds) : undefined;
 
         const [storeList, [{ value: total }]] = await Promise.all([
-            db.query.stores.findMany({ where: stWhere, offset: skip, limit: Number(limit), with: { branch: { columns: { id: true, name: true, code: true } } }, orderBy: asc(stores.name) }),
+            db.query.stores.findMany({ where: stWhere, offset: skip, limit: Number(limit), with: { branches: { columns: { id: true, name: true, code: true } } }, orderBy: asc(stores.name) }),
             db.select({ value: count() }).from(stores).where(stWhere),
         ]);
 
@@ -830,12 +881,13 @@ adminRoutes.get('/stores', authenticate, withTenantTx(), requireTenantAdmin(), b
 });
 
 /**
- * POST /admin/stores - Create a new store
+ * POST /admin/stores - Create a new store (Tenant → Store → Branch — a store
+ * no longer needs an existing branch; branches are created under it instead)
  */
 adminRoutes.post('/stores', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
-        const { name, code, branchId, address, phone, email, settings } = req.body;
+        const { name, code, parentStoreId, address, phone, email, settings } = req.body;
 
         const existing = await db.query.stores.findFirst({ where: eq(stores.code, code) });
         if (existing) {
@@ -846,10 +898,20 @@ adminRoutes.post('/stores', authenticate, withTenantTx(), requireTenantAdmin(), 
         }
 
         const storeTenantId = req.authUser?.tenantId || req.user?.tenantId;
-        const [store] = await db.insert(stores).values({ tenantId: storeTenantId, name, code, branchId, address, phone, email, settings: settings || {}, isActive: true }).returning();
-        const storeWithBranch = await db.query.stores.findFirst({ where: eq(stores.id, store.id), with: { branch: { columns: { id: true, name: true } } } });
 
-        res.status(201).json({ success: true, data: storeWithBranch });
+        // Compute materialized storePath: parent.path + '.' + code, or code for a root.
+        let storePath = String(code);
+        if (parentStoreId) {
+            const parent = await db.query.stores.findFirst({ where: eq(stores.id, parentStoreId), columns: { storePath: true } });
+            if (parent?.storePath) storePath = `${parent.storePath}.${code}`;
+        }
+
+        const [store] = await db.insert(stores).values({
+            tenantId: storeTenantId, name, code, parentStoreId: parentStoreId || null, storePath,
+            address, phone, email, settings: settings || {}, isActive: true,
+        }).returning();
+
+        res.status(201).json({ success: true, data: store });
     } catch (error) {
         next(error);
     }
@@ -862,7 +924,7 @@ adminRoutes.put('/stores/:id', authenticate, withTenantTx(), requireTenantAdmin(
     try {
         const db = req.tx ?? globalDb;
         const { id } = req.params;
-        const { name, code, branchId, address, phone, email, isActive, settings } = req.body;
+        const { name, code, address, phone, email, isActive, settings } = req.body;
 
         const existing = await db.query.stores.findFirst({ where: eq(stores.id, id) });
         if (!existing) {
@@ -882,8 +944,8 @@ adminRoutes.put('/stores/:id', authenticate, withTenantTx(), requireTenantAdmin(
             }
         }
 
-        await db.update(stores).set({ name, code, branchId, address, phone, email, isActive, settings }).where(eq(stores.id, id));
-        const store = await db.query.stores.findFirst({ where: eq(stores.id, id), with: { branch: { columns: { id: true, name: true } } } });
+        await db.update(stores).set({ name, code, address, phone, email, isActive, settings }).where(eq(stores.id, id));
+        const store = await db.query.stores.findFirst({ where: eq(stores.id, id), with: { branches: { columns: { id: true, name: true } } } });
 
         res.json({ success: true, data: store });
     } catch (error) {
@@ -927,7 +989,7 @@ adminRoutes.get('/stores/:id/details', authenticate, withTenantTx(), async (req,
         const db = req.tx ?? globalDb;
         const store = await db.query.stores.findFirst({
             where: eq(stores.id, req.params.id),
-            with: { branch: { columns: { id: true, name: true, code: true, address: true, phone: true } } },
+            with: { branches: { columns: { id: true, name: true, code: true, address: true, phone: true } } },
         });
         if (!store) {
             return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Store not found' } });
@@ -949,15 +1011,21 @@ adminRoutes.get('/stores/:id/stats', authenticate, withTenantTx(), async (req, r
             return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Store not found' } });
         }
 
-        const branchId = store.branchId;
+        // A store can have multiple branches now — aggregate across all of them.
+        const storeBranches = await db.query.branches.findMany({ where: eq(branches.storeId, req.params.id), columns: { id: true } });
+        const branchIds = storeBranches.map(b => b.id);
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
         const [[{ value: totalProducts }], [{ value: totalUsers }], [{ value: todayTransactions }], todaySales] = await Promise.all([
             db.select({ value: count() }).from(productStores).where(and(eq(productStores.storeId, req.params.id), eq(productStores.isActive, true))),
             db.select({ value: count() }).from(userStores).where(eq(userStores.storeId, req.params.id)),
-            db.select({ value: count() }).from(transactions).where(and(eq(transactions.branchId, branchId), gte(transactions.createdAt, today), eq(transactions.status, 'COMPLETED'))),
-            db.query.transactions.findMany({ where: and(eq(transactions.branchId, branchId), gte(transactions.createdAt, today), eq(transactions.status, 'COMPLETED')), columns: { total: true } }),
+            branchIds.length > 0
+                ? db.select({ value: count() }).from(transactions).where(and(inArray(transactions.branchId, branchIds), gte(transactions.createdAt, today), eq(transactions.status, 'COMPLETED')))
+                : Promise.resolve([{ value: 0 }]),
+            branchIds.length > 0
+                ? db.query.transactions.findMany({ where: and(inArray(transactions.branchId, branchIds), gte(transactions.createdAt, today), eq(transactions.status, 'COMPLETED')), columns: { total: true } })
+                : Promise.resolve([] as { total: number }[]),
         ]);
 
         const totalSalesToday = todaySales.reduce((sum: number, t: any) => sum + t.total, 0);
@@ -982,11 +1050,11 @@ adminRoutes.get('/stores/:id/stats', authenticate, withTenantTx(), async (req, r
 adminRoutes.get('/stores/:id/branches', authenticate, withTenantTx(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
-        const store = await db.query.stores.findFirst({ where: eq(stores.id, req.params.id), columns: { branchId: true } });
+        const store = await db.query.stores.findFirst({ where: eq(stores.id, req.params.id), columns: { id: true } });
         if (!store) {
             return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Store not found' } });
         }
-        const branchList = await db.query.branches.findMany({ where: eq(branches.id, store.branchId), columns: { id: true, name: true, code: true, address: true, phone: true, isActive: true } });
+        const branchList = await db.query.branches.findMany({ where: eq(branches.storeId, store.id), columns: { id: true, name: true, code: true, address: true, phone: true, isActive: true } });
         res.json({ success: true, data: branchList });
     } catch (error) {
         next(error);
@@ -1146,22 +1214,25 @@ adminRoutes.get('/dashboard/chart-data', authenticate, withTenantTx(), requireTe
         .groupBy(users.role)
         .orderBy(desc(count()));
 
-        // 2. COLUMN: Stores per branch
+        // 2. COLUMN: Branches per store (stores are the top-level tier now —
+        // "stores per branch" doesn't exist anymore, a branch belongs to
+        // exactly one store. Response key kept as `storesByBranch` for
+        // frontend compatibility; the `branch` label is now a store name.)
         const storesByBranchRaw = await db.select({
-            branchId: stores.branchId,
+            storeId: branches.storeId,
             count: count(),
-        }).from(stores)
-        .where(storeTenantCond ?? undefined)
-        .groupBy(stores.branchId);
+        }).from(branches)
+        .where(branchTenantCond ?? undefined)
+        .groupBy(branches.storeId);
 
-        // Get branch names
-        const branchIds = storesByBranchRaw.map(r => r.branchId).filter(Boolean) as string[];
+        // Get store names
+        const branchIds = storesByBranchRaw.map(r => r.storeId).filter(Boolean) as string[];
         const branchNames: Record<string, string> = {};
         if (branchIds.length > 0) {
-            const branchRows = await db.select({ id: branches.id, name: branches.name })
-                .from(branches)
-                .where(and(inArray(branches.id, branchIds), branchTenantCond ?? undefined));
-            branchRows.forEach(b => { branchNames[b.id] = b.name; });
+            const storeRows = await db.select({ id: stores.id, name: stores.name })
+                .from(stores)
+                .where(and(inArray(stores.id, branchIds), storeTenantCond ?? undefined));
+            storeRows.forEach(s => { branchNames[s.id] = s.name; });
         }
 
         // 3. LINE: Transactions last 7 days
@@ -1194,7 +1265,7 @@ adminRoutes.get('/dashboard/chart-data', authenticate, withTenantTx(), requireTe
             data: {
                 usersByRole: usersByRoleRaw.map(r => ({ role: r.role || 'unknown', count: Number(r.count) })),
                 storesByBranch: storesByBranchRaw.map(r => ({
-                    branch: r.branchId ? (branchNames[r.branchId] || r.branchId.slice(0, 8)) : 'N/A',
+                    branch: r.storeId ? (branchNames[r.storeId] || r.storeId.slice(0, 8)) : 'N/A',
                     count: Number(r.count),
                 })),
                 transactionsTrend,
@@ -1241,7 +1312,7 @@ adminRoutes.get('/stores-overview', authenticate, withTenantTx(), requireTenantA
         const tenantMap = new Map(tenantRows.map(t => [t.id, t]));
 
         // Per-branch counts in parallel
-        const [productCounts, categoryCounts, stockCounts2, userCounts, storeCounts] = await Promise.all([
+        const [productCounts, categoryCounts, stockCounts2, userCounts] = await Promise.all([
             // products per branch (via inventory)
             db.select({ branchId: inventory.branchId, cnt: count() })
                 .from(inventory).where(inArray(inventory.branchId, branchIds))
@@ -1261,10 +1332,6 @@ adminRoutes.get('/stores-overview', authenticate, withTenantTx(), requireTenantA
             db.select({ branchId: users.branchId, cnt: count() })
                 .from(users).where(and(inArray(users.branchId, branchIds), eq(users.isActive, true)))
                 .groupBy(users.branchId),
-            // stores per branch
-            db.select({ branchId: stores.branchId, cnt: count() })
-                .from(stores).where(and(inArray(stores.branchId, branchIds), eq(stores.isActive, true)))
-                .groupBy(stores.branchId),
         ]);
 
         const productCountMap = new Map(productCounts.map(r => [r.branchId, r.cnt]));
@@ -1275,9 +1342,10 @@ adminRoutes.get('/stores-overview', authenticate, withTenantTx(), requireTenantA
         }
         const stockMap = new Map(stockCounts2.map(r => [r.branchId, { qty: Number(r.qty || 0), val: Number(r.val || 0) }]));
         const userCountMap = new Map(userCounts.map(r => [r.branchId, r.cnt]));
-        const storeCountMap = new Map(storeCounts.map(r => [r.branchId, r.cnt]));
 
-        // Enrich branches
+        // Enrich branches. storeCount is always 1 now — a branch belongs to
+        // exactly one store under the reversed hierarchy (previously a branch
+        // could contain many stores, so this was a real aggregate).
         const enrichedBranches = allBranches.map(b => ({
             ...b,
             stats: {
@@ -1286,7 +1354,7 @@ adminRoutes.get('/stores-overview', authenticate, withTenantTx(), requireTenantA
                 stockQty: stockMap.get(b.id)?.qty || 0,
                 stockValue: stockMap.get(b.id)?.val || 0,
                 userCount: userCountMap.get(b.id) || 0,
-                storeCount: storeCountMap.get(b.id) || 0,
+                storeCount: 1,
             },
         }));
 
@@ -1680,25 +1748,32 @@ adminRoutes.get('/roles/templates', authenticate, withTenantTx(), requireTenantA
  * POST /admin/roles/seed - Seed default roles to database
  * MUST be before /roles/:id to prevent Express matching 'seed' as :id
  */
-adminRoutes.post('/roles/seed', authenticate, withTenantTx(), requireAdmin(), async (req, res, next) => {
+// Superadmin-only: this seeds/overwrites the shared GLOBAL (tenantId=null)
+// role template catalog used as a platform-wide default. It previously only
+// required requireAdmin() (roleLevel <= 2, which includes a plain tenant
+// owner/store_owner — NOT just true superadmin), and matched an "existing"
+// role by NAME ONLY with no tenantId filter — so any tenant owner could
+// silently overwrite another tenant's identically-named custom role (or the
+// global template) with the hardcoded platform defaults.
+adminRoutes.post('/roles/seed', authenticate, withTenantTx(), requireSuperAdmin(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const results: any[] = [];
 
         for (const roleData of ACCESS_DEFAULT_ROLES) {
             const mask = permissionsToMask(roleData.permissions);
-            const existing = await db.query.roles.findFirst({ where: eq(roles.name, roleData.name) });
+            const existing = await db.query.roles.findFirst({ where: and(eq(roles.name, roleData.name), isNull(roles.tenantId)) });
 
             if (existing) {
                 const [updated] = await db.update(roles).set({
                     displayName: roleData.displayName, description: roleData.description,
                     permissions: roleData.permissions, isSystem: roleData.isSystem,
                     maskLow: mask.low, maskHigh: mask.high,
-                }).where(eq(roles.name, roleData.name)).returning();
+                }).where(eq(roles.id, existing.id)).returning();
                 results.push({ ...updated, action: 'updated' });
             } else {
                 const [created] = await db.insert(roles).values({
-                    ...roleData, maskLow: mask.low, maskHigh: mask.high,
+                    ...roleData, tenantId: null, maskLow: mask.low, maskHigh: mask.high,
                 }).returning();
                 results.push({ ...created, action: 'created' });
             }
@@ -3062,6 +3137,26 @@ adminRoutes.put('/roles/:id/rules', authenticate, withTenantTx(), requireTenantA
             return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'rules must be an array' } });
         }
 
+        // Ownership check (mirrors PATCH /admin/roles/:id) — requireTenantAdmin()
+        // only gates on roleLevel <= 5, so without this a branch admin in ANY
+        // tenant could pass any roleId, including one belonging to a
+        // different tenant, and overwrite its CRUD rules.
+        const callerLevel = req.authUser?.roleLevel ?? 7;
+        const ruleTargetConds: any[] = [eq(roles.id, roleId)];
+        if (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) {
+            ruleTargetConds.push(eq(roles.tenantId, req.authUser.tenantId));
+        }
+        if (!req.authUser?.isSuperAdmin && callerLevel >= 5) {
+            ruleTargetConds.push(eq(roles.branchId, req.authUser?.activeBranchId ?? '__none__'));
+        }
+        const targetRole = await db.query.roles.findFirst({ where: and(...ruleTargetConds) });
+        if (!targetRole) {
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Role not found' } });
+        }
+        if (targetRole.isSystem) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot modify system role rules' } });
+        }
+
         await db.delete(roleRules).where(eq(roleRules.roleId, roleId));
 
         const created: any[] = [];
@@ -3094,11 +3189,26 @@ adminRoutes.put('/roles/:id/rules', authenticate, withTenantTx(), requireTenantA
 adminRoutes.get('/rules/matrix', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
-        const [matrixRules, matrixRoles, matrixRoleRules] = await Promise.all([
+
+        // Scope to the caller's own visible roles — requireTenantAdmin() only
+        // gates on roleLevel <= 5, so without this every tenant's roles (and
+        // role_rules) were readable/writable by any branch admin in any tenant.
+        const isSuperAdmin = req.authUser?.isSuperAdmin ?? false;
+        const callerTenantId = req.authUser?.tenantId;
+        const callerLevel = req.authUser?.roleLevel ?? 7;
+        const callerBranchId = req.authUser?.activeBranchId;
+        const roleScopeConds: any[] = [];
+        if (!isSuperAdmin && callerTenantId) roleScopeConds.push(eq(roles.tenantId, callerTenantId));
+        if (!isSuperAdmin && callerLevel >= 5) roleScopeConds.push(or(isNull(roles.branchId), eq(roles.branchId, callerBranchId ?? '__none__')));
+
+        const [matrixRules, matrixRoles] = await Promise.all([
             db.query.rules.findMany({ where: eq(rules.isActive, true), orderBy: asc(rules.order) }),
-            db.query.roles.findMany({ orderBy: asc(roles.name) }),
-            db.query.roleRules.findMany(),
+            db.query.roles.findMany({ where: roleScopeConds.length > 0 ? and(...roleScopeConds) : undefined, orderBy: asc(roles.name) }),
         ]);
+        const matrixRoleIds = matrixRoles.map(r => r.id);
+        const matrixRoleRules = matrixRoleIds.length > 0
+            ? await db.query.roleRules.findMany({ where: inArray(roleRules.roleId, matrixRoleIds) })
+            : [];
 
         const matrix: Record<string, Record<string, { r: boolean; c: boolean; u: boolean; d: boolean }>> = {};
         for (const role of matrixRoles) {
@@ -3152,11 +3262,18 @@ adminRoutes.put('/rules/matrix', authenticate, withTenantTx(), requireTenantAdmi
             return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'matrix is required' } });
         }
 
-        await db.delete(roleRules);
+        const isSuperAdmin = req.authUser?.isSuperAdmin ?? false;
+        const requestedRoleIds = Object.keys(matrix);
 
-        let count = 0;
-        const entries: { roleId: string; ruleId: string; canRead: boolean; canCreate: boolean; canUpdate: boolean; canDelete: boolean }[] = [];
-
+        // Non-superadmin callers may only write role_rules for roles actually
+        // visible to them (their own tenant, and their own branch if
+        // branch-level) — previously requireTenantAdmin()'s roleLevel<=5 gate
+        // was the ONLY check here: this wiped role_rules for EVERY role on
+        // the platform and rebuilt from the request body, then cascaded
+        // global role rules onto every tenant's same-named roles. A branch
+        // admin in Tenant A could rewrite Tenant B's (and every tenant's)
+        // permissions through this endpoint.
+        let entries: { roleId: string; ruleId: string; canRead: boolean; canCreate: boolean; canUpdate: boolean; canDelete: boolean }[] = [];
         for (const [roleId, ruleMap] of Object.entries(matrix) as [string, Record<string, { r: boolean; c: boolean; u: boolean; d: boolean }>][]) {
             for (const [ruleId, crud] of Object.entries(ruleMap)) {
                 if (crud.r || crud.c || crud.u || crud.d) {
@@ -3165,35 +3282,68 @@ adminRoutes.put('/rules/matrix', authenticate, withTenantTx(), requireTenantAdmi
             }
         }
 
-        for (const entry of entries) {
-            await db.insert(roleRules).values(entry);
-            count++;
-        }
+        let count = 0;
 
-        // Propagate global role rules (tenantId=null) to all tenant roles with the same name.
-        // This ensures super-admin edits in the matrix take effect for all tenant users immediately.
-        const globalRolesList = await db.query.roles.findMany({ where: isNull(roles.tenantId) });
-        const globalRulesByRoleId: Record<string, typeof entries> = {};
-        for (const gr of globalRolesList) {
-            globalRulesByRoleId[gr.id] = entries.filter(e => e.roleId === gr.id);
-        }
+        if (isSuperAdmin) {
+            await db.delete(roleRules);
+            for (const entry of entries) {
+                await db.insert(roleRules).values(entry);
+                count++;
+            }
 
-        for (const gr of globalRolesList) {
-            const globalEntries = globalRulesByRoleId[gr.id];
-            if (!globalEntries || globalEntries.length === 0) continue;
-            // Find tenant-specific roles with the same name
-            const tenantRoles = await db.query.roles.findMany({
-                where: and(eq(roles.name, gr.name), isNotNull(roles.tenantId)),
-            });
-            for (const tr of tenantRoles) {
-                // Skip if this tenant role is already in the matrix (explicitly managed)
-                if (matrix[tr.id]) continue;
-                // Copy global rules to this tenant role
-                for (const ge of globalEntries) {
-                    await db.insert(roleRules).values({ ...ge, roleId: tr.id });
-                    count++;
+            // Propagate global role rules (tenantId=null) to all tenant roles with the same name.
+            // Superadmin-only: this is the platform-template cascade, not something
+            // a tenant/branch admin's matrix edit should ever trigger.
+            const globalRolesList = await db.query.roles.findMany({ where: isNull(roles.tenantId) });
+            const globalRulesByRoleId: Record<string, typeof entries> = {};
+            for (const gr of globalRolesList) {
+                globalRulesByRoleId[gr.id] = entries.filter(e => e.roleId === gr.id);
+            }
+            for (const gr of globalRolesList) {
+                const globalEntries = globalRulesByRoleId[gr.id];
+                if (!globalEntries || globalEntries.length === 0) continue;
+                const tenantRoles = await db.query.roles.findMany({
+                    where: and(eq(roles.name, gr.name), isNotNull(roles.tenantId)),
+                });
+                for (const tr of tenantRoles) {
+                    if (matrix[tr.id]) continue; // already explicitly managed in this payload
+                    for (const ge of globalEntries) {
+                        await db.insert(roleRules).values({ ...ge, roleId: tr.id });
+                        count++;
+                    }
                 }
             }
+        } else {
+            const callerTenantId = req.authUser?.tenantId;
+            const callerLevel = req.authUser?.roleLevel ?? 7;
+            const callerBranchId = req.authUser?.activeBranchId;
+            const roleScopeConds: any[] = [];
+            if (callerTenantId) roleScopeConds.push(eq(roles.tenantId, callerTenantId));
+            if (callerLevel >= 5) roleScopeConds.push(or(isNull(roles.branchId), eq(roles.branchId, callerBranchId ?? '__none__')));
+
+            const visibleRoles = await db.query.roles.findMany({
+                where: roleScopeConds.length > 0 ? and(...roleScopeConds) : undefined,
+                columns: { id: true, isSystem: true },
+            });
+            const visibleRoleIds = new Set(visibleRoles.map(r => r.id));
+            const invalidIds = requestedRoleIds.filter(id => !visibleRoleIds.has(id));
+            if (invalidIds.length > 0) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'One or more roles are outside your tenant/branch scope' } });
+            }
+            const systemRoleIds = new Set(visibleRoles.filter(r => r.isSystem).map(r => r.id));
+            if (requestedRoleIds.some(id => systemRoleIds.has(id))) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot modify system role rules' } });
+            }
+
+            if (requestedRoleIds.length > 0) {
+                await db.delete(roleRules).where(inArray(roleRules.roleId, requestedRoleIds));
+            }
+            for (const entry of entries) {
+                await db.insert(roleRules).values(entry);
+                count++;
+            }
+            // No global-role cascade here — a tenant/branch admin's edit only
+            // ever affects the roles they were explicitly granted in this call.
         }
 
         await logActivity(req.authUser!.userId, 'rules_matrix_saved', `ບັນທຶກ CRUD matrix: ${count} role-rules`, {}, req);
@@ -3219,6 +3369,27 @@ adminRoutes.post('/roles/:id/copy-rules', authenticate, withTenantTx(), requireT
 
         if (!sourceRoleId) {
             return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'sourceRoleId is required' } });
+        }
+
+        // Ownership check — without this, a caller could copy rules FROM a role
+        // in another tenant (reconnaissance) or INTO a role in another tenant
+        // (overwrite), same bug class as PUT /roles/:id/rules above.
+        const copyCallerLevel = req.authUser?.roleLevel ?? 7;
+        const roleVisibleConds = (roleId: string) => {
+            const conds: any[] = [eq(roles.id, roleId)];
+            if (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) conds.push(eq(roles.tenantId, req.authUser.tenantId));
+            if (!req.authUser?.isSuperAdmin && copyCallerLevel >= 5) conds.push(eq(roles.branchId, req.authUser?.activeBranchId ?? '__none__'));
+            return and(...conds);
+        };
+        const [sourceRoleCheck, targetRoleCheck] = await Promise.all([
+            db.query.roles.findFirst({ where: roleVisibleConds(sourceRoleId) }),
+            db.query.roles.findFirst({ where: roleVisibleConds(targetRoleId) }),
+        ]);
+        if (!sourceRoleCheck || !targetRoleCheck) {
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Source or target role not found' } });
+        }
+        if (targetRoleCheck.isSystem) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot modify system role rules' } });
         }
 
         const sourceRulesList = await db.query.roleRules.findMany({ where: eq(roleRules.roleId, sourceRoleId) });
@@ -3554,15 +3725,15 @@ adminRoutes.post('/backfill-user-stores', authenticate, withTenantTx(), requireA
             const [{ value: existing }] = await db.select({ value: count() }).from(userStores).where(eq(userStores.userId, user.id));
             if (existing > 0) { skipped++; continue; }
 
-            const store = await db.query.stores.findFirst({
-                where: and(eq(stores.branchId, user.branchId!), eq(stores.isActive, true)),
-                orderBy: desc(stores.isDefault),
+            const owningBranch = await db.query.branches.findFirst({
+                where: eq(branches.id, user.branchId!),
+                columns: { storeId: true },
             });
 
-            if (!store) { skipped++; continue; }
+            if (!owningBranch) { skipped++; continue; }
 
             await db.insert(userStores).values({
-                userId: user.id, storeId: store.id, branchId: user.branchId!,
+                userId: user.id, storeId: owningBranch.storeId, branchId: user.branchId!,
                 canRead: true, canWrite: true, canDelete: false, canManage: false, isDefault: true,
             });
             created++;

@@ -11,6 +11,10 @@ import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 export interface RequestContextVars {
     tenantId: string;
     branchPath?: string;
+    /** Store-tree materialized path (stores.storePath) — mirrors branchPath
+     *  for the store tier (Tenant → Store → Branch). Empty/unset means "no
+     *  store restriction beyond tenant", same convention as branchPath. */
+    storePath?: string;
     /** Optional schema name for Enterprise-plan tenants (Layer 3). */
     schemaName?: string;
 }
@@ -72,6 +76,9 @@ export async function setRequestContext(
     if (vars.branchPath && !BRANCH_PATH_RE.test(vars.branchPath)) {
         throw new Error('setRequestContext: branchPath has an unexpected format');
     }
+    if (vars.storePath && !BRANCH_PATH_RE.test(vars.storePath)) {
+        throw new Error('setRequestContext: storePath has an unexpected format');
+    }
     if (vars.schemaName && !IDENTIFIER_RE.test(vars.schemaName)) {
         throw new Error('setRequestContext: schemaName has an unexpected format');
     }
@@ -84,6 +91,12 @@ export async function setRequestContext(
     } else {
         // Empty string → policies must allow tenant-admin (root scope) access.
         await db.execute(sql.raw(`${setKeyword} app.current_branch_path = ''`));
+    }
+
+    if (vars.storePath) {
+        await db.execute(sql.raw(`${setKeyword} app.current_store_path = '${vars.storePath}'`));
+    } else {
+        await db.execute(sql.raw(`${setKeyword} app.current_store_path = ''`));
     }
 
     if (vars.schemaName) {

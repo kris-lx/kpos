@@ -13,8 +13,11 @@ import { randomUUID } from 'crypto';
 const SQL_URL = process.env.DATABASE_MIGRATE_URL || 'postgresql://kpos:olxguCDmxmoReDcxcR2xLTZ30leimP1Y@localhost:5432/kpos_db';
 const BASE = 'http://localhost:5000/api/v1';
 
+// Hierarchy is Tenant → Store → Branch (store = brand/business-unit tier,
+// branch = physical outlet under it). One store per branch below, so
+// BRANCH_COUNT also means BRANCH_COUNT distinct top-level stores — enough to
+// test real multi-store staff assignment (one user, 2 different stores).
 const BRANCH_COUNT = 3;
-const STORES_PER_BRANCH = 2;
 const PRODUCTS_PER_BRANCH = 10;
 const CASHIERS_PER_BRANCH = 20; // => 60 cashiers total
 const MEMBERS_PER_BRANCH = 20;  // => 60 members total
@@ -60,20 +63,18 @@ async function main() {
     const ownerPassword = 'TestPass123!';
     const hashed = await argon2.hash(ownerPassword);
 
-    console.log(`--- Seeding tenant + ${BRANCH_COUNT} branches x ${STORES_PER_BRANCH} stores ---`);
+    console.log(`--- Seeding tenant + ${BRANCH_COUNT} stores, each with 1 branch ---`);
     await sql`insert into tenants (id, name, code, plan, is_active, status) values (${tenantId}, 'Retest Full Tenant', ${'RETESTFULL-' + stamp}, 'free', true, 'active')`;
 
-    const branches: { id: string; name: string }[] = [];
+    const branches: { id: string; name: string; storeId: string }[] = [];
     for (let b = 0; b < BRANCH_COUNT; b++) {
+        const storeId = randomUUID();
         const branchId = randomUUID();
-        branches.push({ id: branchId, name: `Branch-${b}` });
-        await sql`insert into branches (id, tenant_id, name, code, branch_path, is_active, is_main)
-                   values (${branchId}, ${tenantId}, ${'Branch ' + b}, ${'BR' + b + '-' + stamp}, ${'BR' + b + '-' + stamp}, true, ${b === 0})`;
-        for (let s = 0; s < STORES_PER_BRANCH; s++) {
-            const storeId = randomUUID();
-            await sql`insert into stores (id, tenant_id, name, code, branch_id, is_active, is_default)
-                       values (${storeId}, ${tenantId}, ${'Store ' + b + '-' + s}, ${'S' + b + s + '-' + stamp}, ${branchId}, true, ${s === 0})`;
-        }
+        branches.push({ id: branchId, name: `Branch-${b}`, storeId });
+        await sql`insert into stores (id, tenant_id, name, code, store_path, is_active, is_default)
+                   values (${storeId}, ${tenantId}, ${'Store ' + b}, ${'ST' + b + '-' + stamp}, ${'ST' + b + '-' + stamp}, true, ${b === 0})`;
+        await sql`insert into branches (id, tenant_id, store_id, name, code, branch_path, is_active, is_main)
+                   values (${branchId}, ${tenantId}, ${storeId}, ${'Branch ' + b}, ${'BR' + b + '-' + stamp}, ${'BR' + b + '-' + stamp}, true, ${b === 0})`;
     }
 
     // Owner: tenant-level, no branch/store assignment (same precondition as the other retest scripts).
@@ -244,6 +245,57 @@ async function main() {
             history);
     }
 
+    // ── RBAC redesign verification: bad role name is rejected, not silently granted ──
+    console.log('--- Owner attempts to create staff with a role name that has no corresponding row ---');
+    const badRoleRes = await call('POST', '/staff', ownerToken, {
+        email: `badrole-${stamp}@retest.local`, password: 'Whatever123!', name: 'Bad Role Staff',
+        role: `nonexistent-role-${stamp}`, branchId: branches[0].id,
+    });
+    check('staff create with unknown role name is rejected (400), not silently granted', badRoleRes.status === 400, badRoleRes.data);
+
+    // ── RBAC redesign verification: cross-tenant rules/matrix ownership ──
+    console.log('--- Seeding a second, unrelated tenant to verify cross-tenant rules ownership ---');
+    const tenantBId = randomUUID();
+    const ownerBId = randomUUID();
+    const ownerBEmail = `ownerb-${stamp}@retest.local`;
+    await sql`insert into tenants (id, name, code, plan, is_active, status) values (${tenantBId}, 'Retest Tenant B', ${'RETESTB-' + stamp}, 'free', true, 'active')`;
+    await sql`insert into users (id, tenant_id, email, password, name, role, is_active, email_verified, permissions)
+               values (${ownerBId}, ${tenantBId}, ${ownerBEmail}, ${hashed}, 'Retest Owner B', 'store_owner', true, true, '{}')`;
+    const roleBId = randomUUID();
+    await sql`insert into roles (id, tenant_id, name, display_name, permissions, is_system)
+               values (${roleBId}, ${tenantBId}, 'cashier-b', 'Cashier B', ARRAY['sales:create'], false)`;
+    await sql`update users set role_id = ${roleBId} where id = ${ownerBId}`;
+
+    check(`tenant A's own role id resolved`, !!cashierRoleId);
+    const putRulesRes = await call('PUT', `/admin/roles/${roleBId}/rules`, ownerToken, { rules: [] });
+    check('PUT /admin/roles/:id/rules against another tenant\'s role is rejected', putRulesRes.status === 403 || putRulesRes.status === 404, putRulesRes.data);
+
+    const matrixRes = await call('PUT', '/admin/rules/matrix', ownerToken, { matrix: { [roleBId]: {} } });
+    check('PUT /admin/rules/matrix touching another tenant\'s role is rejected', matrixRes.status === 403, matrixRes.data);
+
+    const copyRulesRes = await call('POST', `/admin/roles/${cashierRoleId}/copy-rules`, ownerToken, { sourceRoleId: roleBId });
+    check('POST /admin/roles/:id/copy-rules with a source role from another tenant is rejected', copyRulesRes.status === 403 || copyRulesRes.status === 404, copyRulesRes.data);
+
+    // Confirm tenant B's role rules are actually untouched by any of the above.
+    const roleBRuleCount = await sql`select count(*) as c from role_rules where role_id = ${roleBId}`;
+    check('tenant B\'s role_rules were never modified', Number(roleBRuleCount[0].c) === 0, roleBRuleCount[0]);
+
+    // ── Multi-store assignment: one staff member assigned across 2 different
+    // top-level stores (e.g. a regional/area staffer overseeing 2 brands) ──
+    console.log('--- Creating a staff member with storeScope:"stores" and 2 explicit storeIds (different stores) ---');
+    const multiStoreEmail = `multistore-${stamp}@retest.local`;
+    const targetStoreIds = [branches[0].storeId, branches[1].storeId];
+    const multiStoreRes = await call('POST', '/staff', ownerToken, {
+        email: multiStoreEmail, password: 'MultiStore123!', name: 'Multi Store Staff',
+        role: `cashier-${stamp}`, roleId: cashierRoleId, branchId: branches[0].id,
+        storeScope: 'stores', storeIds: targetStoreIds,
+    });
+    check('multi-store staff create succeeds', multiStoreRes.status === 201, multiStoreRes.data);
+    const multiStoreUserId = multiStoreRes.data?.data?.id;
+    const multiStoreRows = multiStoreUserId ? await sql`select store_id, is_default from user_stores where user_id = ${multiStoreUserId}` : [];
+    check(`multi-store staff has exactly ${targetStoreIds.length} userStores rows`, multiStoreRows.length === targetStoreIds.length, multiStoreRows);
+    check('multi-store staff has exactly one isDefault row', multiStoreRows.filter(r => r.is_default).length === 1, multiStoreRows);
+
     console.log(`\n=== ${pass} passed, ${failCount} failed  (total wall time: ${Date.now() - t0}ms) ===`);
 
     if (process.env.SKIP_CLEANUP) {
@@ -272,6 +324,12 @@ async function main() {
     await sql`delete from branches where tenant_id = ${tenantId}`;
     await sql`delete from settings where tenant_id = ${tenantId}`;
     await sql`delete from tenants where id = ${tenantId}`;
+
+    await sql`delete from role_rules where role_id = ${roleBId}`;
+    await sql`delete from sessions where user_id = ${ownerBId}`;
+    await sql`delete from users where tenant_id = ${tenantBId}`;
+    await sql`delete from roles where tenant_id = ${tenantBId}`;
+    await sql`delete from tenants where id = ${tenantBId}`;
     await sql.end();
 
     if (failCount > 0) process.exit(1);

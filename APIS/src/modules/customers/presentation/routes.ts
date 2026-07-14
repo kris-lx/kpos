@@ -17,11 +17,11 @@ export const customerRoutes = Router();
 // pooled globalDb instead, setting the RLS context with SET LOCAL inside.
 async function scopedTransaction(req, callback) {
     return globalDb.transaction(async (tx) => {
-        const { tenantId, isSuperAdmin, activeBranchPath } = req.authUser ?? {};
+        const { tenantId, isSuperAdmin, activeBranchPath, activeStorePath } = req.authUser ?? {};
         if (isSuperAdmin) {
             await setSuperAdminBypassContext(tx, { local: true });
         } else if (tenantId) {
-            await setRequestContext(tx, { tenantId, branchPath: activeBranchPath }, { local: true });
+            await setRequestContext(tx, { tenantId, branchPath: activeBranchPath, storePath: activeStorePath }, { local: true });
         }
         return callback(tx);
     });

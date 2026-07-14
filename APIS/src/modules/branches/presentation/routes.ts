@@ -145,13 +145,21 @@ branchRoutes.post('/', authenticate, withTenantTx(), authorize('branches:create'
     try {
         const db = req.tx ?? globalDb;
         const tenantId = (req.authUser?.tenantId || req.user?.tenantId) || null;
-        const { name, code, address, phone, email, taxId, logo, isMain, isActive, settings, parentBranchId } = req.body;
+        const { name, code, address, phone, email, taxId, logo, isMain, isActive, settings, parentBranchId, storeId } = req.body;
 
-        if (!name || !code) {
+        if (!name || !code || !storeId) {
             return res.status(400).json({
                 success: false,
-                error: { code: 'VALIDATION', message: 'Name and code are required' }
+                error: { code: 'VALIDATION', message: 'Name, code, and storeId are required — a branch is a physical outlet under a store' }
             });
+        }
+
+        // Verify the target store belongs to this tenant and is in the caller's scope
+        const storeConds: any[] = [eq(stores.id, storeId)];
+        if (tenantId) storeConds.push(eq(stores.tenantId, tenantId));
+        const targetStore = await db.query.stores.findFirst({ where: and(...storeConds), columns: { id: true } });
+        if (!targetStore) {
+            return res.status(400).json({ success: false, error: { code: 'INVALID_STORE', message: 'Store not found' } });
         }
         // `code` becomes part of `branches.branchPath` (materialized path,
         // '.'-joined — see below) which is read back and used to build
@@ -195,6 +203,7 @@ branchRoutes.post('/', authenticate, withTenantTx(), authorize('branches:create'
 
         const [branch] = await db.insert(branches).values({
             tenantId,
+            storeId,
             parentBranchId: parentBranchId || null,
             branchPath,
             name, code, address, phone, email, taxId, logo,
@@ -276,16 +285,17 @@ branchRoutes.delete('/:id', authenticate, withTenantTx(), authorize('branches:de
             }
         }
 
-        // Check if branch has any stores
-        const [{ value: storeCount }] = await db.select({ value: count() }).from(stores)
-            .where(and(eq(stores.branchId, id), eq(stores.isActive, true)));
+        // Check if branch has any child branches (branches are now the narrow
+        // tier — a branch no longer "contains" stores, it belongs to one)
+        const [{ value: childCount }] = await db.select({ value: count() }).from(branches)
+            .where(and(eq(branches.parentBranchId, id), eq(branches.isActive, true)));
 
-        if (storeCount > 0) {
+        if (childCount > 0) {
             return res.status(400).json({
                 success: false,
                 error: {
-                    code: 'BRANCH_HAS_STORES',
-                    message: `ບໍ່ສາມາດລົບສາຂານີ້ໄດ້ ເພາະມີ ${storeCount} ຮ້ານຢູ່ໃນສາຂານີ້`
+                    code: 'BRANCH_HAS_CHILDREN',
+                    message: `ບໍ່ສາມາດລົບສາຂານີ້ໄດ້ ເພາະມີ ${childCount} ສາຂາຍ່ອຍຢູ່ໃນສາຂານີ້`
                 }
             });
         }

@@ -19,11 +19,11 @@ export const inventoryRoutes = Router();
 // pooled globalDb instead, setting the RLS context with SET LOCAL inside.
 async function scopedTransaction(req, callback) {
     return globalDb.transaction(async (tx) => {
-        const { tenantId, isSuperAdmin, activeBranchPath } = req.authUser ?? {};
+        const { tenantId, isSuperAdmin, activeBranchPath, activeStorePath } = req.authUser ?? {};
         if (isSuperAdmin) {
             await setSuperAdminBypassContext(tx, { local: true });
         } else if (tenantId) {
-            await setRequestContext(tx, { tenantId, branchPath: activeBranchPath }, { local: true });
+            await setRequestContext(tx, { tenantId, branchPath: activeBranchPath, storePath: activeStorePath }, { local: true });
         }
         return callback(tx);
     });
@@ -997,17 +997,17 @@ inventoryRoutes.post('/stock-transfers', authenticate, withTenantTx(), authorize
             });
         }
 
-        const [fromStore, toStore] = await Promise.all([
-            db.query.stores.findFirst({ where: eq(stores.id, fromBranchId), columns: { id: true, branchId: true, name: true } }),
-            db.query.stores.findFirst({ where: eq(stores.id, toBranchId), columns: { id: true, branchId: true, name: true } }),
+        const [fromBranch, toBranch] = await Promise.all([
+            db.query.branches.findFirst({ where: eq(branches.id, fromBranchId), columns: { id: true, storeId: true, name: true } }),
+            db.query.branches.findFirst({ where: eq(branches.id, toBranchId), columns: { id: true, storeId: true, name: true } }),
         ]);
 
-        // If stores exist, validate they are in the same branch
-        if (fromStore && toStore) {
-            if (fromStore.branchId !== toStore.branchId) {
+        // If branches exist, validate they belong to the same store
+        if (fromBranch && toBranch) {
+            if (fromBranch.storeId !== toBranch.storeId) {
                 return res.status(400).json({
                     success: false,
-                    error: { code: 'DIFFERENT_BRANCH', message: 'ການໂອນສິນຄ້າຕ້ອງຢູ່ໃນສາຂາດຽວກັນເທົ່ານັ້ນ' }
+                    error: { code: 'DIFFERENT_STORE', message: 'ການໂອນສິນຄ້າຕ້ອງຢູ່ໃນຮ້ານດຽວກັນເທົ່ານັ້ນ' }
                 });
             }
         }

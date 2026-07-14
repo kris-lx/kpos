@@ -3,13 +3,14 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, branchFilter, getRoleLevel, ROLE_LEVELS, ensureScopeAccess, invalidateUserStoreCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, branchFilter, getRoleLevel, ensureScopeAccess, invalidateUserStoreCache, resolveAssignableRole, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
 import { db as globalDb } from '@/config/database.config';
 import { users, userStores, roles, branches, stores } from '@/db/schema/tables';
 import { eq, and, or, ilike, inArray, notInArray, isNull, desc, asc, count } from 'drizzle-orm';
 import argon2 from 'argon2';
 import { invalidateUserPermissions } from '@/infrastructure/services/permission.service';
+import { assignUserToStores } from '@/shared/store-assignment';
 
 export const staffRoutes = Router();
 
@@ -150,11 +151,16 @@ staffRoutes.get('/roles/list', authenticate, withTenantTx(), async (req, res, ne
                 orderBy: asc(roles.name),
             });
         } else {
-            // branch_admin and below: show assignable system roles + tenant custom roles
-            // Exclude elevated roles they cannot grant
+            // branch_admin and below: show assignable system roles + tenant custom roles.
+            // Exclude elevated roles they cannot grant, and exclude OTHER
+            // branches' branch-private roles — those aren't actually
+            // assignable by this caller (resolveAssignableRole would reject
+            // them), so don't list them either.
             const excludeNames = ['super_admin', 'admin', 'hq_admin', 'hq_manager', 'store_owner'];
+            const activeBranchId = req.authUser?.activeBranchId;
+            const branchVisibility = activeBranchId ? or(isNull(roles.branchId), eq(roles.branchId, activeBranchId)) : isNull(roles.branchId);
             roleRows = await db.query.roles.findMany({
-                where: and(...baseConds, notInArray(roles.name, excludeNames)),
+                where: and(...baseConds, notInArray(roles.name, excludeNames), branchVisibility),
                 orderBy: asc(roles.name),
             });
         }
@@ -248,26 +254,58 @@ staffRoutes.get('/:id', authenticate, withTenantTx(), authorize('staff:read'), a
 staffRoutes.post('/', authenticate, withTenantTx(), branchFilter(), authorize('staff:create'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
-        const { email, password, name, phone, role, branchId, storeId, roleId, isActive, permissions } = req.body;
+        const { email, password, name, phone, role, branchId, storeId, storeIds, storeScope, defaultStoreId, roleId, isActive, permissions } = req.body;
         const authUser = req.authUser;
 
         if (!email || !password || !name) {
             res.status(400).json({ success: false, error: { code: 'VAL_001', message: 'Email, password, and name are required' } });
             return;
         }
+        if (!roleId && !role) {
+            res.status(400).json({ success: false, error: { code: 'VAL_003', message: 'roleId or role is required' } });
+            return;
+        }
 
-        // Privilege ladder: a caller can only create staff strictly less privileged
-        // than themselves (e.g. branch_admin → manager/staff, never another admin).
+        // Resolve the target role to an actual, visible-to-this-caller `roles`
+        // row — never grant permissions from a bare name string alone. See
+        // resolveAssignableRole() for the visibility/precedence rules. This
+        // also IS the privilege ladder check now: a caller can only assign a
+        // role strictly less privileged than their own.
+        const tenantId = req.authUser?.tenantId || req.user?.tenantId || null;
+        let resolvedRole: { id: string; name: string; roleLevel: number } | null = null;
         if (!authUser?.isSuperAdmin) {
-            const targetRoleLevel = ROLE_LEVELS[role || 'staff'] ?? 7;
-            if (targetRoleLevel < (authUser?.roleLevel ?? 7)) {
+            resolvedRole = await resolveAssignableRole(db, {
+                roleId: roleId || undefined,
+                roleName: role || undefined,
+                callerTenantId: tenantId,
+                callerBranchId: authUser?.activeBranchId,
+                callerRoleLevel: authUser?.roleLevel ?? 7,
+                callerIsSuperAdmin: false,
+            });
+            if (!resolvedRole) {
+                res.status(400).json({ success: false, error: { code: 'ROLE_NOT_FOUND', message: 'No such role is available to assign — ask an admin to create it first' } });
+                return;
+            }
+            if (resolvedRole.roleLevel < (authUser?.roleLevel ?? 7)) {
                 res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot create staff with higher privileges than your own' } });
+                return;
+            }
+        } else if (roleId || role) {
+            resolvedRole = await resolveAssignableRole(db, {
+                roleId: roleId || undefined,
+                roleName: role || undefined,
+                callerTenantId: tenantId,
+                callerBranchId: authUser?.activeBranchId,
+                callerRoleLevel: 1,
+                callerIsSuperAdmin: true,
+            });
+            if (!resolvedRole) {
+                res.status(400).json({ success: false, error: { code: 'ROLE_NOT_FOUND', message: 'No such role found' } });
                 return;
             }
         }
 
         // Check if email exists (tenant-scoped for multi-tenancy)
-        const tenantId = req.authUser?.tenantId || req.user?.tenantId;
         const emailConds: any[] = [eq(users.email, email)];
         if (tenantId) emailConds.push(eq(users.tenantId, tenantId));
         const existing = await db.query.users.findFirst({ where: and(...emailConds) });
@@ -279,7 +317,6 @@ staffRoutes.post('/', authenticate, withTenantTx(), branchFilter(), authorize('s
         const hashedPassword = await argon2.hash(password);
 
         const sanitizedBranchId = branchId && branchId.trim() !== '' ? branchId : req.authUser?.activeBranchId || (req.user as any)?.branchId || undefined;
-        const sanitizedRoleId = roleId && roleId.trim() !== '' ? roleId : undefined;
         // Validate branchId is within user's accessible scope
         const staffFilter = req.branchFilter;
         if (staffFilter && sanitizedBranchId && !req.authUser?.isSuperAdmin && (req.authUser?.roleLevel ?? 7) > 2) {
@@ -287,22 +324,44 @@ staffRoutes.post('/', authenticate, withTenantTx(), branchFilter(), authorize('s
                 return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot create staff in a branch outside your scope' } });
             }
         }
-        // Resolve the store to scope this staff member to: explicit storeId >
-        // creator's own active store > branch's default store. Without this
-        // fallback, an owner with no activeStoreId (no userStores row of their
-        // own) would create staff with no userStores mapping at all, making
-        // the new staff member invisible in list/detail views that scope by
-        // userStores membership — even to the owner who just created them.
-        let sanitizedStoreId = storeId && String(storeId).trim() !== '' ? String(storeId) : (authUser?.activeStoreId || undefined);
-        if (!sanitizedStoreId && sanitizedBranchId) {
-            const branchStore = await db.query.stores.findFirst({
-                where: and(eq(stores.branchId, sanitizedBranchId), eq(stores.isDefault, true)),
-                columns: { id: true },
-            }) ?? await db.query.stores.findFirst({
-                where: eq(stores.branchId, sanitizedBranchId),
-                columns: { id: true },
-            });
-            if (branchStore) sanitizedStoreId = branchStore.id;
+
+        // Store scope: 'branch' means branch-wide access (no userStores rows —
+        // matches how a level 3-4 HQ user with zero userStores rows already
+        // gets branch-wide visibility, just made an explicit choice instead of
+        // an accident of whether anyone called the store-assignment endpoints).
+        // 'stores' (default when storeIds/storeId given) assigns one or more
+        // specific stores. Falls back to the previous single-store resolution
+        // chain when neither storeIds nor storeScope is given, for compatibility.
+        //
+        // A branch belongs to exactly one store now (branches.storeId, NOT
+        // NULL) — so the "which store does this branch belong to" lookup is a
+        // direct FK read, not a reverse search across candidate stores.
+        const explicitStoreIds: string[] = Array.isArray(storeIds) && storeIds.length > 0
+            ? storeIds.map(String)
+            : (storeId && String(storeId).trim() !== '' ? [String(storeId)] : []);
+
+        let resolvedStoreIds = explicitStoreIds;
+        if (storeScope !== 'branch' && resolvedStoreIds.length === 0) {
+            // Legacy single-store fallback: creator's own active store > the target branch's owning store.
+            let fallbackStoreId = authUser?.activeStoreId || undefined;
+            if (!fallbackStoreId && sanitizedBranchId) {
+                const owningBranch = await db.query.branches.findFirst({
+                    where: eq(branches.id, sanitizedBranchId),
+                    columns: { storeId: true },
+                });
+                if (owningBranch) fallbackStoreId = owningBranch.storeId;
+            }
+            if (fallbackStoreId) resolvedStoreIds = [fallbackStoreId];
+        }
+
+        // Validate every explicitly-requested store belongs to this tenant.
+        if (resolvedStoreIds.length > 0) {
+            const validConds: any[] = [inArray(stores.id, resolvedStoreIds)];
+            if (tenantId) validConds.push(eq(stores.tenantId, tenantId));
+            const validStores = await db.query.stores.findMany({ where: and(...validConds), columns: { id: true } });
+            if (validStores.length !== resolvedStoreIds.length) {
+                return res.status(400).json({ success: false, error: { code: 'VALIDATION_001', message: 'One or more storeIds do not belong to your tenant' } });
+            }
         }
 
         const [staff] = await db.insert(users).values({
@@ -311,9 +370,9 @@ staffRoutes.post('/', authenticate, withTenantTx(), branchFilter(), authorize('s
             password: hashedPassword,
             name,
             phone: phone || null,
-            role: role || 'staff',
+            role: resolvedRole?.name || 'staff',
             branchId: sanitizedBranchId,
-            roleId: sanitizedRoleId,
+            roleId: resolvedRole?.id,
             isActive: isActive !== undefined ? isActive : true,
             permissions: Array.isArray(permissions) ? permissions : [],
         }).returning({
@@ -336,24 +395,29 @@ staffRoutes.post('/', authenticate, withTenantTx(), branchFilter(), authorize('s
             updatedAt: users.updatedAt,
         });
 
-        // Auto-create UserStore record so staff is scoped to the store
-        if (sanitizedStoreId && sanitizedBranchId) {
-            const existingUs = await db.query.userStores.findFirst({
-                where: and(eq(userStores.userId, staff.id), eq(userStores.storeId, sanitizedStoreId)),
-            });
-            if (!existingUs) {
-                await db.insert(userStores).values({
-                    tenantId,
-                    userId: staff.id,
-                    storeId: sanitizedStoreId,
-                    branchId: sanitizedBranchId,
-                    canRead: true,
-                    canWrite: true,
-                    canDelete: false,
-                    canManage: false,
-                    isDefault: true,
+        if (resolvedStoreIds.length > 0) {
+            // Narrow to the target branch only for the store that branch
+            // actually belongs to — a branch belongs to exactly one store, so
+            // that grant is "just this branch"; any other store in
+            // resolvedStoreIds is a separate whole-store grant.
+            let owningStoreId: string | undefined;
+            if (sanitizedBranchId) {
+                const owningBranch = await db.query.branches.findFirst({
+                    where: eq(branches.id, sanitizedBranchId),
+                    columns: { storeId: true },
                 });
+                owningStoreId = owningBranch?.storeId;
             }
+            await assignUserToStores(db, {
+                userId: staff.id,
+                tenantId: tenantId || null,
+                assignments: resolvedStoreIds.map(sId => ({
+                    storeId: sId,
+                    branchId: sId === owningStoreId ? sanitizedBranchId : null,
+                })),
+                defaultStoreId: defaultStoreId || resolvedStoreIds[0],
+                assignedBy: req.user?.userId,
+            });
         }
 
         res.status(201).json({ success: true, data: staff });
@@ -387,23 +451,28 @@ staffRoutes.put('/:id', authenticate, withTenantTx(), authorize('staff:update'),
         if (updateData.branchId === '' || updateData.branchId === null) delete updateData.branchId;
         if (updateData.storeId === '' || updateData.storeId === null) delete updateData.storeId;
 
-        if (updateData.roleId !== undefined) {
-            if (updateData.roleId) {
-                const roleConds: any[] = [eq(roles.id, updateData.roleId)];
-                if (target.tenantId && !req.authUser?.isSuperAdmin) roleConds.push(or(eq(roles.tenantId, target.tenantId), isNull(roles.tenantId)));
-                const roleRow = await db.query.roles.findFirst({ where: and(...roleConds), columns: { id: true, name: true } });
-                if (!roleRow) {
-                    return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Role not found or no access' } });
-                }
-                if (!req.authUser?.isSuperAdmin && getRoleLevel(roleRow.name, false) <= (req.authUser?.roleLevel ?? 7)) {
-                    return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot assign equal or higher role' } });
-                }
-                updateData.role = roleRow.name;
+        if (updateData.roleId !== undefined || updateData.role) {
+            // Resolve to an actual, visible-to-this-caller `roles` row —
+            // never accept a bare role-name string on its own (see
+            // resolveAssignableRole for why: that used to let permissions
+            // materialize from a name with no corresponding role ever
+            // created for the tenant).
+            const resolved = await resolveAssignableRole(db, {
+                roleId: updateData.roleId || undefined,
+                roleName: updateData.role || undefined,
+                callerTenantId: target.tenantId,
+                callerBranchId: req.authUser?.activeBranchId,
+                callerRoleLevel: req.authUser?.roleLevel ?? 7,
+                callerIsSuperAdmin: req.authUser?.isSuperAdmin ?? false,
+            });
+            if (!resolved) {
+                return res.status(400).json({ success: false, error: { code: 'ROLE_NOT_FOUND', message: 'No such role is available to assign' } });
             }
-        } else if (updateData.role) {
-            if (!req.authUser?.isSuperAdmin && getRoleLevel(updateData.role, false) <= (req.authUser?.roleLevel ?? 7)) {
+            if (!req.authUser?.isSuperAdmin && resolved.roleLevel <= (req.authUser?.roleLevel ?? 7)) {
                 return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot assign equal or higher role' } });
             }
+            updateData.role = resolved.name;
+            updateData.roleId = resolved.id;
         }
 
         if (updateData.branchId) {

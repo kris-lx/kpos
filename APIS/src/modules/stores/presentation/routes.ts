@@ -3,18 +3,19 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, branchFilter, requireStoreAccess, applyScopeFilter, invalidateUserStoreCache, invalidateAllUserStoreCache, getRoleLevel, type ScopeFilter, buildScopeCondition } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, branchFilter, requireStoreAccess, invalidateUserStoreCache, invalidateAllUserStoreCache, getRoleLevel, canAccessStore, type ScopeFilter, buildStoreIdScope } from '@/infrastructure/http/middleware/auth.middleware';
 import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
 import { db as globalDb } from '@/config/database.config';
 import { stores, branches, users, userStores, storeRequests } from '@/db/schema/tables';
 import { eq, and, or, ilike, inArray, desc, asc, count } from 'drizzle-orm';
+import { assignUserToStores } from '@/shared/store-assignment';
 
 export const storeRoutes = Router();
 
 type StoreScopeRecord = {
     id: string;
     tenantId?: string | null;
-    branchId?: string | null;
+    storePath?: string | null;
 };
 
 type UserScopeRecord = {
@@ -24,6 +25,11 @@ type UserScopeRecord = {
     isSuperAdmin?: boolean | null;
 };
 
+// Stores are now the top-level, tenant-rooted tier (Tenant → Store → Branch) —
+// a store no longer has a branchId to check against accessibleBranchIds.
+// Access is: superadmin, tenant-level (roleLevel<=2), direct membership in
+// accessibleStoreIds, or (level-3 store-tree HQ) the store falls under one of
+// the caller's store-path subtrees.
 function canAccessStoreRecord(req: any, store: StoreScopeRecord): boolean {
     const authUser = req.authUser;
     if (!authUser) return false;
@@ -31,7 +37,7 @@ function canAccessStoreRecord(req: any, store: StoreScopeRecord): boolean {
     if (store.tenantId && store.tenantId !== authUser.tenantId) return false;
     if ((authUser.roleLevel ?? 7) <= 2) return true;
     if (store.id && authUser.accessibleStoreIds?.includes(store.id)) return true;
-    if (store.branchId && authUser.accessibleBranchIds?.includes(store.branchId)) return true;
+    if (store.storePath && canAccessStore(authUser, store.storePath)) return true;
     return false;
 }
 
@@ -45,34 +51,29 @@ function canManageTargetUser(req: any, target: UserScopeRecord): boolean {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// GET ALL STORES (filtered by accessible branches)
+// GET ALL STORES (filtered by accessible store subtree)
 // ═══════════════════════════════════════════════════════════════════════════
 storeRoutes.get('/', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
-        const { branchId, search, page = 1, limit = 50 } = req.query;
+        const { search, page = 1, limit = 50 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
         const filter = req.branchFilter;
-        
+
         const conditions: any[] = [eq(stores.isActive, true)];
-        
+
         // BE-75: Tenant isolation
         const tenantId = req.authUser?.tenantId;
         if (tenantId && !req.authUser?.isSuperAdmin) {
             conditions.push(eq(stores.tenantId, tenantId));
         }
 
-        // Apply scope
-        const scopeCond = buildScopeCondition(filter, { id: stores.id, branchId: stores.branchId }, 'store');
+        // Apply scope — stores are the top-level tier now, so scoping is by
+        // store subtree (exact ids, or a level-3 store-tree path prefix), not
+        // by branch at all.
+        const scopeCond = buildStoreIdScope(filter, stores.id);
         if (scopeCond) conditions.push(scopeCond);
-        
-        if (branchId) {
-            if (filter && !filter.branchIds.includes(String(branchId))) {
-                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
-            }
-            conditions.push(eq(stores.branchId, String(branchId)));
-        }
-        
+
         if (search) {
             const s = String(search);
             conditions.push(or(ilike(stores.name, `%${s}%`), ilike(stores.code, `%${s}%`)));
@@ -85,7 +86,7 @@ storeRoutes.get('/', authenticate, withTenantTx(), branchFilter(), async (req, r
                 where: whereClause,
                 offset: skip,
                 limit: Number(limit),
-                with: { branch: true },
+                with: { branches: true },
                 orderBy: [desc(stores.isDefault), asc(stores.name)],
             }),
             db.select({ value: count() }).from(stores).where(whereClause),
@@ -392,7 +393,7 @@ storeRoutes.get('/:id', authenticate, withTenantTx(), branchFilter(), async (req
 
         const store = await db.query.stores.findFirst({
             where: and(...getConds),
-            with: { branch: true, userAccess: { with: { user: true } } },
+            with: { branches: true, userAccess: { with: { user: true } } },
         });
 
         if (!store) {
@@ -402,17 +403,11 @@ storeRoutes.get('/:id', authenticate, withTenantTx(), branchFilter(), async (req
             });
         }
 
-        // Check store-level or branch-level access
-        if (filter) {
-            const hasAccess = filter.scopeByStore
-                ? filter.storeIds.includes(store.id)
-                : filter.branchIds.includes(store.branchId);
-            if (!hasAccess) {
-                return res.status(403).json({
-                    success: false,
-                    error: { code: 'FORBIDDEN', message: 'No access to this store' }
-                });
-            }
+        if (!canAccessStoreRecord(req, store)) {
+            return res.status(403).json({
+                success: false,
+                error: { code: 'FORBIDDEN', message: 'No access to this store' }
+            });
         }
 
         res.json({ success: true, data: store });
@@ -427,34 +422,56 @@ storeRoutes.get('/:id', authenticate, withTenantTx(), branchFilter(), async (req
 storeRoutes.post('/', authenticate, withTenantTx(), authorize('stores:create', 'branches:create'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
-        const { name, code, branchId, address, phone, email, description, logo, isDefault, settings } = req.body;
+        const { name, code, parentStoreId, address, phone, email, description, logo, isDefault, settings } = req.body;
 
-        // Validate required fields
-        if (!name || !code || !branchId) {
+        // Validate required fields — stores are the top-level tier now, no
+        // branchId to nest under. parentStoreId is optional (store subtree,
+        // e.g. a chain/brand with its own sub-concepts).
+        if (!name || !code) {
             return res.status(400).json({
                 success: false,
-                error: { code: 'VALIDATION_ERROR', message: 'Name, code, and branchId are required' }
+                error: { code: 'VALIDATION_ERROR', message: 'Name and code are required' }
+            });
+        }
+        // `code` feeds storePath (materialized path, '.'-joined) — same
+        // constraint branches.code already enforces for branchPath.
+        if (!/^[\w -]+$/.test(code)) {
+            return res.status(400).json({
+                success: false,
+                error: { code: 'VALIDATION_ERROR', message: "Store code may only contain letters, numbers, spaces, underscores and hyphens (no '.')" }
             });
         }
 
-        const existing = await db.query.stores.findFirst({ where: eq(stores.code, code) });
+        const tenantId = (req.authUser?.tenantId || req.user?.tenantId) || null;
+        const dupConds: any[] = [eq(stores.code, code)];
+        if (tenantId) dupConds.push(eq(stores.tenantId, tenantId));
+        const existing = await db.query.stores.findFirst({ where: and(...dupConds) });
         if (existing) {
             return res.status(400).json({ success: false, error: { code: 'DUPLICATE', message: 'Store code already exists' } });
         }
 
-        const branch = await db.query.branches.findFirst({ where: eq(branches.id, branchId) });
-        if (!branch) {
-            return res.status(400).json({ success: false, error: { code: 'INVALID_BRANCH', message: 'Branch not found' } });
+        // Compute storePath: parent.path + '.' + code, or just code for a root store.
+        let storePath = code;
+        if (parentStoreId) {
+            const parentConds: any[] = [eq(stores.id, parentStoreId)];
+            if (tenantId) parentConds.push(eq(stores.tenantId, tenantId));
+            const parent = await db.query.stores.findFirst({ where: and(...parentConds), columns: { storePath: true } });
+            if (!parent) {
+                return res.status(400).json({ success: false, error: { code: 'INVALID_PARENT', message: 'Parent store not found' } });
+            }
+            if (parent.storePath) storePath = parent.storePath + '.' + code;
         }
 
         if (isDefault) {
-            await db.update(stores).set({ isDefault: false, updatedAt: new Date() }).where(and(eq(stores.branchId, branchId), eq(stores.isDefault, true)));
+            await db.update(stores).set({ isDefault: false, updatedAt: new Date() })
+                .where(and(eq(stores.isDefault, true), ...(tenantId ? [eq(stores.tenantId, tenantId)] : [])));
         }
 
-        const tenantId = (req.authUser?.tenantId || req.user?.tenantId) || null;
         const [store] = await db.insert(stores).values({
             tenantId,
-            name, code, branchId, address, phone, email, description, logo,
+            parentStoreId: parentStoreId || null,
+            storePath,
+            name, code, address, phone, email, description, logo,
             isDefault: isDefault || false,
             settings,
         }).returning();
@@ -465,7 +482,8 @@ storeRoutes.post('/', authenticate, withTenantTx(), authorize('stores:create', '
             if (existingUs) {
                 await db.update(userStores).set({ canRead: true, canWrite: true, canDelete: true, canManage: true, isDefault: isDefault || false }).where(eq(userStores.id, existingUs.id));
             } else {
-                await db.insert(userStores).values({ tenantId, userId: creatorId, storeId: store.id, branchId, canRead: true, canWrite: true, canDelete: true, canManage: true, isDefault: isDefault || false });
+                // branchId left null — a whole-store grant (see UserStoreAccess doc comment).
+                await db.insert(userStores).values({ tenantId, userId: creatorId, storeId: store.id, branchId: null, canRead: true, canWrite: true, canDelete: true, canManage: true, isDefault: isDefault || false });
             }
             await invalidateUserStoreCache(creatorId);
         }
@@ -502,7 +520,10 @@ storeRoutes.put('/:id', authenticate, withTenantTx(), authorize('stores:update',
         }
 
         if (isDefault && !existing.isDefault) {
-            await db.update(stores).set({ isDefault: false, updatedAt: new Date() }).where(and(eq(stores.branchId, existing.branchId), eq(stores.isDefault, true)));
+            // isDefault now means "the tenant's root/default store" (mirrors
+            // branches.isMain) — scope the reset by tenant, not by branch.
+            await db.update(stores).set({ isDefault: false, updatedAt: new Date() })
+                .where(and(eq(stores.isDefault, true), ...(existing.tenantId ? [eq(stores.tenantId, existing.tenantId)] : [])));
         }
 
         const updateData: any = { updatedAt: new Date() };
@@ -531,51 +552,58 @@ storeRoutes.put('/:id', authenticate, withTenantTx(), authorize('stores:update',
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// TRANSFER STORE TO ANOTHER BRANCH
+// REPARENT STORE (move within the store tree — stores no longer belong to a
+// branch, so "transfer to another branch" became "move to another parent
+// store" — the closest equivalent operation left on this entity).
 // ═══════════════════════════════════════════════════════════════════════════
 storeRoutes.put('/:id/transfer', authenticate, withTenantTx(), authorize('stores:update', 'branches:update'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const { id } = req.params;
-        const { toBranchId } = req.body;
-
-        if (!toBranchId) {
-            return res.status(400).json({
-                success: false,
-                error: { code: 'VALIDATION', message: 'toBranchId is required' }
-            });
-        }
+        const { toParentStoreId } = req.body;
 
         // BE-75: Tenant-scoped store transfer
         const tenantId = req.authUser?.tenantId;
         const trConds: any[] = [eq(stores.id, id)];
         if (tenantId && !req.authUser?.isSuperAdmin) trConds.push(eq(stores.tenantId, tenantId));
-        const store = await db.query.stores.findFirst({ where: and(...trConds), with: { branch: true } });
+        const store = await db.query.stores.findFirst({ where: and(...trConds) });
         if (!store) {
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Store not found or no access' } });
         }
 
-        if (store.branchId === toBranchId) {
-            return res.status(400).json({ success: false, error: { code: 'SAME_BRANCH', message: 'ຮ້ານຢູ່ສາຂານີ້ຢູ່ແລ້ວ' } });
+        if (store.parentStoreId === (toParentStoreId || null)) {
+            return res.status(400).json({ success: false, error: { code: 'SAME_PARENT', message: 'ຮ້ານຢູ່ພາຍໃຕ້ນີ້ຢູ່ແລ້ວ' } });
         }
 
-        // Verify target branch belongs to same tenant
-        const brConds: any[] = [eq(branches.id, toBranchId)];
-        if (tenantId && !req.authUser?.isSuperAdmin) brConds.push(eq(branches.tenantId, tenantId));
-        const targetBranch = await db.query.branches.findFirst({ where: and(...brConds) });
-        if (!targetBranch) {
-            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Target branch not found' } });
+        let newStorePath = store.code;
+        let targetParentName = '(root)';
+        if (toParentStoreId) {
+            if (toParentStoreId === id) {
+                return res.status(400).json({ success: false, error: { code: 'INVALID_PARENT', message: 'A store cannot be its own parent' } });
+            }
+            const parConds: any[] = [eq(stores.id, toParentStoreId)];
+            if (tenantId && !req.authUser?.isSuperAdmin) parConds.push(eq(stores.tenantId, tenantId));
+            const targetParent = await db.query.stores.findFirst({ where: and(...parConds) });
+            if (!targetParent) {
+                return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Target parent store not found' } });
+            }
+            // Prevent creating a cycle: target can't be a descendant of the store being moved.
+            if (targetParent.storePath === store.storePath || targetParent.storePath.startsWith(store.storePath + '.')) {
+                return res.status(400).json({ success: false, error: { code: 'INVALID_PARENT', message: 'Cannot move a store under its own descendant' } });
+            }
+            newStorePath = (targetParent.storePath ? targetParent.storePath + '.' : '') + store.code;
+            targetParentName = targetParent.name;
         }
 
-        const [[updatedStore]] = await Promise.all([
-            db.update(stores).set({ branchId: toBranchId, updatedAt: new Date() }).where(eq(stores.id, id)).returning(),
-            db.update(userStores).set({ branchId: toBranchId }).where(eq(userStores.storeId, id)),
-        ]);
+        const [updatedStore] = await db.update(stores)
+            .set({ parentStoreId: toParentStoreId || null, storePath: newStorePath, updatedAt: new Date() })
+            .where(eq(stores.id, id))
+            .returning();
 
         res.json({
             success: true,
             data: updatedStore,
-            message: `ໂອນຮ້ານ ${store.name} ຈາກ ${store.branch.name} ໄປ ${targetBranch.name} ສຳເລັດ`
+            message: `ຍ້າຍຮ້ານ ${store.name} ໄປພາຍໃຕ້ ${targetParentName} ສຳເລັດ`
         });
     } catch (error) {
         next(error);
@@ -653,7 +681,7 @@ storeRoutes.post('/:id/users', authenticate, withTenantTx(), authorize('staff:up
 
         const [assignment] = await db.insert(userStores).values({
             tenantId: store.tenantId,
-            userId, storeId, branchId: store.branchId,
+            userId, storeId, branchId: null, // whole-store grant (every branch under this store)
             canRead, canWrite, canDelete, canManage, isDefault,
             assignedBy: req.user?.userId,
         }).returning();
@@ -766,7 +794,7 @@ storeRoutes.post('/users/:userId/bulk-assign', authenticate, withTenantTx(), aut
     try {
         const db = req.tx ?? globalDb;
         const { userId } = req.params;
-        const { storeIds, permissions = {} } = req.body;
+        const { storeIds, permissions = {}, defaultStoreId } = req.body;
 
         if (!Array.isArray(storeIds) || storeIds.length === 0) {
             return res.status(400).json({
@@ -792,39 +820,25 @@ storeRoutes.post('/users/:userId/bulk-assign', authenticate, withTenantTx(), aut
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'One or more stores are outside your tenant or scope' } });
         }
 
-        const results: any[] = [];
-        for (const store of storeList) {
-            const assignmentTenantId = store.tenantId || user.tenantId || tenantId;
-            if (!assignmentTenantId) {
-                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Tenant context required for store assignment' } });
-            }
-
-            const existing = await db.query.userStores.findFirst({
-                where: and(eq(userStores.userId, userId), eq(userStores.storeId, store.id), eq(userStores.tenantId, assignmentTenantId)),
-            });
-
-            if (existing) {
-                const [updated] = await db.update(userStores).set({
-                    tenantId: assignmentTenantId,
-                    canRead: permissions.canRead ?? true,
-                    canWrite: permissions.canWrite ?? true,
-                    canDelete: permissions.canDelete ?? false,
-                    canManage: permissions.canManage ?? false,
-                }).where(eq(userStores.id, existing.id)).returning();
-                results.push(updated);
-            } else {
-                const [created] = await db.insert(userStores).values({
-                    tenantId: assignmentTenantId,
-                    userId, storeId: store.id, branchId: store.branchId,
-                    canRead: permissions.canRead ?? true,
-                    canWrite: permissions.canWrite ?? true,
-                    canDelete: permissions.canDelete ?? false,
-                    canManage: permissions.canManage ?? false,
-                    assignedBy: req.user?.userId,
-                }).returning();
-                results.push(created);
-            }
-        }
+        // assignUserToStores also enforces exactly one isDefault=true row for
+        // this user across ALL their store assignments (not just this batch) —
+        // this loop previously wrote rows directly and never touched isDefault
+        // at all, so a user could end up with 0 or 2+ default stores depending
+        // on whether they were also assigned via the single-store endpoint.
+        const results = await assignUserToStores(db, {
+            userId,
+            tenantId: user.tenantId || tenantId || null,
+            assignments: storeList.map(store => ({
+                storeId: store.id,
+                branchId: null, // whole-store grant
+                canRead: permissions.canRead ?? true,
+                canWrite: permissions.canWrite ?? true,
+                canDelete: permissions.canDelete ?? false,
+                canManage: permissions.canManage ?? false,
+            })),
+            defaultStoreId,
+            assignedBy: req.user?.userId,
+        });
 
         await invalidateUserStoreCache(userId);
         res.json({

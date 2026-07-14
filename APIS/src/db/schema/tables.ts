@@ -38,6 +38,11 @@ export const tenants = pgTable('tenants', {
 export const branches = pgTable('branches', {
     id: uuid('id').primaryKey().defaultRandom(),
     tenantId: uuid('tenant_id'),
+    // A branch is a physical outlet location and belongs to exactly one
+    // store (the shop/company entity) — Tenant → Store → Branch. Denormalized
+    // alongside tenantId, matching the userStores pattern, so branch-scoped
+    // queries don't need a join to resolve tenant isolation.
+    storeId: uuid('store_id').notNull(),
     parentBranchId: uuid('parent_branch_id'),
     branchPath: text('branch_path').notNull().default(''),
     name: text('name').notNull(),
@@ -61,6 +66,7 @@ export const branches = pgTable('branches', {
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (t) => [
     index('branches_tenant_idx').on(t.tenantId),
+    index('branches_store_idx').on(t.storeId),
     index('branches_parent_idx').on(t.parentBranchId),
     index('branches_path_idx').on(t.branchPath),
     uniqueIndex('branches_tenant_code_idx').on(t.tenantId, t.code),
@@ -80,6 +86,10 @@ export const users = pgTable('users', {
     avatar: text('avatar'),
     role: text('role').notNull().default('staff'),
     roleId: uuid('role_id'),
+    // Single-value anchors, used as a fallback when a user has no explicit
+    // userStores grant rows (mirrors each other: storeId for the broad
+    // store-owner tier, branchId for a specific branch-level assignment).
+    storeId: uuid('store_id'),
     branchId: uuid('branch_id'),
     permissions: text('permissions').array().notNull().default([]),
     isActive: boolean('is_active').notNull().default(true),
@@ -219,9 +229,14 @@ export const menuPermissions = pgTable('menu_permissions', {
 export const stores = pgTable('stores', {
     id: uuid('id').primaryKey().defaultRandom(),
     tenantId: uuid('tenant_id'),
+    // Stores are the top-level, tenant-rooted entity — Tenant → Store →
+    // Branch. A store can itself have a sub-tree of stores (parentStoreId +
+    // storePath materialized path, mirroring branches' own parentBranchId/
+    // branchPath), independent of the branch tree nested inside each store.
+    parentStoreId: uuid('parent_store_id'),
+    storePath: text('store_path').notNull().default(''),
     name: text('name').notNull(),
     code: text('code').notNull(),
-    branchId: uuid('branch_id').notNull(),
     address: text('address'),
     phone: text('phone'),
     email: text('email'),
@@ -231,11 +246,16 @@ export const stores = pgTable('stores', {
     merchantId: text('merchant_id'),
     paymentGateway: text('payment_gateway'),
     isActive: boolean('is_active').notNull().default(true),
+    // Repurposed: previously "the default store within a branch"; now "the
+    // tenant's root/default store", analogous to branches.isMain.
     isDefault: boolean('is_default').notNull().default(false),
     settings: jsonb('settings'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (t) => [
+    index('stores_tenant_idx').on(t.tenantId),
+    index('stores_parent_idx').on(t.parentStoreId),
+    index('stores_path_idx').on(t.storePath),
     uniqueIndex('stores_tenant_code_idx').on(t.tenantId, t.code),
 ]);
 
@@ -243,8 +263,13 @@ export const userStores = pgTable('user_stores', {
     id: uuid('id').primaryKey().defaultRandom(),
     tenantId: uuid('tenant_id'),
     userId: uuid('user_id').notNull(),
+    // Grants access to a whole store (all its branches). branchId narrows
+    // that grant to just ONE specific branch within the store when set —
+    // previously notNull (store was the narrow/leaf unit); now optional,
+    // since store is the broad tier and a grant may or may not be narrowed
+    // further down to a single branch.
     storeId: uuid('store_id').notNull(),
-    branchId: uuid('branch_id').notNull(),
+    branchId: uuid('branch_id'),
     isDefault: boolean('is_default').notNull().default(false),
     canRead: boolean('can_read').notNull().default(true),
     canWrite: boolean('can_write').notNull().default(true),

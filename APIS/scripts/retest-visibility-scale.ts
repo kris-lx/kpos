@@ -13,8 +13,11 @@ import { randomUUID } from 'crypto';
 const SQL_URL = process.env.DATABASE_MIGRATE_URL || 'postgresql://kpos:olxguCDmxmoReDcxcR2xLTZ30leimP1Y@localhost:5432/kpos_db';
 const BASE = 'http://localhost:5000/api/v1';
 
+// Hierarchy is Tenant → Store → Branch (store = brand/business-unit tier,
+// branch = physical outlet under it). BRANCH_COUNT branches each get their
+// own store (a chain of BRANCH_COUNT single-outlet "brands") so the
+// cross-branch isolation checks below still exercise distinct top-level scopes.
 const BRANCH_COUNT = 3;
-const STORES_PER_BRANCH = 2;
 const PRODUCTS_PER_BRANCH = 20;
 const STAFF_PER_BRANCH = 30; // => 90 staff total, plus the owner
 
@@ -59,22 +62,18 @@ async function main() {
     const ownerPassword = 'TestPass123!';
     const hashed = await argon2.hash(ownerPassword);
 
-    console.log(`--- Seeding tenant + ${BRANCH_COUNT} branches x ${STORES_PER_BRANCH} stores ---`);
+    console.log(`--- Seeding tenant + ${BRANCH_COUNT} stores, each with 1 branch ---`);
     await sql`insert into tenants (id, name, code, plan, is_active, status) values (${tenantId}, 'Retest Scale Tenant', ${'RETESTSCALE-' + stamp}, 'free', true, 'active')`;
 
     const branches: { id: string; name: string }[] = [];
-    const stores: { id: string; branchId: string; isDefault: boolean }[] = [];
     for (let b = 0; b < BRANCH_COUNT; b++) {
+        const storeId = randomUUID();
         const branchId = randomUUID();
         branches.push({ id: branchId, name: `Branch-${b}` });
-        await sql`insert into branches (id, tenant_id, name, code, branch_path, is_active, is_main)
-                   values (${branchId}, ${tenantId}, ${'Branch ' + b}, ${'BR' + b + '-' + stamp}, ${'BR' + b + '-' + stamp}, true, ${b === 0})`;
-        for (let s = 0; s < STORES_PER_BRANCH; s++) {
-            const storeId = randomUUID();
-            stores.push({ id: storeId, branchId, isDefault: s === 0 });
-            await sql`insert into stores (id, tenant_id, name, code, branch_id, is_active, is_default)
-                       values (${storeId}, ${tenantId}, ${'Store ' + b + '-' + s}, ${'S' + b + s + '-' + stamp}, ${branchId}, true, ${s === 0})`;
-        }
+        await sql`insert into stores (id, tenant_id, name, code, store_path, is_active, is_default)
+                   values (${storeId}, ${tenantId}, ${'Store ' + b}, ${'ST' + b + '-' + stamp}, ${'ST' + b + '-' + stamp}, true, ${b === 0})`;
+        await sql`insert into branches (id, tenant_id, store_id, name, code, branch_path, is_active, is_main)
+                   values (${branchId}, ${tenantId}, ${storeId}, ${'Branch ' + b}, ${'BR' + b + '-' + stamp}, ${'BR' + b + '-' + stamp}, true, ${b === 0})`;
     }
 
     // Owner: tenant-level, no branch/store assignment — same precondition as the smoke test.
@@ -87,6 +86,13 @@ async function main() {
                      'categories:create','categories:update','categories:delete','categories:read',
                      'staff:create','staff:read','staff:update'], true)`;
     await sql`update users set role_id = ${roleId} where id = ${ownerId}`;
+
+    // A 'staff' role must actually exist for this tenant now — permissions no
+    // longer materialize from a bare role-name string (loadCachedAuthUser /
+    // resolveAssignableRole in auth.middleware.ts). Staff created below pass
+    // role: 'staff', resolved against this row.
+    await sql`insert into roles (id, tenant_id, name, display_name, permissions, is_system)
+               values (${randomUUID()}, ${tenantId}, 'staff', 'Staff', ARRAY['pos:access','sales:create'], true)`;
 
     console.log('--- Logging in as owner ---');
     const login = await call('POST', '/auth/login', undefined, { email: ownerEmail, password: ownerPassword });

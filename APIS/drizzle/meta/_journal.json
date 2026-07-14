@@ -169,6 +169,27 @@
       "when": 1783776180000,
       "tag": "0023_settlements_one_per_branch_day",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1783965626242,
+      "tag": "0024_store_branch_hierarchy_step1",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1783965726823,
+      "tag": "0025_store_branch_hierarchy_step2",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1783965786823,
+      "tag": "0026_store_path_scope_rls",
+      "breakpoints": true
     }
   ]
 }

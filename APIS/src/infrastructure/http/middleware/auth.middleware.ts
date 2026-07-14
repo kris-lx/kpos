@@ -10,8 +10,7 @@ import { ApiError } from './error.middleware';
 import { db } from '@/config/database.config';
 import { cache } from '@/config/redis.config';
 import { eq, inArray, and, or, like, isNull, sql, type SQL } from 'drizzle-orm';
-import { users, userStores, tenants, roles, branches } from '@/db/schema/tables';
-import { SYSTEM_ROLE_PERMISSIONS } from '@/shared/systemRolePermissions';
+import { users, userStores, tenants, roles, branches, stores } from '@/db/schema/tables';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import { hasPerm, permissionsToMask, maskToStrings, stringsToMask, legacyPermTobit, type PermBit } from '@/infrastructure/permissions';
 import { getUserMask, invalidateUserPermissions } from '@/infrastructure/services/permission.service';
@@ -27,13 +26,18 @@ export interface JwtPayload {
 }
 
 /**
- * 6-level role hierarchy used for branch visibility scoping and role-assignment enforcement.
- * Lower number = broader access. A caller can only assign roles with a HIGHER level number.
- *   1 = platform layer   → all tenants / all branches
- *   2 = merchant_owner   → all branches within tenant (full control)
- *   3 = merchant_manager / accountant → cross-branch read + limited write
- *   4 = supervisor       → own branch only (full CRUD)
- *   5 = senior_cashier / cashier → POS only
+ * 6-level role hierarchy used for branch/store visibility scoping and
+ * role-assignment enforcement. Lower number = broader access. A caller can
+ * only assign roles with a HIGHER level number.
+ * Hierarchy is Tenant → Store → Branch (a store has many branches):
+ *   1 = platform layer   → all tenants / all stores / all branches
+ *   2 = merchant_owner   → all stores + branches within tenant (full control)
+ *   3 = merchant_manager / accountant → a store subtree (that store + any
+ *       child stores via storePath) — sees every branch under those stores
+ *   4 = supervisor       → a branch subtree WITHIN one store (own branch +
+ *       any child branches via branchPath) — mechanism unchanged from
+ *       before the store/branch reversal, now implicitly scoped to one store
+ *   5 = senior_cashier / cashier → POS only, exact branch/store grants
  *   6 = inventory_staff / kitchen_staff / waiter → specialist roles
  */
 export const ROLE_LEVELS: Record<string, number> = {
@@ -74,17 +78,39 @@ export function getRoleLevel(role: string, isSuperAdmin: boolean): number {
     return ROLE_LEVELS[role] ?? 7;
 }
 
-/** Returns true if the user can access branches beyond their own (HQ or above). */
+/**
+ * Returns true if the user can access branches beyond their own. Not called
+ * elsewhere in the backend today (the real enforcement is
+ * buildBranchIdScope/ensureScopeAccess, which use exact resolved branchIds
+ * rather than path strings) — kept as a best-effort path-based helper.
+ * Level 3 (store-tree HQ) isn't meaningfully expressible via a single
+ * branch_path prefix (their scope spans however many independent
+ * branch-trees exist across every store in their subtree), so it falls back
+ * to the same prefix check as level 4; callers needing precise level-3
+ * access should check membership in `accessibleBranchIds` instead.
+ */
 export function canAccessBranch(user: AuthenticatedUser, targetBranchPath: string): boolean {
     if (user.isSuperAdmin || user.roleLevel <= 2) return true;
     const paths = user.accessibleBranchPaths || [];
     if (user.roleLevel <= 4) {
-        // HQ admin/manager: own branch + all descendants via materialized path.
+        // Store-tree HQ / branch supervisor: own branch + all descendants via materialized path.
         return paths.some(p => targetBranchPath === p || targetBranchPath.startsWith(p + '.'));
     }
     // Branch-level user: own branch only. branch_path is code-based, so match the
     // exact path (the old `accessibleBranchIds.includes(uuid-in-path)` never matched).
     return paths.some(p => targetBranchPath === p);
+}
+
+/** Returns true if the user can access stores beyond their own (level 3 store-tree HQ or above). */
+export function canAccessStore(user: AuthenticatedUser, targetStorePath: string): boolean {
+    if (user.isSuperAdmin || user.roleLevel <= 2) return true;
+    const paths = user.accessibleStorePaths || [];
+    if (user.roleLevel === 3) {
+        // Store-tree HQ: their store(s) + all descendant stores via materialized path.
+        return paths.some(p => targetStorePath === p || targetStorePath.startsWith(p + '.'));
+    }
+    // Level 4 and below: confined to whichever single store their branch belongs to.
+    return paths.some(p => targetStorePath === p);
 }
 
 /** Identity-only JWT payload (BE-02) */
@@ -108,9 +134,10 @@ interface IdentityJwtPayload {
 // Extended user context with store access
 export interface UserStoreAccess {
     storeId: string;
-    branchId: string;
+    /** Null = whole-store grant (every branch under this store); set = narrowed to one specific branch. */
+    branchId: string | null;
     storeName: string;
-    branchName: string;
+    branchName: string | null;
     storeLogo: string | null;
     canRead: boolean;
     canWrite: boolean;
@@ -124,10 +151,16 @@ export interface AuthenticatedUser extends JwtPayload {
     accessibleStores: UserStoreAccess[];
     accessibleBranchIds: string[];
     accessibleBranchPaths: string[];
+    /** Store-tree materialized paths (stores.storePath) for level-3 store HQ scope. */
+    accessibleStorePaths: string[];
     accessibleStoreIds: string[];
     activeStoreId?: string;
     activeBranchId: string;
     activeBranchPath?: string;
+    /** Materialized path of the active store (mirrors activeBranchPath). */
+    activeStorePath?: string;
+    /** User's home/anchor store (mirrors branchId from JwtPayload). */
+    storeId: string;
     isSuperAdmin: boolean;
     tenantId: string | null;
     /** Numeric role level (1=system_admin … 7=staff). Lower = broader access. */
@@ -221,6 +254,64 @@ async function loadAccessibleBranchPaths(
     return paths;
 }
 
+/** Load store_path for a single store (Redis-cached, DB fallback). Mirrors loadBranchPath. */
+async function loadStorePath(storeId: string): Promise<string | undefined> {
+    const cacheKey = `${CACHE_PREFIX}:storepath:${storeId}`;
+    const cached = await cache.get<string>(cacheKey);
+    if (cached) return cached;
+
+    const row = await db.query.stores.findFirst({
+        where: eq(stores.id, storeId),
+        columns: { storePath: true },
+    });
+    const path = row?.storePath || undefined;
+    if (path) await cache.set(cacheKey, path, CACHE_TTL);
+    return path;
+}
+
+/**
+ * Load distinct store_paths for all stores the user has a broad (whole-store)
+ * grant on. Mirrors loadAccessibleBranchPaths, one tier up.
+ */
+async function loadAccessibleStorePaths(
+    userId: string,
+    storeIds: string[],
+): Promise<string[]> {
+    if (!storeIds.length) return [];
+    const cacheKey = `${CACHE_PREFIX}:storepaths:${userId}`;
+    const cached = await cache.get<string[]>(cacheKey);
+    if (cached) return cached;
+
+    const rows = await db.query.stores.findMany({
+        where: inArray(stores.id, storeIds),
+        columns: { storePath: true },
+    });
+    const paths = [...new Set(rows.map(r => r.storePath).filter(Boolean) as string[])];
+    await cache.set(cacheKey, paths, CACHE_TTL);
+    return paths;
+}
+
+/**
+ * Expand a set of "whole store" grants (userStores rows with branchId=NULL)
+ * into every branch id currently under those stores. Redis-cached per store
+ * set — store membership changes rarely enough that the normal CACHE_TTL
+ * (and explicit invalidation on branch create/move) is sufficient.
+ */
+async function loadBranchIdsForStores(storeIds: string[]): Promise<string[]> {
+    if (!storeIds.length) return [];
+    const cacheKey = `${CACHE_PREFIX}:storebranches:${[...storeIds].sort().join(',')}`;
+    const cached = await cache.get<string[]>(cacheKey);
+    if (cached) return cached;
+
+    const rows = await db.query.branches.findMany({
+        where: and(inArray(branches.storeId, storeIds), eq(branches.isActive, true)),
+        columns: { id: true },
+    });
+    const ids = rows.map(r => r.id);
+    await cache.set(cacheKey, ids, CACHE_TTL);
+    return ids;
+}
+
 // Load user's store access from database (with Redis cache)
 async function loadUserStoreAccess(userId: string, tenantId: string | null): Promise<UserStoreAccess[]> {
     const cacheKey = `${CACHE_PREFIX}:stores:${userId}`;
@@ -245,13 +336,15 @@ async function loadUserStoreAccess(userId: string, tenantId: string | null): Pro
             with: { store: true, branch: true },
         });
 
+    // branchId is nullable now (NULL = whole-store grant); only require the
+    // branch to exist/be active when the grant was actually narrowed to one.
     const result = userStoreRows
-        .filter(us => us.store != null && us.branch != null && us.store.isActive && us.branch.isActive)
+        .filter(us => us.store != null && us.store.isActive && (us.branchId === null || (us.branch != null && us.branch.isActive)))
         .map(us => ({
             storeId: us.storeId,
             branchId: us.branchId,
             storeName: us.store.name,
-            branchName: us.branch.name,
+            branchName: us.branch?.name ?? null,
             storeLogo: us.store.logo ?? null,
             canRead: us.canRead,
             canWrite: us.canWrite,
@@ -269,6 +362,7 @@ interface CachedAuthUser {
     isActive: boolean;
     email: string;
     branchId: string;
+    storeId: string;
     tenantId: string | null;
     isSuperAdmin: boolean;
     permissions: string[];
@@ -291,65 +385,34 @@ async function loadCachedAuthUser(userId: string): Promise<CachedAuthUser | null
 
     if (!user || !user.isActive) return null;
 
-    // roles/role_rules are RLS-protected tenant tables (FORCE ROW LEVEL
-    // SECURITY) — the plain `db` handle used above has no GUC context (this
-    // runs in JWT middleware, before any req.tx reservation). Without scoping
-    // this lookup to the user's own tenant, every tenant-scoped custom role
-    // (the normal case — only super-admin-created roles have tenantId=null)
-    // silently resolves to zero permissions here, regardless of what's
-    // actually assigned in the DB. Same bug class as loadUserStoreAccess
-    // above; that one already got this fix, this one didn't.
+    // roles is an RLS-protected tenant table (FORCE ROW LEVEL SECURITY) — the
+    // plain `db` handle used above has no GUC context (this runs in JWT
+    // middleware, before any req.tx reservation). Without scoping this lookup
+    // to the user's own tenant, every tenant-scoped custom role (the normal
+    // case — only super-admin-created roles have tenantId=null) silently
+    // resolves to zero permissions here. Same bug class as
+    // loadUserStoreAccess above; that one already had this fix.
+    //
+    // Deliberately NOT falling back to a name-based role lookup or the
+    // hardcoded SYSTEM_ROLE_PERMISSIONS map here: permissions come ONLY from
+    // an actual `roles` row via `user.roleId`. Resolving/validating a role by
+    // NAME happens once, at assignment time (staff create/update — see
+    // resolveAssignableRole below), where it can be checked against what the
+    // assigning caller is actually allowed to grant. Doing it again here,
+    // silently, on every request, meant a user could get a full hardcoded
+    // permission set just by having a `role` string that happened to match
+    // one of ~20 built-in names — with no real `roles` row ever created or
+    // reviewed by any admin for that tenant.
     const userPerms = user.permissions || [];
     let rolePerms: string[] = [];
 
-    const loadRolePerms = async (tx: typeof db) => {
-        let perms: string[] = [];
-        if (user.roleId) {
-            const roleRow = await tx.query.roles.findFirst({
-                where: eq(roles.id, user.roleId),
-                columns: { permissions: true },
-            });
-            perms = (roleRow?.permissions as string[]) || [];
-        }
-
-        // Fallback: if no roleId/permissions loaded, find role by name within the tenant
-        if (perms.length === 0 && user.role && !user.isSuperAdmin) {
-            // Primary: tenant-specific role
-            let fallbackRole = await tx.query.roles.findFirst({
-                where: user.tenantId
-                    ? and(eq(roles.name, user.role), eq(roles.tenantId, user.tenantId))
-                    : and(eq(roles.name, user.role), isNull(roles.tenantId)),
-                columns: { permissions: true },
-            });
-            // Secondary: global system role (tenantId = null)
-            if (!fallbackRole?.permissions?.length && user.tenantId) {
-                fallbackRole = await tx.query.roles.findFirst({
-                    where: and(eq(roles.name, user.role), isNull(roles.tenantId)),
-                    columns: { permissions: true },
-                });
-            }
-            if (fallbackRole?.permissions?.length) {
-                perms = fallbackRole.permissions as string[];
-            }
-
-            // Final fallback: use hardcoded system role permissions if DB role has empty permissions.
-            // This self-heals tenants whose roles were seeded before DEFAULT_ROLES was fully populated.
-            if (perms.length === 0 && SYSTEM_ROLE_PERMISSIONS[user.role]) {
-                perms = SYSTEM_ROLE_PERMISSIONS[user.role];
-                // Asynchronously update the DB role + clear auth cache so next request is
-                // correct. Deliberately NOT awaited, and deliberately NOT using `tx` — this
-                // fires after the function returns, and `tx`'s transaction may already have
-                // committed and released its connection by then. Runs in its own tenant
-                // context instead (still fire-and-forget).
-                if (user.roleId) {
-                    const heal = user.tenantId
-                        ? runWithTenantContext(user.tenantId, (t) => t.update(roles).set({ permissions: perms }).where(eq(roles.id, user.roleId!)))
-                        : db.update(roles).set({ permissions: perms }).where(eq(roles.id, user.roleId));
-                    heal.then(() => cache.del(`${CACHE_PREFIX}:auth:${userId}`)).catch(() => {});
-                }
-            }
-        }
-        return perms;
+    const loadRolePerms = async (tx: typeof db): Promise<string[]> => {
+        if (!user.roleId) return [];
+        const roleRow = await tx.query.roles.findFirst({
+            where: eq(roles.id, user.roleId),
+            columns: { permissions: true },
+        });
+        return (roleRow?.permissions as string[]) || [];
     };
 
     rolePerms = user.tenantId && !user.isSuperAdmin
@@ -365,6 +428,7 @@ async function loadCachedAuthUser(userId: string): Promise<CachedAuthUser | null
         isActive: user.isActive,
         email: user.email,
         branchId: user.branchId || '',
+        storeId: user.storeId || '',
         tenantId: user.tenantId || null,
         isSuperAdmin: user.isSuperAdmin,
         permissions: mergedPermissions,
@@ -377,6 +441,89 @@ async function loadCachedAuthUser(userId: string): Promise<CachedAuthUser | null
 
     await cache.set(cacheKey, result, CACHE_TTL);
     return result;
+}
+
+export interface ResolvedRole {
+    id: string;
+    name: string;
+    roleLevel: number;
+}
+
+/**
+ * Resolves a role name/id to an actual, visible-to-the-caller `roles` row at
+ * assignment time (staff create/update) — this is the ONLY place a role name
+ * string gets turned into permissions. Returns null if nothing matches,
+ * which callers must treat as a rejection (400), never a silent grant.
+ *
+ * Visibility, in precedence order:
+ *   - Superadmin callers: any role, anywhere.
+ *   - Tenant-level callers (roleLevel <= 2): any role in their own tenant
+ *     (tenant-wide or any branch-private role), or a global (tenantId=null)
+ *     system-template role.
+ *   - Branch-level callers (roleLevel > 2): only their own tenant's
+ *     tenant-wide roles, their OWN branch's branch-private roles, or a
+ *     global role — never another branch's private role.
+ */
+export async function resolveAssignableRole(
+    // Callers pass `req.tx ?? globalDb` — a union of the reserved-connection
+    // handle and the pooled singleton, which don't structurally share the
+    // `$client` field `typeof db` would require. Matches the `db: any`
+    // convention already used by assignUserToStores for the same reason.
+    dbHandle: any,
+    params: {
+        roleId?: string;
+        roleName?: string;
+        callerTenantId: string | null;
+        callerBranchId?: string | null;
+        callerRoleLevel: number;
+        callerIsSuperAdmin: boolean;
+    }
+): Promise<ResolvedRole | null> {
+    const { roleId, roleName, callerTenantId, callerBranchId, callerRoleLevel, callerIsSuperAdmin } = params;
+    if (!roleId && !roleName) return null;
+
+    // Takes the CALLER'S OWN db handle (req.tx or globalDb) rather than
+    // opening a new transaction/connection here. req.tx already has RLS
+    // tenant context set on a reserved connection for the whole request
+    // (see withTenantTx middleware) — opening a second transaction via
+    // runWithTenantContext competed for the same capped connection pool
+    // that the reserved req.tx connection was already holding open, and
+    // under concurrent staff-creation load deadlocked the pool entirely
+    // (every connection reserved, none left for the nested transaction).
+    const isVisible = (role: { tenantId: string | null; branchId: string | null }): boolean => {
+        if (callerIsSuperAdmin) return true;
+        if (role.tenantId === null) return true; // global system template
+        if (role.tenantId !== callerTenantId) return false;
+        if (callerRoleLevel <= 2) return true; // tenant-level: sees all of their tenant's roles
+        return role.branchId === null || role.branchId === callerBranchId;
+    };
+
+    let row: { id: string; name: string; tenantId: string | null; branchId: string | null } | undefined;
+    if (roleId) {
+        row = await dbHandle.query.roles.findFirst({
+            where: eq(roles.id, roleId),
+            columns: { id: true, name: true, tenantId: true, branchId: true },
+        });
+        if (row && !isVisible(row)) row = undefined;
+    } else {
+        if (callerTenantId) {
+            const tenantRow = await dbHandle.query.roles.findFirst({
+                where: and(eq(roles.name, roleName!), eq(roles.tenantId, callerTenantId)),
+                columns: { id: true, name: true, tenantId: true, branchId: true },
+            });
+            if (tenantRow && isVisible(tenantRow)) row = tenantRow;
+        }
+        if (!row) {
+            const globalRow = await dbHandle.query.roles.findFirst({
+                where: and(eq(roles.name, roleName!), isNull(roles.tenantId)),
+                columns: { id: true, name: true, tenantId: true, branchId: true },
+            });
+            if (globalRow && isVisible(globalRow)) row = globalRow;
+        }
+    }
+
+    if (!row) return null;
+    return { id: row.id, name: row.name, roleLevel: getRoleLevel(row.name, false) };
 }
 
 // Untyped `Request`/`Response` here would pin this middleware's type params to the
@@ -437,13 +584,24 @@ export async function authenticate(
 
             const mergedPermissions = user.permissions;
 
-            // Get unique branch and store IDs
-            const accessibleBranchIds = [...new Set(accessibleStores.map(s => s.branchId))];
-            const accessibleStoreIds = accessibleStores.map(s => s.storeId);
+            // Each userStores row is either a "whole store" grant (branchId
+            // NULL — every branch under that store) or narrowed to one
+            // specific branch. Expand whole-store grants to their current
+            // branch id set so exact-list scoping (roleLevel 5-7) still
+            // works the same way it always has.
+            const narrowedBranchIds = accessibleStores.filter(s => s.branchId).map(s => s.branchId as string);
+            const wholeStoreIds = [...new Set(accessibleStores.filter(s => !s.branchId).map(s => s.storeId))];
+            const expandedBranchIds = await loadBranchIdsForStores(wholeStoreIds);
 
-            // If user has no store assignments, give access to their default branch
+            const accessibleBranchIds = [...new Set([...narrowedBranchIds, ...expandedBranchIds])];
+            const accessibleStoreIds = [...new Set(accessibleStores.map(s => s.storeId))];
+
+            // If user has no store assignments, fall back to their single-value anchors
             if (accessibleBranchIds.length === 0 && user.branchId) {
                 accessibleBranchIds.push(user.branchId);
+            }
+            if (accessibleStoreIds.length === 0 && user.storeId) {
+                accessibleStoreIds.push(user.storeId);
             }
 
             // Get active store from header or use default
@@ -451,16 +609,19 @@ export async function authenticate(
             const defaultStore = accessibleStores.find(s => s.isDefault);
             const activeStoreId = activeStoreHeader && accessibleStoreIds.includes(activeStoreHeader)
                 ? activeStoreHeader
-                : defaultStore?.storeId;
+                : (defaultStore?.storeId || user.storeId || undefined);
 
-            // Set active branch from active store or user's default branch
-            const activeStore = accessibleStores.find(s => s.storeId === activeStoreId);
-            const activeBranchId = activeStore?.branchId || user.branchId || branchId;
+            // Active branch: a narrowed grant matching the active store, else the
+            // user's own branchId anchor, else the JWT's branchId claim.
+            const activeStoreGrant = accessibleStores.find(s => s.storeId === activeStoreId && s.branchId);
+            const activeBranchId = activeStoreGrant?.branchId || user.branchId || branchId;
 
-            // Load branch paths in parallel (all Redis-cached after first hit)
-            const [accessibleBranchPaths, activeBranchPath] = await Promise.all([
+            // Load branch/store paths in parallel (all Redis-cached after first hit)
+            const [accessibleBranchPaths, accessibleStorePaths, activeBranchPath, activeStorePath] = await Promise.all([
                 loadAccessibleBranchPaths(userId, accessibleBranchIds),
+                loadAccessibleStorePaths(userId, accessibleStoreIds),
                 activeBranchId ? loadBranchPath(activeBranchId) : Promise.resolve(undefined),
+                activeStoreId ? loadStorePath(activeStoreId) : Promise.resolve(undefined),
             ]);
 
             // Resolve final tenantId — prefer DB value, fall back to JWT claim, null for superadmin
@@ -484,10 +645,13 @@ export async function authenticate(
                 accessibleStores,
                 accessibleBranchIds,
                 accessibleBranchPaths,
+                accessibleStorePaths,
                 accessibleStoreIds,
                 activeStoreId,
                 activeBranchId,
                 activeBranchPath,
+                activeStorePath,
+                storeId: user.storeId || '',
                 isSuperAdmin: user.isSuperAdmin || false,
                 roleLevel: user.roleLevel,
                 maskLow: user.maskLow ?? '0',
@@ -723,19 +887,25 @@ export interface ScopeFilter {
     storeIds: string[];
     activeBranchId: string;
     activeStoreId?: string;
-    /** true when user is scoped by store (store_owner with UserStore entries) */
+    /** true when user is scoped by explicit userStores grants (not just their single-value anchor) */
     scopeByStore: boolean;
     /**
-     * Branch paths for HQ-level users (roleLevel 3-4).
+     * Branch paths for level-4 users (branch-tree supervisor, within one store).
      * When set, route handlers should use path-prefix matching instead of exact branchId matching.
      * e.g. "root.hq" matches all branches where branchPath starts with "root.hq"
      */
     branchPaths?: string[];
+    /**
+     * Store paths for level-3 users (store-tree HQ — a subtree of stores,
+     * granting every branch under each store in that subtree).
+     * e.g. "root.flagship" matches all stores where storePath starts with "root.flagship"
+     */
+    storePaths?: string[];
     /** Numeric role level, copied from authUser.roleLevel */
     roleLevel: number;
 }
 
-// New middleware: Filter by accessible branches/stores
+// New middleware: Filter by accessible stores/branches
 export function branchFilter() {
     return (req: Request, _res: Response, next: NextFunction): void => {
         if (req.authUser) {
@@ -746,7 +916,7 @@ export function branchFilter() {
                 let storeIds = req.authUser.accessibleStoreIds;
                 const hasStoreScope = storeIds.length > 0;
 
-                // Level 1-2 (system_admin, tenant_admin): tenant-only scope, no branch restriction
+                // Level 1-2 (platform/tenant owner): tenant-only scope, no restriction
                 if (roleLevel <= 2) {
                     req.branchFilter = {
                         tenantId: req.authUser.tenantId,
@@ -757,8 +927,25 @@ export function branchFilter() {
                         scopeByStore: false,
                         roleLevel,
                     };
-                } else if (roleLevel <= 4) {
-                    // Level 3-4 (hq_admin, hq_manager): path-prefix scope for child branches
+                } else if (roleLevel === 3) {
+                    // Level 3 (store-tree HQ): path-prefix scope over a subtree of
+                    // stores — grants every branch under each store in that subtree.
+                    if (storeIds.length === 0 && req.authUser.storeId) {
+                        storeIds = [req.authUser.storeId];
+                    }
+                    req.branchFilter = {
+                        tenantId: req.authUser.tenantId,
+                        branchIds,
+                        storeIds,
+                        activeBranchId: req.authUser.activeBranchId,
+                        activeStoreId: req.authUser.activeStoreId,
+                        scopeByStore: hasStoreScope,
+                        storePaths: req.authUser.accessibleStorePaths,
+                        roleLevel,
+                    };
+                } else if (roleLevel === 4) {
+                    // Level 4 (branch-tree supervisor): path-prefix scope for child
+                    // branches, implicitly confined within their own store.
                     if (branchIds.length === 0 && req.authUser.branchId) {
                         branchIds = [req.authUser.branchId];
                     }
@@ -773,7 +960,7 @@ export function branchFilter() {
                         roleLevel,
                     };
                 } else {
-                    // Level 5-7 (branch_admin, manager, staff): exact branch/store scope
+                    // Level 5-7 (cashier, specialist staff): exact branch/store scope
                     if (branchIds.length === 0 && req.authUser.branchId) {
                         branchIds = [req.authUser.branchId];
                     }
@@ -799,11 +986,12 @@ export function branchFilter() {
 
 /**
  * Helper: build Drizzle scope condition from ScopeFilter.
- * - 'store' model: filters by store.id ∈ storeIds (or branchId fallback)
- * - 'storeId' model (Customer, etc.): filters by storeId ∈ storeIds
+ * - 'store' model: the `stores` table itself — filters by store.id ∈ storeIds
+ * - 'storeId' model (Customer, etc.): filters by branchId ∈ branchIds first
+ *   (narrower/authoritative), falling back to storeId ∈ storeIds
  * - 'branchId' model (Product, Inventory, Transaction, etc.): filters by branchId ∈ branchIds
  *
- * Pass column refs from the target table, e.g. buildScopeCondition(filter, { id: stores.id, branchId: stores.branchId }, 'store')
+ * Pass column refs from the target table, e.g. buildScopeCondition(filter, { id: stores.id }, 'store')
  */
 export function buildScopeCondition(
     filter: ScopeFilter | undefined,
@@ -819,18 +1007,23 @@ export function buildScopeCondition(
         conditions.push(eq(columns.tenantId, filter.tenantId));
     }
 
-    // Branch/Store scoping
+    // Branch/Store scoping. Since the store/branch hierarchy reversal (store
+    // is now the broad tier, branch the narrow/operational one), branchId is
+    // the authoritative, narrower filter wherever both columns exist —
+    // storeId is only a fallback for callers with a broad store-level grant
+    // and no narrowed branch list at all (e.g. a level-3 store-tree HQ user
+    // whose exact branchIds weren't pre-expanded).
     if (modelType === 'store') {
+        // The `stores` table itself — no longer has a branchId column at all;
+        // scope by storeIds (see buildStoreIdScope for path-prefix scoping).
         if (filter.scopeByStore && filter.storeIds.length > 0 && columns.id) {
             conditions.push(inArray(columns.id, filter.storeIds));
-        } else if (filter.branchIds.length > 0 && columns.branchId) {
-            conditions.push(inArray(columns.branchId, filter.branchIds));
         }
     } else if (modelType === 'storeId') {
-        if (filter.scopeByStore && filter.storeIds.length > 0 && columns.storeId) {
-            conditions.push(inArray(columns.storeId, filter.storeIds));
-        } else if (filter.branchIds.length > 0 && columns.branchId) {
+        if (filter.branchIds.length > 0 && columns.branchId) {
             conditions.push(inArray(columns.branchId, filter.branchIds));
+        } else if (filter.scopeByStore && filter.storeIds.length > 0 && columns.storeId) {
+            conditions.push(inArray(columns.storeId, filter.storeIds));
         }
     } else {
         if (filter.branchIds.length > 0 && columns.branchId) {
@@ -870,12 +1063,24 @@ export function buildBranchIdScope(
 ): SQL | undefined {
     if (!filter) return undefined;
 
-    const { roleLevel = 7, branchPaths, branchIds } = filter;
+    const { roleLevel = 7, branchPaths, storePaths, branchIds } = filter;
 
     // Tenant/system admins: no branch restriction
     if (roleLevel <= 2) return undefined;
 
-    // HQ level (3-4): path-prefix sub-select against branches table.
+    // Level 3 (store-tree HQ): every branch under any store in their store
+    // subtree. Parameterized sub-select, same safe pattern as the level-4
+    // branch below.
+    if (roleLevel === 3 && storePaths && storePaths.length > 0) {
+        const pathConds: SQL[] = storePaths.map(
+            (p) => sql`(${stores.storePath} = ${p} OR ${stores.storePath} LIKE ${p + '.%'})`
+        );
+        const whereClause = pathConds.length === 1 ? pathConds[0] : sql.join(pathConds, sql` OR `);
+        return sql`${branchIdColumn} IN (SELECT id FROM branches WHERE store_id IN (SELECT id FROM stores WHERE ${whereClause}))`;
+    }
+
+    // Level 4 (branch-tree supervisor): path-prefix sub-select against
+    // branches table, within their own store.
     // Parameterized (matches buildBranchPathScope's safe pattern) — this used
     // to build the WHERE clause via manual quote-escaping + sql.raw(), which
     // is correct today only because branches.branchPath happens to be
@@ -884,7 +1089,7 @@ export function buildBranchIdScope(
     // (see branches/presentation/routes.ts) — any future edit to this
     // escaping logic, or a code path that bypasses it, would be a real SQL
     // injection. Parameterized bind values remove the risk entirely.
-    if (roleLevel <= 4 && branchPaths && branchPaths.length > 0) {
+    if (roleLevel === 4 && branchPaths && branchPaths.length > 0) {
         const pathConds: SQL[] = branchPaths.map(
             (p) => sql`(${branches.branchPath} = ${p} OR ${branches.branchPath} LIKE ${p + '.%'})`
         );
@@ -892,9 +1097,42 @@ export function buildBranchIdScope(
         return sql`${branchIdColumn} IN (SELECT id FROM branches WHERE ${whereClause})`;
     }
 
-    // Branch-level (5-7): exact IN list
+    // Branch-level (5-7), or level 3-4 with no path scope resolved: exact IN list
     if (branchIds.length > 0) {
         return inArray(branchIdColumn, branchIds);
+    }
+
+    return undefined;
+}
+
+/**
+ * Store-tree equivalent of buildBranchIdScope — scopes a `storeId` (or the
+ * `stores` table's own `id`) column by a level-3 user's store subtree, or an
+ * exact storeIds list otherwise. Use this for the `stores` table itself, or
+ * any other table that should be scoped at the store tier rather than the
+ * branch tier.
+ */
+export function buildStoreIdScope(
+    filter: ScopeFilter | undefined,
+    storeIdColumn: PgColumn
+): SQL | undefined {
+    if (!filter) return undefined;
+
+    const { roleLevel = 7, storePaths, storeIds } = filter;
+
+    // Tenant/system admins: no store restriction
+    if (roleLevel <= 2) return undefined;
+
+    if (roleLevel === 3 && storePaths && storePaths.length > 0) {
+        const pathConds: SQL[] = storePaths.map(
+            (p) => sql`(${stores.storePath} = ${p} OR ${stores.storePath} LIKE ${p + '.%'})`
+        );
+        const whereClause = pathConds.length === 1 ? pathConds[0] : sql.join(pathConds, sql` OR `);
+        return sql`${storeIdColumn} IN (SELECT id FROM stores WHERE ${whereClause})`;
+    }
+
+    if (storeIds.length > 0) {
+        return inArray(storeIdColumn, storeIds);
     }
 
     return undefined;
@@ -947,6 +1185,25 @@ export function buildBranchPathScope(
     return conds.length === 1 ? conds[0] : sql.join(conds, sql` OR `);
 }
 
+/**
+ * Store-path scope condition, mirroring buildBranchPathScope one tier up —
+ * use on the `stores` table's own `store_path` column for level-3 users.
+ */
+export function buildStorePathScope(
+    req: Request,
+    storePathColumn: PgColumn
+): SQL | undefined {
+    if (!req.authUser) return undefined;
+    if (req.authUser.isSuperAdmin) return undefined;
+    const paths = req.authUser.accessibleStorePaths || [];
+    if (paths.length === 0) return undefined;
+
+    const conds: SQL[] = paths.map(
+        (p) => sql`(${storePathColumn} = ${p} OR ${storePathColumn} LIKE ${p + '.%'})`
+    );
+    return conds.length === 1 ? conds[0] : sql.join(conds, sql` OR `);
+}
+
 /** @deprecated Use buildScopeCondition for Drizzle queries. Kept for migration reference. */
 export function applyScopeFilter(
     where: Record<string, unknown>,
@@ -989,16 +1246,17 @@ export function ensureScopeAccess(
         return true;
     }
 
-    // Regular users (Store Admins, Staff) must have explicit scope access
+    // Regular users (Store Admins, Staff) must have explicit scope access.
+    // Branch is now the narrower/authoritative field (a branch belongs to
+    // exactly one store) — check it first, falling back to the broader
+    // store-level scope only when the record has no branchId at all.
     const { accessibleBranchIds, accessibleStoreIds } = req.authUser;
 
-    // Check store-level scope first
-    if (record.storeId && accessibleStoreIds.length > 0) {
-        return accessibleStoreIds.includes(record.storeId);
-    }
-    // Fall back to branch-level scope
     if (record.branchId && accessibleBranchIds.length > 0) {
         return accessibleBranchIds.includes(record.branchId);
+    }
+    if (record.storeId && accessibleStoreIds.length > 0) {
+        return accessibleStoreIds.includes(record.storeId);
     }
     // If record has no scope fields at all, allow (backward compat for old data)
     if (!record.storeId && !record.branchId && !record.tenantId) return true;

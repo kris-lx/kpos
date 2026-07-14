@@ -30,6 +30,9 @@ export const tenantsRelations = relations(tenants, ({ many }) => ({
 
 export const branchesRelations = relations(branches, ({ one, many }) => ({
     tenant: one(tenants, { fields: [branches.tenantId], references: [tenants.id] }),
+    store: one(stores, { fields: [branches.storeId], references: [stores.id] }),
+    parent: one(branches, { fields: [branches.parentBranchId], references: [branches.id], relationName: 'branchHierarchy' }),
+    children: many(branches, { relationName: 'branchHierarchy' }),
     users: many(users),
     products: many(products),
     transactions: many(transactions),
@@ -39,7 +42,6 @@ export const branchesRelations = relations(branches, ({ one, many }) => ({
     shifts: many(shifts),
     cashRegisters: many(cashRegisters),
     customers: many(customers),
-    stores: many(stores),
     userStores: many(userStores),
     storeRequests: many(storeRequests),
     documents: many(documents),
@@ -49,6 +51,7 @@ export const branchesRelations = relations(branches, ({ one, many }) => ({
 
 export const usersRelations = relations(users, ({ one, many }) => ({
     tenant: one(tenants, { fields: [users.tenantId], references: [tenants.id] }),
+    store: one(stores, { fields: [users.storeId], references: [stores.id] }),
     branch: one(branches, { fields: [users.branchId], references: [branches.id] }),
     roleRelation: one(roles, { fields: [users.roleId], references: [roles.id] }),
     transactions: many(transactions),
@@ -97,7 +100,9 @@ export const menuPermissionsRelations = relations(menuPermissions, ({ one, many 
 
 export const storesRelations = relations(stores, ({ one, many }) => ({
     tenant: one(tenants, { fields: [stores.tenantId], references: [tenants.id] }),
-    branch: one(branches, { fields: [stores.branchId], references: [branches.id] }),
+    parent: one(stores, { fields: [stores.parentStoreId], references: [stores.id], relationName: 'storeHierarchy' }),
+    children: many(stores, { relationName: 'storeHierarchy' }),
+    branches: many(branches),
     userAccess: many(userStores),
     products: many(productStores),
     customers: many(customers),

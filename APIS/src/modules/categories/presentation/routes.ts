@@ -6,7 +6,7 @@ import { Router } from 'express';
 import { authenticate, authorize, branchFilter, buildScopeCondition, ensureScopeAccess, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
 import { db as globalDb } from '@/config/database.config';
-import { categories, products, stores } from '@/db/schema/tables';
+import { categories, products, stores, branches } from '@/db/schema/tables';
 import { eq, and, or, asc, isNull, inArray } from 'drizzle-orm';
 
 export const categoryRoutes = Router();
@@ -30,12 +30,13 @@ categoryRoutes.get('/', authenticate, withTenantTx(), branchFilter(), async (req
             }
             conditions.push(or(...scopeConds));
         } else if (filter?.tenantId && filter.branchIds && filter.branchIds.length > 0) {
-            // Branch-scoped user: show categories belonging to their branch's stores only
-            const branchStores = await db.query.stores.findMany({
-                where: inArray(stores.branchId, filter.branchIds),
-                columns: { id: true },
+            // Branch-scoped user: show categories belonging to their branches'
+            // owning stores only (a branch belongs to exactly one store now).
+            const ownerBranches = await db.query.branches.findMany({
+                where: inArray(branches.id, filter.branchIds),
+                columns: { storeId: true },
             });
-            const branchStoreIds = branchStores.map((s: any) => s.id);
+            const branchStoreIds = [...new Set(ownerBranches.map((b: any) => b.storeId))];
             conditions.push(eq(categories.tenantId, filter.tenantId));
             // Scope to this branch's stores, plus tenant-global categories
             // (storeId=NULL) — owners often create categories with no store
@@ -141,15 +142,14 @@ categoryRoutes.post('/', authenticate, withTenantTx(), branchFilter(), authorize
         if (bodyStoreId) {
             resolvedStoreId = String(bodyStoreId);
         } else if (bodyBranchId) {
-            // Find the primary (default) store for this branch
-            const branchStore = await db.query.stores.findFirst({
-                where: and(eq(stores.branchId, String(bodyBranchId)), eq(stores.isDefault, true)),
-                columns: { id: true },
-            }) ?? await db.query.stores.findFirst({
-                where: eq(stores.branchId, String(bodyBranchId)),
-                columns: { id: true },
+            // A branch belongs to exactly one store — direct FK lookup, no
+            // "default store" ambiguity like the old (store has many branches)
+            // model needed.
+            const owningBranch = await db.query.branches.findFirst({
+                where: eq(branches.id, String(bodyBranchId)),
+                columns: { storeId: true },
             });
-            if (branchStore) resolvedStoreId = branchStore.id;
+            if (owningBranch) resolvedStoreId = owningBranch.storeId;
         } else if (!resolvedStoreId && req.authUser?.branchId) {
             // activeStoreId couldn't resolve — most often because this user has
             // no rows in user_stores (never got a store assignment). Without
@@ -157,14 +157,11 @@ categoryRoutes.post('/', authenticate, withTenantTx(), branchFilter(), authorize
             // which branch-scoped list queries deliberately exclude — making it
             // permanently invisible to the very user who just created it, even
             // though the create call itself reports success.
-            const branchStore = await db.query.stores.findFirst({
-                where: and(eq(stores.branchId, req.authUser.branchId), eq(stores.isDefault, true)),
-                columns: { id: true },
-            }) ?? await db.query.stores.findFirst({
-                where: eq(stores.branchId, req.authUser.branchId),
-                columns: { id: true },
+            const owningBranch = await db.query.branches.findFirst({
+                where: eq(branches.id, req.authUser.branchId),
+                columns: { storeId: true },
             });
-            if (branchStore) resolvedStoreId = branchStore.id;
+            if (owningBranch) resolvedStoreId = owningBranch.storeId;
         }
         if (resolvedStoreId) data.storeId = resolvedStoreId;
 
