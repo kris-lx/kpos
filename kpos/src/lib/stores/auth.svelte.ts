@@ -157,10 +157,16 @@ function createAuthStore() {
 
         // On page reload: silently exchange the HttpOnly refresh cookie for a new access token.
         // The browser sends the cookie automatically — no token in localStorage needed.
+        // Also re-fetches store context — without this, accessibleStores/
+        // activeStoreId stay whatever was cached in localStorage from the
+        // last login, forever, across reloads. A tab left open across any
+        // change to the user's store access (reassignment, a store getting
+        // deleted, a backend data reset) would keep submitting stale/
+        // nonexistent storeIds until the user manually logged out and back in.
         if (parsedUser) {
             setTimeout(async () => {
                 const ok = await refresh();
-                if (ok) await Promise.all([refreshProfile(), loadRules(), tenantSettings.load()]);
+                if (ok) await Promise.all([refreshProfile(), loadRules(), loadStoreContext(), tenantSettings.load()]);
             }, 0);
         }
     }
