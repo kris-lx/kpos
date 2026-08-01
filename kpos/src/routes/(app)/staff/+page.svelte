@@ -81,29 +81,48 @@
     let branches = $state<any[]>([]);
     let roles = $state<any[]>([]);
 
-    // A store now has many branches (Tenant → Store → Branch) — when a store
-    // is picked, narrow the branch options to that store's own branches;
-    // with none picked (or only one store in scope), show every accessible branch.
-    let filteredBranches = $derived(
-        formData.storeId ? branches.filter((b) => b.storeId === formData.storeId) : branches
-    );
-    
-    // Load stores, branches and roles
+    // A store now has many branches (Tenant → Store → Branch). Branches are
+    // fetched per-store on demand (see loadBranchesForStore below) rather
+    // than filtered client-side from a full tenant list — a single store
+    // can hold tens of thousands of branches (franchise chains), and
+    // fetching/holding all of a tenant's branches on every staff-page visit
+    // does not scale (found via a 100k-branch scale test: 58MB payload).
+    let filteredBranches = $derived(branches);
+
+    // Load stores and roles (branches are loaded separately, per selected store)
     async function loadDropdownData() {
         try {
-            const [storeRes, branchRes, roleRes] = await Promise.all([
+            const [storeRes, roleRes] = await Promise.all([
                 api.get("stores/my-stores").json<any>(),
-                api.get("staff/branches/list").json<any>(),
                 api.get("staff/roles/list").json<any>()
             ]);
             // my-stores returns { stores: [...], activeStoreId, activeBranchId, ... }
             stores = storeRes.data?.stores || [];
-            branches = branchRes.data || [];
             roles = roleRes.data || [];
         } catch (error) {
             console.error("Failed to load dropdown data:", error);
         }
     }
+
+    // Fetch just the selected store's branches (capped server-side) instead
+    // of the whole tenant's branch list.
+    async function loadBranchesForStore(storeId: string) {
+        if (!storeId) {
+            branches = [];
+            return;
+        }
+        try {
+            const res = await api.get(`staff/branches/list?storeId=${storeId}`).json<any>();
+            branches = res.data || [];
+        } catch (error) {
+            console.error("Failed to load branches for store:", error);
+            branches = [];
+        }
+    }
+
+    $effect(() => {
+        loadBranchesForStore(formData.storeId);
+    });
 
     // Filtered staff
     let filteredStaff = $derived(

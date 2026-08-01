@@ -215,11 +215,29 @@ staffRoutes.get('/branches/list', authenticate, withTenantTx(), async (req, res,
             conditions.push(inArray(branches.id, authUser.accessibleBranchIds));
         }
 
+        // Found via a scale test: a single store can hold a very large
+        // number of branches (franchise chains), and this endpoint used to
+        // return every branch the caller could see with no filter or cap —
+        // a 58MB, 100k-row response for one store in testing. storeId lets
+        // the staff-creation dropdown (which is always scoped to one
+        // selected store) narrow the query; the cap protects the other
+        // caller (cash-register branch filter), which has no store concept
+        // and would otherwise still pull the whole tenant.
+        const { storeId, search } = req.query;
+        if (storeId) {
+            conditions.push(eq(branches.storeId, String(storeId)));
+        }
+        if (search) {
+            conditions.push(ilike(branches.name, `%${String(search)}%`));
+        }
+
+        const BRANCH_LIST_CAP = 300;
         const branchRows = await db.query.branches.findMany({
             where: and(...conditions),
             orderBy: asc(branches.name),
+            limit: BRANCH_LIST_CAP,
         });
-        res.json({ success: true, data: branchRows });
+        res.json({ success: true, data: branchRows, meta: { capped: branchRows.length === BRANCH_LIST_CAP } });
     } catch (error) {
         next(error);
     }
