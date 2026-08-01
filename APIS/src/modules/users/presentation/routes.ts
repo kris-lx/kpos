@@ -55,7 +55,11 @@ userRoutes.get('/', authenticate, withTenantTx(), authorize('users:read'), branc
         const authUser = req.authUser;
         const isSuperAdmin = authUser?.isSuperAdmin;
 
-        // Non-superadmins: scope to their store and hide system admins
+        // Non-superadmins: scope to their store and hide system admins.
+        // Tenant-wide admins (roleLevel <= 2, e.g. store_owner) are exempt
+        // from the store/branch narrowing below — otherwise they'd only see
+        // their "active" store's users instead of their whole tenant.
+        const isTenantWideAdmin = !isSuperAdmin && (authUser?.roleLevel ?? 7) <= 2;
         const conditions: any[] = [];
         let scopedUserIds: string[] | null = null;
         if (!isSuperAdmin) {
@@ -64,15 +68,17 @@ userRoutes.get('/', authenticate, withTenantTx(), authorize('users:read'), branc
             if (tenantId) {
                 conditions.push(eq(users.tenantId, tenantId));
             }
-            const activeStoreId = authUser?.activeStoreId;
-            if (activeStoreId) {
-                const usList = await db.query.userStores.findMany({ where: eq(userStores.storeId, activeStoreId), columns: { userId: true } });
-                scopedUserIds = usList.map(us => us.userId);
-            } else {
-                const filter = req.branchFilter;
-                if (filter?.branchIds?.length) {
-                    const usList = await db.query.userStores.findMany({ where: inArray(userStores.branchId, filter.branchIds), columns: { userId: true } });
+            if (!isTenantWideAdmin) {
+                const activeStoreId = authUser?.activeStoreId;
+                if (activeStoreId) {
+                    const usList = await db.query.userStores.findMany({ where: eq(userStores.storeId, activeStoreId), columns: { userId: true } });
                     scopedUserIds = usList.map(us => us.userId);
+                } else {
+                    const filter = req.branchFilter;
+                    if (filter?.branchIds?.length) {
+                        const usList = await db.query.userStores.findMany({ where: inArray(userStores.branchId, filter.branchIds), columns: { userId: true } });
+                        scopedUserIds = usList.map(us => us.userId);
+                    }
                 }
             }
             conditions.push(eq(users.isSuperAdmin, false));

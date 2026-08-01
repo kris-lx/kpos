@@ -256,8 +256,13 @@ staffRoutes.get('/:id', authenticate, withTenantTx(), authorize('staff:read'), a
             return;
         }
 
-        // Non-superadmins can only view users in their own store
-        if (!isSuperAdmin && authUser?.activeStoreId) {
+        // Branch/store-scoped staff can only view users in their own store.
+        // Tenant-wide admins (roleLevel <= 2, e.g. store_owner) are exempt —
+        // same exemption as the GET / list route — otherwise they'd get a
+        // 403 looking up any staff member outside their "active" store even
+        // though they administer the whole tenant.
+        const isTenantWideAdmin = !isSuperAdmin && (authUser?.roleLevel ?? 7) <= 2;
+        if (!isSuperAdmin && !isTenantWideAdmin && authUser?.activeStoreId) {
             const hasAccess = await db.query.userStores.findFirst({
                 where: and(eq(userStores.userId, staff.id), eq(userStores.storeId, authUser.activeStoreId)),
             });

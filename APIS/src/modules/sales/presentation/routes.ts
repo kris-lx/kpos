@@ -601,7 +601,11 @@ salesRoutes.get('/shifts', authenticate, withTenantTx(), branchFilter(), async (
         // G6: Tenant isolation for shifts
         const tc = tenantScope(req, shifts.tenantId);
         if (tc) shiftConds.push(tc);
-        if (!isSuperAdmin) {
+        // Tenant-wide admins (roleLevel <= 2, e.g. store_owner) are exempt
+        // from the activeStoreId/branch narrowing — otherwise they'd only
+        // see shifts from their "active" store instead of their whole tenant.
+        const isTenantWideAdmin = !isSuperAdmin && (authUser?.roleLevel ?? 7) <= 2;
+        if (!isSuperAdmin && !isTenantWideAdmin) {
             const activeStoreId = authUser?.activeStoreId;
             if (activeStoreId) shiftConds.push(eq(shifts.storeId, activeStoreId));
             else if (filter?.branchIds?.length) shiftConds.push(inArray(shifts.branchId, filter.branchIds));
