@@ -70,15 +70,15 @@
         )}
         onclick={() => (isOpen = !isOpen)}
     >
-        <Store class="h-4 w-4 text-primary" />
-        <div class="flex flex-col items-start">
+        <Store class="h-4 w-4 text-primary shrink-0" />
+        <div class="flex flex-col items-start min-w-0 max-w-[7rem] sm:max-w-[10rem]">
             {#if auth.activeStore}
-                <span class="text-sm font-medium">{auth.activeStore.storeName}</span>
+                <span class="text-sm font-medium truncate w-full">{auth.activeStore.storeName}</span>
                 {#if auth.activeStore.branchName}
-                    <span class="text-xs text-base-content/60">{auth.activeStore.branchName}</span>
+                    <span class="text-xs text-base-content/60 truncate w-full">{auth.activeStore.branchName}</span>
                 {/if}
             {:else}
-                <span class="text-sm">{t('stores.selectStore')}</span>
+                <span class="text-sm truncate w-full">{t('stores.selectStore')}</span>
             {/if}
         </div>
         <ChevronDown class={cn('h-4 w-4 transition-transform', isOpen && 'rotate-180')} />

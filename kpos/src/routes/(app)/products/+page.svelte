@@ -788,7 +788,7 @@
                     <!-- Content -->
                     <div class="p-4">
                         <div class="flex items-start justify-between gap-2 mb-2">
-                            <h3 class="font-semibold text-gray-900 dark:text-white line-clamp-1">
+                            <h3 class="font-semibold text-gray-900 dark:text-white line-clamp-2" title={product.name}>
                                 {product.name}
                             </h3>
                             {#if !product.branchId}
