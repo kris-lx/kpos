@@ -8,7 +8,7 @@ import * as XLSX from 'xlsx';
 import { authenticate, authorize, branchFilter, applyScopeFilter, ensureScopeAccess, buildScopeCondition, buildBranchIdScope, invalidateQueryCache, isAdmin, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
 import { db as globalDb } from '@/config/database.config';
-import { products, categories, priceLevels, productPriceLevels, skuVariants, inventory, productStores } from '@/db/schema/tables';
+import { products, categories, priceLevels, productPriceLevels, skuVariants, inventory, productStores, branches, stores } from '@/db/schema/tables';
 import { eq, and, or, ne, ilike, inArray, isNotNull, isNull, desc, asc, count, sql } from 'drizzle-orm';
 
 export const productRoutes = Router();
@@ -253,54 +253,34 @@ productRoutes.get('/skus', authenticate, withTenantTx(), branchFilter(), async (
         
         const skuConds: any[] = [];
 
-        // Scope SKU variants to user's accessible products
+        // Scope SKU variants via their parent product's store/branch scope —
+        // same shared-vs-exclusive logic as GET /products (see there for why
+        // productStores is no longer used).
         if (filter?.scopeByStore && filter.storeIds.length > 0) {
-            // Get product IDs mapped to their stores
-            const storeProds = await db.query.productStores.findMany({
-                where: inArray(productStores.storeId, filter.storeIds),
-                columns: { productId: true }
+            const storeProds = await db.query.products.findMany({
+                where: inArray(products.storeId, filter.storeIds),
+                columns: { id: true },
             });
-            const scopedProductIds = storeProds.map(sp => sp.productId);
-
-            if (scopedProductIds.length > 0) {
-                skuConds.push(inArray(skuVariants.productId, scopedProductIds));
-            } else if (filter.branchIds.length > 0) {
-                // No explicit store-product mappings yet (common — productStores is
-                // only populated when the creator themselves is store-scoped). Fall
-                // back to this user's own branch's products, NOT all tenant SKUs —
-                // that would leak every other branch's SKUs to a store-scoped staff
-                // member the moment they have zero productStores rows, since
-                // scopeByStore now flips true for every staff member (userStores
-                // row created on staff:create).
-                const branchProds = await db.query.products.findMany({
-                    where: inArray(products.branchId, filter.branchIds),
-                    columns: { id: true }
-                });
-                const branchProdIds = branchProds.map(p => p.id);
-                skuConds.push(branchProdIds.length > 0 ? inArray(skuVariants.productId, branchProdIds) : sql`1 = 0`);
-            } else if (filter.tenantId) {
-                // No store or branch context at all — safety-net fallback for
-                // tenant-level roles (owner/tenant_admin) that reach this branch
-                // only if they somehow also carry a userStores row.
-                skuConds.push(eq(skuVariants.tenantId, filter.tenantId));
-            }
-        } else if (filter) {
-            // Branch scoped users (e.g. branch admins) need to filter by product's branchId
-            if (filter.branchIds.length > 0) {
-                const branchProds = await db.query.products.findMany({
-                    where: inArray(products.branchId, filter.branchIds),
-                    columns: { id: true }
-                });
-                const branchProdIds = branchProds.map(p => p.id);
-                if (branchProdIds.length > 0) {
-                    skuConds.push(inArray(skuVariants.productId, branchProdIds));
-                } else {
-                    skuConds.push(sql`1 = 0`);
-                }
-            } else if (filter.tenantId) {
-                // Tenant fallback
-                skuConds.push(eq(skuVariants.tenantId, filter.tenantId));
-            }
+            const productIds = storeProds.map(p => p.id);
+            skuConds.push(productIds.length > 0 ? inArray(skuVariants.productId, productIds) : sql`1 = 0`);
+        } else if (filter && filter.branchIds.length > 0) {
+            const ownerBranches = await db.query.branches.findMany({
+                where: inArray(branches.id, filter.branchIds),
+                columns: { storeId: true },
+            });
+            const ownerStoreIds = [...new Set(ownerBranches.map(b => b.storeId))];
+            const scopedProds = await db.query.products.findMany({
+                where: or(
+                    inArray(products.branchId, filter.branchIds),
+                    and(isNull(products.branchId), ownerStoreIds.length > 0 ? inArray(products.storeId, ownerStoreIds) : sql`1 = 0`),
+                )!,
+                columns: { id: true },
+            });
+            const productIds = scopedProds.map(p => p.id);
+            skuConds.push(productIds.length > 0 ? inArray(skuVariants.productId, productIds) : sql`1 = 0`);
+        } else if (filter?.tenantId) {
+            // Tenant admin (roleLevel <= 2), or an HQ level with no resolved branchIds yet
+            skuConds.push(eq(skuVariants.tenantId, filter.tenantId));
         }
 
         if (productId) skuConds.push(eq(skuVariants.productId, String(productId)));
@@ -380,7 +360,12 @@ productRoutes.get('/skus/:id', authenticate, withTenantTx(), async (req, res, ne
             return;
         }
 
-        if (!ensureScopeAccess(skuVariant, req)) {
+        // sku_variants has no branchId/storeId of its own — scope comes from
+        // the parent product. Passing the bare skuVariant row here meant
+        // record.branchId/storeId were always undefined, which fell through
+        // every branch of ensureScopeAccess to `false` for any non-admin
+        // caller — this 403'd every legitimate branch-level SKU lookup.
+        if (!ensureScopeAccess({ branchId: skuVariant.product?.branchId, storeId: skuVariant.product?.storeId, tenantId: skuVariant.tenantId }, req)) {
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this SKU variant' } });
         }
 
@@ -592,24 +577,11 @@ productRoutes.get('/generate/barcode', authenticate, withTenantTx(), async (req,
 });
 
 // Get all available barcodes (for dropdown)
-productRoutes.get('/barcodes', authenticate, withTenantTx(), async (req, res, next) => {
-    try {
-        const db = req.tx ?? globalDb;
-        const [productBarcodes, skuBarcodes] = await Promise.all([
-            db.query.products.findMany({ where: isNotNull(products.barcode), columns: { barcode: true }, orderBy: asc(products.barcode) }),
-            db.query.skuVariants.findMany({ where: isNotNull(skuVariants.barcode), columns: { barcode: true }, orderBy: asc(skuVariants.barcode) }),
-        ]);
-        
-        // Combine and deduplicate barcodes
-        const allBarcodes = new Set<string>();
-        productBarcodes.forEach(p => p.barcode && allBarcodes.add(p.barcode));
-        skuBarcodes.forEach(s => s.barcode && allBarcodes.add(s.barcode));
-        
-        res.json({ success: true, data: Array.from(allBarcodes).sort() });
-    } catch (error) {
-        next(error);
-    }
-});
+// NOTE: the real, tenant/branch-scoped /barcodes handler is further down in
+// this file (was previously unreachable dead code — Express matches route
+// registration order, and an earlier, completely unscoped /barcodes handler
+// used to be registered here first, silently leaking every tenant's barcodes
+// to every caller). Removed; see the scoped handler below.
 
 // ═══════════════════════════════════════════════════════════════════════════
 // LOOKUP ROUTE (Must be before /:id to avoid conflicts)
@@ -627,7 +599,19 @@ productRoutes.get('/lookup/:code', authenticate, withTenantTx(), async (req, res
         }
         const branchIds = req.authUser?.accessibleBranchIds || [];
         if (branchIds.length > 0 && !isAdmin(req)) {
-            lookupConds.push(inArray(products.branchId, branchIds));
+            // Must also match shared (branchId null) products from the
+            // scanning branch's own store — a plain inArray(branchId, ...)
+            // would never match a shared catalog item during a POS barcode
+            // scan, since its branchId is null.
+            const ownerBranches = await db.query.branches.findMany({
+                where: inArray(branches.id, branchIds),
+                columns: { storeId: true },
+            });
+            const ownerStoreIds = [...new Set(ownerBranches.map(b => b.storeId))];
+            lookupConds.push(or(
+                inArray(products.branchId, branchIds),
+                and(isNull(products.branchId), ownerStoreIds.length > 0 ? inArray(products.storeId, ownerStoreIds) : sql`1 = 0`),
+            )!);
         }
 
         const product = await db.query.products.findFirst({
@@ -660,34 +644,29 @@ productRoutes.get('/', authenticate, withTenantTx(), branchFilter(), async (req,
         const filter = req.branchFilter;
 
         const prodConds: any[] = [eq(products.isActive, true)];
-        
-        if (filter?.scopeByStore && filter.storeIds.length > 0) {
-            // If user is scoped by store, prefer products explicitly mapped to their store
-            const storeProds = await db.query.productStores.findMany({
-                where: inArray(productStores.storeId, filter.storeIds),
-                columns: { productId: true }
-            });
-            const scopedProductIds = storeProds.map(sp => sp.productId);
 
-            if (scopedProductIds.length > 0) {
-                prodConds.push(inArray(products.id, scopedProductIds));
-            } else {
-                // No store-product mappings — scope to user's branch to prevent cross-branch leakage
-                const authBranchId = req.authUser?.activeBranchId || req.authUser?.branchId;
-                if (authBranchId) {
-                    prodConds.push(eq(products.branchId, authBranchId));
-                } else if (filter.tenantId) {
-                    prodConds.push(eq(products.tenantId, filter.tenantId));
-                }
-            }
-        } else if (filter) {
-            // HQ or branch-scoped: use path-aware branch scope
-            const branchScope = buildBranchIdScope(filter, products.branchId);
-            if (branchScope) {
-                prodConds.push(branchScope);
-            } else if (filter.tenantId && !req.authUser?.isSuperAdmin) {
-                prodConds.push(eq(products.tenantId, filter.tenantId));
-            }
+        // Scoping mirrors categories/presentation/routes.ts: every product
+        // carries its owning store's id, and is either shared (branchId
+        // null — visible at every branch under that store) or exclusive to
+        // one branch. A whole-store grant sees everything under the store
+        // (both shared and every branch's exclusive items) since every row
+        // already carries the right storeId — no separate productStores
+        // lookup needed (that table is no longer the source of truth here).
+        if (filter?.scopeByStore && filter.storeIds.length > 0) {
+            prodConds.push(inArray(products.storeId, filter.storeIds));
+        } else if (filter && filter.branchIds.length > 0) {
+            const ownerBranches = await db.query.branches.findMany({
+                where: inArray(branches.id, filter.branchIds),
+                columns: { storeId: true },
+            });
+            const ownerStoreIds = [...new Set(ownerBranches.map(b => b.storeId))];
+            prodConds.push(or(
+                inArray(products.branchId, filter.branchIds),
+                and(isNull(products.branchId), ownerStoreIds.length > 0 ? inArray(products.storeId, ownerStoreIds) : sql`1 = 0`),
+            )!);
+        } else if (filter?.tenantId) {
+            // Tenant admin (roleLevel <= 2), or an HQ level with no resolved branchIds yet
+            prodConds.push(eq(products.tenantId, filter.tenantId));
         }
 
         if (branchId) {
@@ -739,35 +718,74 @@ productRoutes.get('/', authenticate, withTenantTx(), branchFilter(), async (req,
 productRoutes.post('/', authenticate, withTenantTx(), branchFilter(), authorize('products:create'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
-        const { stock, minStock, ...productData } = req.body;
-        
+        const { stock, minStock, scope, ...productData } = req.body;
+
         // Ensure tenant scoping
         if (!productData.tenantId) {
             productData.tenantId = req.authUser?.tenantId || req.user?.tenantId;
         }
-        
+
         // Ensure array columns are always arrays (prevent PgArray value.map error)
         if (productData.images !== undefined) productData.images = Array.isArray(productData.images) ? productData.images : [];
         if (productData.tags !== undefined) productData.tags = Array.isArray(productData.tags) ? productData.tags : [];
-        
+
         // Get user's branchId from auth context (NOT from any random branch)
         if (!productData.branchId) {
             productData.branchId = req.authUser?.activeBranchId || req.user?.branchId;
         }
-        
-        if (!productData.branchId) {
-            res.status(400).json({ 
-                success: false, 
-                error: { code: 'VALIDATION_001', message: 'Branch ID is required. Please select an active store/branch.' } 
+
+        // Resolve storeId (now required — every product belongs to exactly
+        // one store/brand): explicit body.storeId > branchId's owning store >
+        // caller's activeStoreId > caller's own branch's owning store. Same
+        // chain as categories/presentation/routes.ts's storeId resolution.
+        // Must run BEFORE the scope:'store' branchId nulling below, since the
+        // resolved branchId (even one about to become a shared product) is
+        // the most reliable source for which store this product belongs to —
+        // an owner creating a shared product from branch A's context has no
+        // activeStoreId/authUser.branchId to fall back on otherwise.
+        if (!productData.storeId) {
+            if (productData.branchId) {
+                const owningBranch = await db.query.branches.findFirst({
+                    where: eq(branches.id, productData.branchId),
+                    columns: { storeId: true },
+                });
+                if (owningBranch) productData.storeId = owningBranch.storeId;
+            }
+            if (!productData.storeId) productData.storeId = req.authUser?.activeStoreId;
+            if (!productData.storeId && req.authUser?.branchId) {
+                const owningBranch = await db.query.branches.findFirst({
+                    where: eq(branches.id, req.authUser.branchId),
+                    columns: { storeId: true },
+                });
+                if (owningBranch) productData.storeId = owningBranch.storeId;
+            }
+        }
+
+        // `scope: 'store'` is an explicit opt-in to create a shared, brand-
+        // level product (visible/sellable at every branch under the store) —
+        // default stays 'branch' so every existing caller that never sends
+        // `scope` keeps today's exact behavior (branch-exclusive product).
+        if (scope === 'store') {
+            productData.branchId = null;
+        }
+
+        if (!productData.storeId) {
+            res.status(400).json({
+                success: false,
+                error: { code: 'VALIDATION_001', message: 'Store ID is required. Please select an active store.' }
             });
             return;
         }
 
-        // Verify user has access to the target branch
-        if (!ensureScopeAccess({ branchId: productData.branchId }, req)) {
-            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+        // Verify access: branch access if branch-exclusive, else store access.
+        if (productData.branchId) {
+            if (!ensureScopeAccess({ branchId: productData.branchId }, req)) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+            }
+        } else if (!ensureScopeAccess({ storeId: productData.storeId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this store' } });
         }
-        
+
         // Handle empty categoryId and vendorId
         if (productData.categoryId === '' || productData.categoryId === null) {
             delete productData.categoryId;
@@ -791,27 +809,16 @@ productRoutes.post('/', authenticate, withTenantTx(), branchFilter(), authorize(
 
         const [product] = await db.insert(products).values(productData).returning();
 
-        // Create initial inventory if stock provided
+        // Create initial inventory if stock provided. Only meaningful for a
+        // branch-exclusive product — a shared (branchId null) product has no
+        // single branch to seed stock into; each branch gets its own
+        // inventory row lazily on its own first stock-in.
         if (stock !== undefined && stock > 0 && productData.branchId) {
             await db.insert(inventory).values({
                 productId: product.id,
                 branchId: productData.branchId,
                 quantity: stock,
                 available: stock,
-            });
-        }
-
-        // Map product to active store if user is scoped by store
-        const filter = req.branchFilter;
-        const targetStoreId = filter?.activeStoreId || filter?.storeIds?.[0];
-        if (filter?.scopeByStore && targetStoreId) {
-            await db.insert(productStores).values({
-                productId: product.id,
-                storeId: targetStoreId,
-                price: product.price,
-                stock: stock || 0,
-                minStock: product.lowStockThreshold,
-                isActive: true
             });
         }
 
@@ -847,6 +854,44 @@ productRoutes.post('/', authenticate, withTenantTx(), branchFilter(), authorize(
     }
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// BARCODE HELPERS (Must be before /:id)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Get all products with barcodes (for barcode page listing)
+productRoutes.get('/barcodes', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
+    try {
+        const db = req.tx ?? globalDb;
+        const filter = req.branchFilter;
+        const conds: any[] = [isNotNull(products.barcode)];
+
+        if (filter?.scopeByStore && filter.storeIds.length > 0) {
+            conds.push(inArray(products.storeId, filter.storeIds));
+        } else if (filter && filter.branchIds.length > 0) {
+            const ownerBranches = await db.query.branches.findMany({
+                where: inArray(branches.id, filter.branchIds),
+                columns: { storeId: true },
+            });
+            const ownerStoreIds = [...new Set(ownerBranches.map(b => b.storeId))];
+            conds.push(or(
+                inArray(products.branchId, filter.branchIds),
+                and(isNull(products.branchId), ownerStoreIds.length > 0 ? inArray(products.storeId, ownerStoreIds) : sql`1 = 0`),
+            )!);
+        } else if (filter?.tenantId) {
+            conds.push(eq(products.tenantId, filter.tenantId));
+        }
+
+        const rows = await db.query.products.findMany({
+            where: and(...conds),
+            columns: { id: true, name: true, sku: true, barcode: true, price: true },
+            orderBy: asc(products.name),
+        });
+        res.json({ success: true, data: rows });
+    } catch (error) {
+        next(error);
+    }
+});
+
 // Get product by ID (MUST BE AFTER ALL SPECIFIC ROUTES)
 productRoutes.get('/:id', authenticate, withTenantTx(), async (req, res, next) => {
     try {
@@ -873,52 +918,6 @@ productRoutes.get('/:id', authenticate, withTenantTx(), async (req, res, next) =
         }
 
         res.json({ success: true, data: product });
-    } catch (error) {
-        next(error);
-    }
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
-// BARCODE HELPERS (Must be before /:id)
-// ═══════════════════════════════════════════════════════════════════════════
-
-// Get all products with barcodes (for barcode page listing)
-productRoutes.get('/barcodes', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
-    try {
-        const db = req.tx ?? globalDb;
-        const filter = req.branchFilter;
-        const conds: any[] = [isNotNull(products.barcode)];
-        
-        if (filter?.scopeByStore && filter.storeIds.length > 0) {
-            // Get product IDs mapped to their stores
-            const storeProds = await db.query.productStores.findMany({
-                where: inArray(productStores.storeId, filter.storeIds),
-                columns: { productId: true }
-            });
-            const scopedProductIds = storeProds.map(sp => sp.productId);
-
-            if (scopedProductIds.length > 0) {
-                conds.push(inArray(products.id, scopedProductIds));
-            } else if (filter.branchIds.length > 0) {
-                // No explicit store-product mappings yet — scope to this user's
-                // own branch, not the whole tenant (see products/skus route for
-                // the same fix and why: scopeByStore now flips true for every
-                // staff member once they have a userStores row).
-                conds.push(inArray(products.branchId, filter.branchIds));
-            } else if (filter.tenantId) {
-                conds.push(eq(products.tenantId, filter.tenantId));
-            }
-        } else if (filter) {
-            if (filter.branchIds.length > 0) conds.push(inArray(products.branchId, filter.branchIds));
-            else if (filter.tenantId) conds.push(eq(products.tenantId, filter.tenantId));
-        }
-
-        const rows = await db.query.products.findMany({
-            where: and(...conds),
-            columns: { id: true, name: true, sku: true, barcode: true, price: true },
-            orderBy: asc(products.name),
-        });
-        res.json({ success: true, data: rows });
     } catch (error) {
         next(error);
     }
@@ -971,23 +970,33 @@ productRoutes.put('/:id', authenticate, withTenantTx(), authorize('products:upda
             updateConds.push(eq(products.tenantId, tenantId));
         }
 
-        const existing = await db.query.products.findFirst({ where: and(...updateConds), columns: { branchId: true } });
+        // storeId/tenantId are required for ensureScopeAccess to correctly
+        // fall back to store-level scope for a shared (branchId=null)
+        // product — selecting branchId alone made it fall through to the
+        // "record has no scope fields at all" backward-compat branch and
+        // grant access to everyone.
+        const existing = await db.query.products.findFirst({ where: and(...updateConds), columns: { branchId: true, storeId: true, tenantId: true } });
         if (!existing) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Product not found or no access' } });
         if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
 
         const { stock, minStock, ...productData } = req.body;
-        
+
         if (productData.categoryId === '' || productData.categoryId === null) delete productData.categoryId;
         if (productData.vendorId === '' || productData.vendorId === null) delete productData.vendorId;
         if (productData.sku === '') productData.sku = null;
         if (productData.barcode === '') productData.barcode = null;
         if (minStock !== undefined) productData.lowStockThreshold = minStock;
-        if (!productData.branchId) delete productData.branchId;
+        // '' means "not selected" from a form — null is an explicit request
+        // to convert this to a shared (store-level) product, and must reach
+        // the DB, not get silently dropped.
+        if (productData.branchId === '') productData.branchId = null;
         // Ensure array columns are always arrays
         if (productData.images !== undefined) productData.images = Array.isArray(productData.images) ? productData.images : [];
         if (productData.tags !== undefined) productData.tags = Array.isArray(productData.tags) ? productData.tags : [];
-        // Never allow changing tenantId
+        // Never allow changing tenantId or storeId (immutable post-creation,
+        // same as branches.storeId/stores.tenantId elsewhere in this codebase)
         delete productData.tenantId;
+        delete productData.storeId;
 
         const [product] = await db.update(products).set({ ...productData, updatedAt: new Date() }).where(and(...updateConds)).returning();
 
@@ -1009,7 +1018,7 @@ productRoutes.delete('/:id', authenticate, withTenantTx(), authorize('products:d
             delConds.push(eq(products.tenantId, tenantId));
         }
 
-        const existing = await db.query.products.findFirst({ where: and(...delConds), columns: { branchId: true } });
+        const existing = await db.query.products.findFirst({ where: and(...delConds), columns: { branchId: true, storeId: true, tenantId: true } });
         if (!existing) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Product not found or no access' } });
         if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
 

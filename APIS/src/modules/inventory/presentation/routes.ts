@@ -85,9 +85,25 @@ inventoryRoutes.get('/', authenticate, withTenantTx(), branchFilter(), async (re
         if (tenantId && !req.authUser?.isSuperAdmin) {
             prodConds.push(eq(products.tenantId, tenantId));
         }
-        const prodScope = buildBranchIdScope(filter, products.branchId);
-        if (prodScope) prodConds.push(prodScope);
-        else if (!filter && userBranchId) prodConds.push(eq(products.branchId, userBranchId));
+        // Must also include shared (branchId null) products from the user's
+        // own store — a plain branchId match would silently hide a store's
+        // shared catalog from this inventory list (see products routes for
+        // the same pattern and why).
+        if (filter && filter.roleLevel > 2 && filter.branchIds.length > 0) {
+            const ownerBranches = await db.query.branches.findMany({
+                where: inArray(branches.id, filter.branchIds),
+                columns: { storeId: true },
+            });
+            const ownerStoreIds = [...new Set(ownerBranches.map(b => b.storeId))];
+            prodConds.push(or(
+                inArray(products.branchId, filter.branchIds),
+                and(isNull(products.branchId), ownerStoreIds.length > 0 ? inArray(products.storeId, ownerStoreIds) : sql`1 = 0`),
+            )!);
+        } else {
+            const prodScope = buildBranchIdScope(filter, products.branchId);
+            if (prodScope) prodConds.push(prodScope);
+            else if (!filter && userBranchId) prodConds.push(eq(products.branchId, userBranchId));
+        }
         if (search) {
             const s = String(search);
             prodConds.push(or(ilike(products.name, `%${s}%`), ilike(products.sku, `%${s}%`), ilike(products.barcode, `%${s}%`)));
@@ -174,8 +190,20 @@ inventoryRoutes.get('/stats', authenticate, withTenantTx(), branchFilter(), quer
         // BE-76: Tenant isolation
         const statsTenantId = req.authUser?.tenantId;
         if (statsTenantId && !req.authUser?.isSuperAdmin) statsConds.push(eq(products.tenantId, statsTenantId));
-        const statsScope = buildScopeCondition(filter, { branchId: products.branchId }, 'branchId');
-        if (statsScope) statsConds.push(statsScope);
+        if (filter && filter.roleLevel > 2 && filter.branchIds.length > 0) {
+            const ownerBranches = await db.query.branches.findMany({
+                where: inArray(branches.id, filter.branchIds),
+                columns: { storeId: true },
+            });
+            const ownerStoreIds = [...new Set(ownerBranches.map(b => b.storeId))];
+            statsConds.push(or(
+                inArray(products.branchId, filter.branchIds),
+                and(isNull(products.branchId), ownerStoreIds.length > 0 ? inArray(products.storeId, ownerStoreIds) : sql`1 = 0`),
+            )!);
+        } else {
+            const statsScope = buildScopeCondition(filter, { branchId: products.branchId }, 'branchId');
+            if (statsScope) statsConds.push(statsScope);
+        }
         const statsProducts = await db.query.products.findMany({
             where: and(...statsConds),
             with: { inventory: true },

@@ -148,6 +148,7 @@ export const productsRelations = relations(products, ({ one, many }) => ({
     tenant: one(tenants, { fields: [products.tenantId], references: [tenants.id] }),
     category: one(categories, { fields: [products.categoryId], references: [categories.id] }),
     vendor: one(vendors, { fields: [products.vendorId], references: [vendors.id] }),
+    store: one(stores, { fields: [products.storeId], references: [stores.id] }),
     branch: one(branches, { fields: [products.branchId], references: [branches.id] }),
     inventory: many(inventory),
     transactionItems: many(transactionItems),

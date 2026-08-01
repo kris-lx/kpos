@@ -4,7 +4,7 @@
 
 import { db } from '@/config/database.config';
 import { settings, categories, products, tables, branches } from '@/db/schema/tables';
-import { eq, and, asc } from 'drizzle-orm';
+import { eq, and, or, isNull, asc } from 'drizzle-orm';
 import { OrderService, CreateOrderDTO, CreateOrderItemDTO } from './OrderService';
 import { OrderType } from '../../domain/entities';
 import { setSuperAdminBypassContext } from '@/db/set-tenant-context';
@@ -118,7 +118,18 @@ export class EMenuService {
             });
 
             const prodConds: any[] = [eq(products.isActive, true)];
-            if (branchId) prodConds.push(eq(products.branchId, branchId));
+            if (branchId) {
+                // Must also include shared (branchId null) products from this
+                // branch's own store, or a QR/e-menu scoped to one branch
+                // would silently omit the brand's shared catalog items.
+                const owningBranch = await tx.query.branches.findFirst({
+                    where: eq(branches.id, branchId),
+                    columns: { storeId: true },
+                });
+                prodConds.push(owningBranch
+                    ? or(eq(products.branchId, branchId), and(isNull(products.branchId), eq(products.storeId, owningBranch.storeId)))!
+                    : eq(products.branchId, branchId));
+            }
             if (tenantId) prodConds.push(eq(products.tenantId, tenantId));
 
             const productList = await tx.query.products.findMany({
@@ -184,9 +195,9 @@ export class EMenuService {
             const { tableId, orderItemsData, tenantId } = await db.transaction(async (tx) => {
                 await setSuperAdminBypassContext(tx, { local: true });
 
-                const branch = await tx.query.branches.findFirst({ where: eq(branches.id, branchId), columns: { tenantId: true } });
+                const branch = await tx.query.branches.findFirst({ where: eq(branches.id, branchId), columns: { tenantId: true, storeId: true } });
                 const resolvedTenantId = branch?.tenantId || undefined;
-                if (!resolvedTenantId) {
+                if (!branch || !resolvedTenantId) {
                     // Not currently reachable (branchId is required by the
                     // route and every lookup below is already scoped by it),
                     // but fail loudly rather than silently proceeding through
@@ -205,11 +216,16 @@ export class EMenuService {
 
                 const resolvedItems: CreateOrderItemDTO[] = await Promise.all(
                     items.map(async (item) => {
-                        // Only accept products that actually belong to this branch and are
-                        // active — never trust the client-supplied name/price, and reject
-                        // cross-branch/cross-tenant product injection.
+                        // Only accept products that actually belong to this branch (or are
+                        // shared from its store) and are active — never trust the
+                        // client-supplied name/price, and reject cross-branch/cross-tenant
+                        // product injection.
                         const product = await tx.query.products.findFirst({
-                            where: and(eq(products.id, item.itemId), eq(products.branchId, branchId), eq(products.isActive, true)),
+                            where: and(
+                                eq(products.id, item.itemId),
+                                or(eq(products.branchId, branchId), and(isNull(products.branchId), eq(products.storeId, branch.storeId)))!,
+                                eq(products.isActive, true),
+                            ),
                             with: { category: { columns: { name: true } } },
                         });
                         if (!product || !this.isRestaurantMenuProduct(product)) {

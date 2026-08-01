@@ -190,6 +190,13 @@
       "when": 1783965786823,
       "tag": "0026_store_path_scope_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1784065000000,
+      "tag": "0027_product_store_catalog",
+      "breakpoints": true
     }
   ]
 }

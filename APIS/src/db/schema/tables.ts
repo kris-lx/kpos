@@ -366,7 +366,12 @@ export const products = pgTable('products', {
     barcode: text('barcode'),
     categoryId: uuid('category_id'),
     vendorId: uuid('vendor_id'),
-    branchId: uuid('branch_id').notNull(),
+    // Every product belongs to exactly one store (its brand). branchId is
+    // nullable: null = shared across every branch under that store (the
+    // brand's catalog, inherited by every franchise branch); set = exclusive
+    // to that one branch (a franchisee's own local item).
+    storeId: uuid('store_id').notNull(),
+    branchId: uuid('branch_id'),
     price: doublePrecision('price').notNull(),
     cost: doublePrecision('cost').notNull().default(0),
     unit: text('unit').notNull().default('piece'),
@@ -386,6 +391,7 @@ export const products = pgTable('products', {
 }, (t) => [
     index('products_tenant_idx').on(t.tenantId),
     index('products_branch_idx').on(t.branchId),
+    index('products_store_idx').on(t.storeId),
 ]);
 
 export const skuVariants = pgTable('sku_variants', {

@@ -261,6 +261,10 @@ staffRoutes.post('/', authenticate, withTenantTx(), branchFilter(), authorize('s
             res.status(400).json({ success: false, error: { code: 'VAL_001', message: 'Email, password, and name are required' } });
             return;
         }
+        // Login always looks up by email.toLowerCase() (auth.service.ts) — storing
+        // the raw-case value here made any mixed-case staff email permanently
+        // unable to log in.
+        const normalizedEmail = String(email).toLowerCase().trim();
         if (!roleId && !role) {
             res.status(400).json({ success: false, error: { code: 'VAL_003', message: 'roleId or role is required' } });
             return;
@@ -306,7 +310,7 @@ staffRoutes.post('/', authenticate, withTenantTx(), branchFilter(), authorize('s
         }
 
         // Check if email exists (tenant-scoped for multi-tenancy)
-        const emailConds: any[] = [eq(users.email, email)];
+        const emailConds: any[] = [eq(users.email, normalizedEmail)];
         if (tenantId) emailConds.push(eq(users.tenantId, tenantId));
         const existing = await db.query.users.findFirst({ where: and(...emailConds) });
         if (existing) {
@@ -366,7 +370,7 @@ staffRoutes.post('/', authenticate, withTenantTx(), branchFilter(), authorize('s
 
         const [staff] = await db.insert(users).values({
             tenantId,
-            email,
+            email: normalizedEmail,
             password: hashedPassword,
             name,
             phone: phone || null,
@@ -444,6 +448,9 @@ staffRoutes.put('/:id', authenticate, withTenantTx(), authorize('staff:update'),
 
         if (password) {
             updateData.password = await argon2.hash(password);
+        }
+        if (updateData.email) {
+            updateData.email = String(updateData.email).toLowerCase().trim();
         }
 
         // Remove empty string fields

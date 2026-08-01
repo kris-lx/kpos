@@ -7,7 +7,7 @@ import { authenticate, authorize, branchFilter, applyScopeFilter, buildScopeCond
 import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
 import { db as globalDb } from '@/config/database.config';
 import { transactions, transactionItems, transactionPayments, products, customers, inventory, users, promotions, coupons, pointsHistory, members, membershipTiers, branches, shifts } from '@/db/schema/tables';
-import { eq, and, or, not, ilike, inArray, isNotNull, gte, lte, lt, desc, asc, count, sum, sql } from 'drizzle-orm';
+import { eq, and, or, not, ilike, inArray, isNotNull, isNull, gte, lte, lt, desc, asc, count, sum, sql } from 'drizzle-orm';
 import { computeDerivedFields, sortByTotalSales, summarise } from '../domain/branch-compare.js';
 
 export const reportRoutes = Router();
@@ -38,12 +38,26 @@ reportRoutes.get('/summary', authenticate, withTenantTx(), branchFilter(), async
 
         const [todaySales] = await dbRead.select({ total: sum(transactions.total), cnt: count() }).from(transactions).where(and(...txConds));
 
-        // Total products
+        // Total products — must also count shared (branchId null) products
+        // from the user's own store, or this undercounts what the branch can
+        // actually sell (see products routes for the same pattern and why).
         const prodConds: any[] = [eq(products.isActive, true)];
         if (tenantId && !req.authUser?.isSuperAdmin) prodConds.push(eq(products.tenantId, tenantId));
-        const prodScope = buildScopeCondition(filter, { branchId: products.branchId }, 'branchId');
-        if (prodScope) prodConds.push(prodScope);
-        if (!filter && branchId)prodConds.push(eq(products.branchId, branchId));
+        if (filter && filter.roleLevel > 2 && filter.branchIds.length > 0) {
+            const ownerBranches = await dbRead.query.branches.findMany({
+                where: inArray(branches.id, filter.branchIds),
+                columns: { storeId: true },
+            });
+            const ownerStoreIds = [...new Set(ownerBranches.map(b => b.storeId))];
+            prodConds.push(or(
+                inArray(products.branchId, filter.branchIds),
+                and(isNull(products.branchId), ownerStoreIds.length > 0 ? inArray(products.storeId, ownerStoreIds) : sql`1 = 0`),
+            )!);
+        } else {
+            const prodScope = buildScopeCondition(filter, { branchId: products.branchId }, 'branchId');
+            if (prodScope) prodConds.push(prodScope);
+            if (!filter && branchId) prodConds.push(eq(products.branchId, branchId));
+        }
         const [{ value: totalProducts }] = await dbRead.select({ value: count() }).from(products).where(and(...prodConds));
 
         // Total customers

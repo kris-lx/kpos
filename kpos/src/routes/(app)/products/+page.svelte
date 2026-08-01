@@ -96,6 +96,9 @@
         description: "",
         stock: 0,
         minStock: 10,
+        // 'branch' (default) = only this branch; 'store' = shared across
+        // every branch under the store (a brand-wide catalog item).
+        scope: "branch" as "branch" | "store",
     });
 
     // Reusable unit list: previously-used units across products + common Lao POS defaults
@@ -233,8 +236,27 @@
             if (formData.vendorId && formData.vendorId !== '') data.vendorId = formData.vendorId;
             if (formData.description && formData.description.trim() !== '') data.description = formData.description.trim();
             if (formData.image && formData.image.trim() !== '') data.image = formData.image;
-            if (formData.stock !== undefined && formData.stock > 0) data.stock = Number(formData.stock);
-            if (formData.minStock !== undefined) data.minStock = Number(formData.minStock);
+            // Shared (store-level) products have no single branch to seed
+            // stock into — each branch stocks it in independently later.
+            if (formData.scope !== "store") {
+                if (formData.stock !== undefined && formData.stock > 0) data.stock = Number(formData.stock);
+                if (formData.minStock !== undefined) data.minStock = Number(formData.minStock);
+            }
+
+            if (editingProduct) {
+                // PUT has no `scope` shorthand — only branchId itself. '' is
+                // treated as an explicit null (convert to shared) by the
+                // backend; switching back to branch-exclusive falls back to
+                // the caller's own active branch (no per-branch picker in
+                // this form yet).
+                const wasShared = !editingProduct.branchId;
+                const nowShared = formData.scope === "store";
+                if (wasShared !== nowShared) {
+                    data.branchId = nowShared ? "" : (auth.activeBranchId || "");
+                }
+            } else {
+                data.scope = formData.scope;
+            }
 
             // Size/color stored in the generic `attributes` JSON column
             const attributes: Record<string, string> = {};
@@ -307,6 +329,7 @@
             color: product.attributes?.color || "",
             isActive: product.isActive ?? true,
             image: product.image || "",
+            scope: product.branchId ? "branch" : "store",
         };
         imagePreview = product.image || null;
         showModal = true;
@@ -336,6 +359,7 @@
             color: "",
             isActive: true,
             image: "",
+            scope: "branch",
         };
     }
 
@@ -767,6 +791,14 @@
                             <h3 class="font-semibold text-gray-900 dark:text-white line-clamp-1">
                                 {product.name}
                             </h3>
+                            {#if !product.branchId}
+                                <span
+                                    class="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400"
+                                    title="ໃຊ້ຮ່ວມກັນທຸກສາຂາ — Shared across every branch"
+                                >
+                                    ຮ່ວມກັນ
+                                </span>
+                            {/if}
                         </div>
 
                         {#if product.sku}
@@ -851,7 +883,17 @@
                                             {/if}
                                         </div>
                                         <div>
-                                            <p class="font-medium text-gray-900 dark:text-white">{product.name}</p>
+                                            <p class="font-medium text-gray-900 dark:text-white flex items-center gap-1.5">
+                                                {product.name}
+                                                {#if !product.branchId}
+                                                    <span
+                                                        class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400"
+                                                        title="ໃຊ້ຮ່ວມກັນທຸກສາຂາ — Shared across every branch"
+                                                    >
+                                                        ຮ່ວມກັນ
+                                                    </span>
+                                                {/if}
+                                            </p>
                                             {#if product.barcode}
                                                 <p class="text-xs text-gray-500 dark:text-gray-400 font-mono">{product.barcode}</p>
                                             {/if}
@@ -1112,6 +1154,40 @@
                     </div>
                 </div>
 
+                <div>
+                    <span class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                        ຂອບເຂດສິນຄ້າ (Scope)
+                    </span>
+                    <div class="grid grid-cols-2 gap-3">
+                        <button
+                            type="button"
+                            onclick={() => (formData.scope = "branch")}
+                            class={cn(
+                                "px-4 py-2.5 rounded-xl border text-sm font-medium text-left transition-all",
+                                formData.scope === "branch"
+                                    ? "border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300"
+                                    : "border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400"
+                            )}
+                        >
+                            <div class="font-semibold">ສະເພາະສາຂານີ້</div>
+                            <div class="text-xs opacity-70">Only this branch</div>
+                        </button>
+                        <button
+                            type="button"
+                            onclick={() => (formData.scope = "store")}
+                            class={cn(
+                                "px-4 py-2.5 rounded-xl border text-sm font-medium text-left transition-all",
+                                formData.scope === "store"
+                                    ? "border-purple-500 bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300"
+                                    : "border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400"
+                            )}
+                        >
+                            <div class="font-semibold">ໃຊ້ຮ່ວມກັນທຸກສາຂາ</div>
+                            <div class="text-xs opacity-70">Shared — every branch</div>
+                        </button>
+                    </div>
+                </div>
+
                 <div class="grid grid-cols-2 gap-4">
                     <div>
                         <label for="a11y-app-products-page-svelte-4" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
@@ -1177,7 +1253,13 @@
                     ></textarea>
                 </div>
 
+                {#if formData.scope === "store"}
+                    <p class="text-xs text-gray-500 dark:text-gray-400 -mt-2">
+                        ສິນຄ້ານີ້ໃຊ້ຮ່ວມກັນທຸກສາຂາ — ແຕ່ລະສາຂາຈະຕ້ອງເພີ່ມສະຕ໋ອກຂອງຕົນເອງ
+                    </p>
+                {/if}
                 <div class="grid grid-cols-3 gap-4">
+                    {#if formData.scope !== "store"}
                     <div>
                         <label for="a11y-app-products-page-svelte-9" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             ສະຕ໋ອກ
@@ -1200,6 +1282,7 @@
                             class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                         />
                     </div>
+                    {/if}
                     <div>
                         <label for="a11y-app-products-page-svelte-11" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             ຫົວໜ່ວຍ
