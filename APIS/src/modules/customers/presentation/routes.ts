@@ -53,7 +53,9 @@ customerRoutes.get('/', authenticate, withTenantTx(), branchFilter(), async (req
             conditions.push(eq(customers.storeId, String(storeId)));
         }
         if (branchId) {
-            if (filter && !filter.branchIds.includes(String(branchId))) {
+            // Empty filter.branchIds means "no restriction" (tenant-wide
+            // admin) — see products/dashboard routes for the same fix.
+            if (filter && filter.branchIds.length > 0 && !filter.branchIds.includes(String(branchId))) {
                 return res.status(403).json({
                     success: false,
                     error: { code: 'FORBIDDEN', message: 'No access to this branch' }

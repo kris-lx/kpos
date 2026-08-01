@@ -160,6 +160,34 @@ export function legacyPermTobit(perm: string): PermBit | undefined {
     return LEGACY_PERM_MAP[perm];
 }
 
+/**
+ * Every permission string the system actually recognizes (authorize() calls,
+ * role assignment, etc.) — derived from LEGACY_PERM_MAP itself so it can
+ * never drift out of sync with what authorize() actually checks. This is
+ * the canonical catalog: the `permission_groups`/`permissions` DB tables
+ * exist for an editable-catalog UI but are seeded by nobody in practice, so
+ * every consumer that needs "the full list of valid permission strings"
+ * (role-permission validation, the role-editor's checkbox list) should fall
+ * back to this rather than silently treating an empty/unseeded DB table as
+ * "there are zero valid permissions."
+ */
+export function getAllPermissionKeys(): string[] {
+    return Object.keys(LEGACY_PERM_MAP);
+}
+
+/**
+ * Same catalog as getAllPermissionKeys(), grouped by the module prefix
+ * (the part before ':') for a checkbox-list UI.
+ */
+export function getGroupedPermissionKeys(): Record<string, string[]> {
+    const grouped: Record<string, string[]> = {};
+    for (const key of Object.keys(LEGACY_PERM_MAP)) {
+        const [module] = key.split(':');
+        (grouped[module] ??= []).push(key);
+    }
+    return grouped;
+}
+
 // ─── Legacy string → bitmask mapping ────────────────────────────────────
 
 const LEGACY_PERM_MAP: Record<string, PermBit> = {

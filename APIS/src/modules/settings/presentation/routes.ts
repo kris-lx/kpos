@@ -36,23 +36,30 @@ async function upsertSetting(category: string, key: string, value: any, branchId
 }
 
 // Helper: get settings with branch fallback (global + branch-specific)
-async function getSettingsForBranch(category: string, branchId: string | undefined, tenantId?: string) {
+async function getSettingsForBranch(db: any, category: string, branchId: string | undefined, tenantId?: string) {
     const branchFilter = branchId
         ? or(isNull(settings.branchId), eq(settings.branchId, branchId))
         : isNull(settings.branchId);
     const conds: any[] = [eq(settings.category, category), branchFilter];
     if (tenantId) conds.push(or(isNull(settings.tenantId), eq(settings.tenantId, tenantId)));
-    return globalDb.query.settings.findMany({ where: and(...conds) });
+    // `settings` has FORCE ROW LEVEL SECURITY — reading via globalDb (no
+    // per-request tenant GUC set) silently returned zero rows for every
+    // tenant-scoped settings row, regardless of category. Same bug shape as
+    // the email-provider RLS bug fixed earlier: any settings saved via these
+    // two helpers (printer, receipt, tax, integrations, notifications, and
+    // the generic category lookup) were saved correctly but could never be
+    // read back. Must use the caller's req.tx (tenant-scoped connection).
+    return db.query.settings.findMany({ where: and(...conds) });
 }
 
 // Helper: get settings for multiple categories with branch fallback
-async function getSettingsForBranchMultiCategory(categories: string[], branchId: string | undefined, tenantId?: string) {
+async function getSettingsForBranchMultiCategory(db: any, categories: string[], branchId: string | undefined, tenantId?: string) {
     const branchFilter = branchId
         ? or(isNull(settings.branchId), eq(settings.branchId, branchId))
         : isNull(settings.branchId);
     const conds: any[] = [inArray(settings.category, categories), branchFilter];
     if (tenantId) conds.push(or(isNull(settings.tenantId), eq(settings.tenantId, tenantId)));
-    return globalDb.query.settings.findMany({ where: and(...conds) });
+    return db.query.settings.findMany({ where: and(...conds) });
 }
 /* eslint-enable no-restricted-syntax */
 
@@ -266,7 +273,7 @@ settingRoutes.get('/category/:category', authenticate, withTenantTx(), async (re
         const branchId = req.query.branchId ? String(req.query.branchId) : req.user!.branchId;
 
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
-        const settingsRows = await getSettingsForBranch(category, branchId, tenantId);
+        const settingsRows = await getSettingsForBranch(db, category, branchId, tenantId);
 
         // Convert to key-value object
         const settingsObject = settingsRows.reduce((acc, s) => {
@@ -289,7 +296,7 @@ settingRoutes.get('/receipt/design', authenticate, withTenantTx(), async (req, r
         const branchId = req.query.branchId ? String(req.query.branchId) : (req.authUser?.activeBranchId || req.user!.branchId);
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
 
-        const rows = await getSettingsForBranch('receipt', branchId, tenantId);
+        const rows = await getSettingsForBranch(db, 'receipt', branchId, tenantId);
         const designRow = rows.find(r => r.key === 'design');
 
         if (!designRow) {
@@ -504,7 +511,7 @@ settingRoutes.get('/integrations', authenticate, withTenantTx(), async (req, res
         const branchId = req.query.branchId ? String(req.query.branchId) : req.user!.branchId;
 
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
-        const settingsRows = await getSettingsForBranchMultiCategory(['integrations', 'integration'], branchId, tenantId);
+        const settingsRows = await getSettingsForBranchMultiCategory(db, ['integrations', 'integration'], branchId, tenantId);
 
         // Return as array with id from key
         const integrations = settingsRows.map(s => {
@@ -670,7 +677,7 @@ settingRoutes.get('/receipt', authenticate, withTenantTx(), async (req, res, nex
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
 
         const [settingsRows, branch] = await Promise.all([
-            getSettingsForBranch('receipt', branchId, tenantId),
+            getSettingsForBranch(db, 'receipt', branchId, tenantId),
             branchId
                 ? db.query.branches.findFirst({
                     where: eq(branches.id, branchId),
@@ -843,7 +850,7 @@ settingRoutes.get('/taxes', authenticate, withTenantTx(), async (req, res, next)
         const branchId = req.query.branchId ? String(req.query.branchId) : req.user!.branchId;
         
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
-        const settingsRows = await getSettingsForBranch('tax', branchId, tenantId);
+        const settingsRows = await getSettingsForBranch(db, 'tax', branchId, tenantId);
         
         // Convert settings to tax list format
         const taxList = settingsRows
@@ -942,7 +949,7 @@ settingRoutes.get('/printers', authenticate, withTenantTx(), async (req, res, ne
         }
 
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
-        const settingsRows = await getSettingsForBranch('printer', branchId, tenantId);
+        const settingsRows = await getSettingsForBranch(db, 'printer', branchId, tenantId);
         
         const printers = settingsRows
             .filter(s => s.key.startsWith('printer_'))
@@ -1368,7 +1375,7 @@ settingRoutes.get('/notifications', authenticate, withTenantTx(), async (req, re
         const branchId = req.query.branchId ? String(req.query.branchId) : req.user!.branchId;
         
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
-        const settingsRows = await getSettingsForBranch('notifications', branchId, tenantId);
+        const settingsRows = await getSettingsForBranch(db, 'notifications', branchId, tenantId);
         
         const notifSettings = settingsRows.reduce((acc, s) => {
             acc[s.key] = s.value;

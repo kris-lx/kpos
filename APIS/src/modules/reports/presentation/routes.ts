@@ -332,8 +332,8 @@ reportRoutes.get('/inventory', authenticate, withTenantTx(), branchFilter(), asy
                 totalItems: allInventory.length,
                 lowStockItems: allInventory.filter(i => i.quantity <= 10 && i.quantity > 0).length,
                 outOfStock: allInventory.filter(i => i.quantity <= 0).length,
-                totalStockValue: allInventory.reduce((sum, i) => sum + i.quantity * i.product.cost, 0),
-                totalRetailValue: allInventory.reduce((sum, i) => sum + i.quantity * i.product.price, 0),
+                totalStockValue: allInventory.reduce((sum, i) => sum + i.quantity * (i.product?.cost ?? 0), 0),
+                totalRetailValue: allInventory.reduce((sum, i) => sum + i.quantity * (i.product?.price ?? 0), 0),
             },
         });
     } catch (error) {

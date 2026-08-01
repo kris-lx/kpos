@@ -4,7 +4,7 @@
 
 import { Router } from 'express';
 import { authenticate, authorize, ROLE_LEVELS, invalidateUserStoreCache } from '@/infrastructure/http/middleware/auth.middleware';
-import { permissionsToMask, maskToStrings } from '@/infrastructure/permissions';
+import { permissionsToMask, maskToStrings, getAllPermissionKeys, getGroupedPermissionKeys } from '@/infrastructure/permissions';
 import { invalidateAllTenantPermissions, invalidateUserPermissions } from '@/infrastructure/services/permission.service';
 import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
 import { db as globalDb } from '@/config/database.config';
@@ -20,7 +20,15 @@ async function loadActivePermissionKeys(): Promise<Set<string>> {
         where: eq(permissions.isActive, true),
         columns: { key: true },
     });
-    return new Set(rows.map(row => row.key));
+    // The permission_groups/permissions tables exist for an editable-catalog
+    // UI but are never actually seeded in this deployment — if the DB table
+    // is empty, falling back to it as "zero valid permissions" rejects every
+    // role create/update that includes any permission at all, which is
+    // exactly what was happening (confirmed via QA: POST /roles with
+    // permissions:["products:view"] returned INVALID_PERMISSIONS). Union
+    // with the hardcoded LEGACY_PERM_MAP catalog, which is guaranteed to be
+    // in sync with what authorize() actually checks.
+    return new Set([...rows.map(row => row.key), ...getAllPermissionKeys()]);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -61,7 +69,16 @@ roleRoutes.get('/permissions', authenticate, withTenantTx(), authorize('roles:re
             return res.json({ success: true, data: { all, grouped } });
         }
 
-        res.json({ success: true, data: { all: [], grouped: {} } });
+        // DB catalog is unseeded — fall back to the hardcoded LEGACY_PERM_MAP
+        // catalog instead of an empty list (see loadActivePermissionKeys for
+        // why this fallback is load-bearing, not cosmetic: the role editor's
+        // checkbox list would otherwise render with nothing to select).
+        const fallbackGrouped = getGroupedPermissionKeys();
+        const grouped: Record<string, { key: string; label: string; permissions: { key: string; label: string }[] }> = {};
+        for (const [module, keys] of Object.entries(fallbackGrouped)) {
+            grouped[module] = { key: module, label: module, permissions: keys.map(k => ({ key: k, label: k })) };
+        }
+        res.json({ success: true, data: { all: getAllPermissionKeys(), grouped } });
     } catch (error) {
         console.error('Get permissions error:', error);
         res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Failed to get permissions' } });

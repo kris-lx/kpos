@@ -14,7 +14,11 @@ export const dashboardRoutes = Router();
 
 // Helper: build branch check condition
 function branchAccessCheck(filter: ScopeFilter | undefined, branchIdParam: string | undefined, res: any): { ok: boolean; branchCondition?: any } {
-    if (branchIdParam && filter && !filter.branchIds.includes(String(branchIdParam))) {
+    // An empty filter.branchIds means "no restriction" (tenant-wide admins,
+    // roleLevel <= 2) — NOT "allowed in zero branches". Without the
+    // length check, every tenant-wide owner got a 403 the instant the
+    // dashboard passed an explicit branchId (which it always does).
+    if (branchIdParam && filter && filter.branchIds.length > 0 && !filter.branchIds.includes(String(branchIdParam))) {
         res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
         return { ok: false };
     }

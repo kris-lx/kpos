@@ -161,7 +161,13 @@ promotionRoutes.post('/coupons', authenticate, withTenantTx(), authorize('promot
 
         const data = { ...req.body };
         if (data.startDate) data.startDate = new Date(data.startDate);
-        if (data.endDate) data.endDate = data.endDate ? new Date(data.endDate) : null;
+        // The form's default/common case sends endDate as "" (no end date
+        // chosen). The old `if (data.endDate) data.endDate = ... : null`
+        // guard skipped the whole assignment whenever endDate was falsy,
+        // leaving the raw empty string to reach Drizzle's insert — which
+        // then crashed calling "".toISOString() on every coupon created
+        // without an explicit end date (the default path through the UI).
+        data.endDate = data.endDate ? new Date(data.endDate) : null;
         if (req.authUser?.activeStoreId) data.storeId = req.authUser.activeStoreId;
         if (req.authUser?.tenantId) data.tenantId = req.authUser.tenantId;
 

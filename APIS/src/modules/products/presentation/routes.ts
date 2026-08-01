@@ -670,7 +670,11 @@ productRoutes.get('/', authenticate, withTenantTx(), branchFilter(), async (req,
         }
 
         if (branchId) {
-            if (filter && !filter.branchIds.includes(String(branchId))) {
+            // Empty filter.branchIds means "no restriction" (tenant-wide
+            // admin), not "allowed in zero branches" — without the length
+            // check this 403'd every tenant-wide owner as soon as the UI
+            // passed an explicit branchId (e.g. the dashboard always does).
+            if (filter && filter.branchIds.length > 0 && !filter.branchIds.includes(String(branchId))) {
                 return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
             }
             prodConds.push(eq(products.branchId, String(branchId)));
