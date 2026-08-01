@@ -148,8 +148,12 @@ promotionRoutes.post('/coupons/validate', authenticate, withTenantTx(), async (r
 promotionRoutes.post('/coupons', authenticate, withTenantTx(), authorize('promotions:create'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
-        // Check if code exists
-        const existing = await db.query.coupons.findFirst({ where: eq(coupons.code, req.body.code) });
+        // Check if code exists (tenant-scoped — otherwise a coupon code taken
+        // by an unrelated tenant would spuriously block this one)
+        const createTenantId = req.authUser?.tenantId;
+        const codeDupConds: any[] = [eq(coupons.code, req.body.code)];
+        if (createTenantId && !req.authUser?.isSuperAdmin) codeDupConds.push(eq(coupons.tenantId, createTenantId));
+        const existing = await db.query.coupons.findFirst({ where: and(...codeDupConds) });
         if (existing) {
             res.status(400).json({ success: false, error: { code: 'VAL_002', message: 'Coupon code already exists' } });
             return;

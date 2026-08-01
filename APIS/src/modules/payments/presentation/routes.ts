@@ -56,9 +56,17 @@ paymentRoutes.get('/transactions', authenticate, withTenantTx(), branchFilter(),
         if (tenantId && !req.authUser?.isSuperAdmin) {
             conditions.push(eq(transactions.tenantId, tenantId));
         }
-        const scopeCond = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
+        const scopeCond = buildScopeCondition(filter, { storeId: transactions.storeId, branchId: transactions.branchId }, 'storeId');
         if (scopeCond) conditions.push(scopeCond);
-        if (branchId) conditions.push(eq(transactions.branchId, String(branchId)));
+        if (branchId) {
+            // Without this, a branch-scoped caller could pass any sibling
+            // branch's id directly and see its transactions — the customers
+            // module's equivalent route already validates this.
+            if (filter && filter.branchIds.length > 0 && !filter.branchIds.includes(String(branchId))) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+            }
+            conditions.push(eq(transactions.branchId, String(branchId)));
+        }
         if (status) conditions.push(eq(transactions.status, String(status)));
         if (dateFrom) conditions.push(gte(transactions.createdAt, new Date(String(dateFrom))));
         if (dateTo) conditions.push(lte(transactions.createdAt, new Date(String(dateTo))));
@@ -124,10 +132,11 @@ paymentRoutes.get('/transactions/:id', authenticate, withTenantTx(), async (req,
 });
 
 // Get transaction summary (for dashboard/reports)
-paymentRoutes.get('/summary', authenticate, withTenantTx(), async (req, res, next) => {
+paymentRoutes.get('/summary', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const { branchId, dateFrom, dateTo } = req.query;
+        const filter = req.branchFilter;
 
         const today = new Date();
         today.setHours(0, 0, 0, 0);
@@ -135,11 +144,25 @@ paymentRoutes.get('/summary', authenticate, withTenantTx(), async (req, res, nex
         const tomorrow = new Date(today);
         tomorrow.setDate(tomorrow.getDate() + 1);
 
-        const sumConditions: any[] = [eq(transactions.status, 'COMPLETED'), eq(transactions.type, 'SALE')];
-        // BE-73: Tenant isolation
+        // Shared tenant/branch scope, reused by both the totals query (which
+        // additionally filters to COMPLETED sales) and the status-breakdown
+        // query below — the latter previously had NO scoping at all when no
+        // branchId query param was supplied (not even tenant isolation),
+        // leaking every tenant's status counts into any caller's summary.
+        const scopeConditions: any[] = [];
         const tenantId = req.authUser?.tenantId;
-        if (tenantId && !req.authUser?.isSuperAdmin) sumConditions.push(eq(transactions.tenantId, tenantId));
-        if (branchId) sumConditions.push(eq(transactions.branchId, String(branchId)));
+        if (tenantId && !req.authUser?.isSuperAdmin) scopeConditions.push(eq(transactions.tenantId, tenantId));
+        const scopeCond = buildScopeCondition(filter, { storeId: transactions.storeId, branchId: transactions.branchId }, 'storeId');
+        if (scopeCond) scopeConditions.push(scopeCond);
+        if (branchId) {
+            if (filter && filter.branchIds.length > 0 && !filter.branchIds.includes(String(branchId))) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+            }
+            scopeConditions.push(eq(transactions.branchId, String(branchId)));
+        }
+        const scopeWhere = scopeConditions.length > 0 ? and(...scopeConditions) : undefined;
+
+        const sumConditions: any[] = [eq(transactions.status, 'COMPLETED'), eq(transactions.type, 'SALE'), ...scopeConditions];
         if (dateFrom) sumConditions.push(gte(transactions.createdAt, new Date(String(dateFrom))));
         if (dateTo) sumConditions.push(lte(transactions.createdAt, new Date(String(dateTo))));
         if (!dateFrom && !dateTo) {
@@ -157,7 +180,7 @@ paymentRoutes.get('/summary', authenticate, withTenantTx(), async (req, res, nex
             status: transactions.status,
             cnt: count(),
         }).from(transactions)
-            .where(branchId ? eq(transactions.branchId, String(branchId)) : undefined)
+            .where(scopeWhere)
             .groupBy(transactions.status);
 
         res.json({
@@ -327,6 +350,14 @@ paymentRoutes.post('/refunds', authenticate, withTenantTx(), authorize('payments
             return;
         }
 
+        // Without this, a branch-scoped caller holding payments:refund could
+        // refund any transaction in the tenant by id — the equivalent sales
+        // module routes already check this.
+        if (!ensureScopeAccess(originalTx, req)) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this transaction' } });
+            return;
+        }
+
         if (originalTx.status !== 'COMPLETED') {
             res.status(400).json({ success: false, error: { code: 'PMT_001', message: 'Can only refund completed transactions' } });
             return;
@@ -399,6 +430,11 @@ paymentRoutes.post('/void/:id', authenticate, withTenantTx(), authorize('payment
 
         if (!transaction) {
             res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Transaction not found or no access' } });
+            return;
+        }
+
+        if (!ensureScopeAccess(transaction, req)) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this transaction' } });
             return;
         }
 

@@ -145,8 +145,13 @@ userRoutes.get('/:id', authenticate, withTenantTx(), authorize('users:read'), as
             });
         }
 
-        // Tenant isolation: non-super-admins can only view users within their tenant
-        if (!req.authUser?.isSuperAdmin && req.authUser?.tenantId && user.tenantId && user.tenantId !== req.authUser.tenantId) {
+        // The old check here was `user.tenantId && user.tenantId !== ...` —
+        // any orphaned/legacy row with a NULL tenantId skipped the comparison
+        // entirely and was returned to every tenant's admin. It also never
+        // checked branch/store scope at all (contrast with GET /, just above,
+        // which does). canViewUserRecord() is the same guard already used by
+        // every other single-user route in this file.
+        if (!canViewUserRecord(req, user)) {
             return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'User not found' } });
         }
 

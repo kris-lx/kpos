@@ -174,8 +174,17 @@ roleRoutes.get('/', authenticate, withTenantTx(), authorize('roles:read'), async
 roleRoutes.get('/:id', authenticate, withTenantTx(), authorize('roles:read'), async (req, res) => {
     try {
         const db = req.tx ?? globalDb;
+        // Every sibling route in this file (list, update, delete, assign)
+        // tenant-scopes its lookup — this one didn't, letting any caller with
+        // roles:read fetch another tenant's role (permission set + assigned
+        // users) by guessing/enumerating its UUID.
+        const tenantId = req.authUser?.tenantId;
+        const getConds: any[] = [eq(roles.id, req.params.id)];
+        if (tenantId && !req.authUser?.isSuperAdmin) {
+            getConds.push(or(eq(roles.tenantId, tenantId), isNull(roles.tenantId)));
+        }
         const role = await db.query.roles.findFirst({
-            where: eq(roles.id, req.params.id),
+            where: and(...getConds),
             with: { users: true },
         });
 
@@ -289,6 +298,23 @@ roleRoutes.post('/', authenticate, withTenantTx(), authorize('roles:create'), as
             });
         }
 
+        // Cannot grant a permission you don't personally hold. The "higher
+        // privileges than your own" check above keys off ROLE_LEVELS[name],
+        // which defaults any custom (non-builtin) role name to level 7 — for
+        // a role named anything other than a recognized builtin, that check
+        // never blocks anything. This closes the actual escalation path
+        // regardless of what the role is named.
+        if (!req.authUser?.isSuperAdmin && (req.authUser?.roleLevel ?? 7) > 2 && !(req.authUser?.permissions || []).includes('*')) {
+            const callerPermissions = new Set(req.authUser?.permissions || []);
+            const ungranted = permissions.filter((p: string) => !callerPermissions.has(p));
+            if (ungranted.length > 0) {
+                return res.status(403).json({
+                    success: false,
+                    error: { code: 'FORBIDDEN', message: `Cannot grant permissions you do not hold: ${ungranted.join(', ')}` }
+                });
+            }
+        }
+
         const mask = permissionsToMask(permissions);
 
         const [role] = await db.insert(roles).values({
@@ -363,9 +389,11 @@ roleRoutes.put('/:id', authenticate, withTenantTx(), authorize('roles:update'), 
             }
         }
 
-        // Check if new name conflicts with another role
+        // Check if new name conflicts with another role (within the same tenant)
         if (name && name !== existing.name) {
-            const nameExists = await db.query.roles.findFirst({ where: eq(roles.name, name) });
+            const nameDupConds: any[] = [eq(roles.name, name)];
+            if (tenantId) nameDupConds.push(eq(roles.tenantId, tenantId));
+            const nameExists = await db.query.roles.findFirst({ where: and(...nameDupConds) });
             if (nameExists) {
                 return res.status(400).json({
                     success: false,
@@ -386,6 +414,18 @@ roleRoutes.put('/:id', authenticate, withTenantTx(), authorize('roles:update'), 
                         message: `Invalid permissions: ${invalidPermissions.join(', ')}`
                     }
                 });
+            }
+            // Same "cannot grant what you don't hold" guard as create — see
+            // that route for why the name-based ladder check alone isn't enough.
+            if (!req.authUser?.isSuperAdmin && (req.authUser?.roleLevel ?? 7) > 2 && !(req.authUser?.permissions || []).includes('*')) {
+                const callerPermissions = new Set(req.authUser?.permissions || []);
+                const ungranted = permissions.filter((p: string) => !callerPermissions.has(p));
+                if (ungranted.length > 0) {
+                    return res.status(403).json({
+                        success: false,
+                        error: { code: 'FORBIDDEN', message: `Cannot grant permissions you do not hold: ${ungranted.join(', ')}` }
+                    });
+                }
             }
         }
 
@@ -528,6 +568,11 @@ roleRoutes.post('/:id/assign', authenticate, withTenantTx(), authorize('roles:up
         }
 
         // Privilege ladder: cannot grant a role more privileged than your own.
+        // ROLE_LEVELS[role.name] defaults to 7 for any custom (non-builtin)
+        // role name, which makes this check a no-op for the exact roles that
+        // most need it — so the real guard is the permission-subset check
+        // below, which works off the role's actual content regardless of
+        // what it's named.
         if (!req.authUser?.isSuperAdmin) {
             const targetLevel = ROLE_LEVELS[role.name] ?? 7;
             if (targetLevel < callerLevel) {
@@ -535,6 +580,17 @@ roleRoutes.post('/:id/assign', authenticate, withTenantTx(), authorize('roles:up
                     success: false,
                     error: { code: 'FORBIDDEN', message: 'Cannot assign a role with higher privileges than your own' }
                 });
+            }
+            if (!(req.authUser?.permissions || []).includes('*')) {
+                const callerPermissions = new Set(req.authUser?.permissions || []);
+                const rolePermissions: string[] = (role.permissions as string[] | null) || [];
+                const ungranted = rolePermissions.filter((p: string) => !callerPermissions.has(p));
+                if (ungranted.length > 0) {
+                    return res.status(403).json({
+                        success: false,
+                        error: { code: 'FORBIDDEN', message: `Cannot assign a role that grants permissions you do not hold: ${ungranted.join(', ')}` }
+                    });
+                }
             }
         }
 

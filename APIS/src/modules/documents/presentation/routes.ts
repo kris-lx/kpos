@@ -32,7 +32,7 @@ documentRoutes.get('/invoices', authenticate, withTenantTx(), branchFilter(), as
         if (tenantId && !req.authUser?.isSuperAdmin) {
             conditions.push(eq(documents.tenantId, tenantId));
         }
-        const scopeCond = buildScopeCondition(filter, { storeId: documents.storeId }, 'storeId');
+        const scopeCond = buildScopeCondition(filter, { storeId: documents.storeId, branchId: documents.branchId }, 'storeId');
         if (scopeCond) conditions.push(scopeCond);
 
         if (status && status !== 'all') conditions.push(eq(documents.status, String(status).toUpperCase()));
@@ -362,7 +362,7 @@ documentRoutes.get('/tax-invoices', authenticate, withTenantTx(), branchFilter()
         if (tenantId && !req.authUser?.isSuperAdmin) {
             tConditions.push(eq(documents.tenantId, tenantId));
         }
-        const tScopeCond = buildScopeCondition(filter, { storeId: documents.storeId }, 'storeId');
+        const tScopeCond = buildScopeCondition(filter, { storeId: documents.storeId, branchId: documents.branchId }, 'storeId');
         if (tScopeCond) tConditions.push(tScopeCond);
 
         if (status && status !== 'all') tConditions.push(eq(documents.status, String(status).toUpperCase()));

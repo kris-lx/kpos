@@ -513,7 +513,9 @@ storeRoutes.put('/:id', authenticate, withTenantTx(), authorize('stores:update',
         }
 
         if (code && code !== existing.code) {
-            const codeExists = await db.query.stores.findFirst({ where: eq(stores.code, code) });
+            const codeDupConds: any[] = [eq(stores.code, code)];
+            if (existing.tenantId) codeDupConds.push(eq(stores.tenantId, existing.tenantId));
+            const codeExists = await db.query.stores.findFirst({ where: and(...codeDupConds) });
             if (codeExists) {
                 return res.status(400).json({ success: false, error: { code: 'DUPLICATE', message: 'Store code already exists' } });
             }
@@ -597,7 +599,7 @@ storeRoutes.put('/:id/transfer', authenticate, withTenantTx(), authorize('stores
 
         const [updatedStore] = await db.update(stores)
             .set({ parentStoreId: toParentStoreId || null, storePath: newStorePath, updatedAt: new Date() })
-            .where(eq(stores.id, id))
+            .where(and(...trConds))
             .returning();
 
         res.json({

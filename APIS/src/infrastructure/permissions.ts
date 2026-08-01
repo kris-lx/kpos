@@ -188,11 +188,13 @@ const LEGACY_PERM_MAP: Record<string, PermBit> = {
     'products:import':    P.PRODUCT_IMPORT,
     'products:export':    P.PRODUCT_EXPORT,
     // ── Categories ───────────────────────────────────────────────────────────
+    // Only view/read map to the bit — see the settings:view/update note below
+    // for why create/update/delete must NOT share it (a view-only role would
+    // silently pass authorize('categories:create'/'update'/'delete') via the
+    // bitmask fast-path in authorize()). Those verbs fall through to the
+    // string-array check instead, same as any unmapped permission string.
     'categories:view':    P.CATEGORY_MANAGE,
     'categories:read':    P.CATEGORY_MANAGE,
-    'categories:create':  P.CATEGORY_MANAGE,
-    'categories:update':  P.CATEGORY_MANAGE,
-    'categories:delete':  P.CATEGORY_MANAGE,
     // ── Inventory ────────────────────────────────────────────────────────────
     'inventory:view':     P.INVENTORY_VIEW,
     'inventory:read':     P.INVENTORY_VIEW,
@@ -228,22 +230,23 @@ const LEGACY_PERM_MAP: Record<string, PermBit> = {
     'users:update':       P.STAFF_UPDATE,
     'users:delete':       P.STAFF_DELETE,
     // ── Roles ────────────────────────────────────────────────────────────────
+    // Only view/read map to the bit — create/update/delete deliberately fall
+    // through to the string check (see categories note above). This one is
+    // especially load-bearing: STAFF_ROLE_ASSIGN previously covered all five
+    // verbs, so any role with only roles:view silently passed
+    // authorize('roles:create'/'update'/'delete') and could create/edit/
+    // delete other roles via the bitmask fast-path.
     'roles:view':         P.STAFF_ROLE_ASSIGN,
     'roles:read':         P.STAFF_ROLE_ASSIGN,
-    'roles:create':       P.STAFF_ROLE_ASSIGN,
-    'roles:update':       P.STAFF_ROLE_ASSIGN,
-    'roles:delete':       P.STAFF_ROLE_ASSIGN,
     // ── Store / Branch ───────────────────────────────────────────────────────
     'stores:view':        P.STORE_VIEW,
     'stores:read':        P.STORE_VIEW,
     'stores:create':      P.STORE_CREATE,
     'stores:update':      P.STORE_UPDATE,
     'stores:delete':      P.STORE_DELETE,
+    // Only view/read map to the bit — see categories note above.
     'branches:view':      P.BRANCH_MANAGE,
     'branches:read':      P.BRANCH_MANAGE,
-    'branches:create':    P.BRANCH_MANAGE,
-    'branches:update':    P.BRANCH_MANAGE,
-    'branches:delete':    P.BRANCH_MANAGE,
     // ── Settings ─────────────────────────────────────────────────────────────
     // NOTE: view/read and update are deliberately DIFFERENT bits (unlike the
     // other collapsed-CRUD modules below) — a view-only settings role must not
@@ -258,11 +261,9 @@ const LEGACY_PERM_MAP: Record<string, PermBit> = {
     'customers:update':   P.CUSTOMER_UPDATE,
     'customers:delete':   P.CUSTOMER_DELETE,
     // ── Promotions ───────────────────────────────────────────────────────────
+    // Only view/read map to the bit — see categories note above.
     'promotions:view':    P.PROMOTION_MANAGE,
     'promotions:read':    P.PROMOTION_MANAGE,
-    'promotions:create':  P.PROMOTION_MANAGE,
-    'promotions:update':  P.PROMOTION_MANAGE,
-    'promotions:delete':  P.PROMOTION_MANAGE,
     // ── Payments ─────────────────────────────────────────────────────────────
     'payments:view':      P.BILLING_VIEW,
     'payments:read':      P.BILLING_VIEW,
@@ -272,11 +273,9 @@ const LEGACY_PERM_MAP: Record<string, PermBit> = {
     'payments:void':      P.SALE_VOID,
     'payments:refund':    P.SALE_REFUND,
     // ── Documents ────────────────────────────────────────────────────────────
+    // Only view/read map to the bit — see categories note above.
     'documents:view':     P.RECEIPT_MANAGE,
     'documents:read':     P.RECEIPT_MANAGE,
-    'documents:create':   P.RECEIPT_MANAGE,
-    'documents:update':   P.RECEIPT_MANAGE,
-    'documents:delete':   P.RECEIPT_MANAGE,
     // ── Restaurant / Tables ──────────────────────────────────────────────────
     'restaurant:view':    P.SALE_VIEW,
     'restaurant:read':    P.SALE_VIEW,

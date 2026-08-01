@@ -935,7 +935,12 @@ settingRoutes.get('/printers', authenticate, withTenantTx(), async (req, res, ne
     try {
         const db = req.tx ?? globalDb;
         const branchId = req.query.branchId ? String(req.query.branchId) : req.user!.branchId;
-        
+        // A caller could otherwise read another branch's printer config
+        // within the same tenant just by passing its id.
+        if (req.query.branchId && !ensureScopeAccess({ branchId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+        }
+
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         const settingsRows = await getSettingsForBranch('printer', branchId, tenantId);
         
@@ -954,6 +959,11 @@ settingRoutes.post('/printers', authenticate, withTenantTx(), authorize('setting
     try {
         const db = req.tx ?? globalDb;
         const branchId = req.body.branchId || req.user!.branchId;
+        // A caller could otherwise write another branch's printer config
+        // within the same tenant just by passing its id.
+        if (req.body.branchId && !ensureScopeAccess({ branchId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+        }
         const {
             name, type, connectionType,
             ipAddress, port = 9100,

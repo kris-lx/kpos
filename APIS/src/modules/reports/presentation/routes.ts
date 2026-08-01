@@ -32,7 +32,7 @@ reportRoutes.get('/summary', authenticate, withTenantTx(), branchFilter(), async
         // Build scope conditions
         const txConds: any[] = [eq(transactions.status, 'COMPLETED'), eq(transactions.type, 'SALE'), gte(transactions.createdAt, today), lt(transactions.createdAt, tomorrow)];
         if (tenantId && !req.authUser?.isSuperAdmin) txConds.push(eq(transactions.tenantId, tenantId));
-        const scopeCond = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
+        const scopeCond = buildScopeCondition(filter, { storeId: transactions.storeId, branchId: transactions.branchId }, 'storeId');
         if (scopeCond) txConds.push(scopeCond);
         if (!filter && branchId)txConds.push(eq(transactions.branchId, branchId));
 
@@ -63,7 +63,7 @@ reportRoutes.get('/summary', authenticate, withTenantTx(), branchFilter(), async
         // Total customers
         const custConds: any[] = [eq(customers.isActive, true)];
         if (tenantId && !req.authUser?.isSuperAdmin) custConds.push(eq(customers.tenantId, tenantId));
-        const custScope = buildScopeCondition(filter, { storeId: customers.storeId }, 'storeId');
+        const custScope = buildScopeCondition(filter, { storeId: customers.storeId, branchId: customers.branchId }, 'storeId');
         if (custScope) custConds.push(custScope);
         const [{ value: totalCustomers }] = await dbRead.select({ value: count() }).from(customers).where(and(...custConds));
 
@@ -135,7 +135,7 @@ reportRoutes.get('/sales', authenticate, withTenantTx(), branchFilter(), async (
         // BE-76: Tenant isolation
         const tenantId = req.authUser?.tenantId;
         if (tenantId && !req.authUser?.isSuperAdmin) salesConds.push(eq(transactions.tenantId, tenantId));
-        const salesScope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
+        const salesScope = buildScopeCondition(filter, { storeId: transactions.storeId, branchId: transactions.branchId }, 'storeId');
         if (salesScope) salesConds.push(salesScope);
         if (!filter && branchId)salesConds.push(eq(transactions.branchId, branchId));
 
@@ -207,7 +207,7 @@ reportRoutes.get('/top-products', authenticate, withTenantTx(), branchFilter(), 
         // BE-76: Tenant isolation
         const tenantId = req.authUser?.tenantId;
         if (tenantId && !req.authUser?.isSuperAdmin) tpConds.push(eq(transactions.tenantId, tenantId));
-        const tpScope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
+        const tpScope = buildScopeCondition(filter, { storeId: transactions.storeId, branchId: transactions.branchId }, 'storeId');
         if (tpScope) tpConds.push(tpScope);
         if (!filter && branchId)tpConds.push(eq(transactions.branchId, branchId));
 
@@ -360,7 +360,7 @@ reportRoutes.get('/payments', authenticate, withTenantTx(), branchFilter(), asyn
         // BE-76: Tenant isolation
         const tenantId = req.authUser?.tenantId;
         if (tenantId && !req.authUser?.isSuperAdmin) pmConds.push(eq(transactions.tenantId, tenantId));
-        const pmScope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
+        const pmScope = buildScopeCondition(filter, { storeId: transactions.storeId, branchId: transactions.branchId }, 'storeId');
         if (pmScope) pmConds.push(pmScope);
         if (!filter && branchId)pmConds.push(eq(transactions.branchId, branchId));
 
@@ -424,7 +424,7 @@ reportRoutes.get('/customers', authenticate, withTenantTx(), branchFilter(), asy
         if (requestedBranchId && filter?.branchIds?.includes(requestedBranchId)) {
             custBaseConds.push(eq(customers.branchId, requestedBranchId));
         } else {
-            const crScope = buildScopeCondition(filter, { storeId: customers.storeId }, 'storeId');
+            const crScope = buildScopeCondition(filter, { storeId: customers.storeId, branchId: customers.branchId }, 'storeId');
             if (crScope) custBaseConds.push(crScope);
         }
 
@@ -433,7 +433,7 @@ reportRoutes.get('/customers', authenticate, withTenantTx(), branchFilter(), asy
         if (requestedBranchId && filter?.branchIds?.includes(requestedBranchId)) {
             txBaseConds.push(eq(transactions.branchId, requestedBranchId));
         } else {
-            const trScope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
+            const trScope = buildScopeCondition(filter, { storeId: transactions.storeId, branchId: transactions.branchId }, 'storeId');
             if (trScope) txBaseConds.push(trScope);
             if (!filter && branchId) txBaseConds.push(eq(transactions.branchId, branchId));
         }
@@ -579,7 +579,7 @@ reportRoutes.get('/products', authenticate, withTenantTx(), branchFilter(), asyn
         // BE-76: Tenant isolation
         const tenantId = req.authUser?.tenantId;
         if (tenantId && !req.authUser?.isSuperAdmin) prConds.push(eq(transactions.tenantId, tenantId));
-        const prScope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
+        const prScope = buildScopeCondition(filter, { storeId: transactions.storeId, branchId: transactions.branchId }, 'storeId');
         if (prScope) prConds.push(prScope);
         if (!filter && branchId)prConds.push(eq(transactions.branchId, branchId));
 
@@ -686,7 +686,7 @@ reportRoutes.get('/financial', authenticate, withTenantTx(), authorize('reports:
         // BE-76: Tenant isolation
         const tenantId = req.authUser?.tenantId;
         if (tenantId && !req.authUser?.isSuperAdmin) finConds.push(eq(transactions.tenantId, tenantId));
-        const finScope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
+        const finScope = buildScopeCondition(filter, { storeId: transactions.storeId, branchId: transactions.branchId }, 'storeId');
         if (finScope) finConds.push(finScope);
         if (!filter && branchId)finConds.push(eq(transactions.branchId, branchId));
 
@@ -822,7 +822,7 @@ reportRoutes.get('/staff', authenticate, withTenantTx(), branchFilter(), async (
         if (requestedBranchId && filter?.branchIds?.includes(requestedBranchId)) {
             stConds.push(eq(transactions.branchId, requestedBranchId));
         } else {
-            const stScope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
+            const stScope = buildScopeCondition(filter, { storeId: transactions.storeId, branchId: transactions.branchId }, 'storeId');
             if (stScope) stConds.push(stScope);
             if (!filter && effectiveBranchId) stConds.push(eq(transactions.branchId, effectiveBranchId));
         }
@@ -952,7 +952,7 @@ reportRoutes.get('/period-compare', authenticate, withTenantTx(), branchFilter()
         const baseConds = (from: Date, to: Date) => {
             const c: any[] = [eq(transactions.type, 'SALE'), eq(transactions.status, 'COMPLETED'), gte(transactions.createdAt, from), lte(transactions.createdAt, to)];
             if (tenantId && !isSuperAdmin) c.push(eq(transactions.tenantId, tenantId));
-            const scope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
+            const scope = buildScopeCondition(filter, { storeId: transactions.storeId, branchId: transactions.branchId }, 'storeId');
             if (scope) c.push(scope);
             if (qBranchId) c.push(eq(transactions.branchId, String(qBranchId)));
             return c;
@@ -989,7 +989,7 @@ reportRoutes.get('/staff-performance', authenticate, withTenantTx(), branchFilte
         const end = to ? new Date(String(to)) : new Date(now); end.setHours(23, 59, 59, 999);
         const addScope = (c: any[]) => {
             if (tenantId && !isSuperAdmin) c.push(eq(transactions.tenantId, tenantId));
-            const scope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
+            const scope = buildScopeCondition(filter, { storeId: transactions.storeId, branchId: transactions.branchId }, 'storeId');
             if (scope) c.push(scope);
             if (qBranchId) c.push(eq(transactions.branchId, String(qBranchId)));
             return c;
@@ -1029,7 +1029,7 @@ reportRoutes.get('/products/best-selling', authenticate, withTenantTx(), branchF
         const end = to ? new Date(String(to)) : new Date(now); end.setHours(23, 59, 59, 999);
         const txConds: any[] = [eq(transactions.type, 'SALE'), eq(transactions.status, 'COMPLETED'), gte(transactions.createdAt, start), lte(transactions.createdAt, end)];
         if (tenantId && !isSuperAdmin) txConds.push(eq(transactions.tenantId, tenantId));
-        const scope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
+        const scope = buildScopeCondition(filter, { storeId: transactions.storeId, branchId: transactions.branchId }, 'storeId');
         if (scope) txConds.push(scope);
         if (qBranchId) txConds.push(eq(transactions.branchId, String(qBranchId)));
         const rows = await dbRead.select({
@@ -1062,10 +1062,26 @@ reportRoutes.get('/promotions', authenticate, withTenantTx(), branchFilter(), as
         const promoConds: any[] = [];
         const couponConds: any[] = [];
         if (tenantId && !isSuperAdmin) { promoConds.push(eq(promotions.tenantId, tenantId)); couponConds.push(eq(coupons.tenantId, tenantId)); }
-        const promoScope = buildScopeCondition(filter, { storeId: promotions.storeId }, 'storeId');
-        if (promoScope) promoConds.push(promoScope);
-        const couponScope = buildScopeCondition(filter, { storeId: coupons.storeId }, 'storeId');
-        if (couponScope) couponConds.push(couponScope);
+        // promotions/coupons have no branchId column, only storeId, so
+        // buildScopeCondition's generic 'storeId' mode only actually scopes
+        // when filter.scopeByStore is set (a broad store-level grant) — for
+        // an ordinary single-branch caller (scopeByStore false) it silently
+        // applies NO condition at all, leaking every store's promotions/
+        // coupons in the tenant. Resolve the caller's own branch(es) to their
+        // owning store(s) instead, same pattern already used in categories/
+        // presentation/routes.ts for the same no-branchId-column shape.
+        if (filter?.scopeByStore && filter.storeIds.length > 0) {
+            promoConds.push(inArray(promotions.storeId, filter.storeIds));
+            couponConds.push(inArray(coupons.storeId, filter.storeIds));
+        } else if (filter && filter.branchIds.length > 0) {
+            const ownerBranches = await db.query.branches.findMany({
+                where: inArray(branches.id, filter.branchIds),
+                columns: { storeId: true },
+            });
+            const ownerStoreIds = [...new Set(ownerBranches.map(b => b.storeId))];
+            promoConds.push(ownerStoreIds.length > 0 ? inArray(promotions.storeId, ownerStoreIds) : sql`1 = 0`);
+            couponConds.push(ownerStoreIds.length > 0 ? inArray(coupons.storeId, ownerStoreIds) : sql`1 = 0`);
+        }
         const [promoRows, couponRows, [{ value: promotionsTotal }], [{ value: couponsTotal }]] = await Promise.all([
             dbRead.query.promotions.findMany({ where: promoConds.length > 0 ? and(...promoConds) : undefined, orderBy: desc(promotions.usageCount), limit, offset }),
             dbRead.query.coupons.findMany({ where: couponConds.length > 0 ? and(...couponConds) : undefined, orderBy: desc(coupons.usageCount), limit, offset }),

@@ -290,8 +290,8 @@ staffRoutes.post('/', authenticate, withTenantTx(), branchFilter(), authorize('s
                 res.status(400).json({ success: false, error: { code: 'ROLE_NOT_FOUND', message: 'No such role is available to assign — ask an admin to create it first' } });
                 return;
             }
-            if (resolvedRole.roleLevel < (authUser?.roleLevel ?? 7)) {
-                res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot create staff with higher privileges than your own' } });
+            if (resolvedRole.roleLevel <= (authUser?.roleLevel ?? 7)) {
+                res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot create staff with equal or higher privileges than your own' } });
                 return;
             }
         } else if (roleId || role) {
@@ -368,6 +368,16 @@ staffRoutes.post('/', authenticate, withTenantTx(), branchFilter(), authorize('s
             }
         }
 
+        // Cannot grant a permission you don't personally hold — without this,
+        // any caller with staff:create could hand a brand-new account
+        // permissions: ["*"] (or any other permission) regardless of the
+        // resolved role, since this array is merged into the user's effective
+        // permission set at auth-load time. Same guard as PUT /:id/permissions.
+        const rawPermissions = Array.isArray(permissions) ? permissions.filter((p: unknown) => typeof p === 'string') : [];
+        const scopedCreatePermissions = req.authUser?.isSuperAdmin || (req.authUser?.permissions || []).includes('*')
+            ? rawPermissions
+            : rawPermissions.filter((p: string) => (req.authUser?.permissions || []).includes(p));
+
         const [staff] = await db.insert(users).values({
             tenantId,
             email: normalizedEmail,
@@ -378,7 +388,7 @@ staffRoutes.post('/', authenticate, withTenantTx(), branchFilter(), authorize('s
             branchId: sanitizedBranchId,
             roleId: resolvedRole?.id,
             isActive: isActive !== undefined ? isActive : true,
-            permissions: Array.isArray(permissions) ? permissions : [],
+            permissions: scopedCreatePermissions,
         }).returning({
             id: users.id,
             tenantId: users.tenantId,
@@ -489,6 +499,30 @@ staffRoutes.put('/:id', authenticate, withTenantTx(), authorize('staff:update'),
             if (!branch || !ensureScopeAccess({ tenantId: branch.tenantId, branchId: branch.id }, req)) {
                 return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Branch not found or outside your scope' } });
             }
+        }
+
+        // storeId had no validation at all — a caller with staff:update could
+        // repoint a staff member's store anchor to any store UUID, including
+        // one belonging to a different tenant, corrupting their scope
+        // resolution. Same check shape as branchId above.
+        if (updateData.storeId) {
+            const storeConds: any[] = [eq(stores.id, updateData.storeId)];
+            if (target.tenantId && !req.authUser?.isSuperAdmin) storeConds.push(eq(stores.tenantId, target.tenantId));
+            const store = await db.query.stores.findFirst({ where: and(...storeConds), columns: { id: true, tenantId: true } });
+            if (!store || !ensureScopeAccess({ tenantId: store.tenantId, storeId: store.id }, req)) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Store not found or outside your scope' } });
+            }
+        }
+
+        // Cannot grant a permission you don't personally hold — same escalation
+        // risk and fix as staff create above.
+        if (updateData.permissions !== undefined) {
+            const rawUpdatePermissions = Array.isArray(updateData.permissions)
+                ? updateData.permissions.filter((p: unknown) => typeof p === 'string')
+                : [];
+            updateData.permissions = req.authUser?.isSuperAdmin || (req.authUser?.permissions || []).includes('*')
+                ? rawUpdatePermissions
+                : rawUpdatePermissions.filter((p: string) => (req.authUser?.permissions || []).includes(p));
         }
 
         updateData.updatedAt = new Date();

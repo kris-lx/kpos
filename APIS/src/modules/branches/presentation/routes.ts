@@ -194,8 +194,10 @@ branchRoutes.post('/', authenticate, withTenantTx(), authorize('branches:create'
         // Compute branchPath: parent.path + '.' + code, or just code for root
         let branchPath = code;
         if (parentBranchId) {
+            const parentConds: any[] = [eq(branches.id, parentBranchId)];
+            if (tenantId) parentConds.push(eq(branches.tenantId, tenantId));
             const parent = await db.query.branches.findFirst({
-                where: eq(branches.id, parentBranchId),
+                where: and(...parentConds),
                 columns: { branchPath: true },
             });
             if (parent?.branchPath) branchPath = parent.branchPath + '.' + code;

@@ -262,7 +262,7 @@ inventoryRoutes.get('/movements', authenticate, withTenantTx(), branchFilter(), 
         // BE-76: Tenant isolation
         const mvTenantId = req.authUser?.tenantId;
         if (mvTenantId && !req.authUser?.isSuperAdmin) mvConds.push(eq(stockMovements.tenantId, mvTenantId));
-        const mvScope = buildScopeCondition(filter, { storeId: stockMovements.storeId }, 'storeId');
+        const mvScope = buildScopeCondition(filter, { storeId: stockMovements.storeId, branchId: stockMovements.branchId }, 'storeId');
         if (mvScope) mvConds.push(mvScope);
         if (productId) mvConds.push(eq(stockMovements.productId, String(productId)));
         if (branchId) mvConds.push(eq(stockMovements.branchId, String(branchId)));
@@ -351,12 +351,23 @@ inventoryRoutes.put('/adjust', authenticate, withTenantTx(), branchFilter(), aut
 });
 
 // Stock transfer between branches
-inventoryRoutes.post('/transfer', authenticate, withTenantTx(), authorize('inventory:transfer'), async (req, res, next) => {
+inventoryRoutes.post('/transfer', authenticate, withTenantTx(), authorize('inventory:transfer'), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const dbRead = db;
         const { productId, fromBranchId, toBranchId, quantity, reason } = req.body;
         const userId = req.user!.userId;
+        const filter = req.branchFilter;
+
+        // Branch access guard — this endpoint moves stock immediately with no
+        // approval step, so without this any user holding inventory:transfer
+        // (which may still be scoped to a single branch) could drain stock out
+        // of any branch in the tenant, not just their own.
+        if (filter && filter.branchIds.length > 0) {
+            if (!filter.branchIds.includes(String(fromBranchId))) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'ບໍ່ມີສິດໂອນສິນຄ້າຈາກສາຂານີ້' } });
+            }
+        }
 
         if (!productId || !fromBranchId || !toBranchId || !quantity || quantity <= 0) {
             return res.status(400).json({
@@ -376,8 +387,8 @@ inventoryRoutes.post('/transfer', authenticate, withTenantTx(), authorize('inven
         // BE-42: Validate both branches exist AND belong to same tenant
         const tenantId = req.authUser?.tenantId;
         const [fromBranch, toBranch] = await Promise.all([
-            db.query.branches.findFirst({ where: eq(branches.id, fromBranchId), columns: { id: true, name: true, tenantId: true } }),
-            db.query.branches.findFirst({ where: eq(branches.id, toBranchId), columns: { id: true, name: true, tenantId: true } }),
+            db.query.branches.findFirst({ where: eq(branches.id, fromBranchId), columns: { id: true, name: true, tenantId: true, storeId: true } }),
+            db.query.branches.findFirst({ where: eq(branches.id, toBranchId), columns: { id: true, name: true, tenantId: true, storeId: true } }),
         ]);
 
         if (!fromBranch) {
@@ -401,6 +412,16 @@ inventoryRoutes.post('/transfer', authenticate, withTenantTx(), authorize('inven
                     error: { code: 'CROSS_TENANT', message: 'ບໍ່ສາມາດໂອນຂ້າມບໍລິສັດໄດ້' }
                 });
             }
+        }
+
+        // A store is a separate brand/franchise unit — stock must never move
+        // across stores silently, same rule enforced on the /transfers
+        // (maker-checker) create route.
+        if (fromBranch.storeId !== toBranch.storeId) {
+            return res.status(400).json({
+                success: false,
+                error: { code: 'DIFFERENT_STORE', message: 'ການໂອນສິນຄ້າຕ້ອງຢູ່ໃນຮ້ານດຽວກັນເທົ່ານັ້ນ' }
+            });
         }
 
         const transferReason = reason || `ໂອນຈາກ ${fromBranch.name} ໄປ ${toBranch.name}`;
@@ -853,6 +874,16 @@ inventoryRoutes.put('/purchase-orders/:id', authenticate, withTenantTx(), author
         const poUpdTenantId = req.authUser?.tenantId;
         const poUpdConds: any[] = [eq(purchaseOrders.id, req.params.id)];
         if (poUpdTenantId && !req.authUser?.isSuperAdmin) poUpdConds.push(eq(purchaseOrders.tenantId, poUpdTenantId));
+        // Fetch + scope-check BEFORE writing — GET /:id already enforces this
+        // via ensureScopeAccess but PUT never did, letting anyone in the
+        // tenant with inventory:update edit a PO tied to a branch outside
+        // their scope.
+        const existingOrder = await db.query.purchaseOrders.findFirst({ where: and(...poUpdConds) });
+        if (!existingOrder) { res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Purchase order not found or no access' } }); return; }
+        if (!ensureScopeAccess(existingOrder, req)) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
+            return;
+        }
         const poUpdateData = { ...req.body };
         delete poUpdateData.tenantId;
         await db.update(purchaseOrders).set(poUpdateData).where(and(...poUpdConds));
@@ -893,6 +924,15 @@ inventoryRoutes.patch('/purchase-orders/:id/status', authenticate, withTenantTx(
         const result = await scopedTransaction(req, async (tx) => {
             const poConds: any[] = [eq(purchaseOrders.id, req.params.id)];
             if (poTenantId && !req.authUser?.isSuperAdmin) poConds.push(eq(purchaseOrders.tenantId, poTenantId));
+
+            // Scope check BEFORE the atomic claim below — this status
+            // transition is what credits inventory (RECEIVED), so without this
+            // any tenant user holding inventory:update could receive a PO into
+            // (or approve one for) a branch outside their own scope.
+            const preCheck = await tx.query.purchaseOrders.findFirst({ where: and(...poConds), columns: { id: true, branchId: true, tenantId: true, status: true } });
+            if (!preCheck) return { order: null, alreadyProcessed: false };
+            if (!ensureScopeAccess(preCheck, req)) return { order: null, alreadyProcessed: false, forbidden: true };
+
             if (status === 'RECEIVED') poConds.push(ne(purchaseOrders.status, 'RECEIVED'));
 
             const [claimed] = await tx.update(purchaseOrders).set(updateData).where(and(...poConds)).returning({ id: purchaseOrders.id });
@@ -928,7 +968,8 @@ inventoryRoutes.patch('/purchase-orders/:id/status', authenticate, withTenantTx(
             return res.status(409).json({ success: false, error: { code: 'ALREADY_RECEIVED', message: 'This purchase order was already marked as received' } });
         }
         if (!result.order) {
-            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Purchase order not found or no access' } });
+            const message = 'forbidden' in result && result.forbidden ? 'No access to this purchase order' : 'Purchase order not found or no access';
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message } });
         }
 
         res.json({ success: true, data: result.order });
@@ -948,6 +989,10 @@ inventoryRoutes.delete('/purchase-orders/:id', authenticate, withTenantTx(), aut
         if (poDelTenantId && !req.authUser?.isSuperAdmin) poDelConds.push(eq(purchaseOrders.tenantId, poDelTenantId));
         const order = await db.query.purchaseOrders.findFirst({ where: and(...poDelConds) });
         if (!order) { res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Purchase order not found or no access' } }); return; }
+        if (!ensureScopeAccess(order, req)) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
+            return;
+        }
         if (order.status !== 'DRAFT') {
             res.status(400).json({ success: false, error: { code: 'INV_001', message: 'Can only delete draft orders' } });
             return;
@@ -1715,6 +1760,17 @@ inventoryRoutes.post('/transfers', authenticate, withTenantTx(), authorize('inve
             }
         }
 
+        // Same-store guard — a store is now a separate brand/franchise unit,
+        // so stock must never move across stores silently (mirrors the check
+        // already present on the sibling /stock-transfers create route).
+        const [fromBranchRow, toBranchRow] = await Promise.all([
+            db.query.branches.findFirst({ where: eq(branches.id, fromBranchId), columns: { storeId: true } }),
+            db.query.branches.findFirst({ where: eq(branches.id, toBranchId), columns: { storeId: true } }),
+        ]);
+        if (fromBranchRow && toBranchRow && fromBranchRow.storeId !== toBranchRow.storeId) {
+            return res.status(400).json({ success: false, error: { code: 'DIFFERENT_STORE', message: 'ການໂອນສິນຄ້າຕ້ອງຢູ່ໃນຮ້ານດຽວກັນເທົ່ານັ້ນ' } });
+        }
+
         const product = await db.query.products.findFirst({ where: eq(products.id, productId), columns: { name: true } });
 
         const fromInv = await db.query.inventory.findFirst({ where: and(eq(inventory.productId, productId), eq(inventory.branchId, fromBranchId)) });
@@ -1746,11 +1802,12 @@ inventoryRoutes.post('/transfers', authenticate, withTenantTx(), authorize('inve
 });
 
 // Approve a simple transfer (deduct from source, credit destination)
-inventoryRoutes.patch('/transfers/:id/approve', authenticate, withTenantTx(), authorize('inventory:update'), async (req, res, next) => {
+inventoryRoutes.patch('/transfers/:id/approve', authenticate, withTenantTx(), authorize('inventory:update'), branchFilter(), async (req, res, next) => {
     try {
         const { id } = req.params;
         const userId = req.user!.userId;
         const tenantId = req.authUser?.tenantId;
+        const filter = req.branchFilter;
 
         // Same atomic-claim + row-locking pattern as /stock-transfers/:id/approve
         // (this is a duplicate implementation of the same feature).
@@ -1758,6 +1815,14 @@ inventoryRoutes.patch('/transfers/:id/approve', authenticate, withTenantTx(), au
             const transfer = await tx.query.stockTransfers.findFirst({ where: eq(stockTransfers.id, id), with: { items: true } });
             if (!transfer) return { code: 'NOT_FOUND' as const };
             if (tenantId && transfer.tenantId && transfer.tenantId !== tenantId) return { code: 'FORBIDDEN' as const };
+            // Branch access guard — without this, any user with inventory:update
+            // (which may be scoped to a single branch) could approve a transfer
+            // between two branches they have no access to at all.
+            if (filter && filter.branchIds.length > 0) {
+                if (!filter.branchIds.includes(String(transfer.fromBranchId)) && !filter.branchIds.includes(String(transfer.toBranchId))) {
+                    return { code: 'FORBIDDEN' as const };
+                }
+            }
 
             const [claimed] = await tx.update(stockTransfers)
                 .set({ status: 'COMPLETED', approvedBy: userId, approvedAt: new Date(), completedBy: userId, completedAt: new Date() })
@@ -1806,7 +1871,7 @@ inventoryRoutes.patch('/transfers/:id/approve', authenticate, withTenantTx(), au
 });
 
 // Reject a simple transfer
-inventoryRoutes.patch('/transfers/:id/reject', authenticate, withTenantTx(), authorize('inventory:update'), async (req, res, next) => {
+inventoryRoutes.patch('/transfers/:id/reject', authenticate, withTenantTx(), authorize('inventory:update'), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const dbRead = db;
@@ -1814,11 +1879,17 @@ inventoryRoutes.patch('/transfers/:id/reject', authenticate, withTenantTx(), aut
         const { reason } = req.body;
         const userId = req.user!.userId;
         const tenantId = req.authUser?.tenantId;
+        const filter = req.branchFilter;
 
         const transfer = await db.query.stockTransfers.findFirst({ where: eq(stockTransfers.id, id) });
         if (!transfer) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Transfer not found' } });
         if (transfer.status !== 'PENDING') return res.status(400).json({ success: false, error: { code: 'INVALID_STATE', message: `Transfer is already ${transfer.status}` } });
         if (tenantId && transfer.tenantId && transfer.tenantId !== tenantId) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Access denied' } });
+        if (filter && filter.branchIds.length > 0) {
+            if (!filter.branchIds.includes(String(transfer.fromBranchId)) && !filter.branchIds.includes(String(transfer.toBranchId))) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'ບໍ່ມີສິດປະຕິເສດການໂອນນີ້' } });
+            }
+        }
 
         await db.update(stockTransfers).set({ status: 'REJECTED', approvedBy: userId, approvedAt: new Date(), notes: reason ? String(reason) : transfer.notes }).where(eq(stockTransfers.id, id));
         queueActivityLog(userId, 'transfer_rejected', 'inventory', `ປະຕິເສດ ${transfer.transferNo}`, { transferId: id, reason }, req).catch(() => {});
@@ -1921,15 +1992,29 @@ inventoryRoutes.patch('/stock-counts/:id/approve', authenticate, withTenantTx(),
             const scConds: any[] = [eq(stockCounts.id, req.params.id)];
             if (scTenantId && !req.authUser?.isSuperAdmin) scConds.push(eq(stockCounts.tenantId, scTenantId));
 
+            // Scope check BEFORE the atomic claim below — checking after would
+            // let a forbidden caller's request still flip status to 'approved'
+            // (the claim commits inside this same transaction) even though the
+            // response tells them it was rejected.
+            const preCheck = await tx.query.stockCounts.findFirst({ where: and(...scConds), columns: { id: true, branchId: true, status: true } });
+            if (!preCheck) return { code: 'NOT_FOUND' as const };
+            // roleLevel <= 4 alone only proves "HQ admin or above somewhere in
+            // this tenant" — a store/branch-tree supervisor (levels 3-4) is
+            // meant to be confined to their own store/branch subtree, not
+            // every store in the tenant. Without this, a branch manager at
+            // Branch A could approve a stock count for an unrelated branch
+            // under a completely different store.
+            if (!ensureScopeAccess({ branchId: preCheck.branchId }, req)) {
+                return { code: 'FORBIDDEN' as const };
+            }
+
             const claimConds = [...scConds, eq(stockCounts.status, 'pending')];
             const [claimed] = await tx.update(stockCounts)
                 .set({ status: 'approved', approvedBy: userId, approvedAt: new Date() })
                 .where(and(...claimConds))
                 .returning({ id: stockCounts.id });
             if (!claimed) {
-                const sc = await tx.query.stockCounts.findFirst({ where: and(...scConds) });
-                if (!sc) return { code: 'NOT_FOUND' as const };
-                return { code: 'INVALID_STATE' as const, status: sc.status };
+                return { code: 'INVALID_STATE' as const, status: preCheck.status };
             }
 
             const sc = await tx.query.stockCounts.findFirst({ where: eq(stockCounts.id, claimed.id), with: { items: true } });
@@ -1957,6 +2042,7 @@ inventoryRoutes.patch('/stock-counts/:id/approve', authenticate, withTenantTx(),
         });
 
         if (result.code === 'NOT_FOUND') return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Stock count not found' } });
+        if (result.code === 'FORBIDDEN') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'ບໍ່ມີສິດອະນຸມັດການນັບສະຕອກນີ້' } });
         if (result.code === 'INVALID_STATE') return res.status(400).json({ success: false, error: { code: 'INVALID_STATE', message: `Stock count is already ${result.status}` } });
 
         queueActivityLog(userId!, 'stock_count_approved', 'inventory', `ອະນຸມັດການນັບສະຕອກ ${result.countNo}`, { countId: result.countId }, req).catch(() => {});
@@ -1988,6 +2074,9 @@ inventoryRoutes.patch('/stock-counts/:id/reject', authenticate, withTenantTx(), 
         if (!sc) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Stock count not found' } });
         if (sc.status !== 'pending') {
             return res.status(400).json({ success: false, error: { code: 'INVALID_STATE', message: `Stock count is already ${sc.status}` } });
+        }
+        if (!ensureScopeAccess({ branchId: sc.branchId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'ບໍ່ມີສິດປະຕິເສດການນັບສະຕອກນີ້' } });
         }
 
         await db.update(stockCounts).set({ status: 'rejected', approvedBy: userId, approvedAt: new Date(), notes: reason ? String(reason) : sc.notes }).where(and(...scConds));

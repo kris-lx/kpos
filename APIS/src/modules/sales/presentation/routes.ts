@@ -493,7 +493,7 @@ salesRoutes.get('/', authenticate, withTenantTx(), branchFilter(), async (req, r
         const canViewOwnSales = userPermissions.includes('sales:view-own');
         if (!canViewAllSales && canViewOwnSales) txConds.push(eq(transactions.userId, req.authUser?.userId || req.user?.userId || ''));
 
-        const scopeCond = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
+        const scopeCond = buildScopeCondition(filter, { storeId: transactions.storeId, branchId: transactions.branchId }, 'storeId');
         if (scopeCond) txConds.push(scopeCond);
 
         if (branchId) txConds.push(eq(transactions.branchId, String(branchId)));
@@ -556,7 +556,7 @@ salesRoutes.get('/summary/daily', authenticate, withTenantTx(), branchFilter(), 
         // BE-79: Tenant isolation
         const tenantId = req.authUser?.tenantId;
         if (tenantId && !req.authUser?.isSuperAdmin) baseConds.push(eq(transactions.tenantId, tenantId));
-        const dayScopeCond = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
+        const dayScopeCond = buildScopeCondition(filter, { storeId: transactions.storeId, branchId: transactions.branchId }, 'storeId');
         if (dayScopeCond) baseConds.push(dayScopeCond);
         if (!filter && branchId) baseConds.push(eq(transactions.branchId, branchId));
 
@@ -928,7 +928,7 @@ salesRoutes.get('/held', authenticate, withTenantTx(), branchFilter(), async (re
         // BE-79: Tenant isolation
         const tenantId = req.authUser?.tenantId;
         if (tenantId && !req.authUser?.isSuperAdmin) heldConds.push(eq(heldSales.tenantId, tenantId));
-        const heldScope = buildScopeCondition(filter, { storeId: heldSales.storeId }, 'storeId');
+        const heldScope = buildScopeCondition(filter, { storeId: heldSales.storeId, branchId: heldSales.branchId }, 'storeId');
         if (heldScope) heldConds.push(heldScope);
         const branchId = req.authUser?.activeBranchId || req.user?.branchId;
         if (!filter && branchId) heldConds.push(eq(heldSales.branchId, branchId));
@@ -1034,7 +1034,7 @@ salesRoutes.get('/credit', authenticate, withTenantTx(), branchFilter(), async (
         // BE-79: Tenant isolation
         const tenantId = req.authUser?.tenantId;
         if (tenantId && !req.authUser?.isSuperAdmin) creditConds.push(eq(transactions.tenantId, tenantId));
-        const creditScope = buildScopeCondition(filter, { storeId: transactions.storeId }, 'storeId');
+        const creditScope = buildScopeCondition(filter, { storeId: transactions.storeId, branchId: transactions.branchId }, 'storeId');
         if (creditScope) creditConds.push(creditScope);
         if (!filter && branchId) creditConds.push(eq(transactions.branchId, branchId));
 

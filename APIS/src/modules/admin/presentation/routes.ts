@@ -1851,6 +1851,24 @@ adminRoutes.post('/roles', authenticate, withTenantTx(), requireTenantAdmin(), a
             });
         }
         const perms = permissions || [];
+
+        // Cannot grant a permission you don't personally hold. ROLE_LEVELS[name]
+        // defaults to 7 for any custom (non-builtin) role name, making the
+        // ladder check above a no-op for exactly the roles that most need it —
+        // this closes the actual escalation path regardless of naming. Same
+        // guard as roles/presentation/routes.ts's POST / (that file's roles
+        // CRUD and this one are duplicate implementations of the same feature).
+        if (!req.authUser?.isSuperAdmin && callerLevel > 2 && !(req.authUser?.permissions || []).includes('*')) {
+            const callerPermissions = new Set(req.authUser?.permissions || []);
+            const ungranted = perms.filter((p: string) => !callerPermissions.has(p));
+            if (ungranted.length > 0) {
+                return res.status(403).json({
+                    success: false,
+                    error: { code: 'FORBIDDEN', message: `Cannot grant permissions you do not hold: ${ungranted.join(', ')}` }
+                });
+            }
+        }
+
         const mask = permissionsToMask(perms);
         const [role] = await db.insert(roles).values({
             tenantId: roleTenantId, branchId: roleBranchId, name, displayName, description,
@@ -1921,6 +1939,19 @@ adminRoutes.patch('/roles/:id', authenticate, withTenantTx(), requireTenantAdmin
         }
 
         const newPerms = permissions || (existing.permissions as string[]);
+
+        // Same "cannot grant what you don't hold" guard as POST /roles above.
+        if (permissions && !req.authUser?.isSuperAdmin && callerLevel > 2 && !(req.authUser?.permissions || []).includes('*')) {
+            const callerPermissions = new Set(req.authUser?.permissions || []);
+            const ungranted = (permissions as string[]).filter((p: string) => !callerPermissions.has(p));
+            if (ungranted.length > 0) {
+                return res.status(403).json({
+                    success: false,
+                    error: { code: 'FORBIDDEN', message: `Cannot grant permissions you do not hold: ${ungranted.join(', ')}` }
+                });
+            }
+        }
+
         const mask = permissionsToMask(newPerms);
 
         const [role] = await db.update(roles).set({
