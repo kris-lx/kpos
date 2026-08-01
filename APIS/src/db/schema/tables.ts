@@ -116,7 +116,10 @@ export const sessions = pgTable('sessions', {
     expiresAt: timestamp('expires_at').notNull(),
     revokedAt: timestamp('revoked_at'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
-});
+}, (t) => [
+    index('sessions_user_idx').on(t.userId),
+    index('sessions_revoked_idx').on(t.revokedAt).where(sql`${t.revokedAt} IS NOT NULL`),
+]);
 
 export const roles = pgTable('roles', {
     id: uuid('id').primaryKey().defaultRandom(),
@@ -468,6 +471,7 @@ export const inventory = pgTable('inventory', {
     uniqueIndex('inventory_product_branch_sku_batch_idx').on(t.productId, t.branchId, t.skuVariantId, t.batchNumber),
     index('inventory_store_idx').on(t.storeId),
     index('inventory_tenant_idx').on(t.tenantId),
+    index('inventory_branch_idx').on(t.branchId),
 ]);
 
 export const stockMovements = pgTable('stock_movements', {
@@ -493,6 +497,8 @@ export const stockMovements = pgTable('stock_movements', {
 }, (t) => [
     index('stock_movements_store_idx').on(t.storeId),
     index('stock_movements_tenant_idx').on(t.tenantId),
+    index('stock_movements_branch_created_idx').on(t.branchId, t.createdAt),
+    index('stock_movements_product_idx').on(t.productId),
 ]);
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -584,6 +590,10 @@ export const transactions = pgTable('transactions', {
     index('transactions_store_idx').on(t.storeId),
     index('transactions_tenant_idx').on(t.tenantId),
     uniqueIndex('transactions_tenant_no_idx').on(t.tenantId, t.transactionNo),
+    index('transactions_branch_created_idx').on(t.branchId, t.createdAt),
+    index('transactions_tenant_status_idx').on(t.tenantId, t.status),
+    index('transactions_user_idx').on(t.userId),
+    index('transactions_customer_idx').on(t.customerId),
 ]);
 
 export const transactionItems = pgTable('transaction_items', {
@@ -605,7 +615,11 @@ export const transactionItems = pgTable('transaction_items', {
     total: doublePrecision('total').notNull(),
     note: text('note'),
     modifiers: jsonb('modifiers'),
-});
+}, (t) => [
+    index('transaction_items_tenant_idx').on(t.tenantId),
+    index('transaction_items_transaction_idx').on(t.transactionId),
+    index('transaction_items_product_idx').on(t.productId),
+]);
 
 export const transactionPayments = pgTable('transaction_payments', {
     id: uuid('id').primaryKey().defaultRandom(),

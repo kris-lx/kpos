@@ -38,6 +38,10 @@
     let showViewModal = $state(false);
     let editingOrder = $state<any>(null);
     let viewingOrder = $state<any>(null);
+    // The create button had no permission gate at all — backend still
+    // rejects POST /purchase-orders for anyone lacking inventory:create,
+    // but every other create button in the app hides itself first.
+    const canCreatePO = $derived(auth.canCreate('inventory') && (auth.hasStoreAccess('write') || !auth.activeStoreId));
     let currentPage = $state(1);
     let itemsPerPage = $state(10);
     let totalItems = $state(0);
@@ -299,6 +303,7 @@
                 <FileText class="w-4 h-4" />
                 PDF
             </button>
+            {#if canCreatePO}
             <button
                 onclick={() => { resetForm(); showModal = true; }}
                 class="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-xl text-sm font-semibold shadow-lg hover:from-indigo-600 hover:to-purple-700 transition-all"
@@ -306,6 +311,7 @@
                 <Plus class="w-5 h-5" />
                 ສ້າງຄຳສັ່ງຊື້
             </button>
+            {/if}
         </div>
     </div>
 

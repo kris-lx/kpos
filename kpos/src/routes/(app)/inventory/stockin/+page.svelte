@@ -18,6 +18,11 @@
     let showModal = $state(false);
     let searchQuery = $state("");
     let isSaving = $state(false);
+    // Create/edit/delete buttons had no permission gate — every other
+    // create/edit/delete button in the app hides itself first.
+    const canCreateStockIn = $derived(auth.canCreate('inventory'));
+    const canUpdateStockIn = $derived(auth.canUpdate('inventory'));
+    const canDeleteStockIn = $derived(auth.canDelete('inventory'));
     let errorMessage = $state("");
     let editingId = $state<string | null>(null);
 
@@ -251,6 +256,7 @@
                 <Download class="h-4 w-4" />
                 {t("common.export")}
             </button>
+            {#if canCreateStockIn}
             <button
                 onclick={openAdd}
                 class="flex items-center gap-2 rounded-lg bg-success-600 px-4 py-2 text-white hover:bg-success-700"
@@ -258,6 +264,7 @@
                 <Plus class="h-5 w-5" />
                 {t("inventory.addStockIn")}
             </button>
+            {/if}
         </div>
     </div>
 
@@ -340,6 +347,7 @@
                             <td class="px-6 py-4 text-sm text-gray-500 dark:text-gray-400">{item.reference || "-"}</td>
                             <td class="px-6 py-4 text-center">
                                 <div class="flex items-center justify-center gap-1">
+                                    {#if canUpdateStockIn}
                                     <button
                                         onclick={() => openEdit(item)}
                                         class="p-2 text-gray-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg"
@@ -347,6 +355,8 @@
                                     >
                                         <Pencil class="w-4 h-4" />
                                     </button>
+                                    {/if}
+                                    {#if canDeleteStockIn}
                                     <button
                                         onclick={() => deleteStockIn(item.id)}
                                         class="p-2 text-gray-400 hover:text-danger-500 hover:bg-danger-50 dark:hover:bg-danger-900/20 rounded-lg"
@@ -354,6 +364,7 @@
                                     >
                                         <Trash2 class="w-4 h-4" />
                                     </button>
+                                    {/if}
                                 </div>
                             </td>
                         </tr>

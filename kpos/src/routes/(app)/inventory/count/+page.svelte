@@ -50,6 +50,9 @@
 
     // Approval permission
     let canApprove = $derived(auth.isSuperAdmin || (auth.roleLevel ?? 7) <= 4);
+    // Create-count button had no permission gate — every other create
+    // button in the app hides itself for users lacking the permission.
+    let canCreateCount = $derived(auth.canCreate('inventory'));
 
     // Stats
     let stats = $derived({
@@ -257,6 +260,7 @@
                 <Download class="w-4 h-4" />
                 ສົ່ງອອກ
             </button>
+            {#if canCreateCount}
             <button
                 onclick={() => { resetForm(); showModal = true; }}
                 class="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-violet-500 to-purple-600 text-white rounded-xl text-sm font-semibold shadow-lg"
@@ -264,6 +268,7 @@
                 <Plus class="w-5 h-5" />
                 ນັບສິນຄ້າ
             </button>
+            {/if}
         </div>
     </div>
 
