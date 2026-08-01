@@ -112,6 +112,16 @@ function createAuthStore() {
     let activeStoreId = $state<string | null>(null);
     let activeBranchId = $state<string | null>(null);
     let userRules = $state<UserRule[]>([]);
+    // Flat list of hrefs from GET /users/me/menu — that endpoint already
+    // filters correctly for ANY role (including custom roles created via the
+    // Roles UI, which get a `permissions` array but never get corresponding
+    // `userRules`/`roleRules` entries — the rules system is only populated
+    // for legacy/system roles). Used as a fallback route guard so a
+    // restricted custom-role user can't navigate straight to a page like
+    // /staff by typing the URL, even though the backend already rejects the
+    // underlying data either way — this closes the frontend UX gap, not a
+    // security hole.
+    let accessibleMenuRoutes = $state<string[]>([]);
 
     // Initialize from localStorage
     if (browser) {
@@ -166,7 +176,7 @@ function createAuthStore() {
         if (parsedUser) {
             setTimeout(async () => {
                 const ok = await refresh();
-                if (ok) await Promise.all([refreshProfile(), loadRules(), loadStoreContext(), tenantSettings.load()]);
+                if (ok) await Promise.all([refreshProfile(), loadRules(), loadAccessibleMenuRoutes(), loadStoreContext(), tenantSettings.load()]);
             }, 0);
         }
     }
@@ -225,7 +235,7 @@ function createAuthStore() {
                 }
 
                 // Load accessible stores, rules, permissions, and tenant config after login
-                await Promise.all([loadStoreContext(), loadRules(), refreshProfile(), tenantSettings.load()]);
+                await Promise.all([loadStoreContext(), loadRules(), loadAccessibleMenuRoutes(), refreshProfile(), tenantSettings.load()]);
 
                 return true;
             }
@@ -391,6 +401,30 @@ function createAuthStore() {
         }
     }
 
+    // Flattens GET /users/me/menu (already correctly permission-filtered
+    // server-side, including for custom roles) into a list of accessible
+    // hrefs — see accessibleMenuRoutes above for why this exists.
+    function flattenMenuHrefs(items: any[]): string[] {
+        const hrefs: string[] = [];
+        for (const item of items || []) {
+            if (item.path) hrefs.push(item.path);
+            if (item.children?.length) hrefs.push(...flattenMenuHrefs(item.children));
+        }
+        return hrefs;
+    }
+
+    async function loadAccessibleMenuRoutes(): Promise<void> {
+        if (!accessToken) return;
+        try {
+            const res = await api.get('users/me/menu').json<{ success: boolean; data?: any[] }>();
+            if (res.success && Array.isArray(res.data)) {
+                accessibleMenuRoutes = flattenMenuHrefs(res.data);
+            }
+        } catch (error) {
+            console.error('Failed to load accessible menu routes:', error);
+        }
+    }
+
     // Rule-based CRUD checks — falls back to legacy permissions if no matching rule
     function canRead(module: string): boolean {
         if (!user) return false;
@@ -434,7 +468,16 @@ function createAuthStore() {
         if (user.isSuperAdmin) return true;
         // Help page is always accessible
         if (path === '/help') return true;
-        return userRules.some(r => r.routes.some(route => path === route || path.startsWith(route + '/')));
+        if (userRules.length > 0) {
+            return userRules.some(r => r.routes.some(route => path === route || path.startsWith(route + '/')));
+        }
+        // No rules configured for this role (the common case for any custom
+        // role created via the Roles UI) — fall back to the menu endpoint's
+        // route list rather than treating "no rules" as "no restriction."
+        if (accessibleMenuRoutes.length > 0) {
+            return accessibleMenuRoutes.some(route => path === route || path.startsWith(route + '/'));
+        }
+        return true;
     }
 
     // Get all accessible routes
@@ -471,7 +514,7 @@ function createAuthStore() {
                 localStorage.setItem(USER_KEY, JSON.stringify(user));
             }
 
-            await Promise.all([loadStoreContext(), loadRules(), tenantSettings.load()]);
+            await Promise.all([loadStoreContext(), loadRules(), loadAccessibleMenuRoutes(), tenantSettings.load()]);
             return true;
         } catch (error) {
             console.error('SSO login completion failed:', error);
@@ -590,6 +633,8 @@ function createAuthStore() {
         // Rules (RBAC)
         get userRules() { return userRules; },
         get accessibleRoutes() { return accessibleRoutes; },
+        get accessibleMenuRoutes() { return accessibleMenuRoutes; },
+        loadAccessibleMenuRoutes,
         
         // Auth methods
         login,

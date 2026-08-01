@@ -267,11 +267,17 @@
         if (auth.userRules.length === 0) {
             auth.loadRules();
         }
+        // Ditto for the menu-derived route fallback — see accessibleMenuRoutes
+        // in the auth store for why this exists (custom roles never get
+        // userRules entries, only the rules system does).
+        if (auth.accessibleMenuRoutes.length === 0) {
+            auth.loadAccessibleMenuRoutes();
+        }
 
         // Route-level permission guard: redirect to dashboard if user has no access to current path.
         // Always-accessible paths: dashboard, help, profile, settings, pos (pos has its own shift guard).
         const alwaysAllowed = ['/dashboard', '/help', '/settings', '/pos', '/store-request'];
-        if (!user?.isSuperAdmin && auth.userRules.length > 0 && currentPath !== '/dashboard') {
+        if (!user?.isSuperAdmin && (auth.userRules.length > 0 || auth.accessibleMenuRoutes.length > 0) && currentPath !== '/dashboard') {
             const pathAllowed = alwaysAllowed.some(p => currentPath === p || currentPath.startsWith(p + '/'))
                 || auth.hasRouteAccess(currentPath);
             if (!pathAllowed) {
@@ -333,12 +339,14 @@
         disconnectRealtimeSocket();
     });
 
-    // Re-run route guard reactively when rules load after initial mount or when page changes
+    // Re-run route guard reactively when rules (or the menu-route fallback)
+    // load after initial mount or when page changes
     $effect(() => {
         const user = auth.user;
         const rules = auth.userRules;
+        const menuRoutes = auth.accessibleMenuRoutes;
         const currentPath = $page.url.pathname;
-        if (!user || user.isSuperAdmin || rules.length === 0) return;
+        if (!user || user.isSuperAdmin || (rules.length === 0 && menuRoutes.length === 0)) return;
         const alwaysAllowed = ['/dashboard', '/help', '/settings', '/pos', '/store-request'];
         const pathAllowed = alwaysAllowed.some(p => currentPath === p || currentPath.startsWith(p + '/'))
             || auth.hasRouteAccess(currentPath);
