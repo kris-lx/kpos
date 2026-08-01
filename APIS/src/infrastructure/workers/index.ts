@@ -9,7 +9,7 @@ import { acquireLock, releaseLock } from '@/shared/distributed-lock';
 import { cache } from '@/config/redis.config';
 import { db } from '@/config/database.config';
 import { inventory, stockMovements, activityLogs, notifications, sessions } from '@/db/schema/tables';
-import { eq, and, lt, isNotNull } from 'drizzle-orm';
+import { eq, and, lt, isNotNull, sql } from 'drizzle-orm';
 import { SocketEventEmitter } from '@/infrastructure/http/socket';
 import { webPushService } from '@/infrastructure/services/webpush.service';
 import { sendEmail, logEmailResult, type SendEmailParams } from '@/infrastructure/services/email/email.service';
@@ -258,6 +258,31 @@ async function cleanupExpiredSessions(): Promise<void> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Partition Maintenance — keep transactions/transaction_items/stock_movements
+// (monthly RANGE-partitioned since migration 0029) supplied with partitions
+// ahead of need. Postgres does not create partitions automatically; without
+// this, inserts for a month with no matching partition would fall into the
+// DEFAULT partition instead (still correct, but loses partition pruning for
+// that month's data going forward). Runs daily — 6 months of lead time is
+// generous room for a once-a-day job to never fall behind.
+// ═══════════════════════════════════════════════════════════════════════════
+const PARTITION_MAINTENANCE_LOCK_KEY = 'kpos:partition-maintenance-lock';
+const PARTITION_MAINTENANCE_LOCK_TTL_MS = 5 * 60 * 1000;
+
+async function ensureFuturePartitions(): Promise<void> {
+    const lockToken = await acquireLock(PARTITION_MAINTENANCE_LOCK_KEY, PARTITION_MAINTENANCE_LOCK_TTL_MS);
+    if (!lockToken) return; // another instance is already running this tick
+    try {
+        await db.execute(sql`SELECT ensure_future_partitions(6)`);
+        console.log('[PartitionMaintenance] Ensured partitions exist through 6 months ahead');
+    } catch (err) {
+        console.error('[PartitionMaintenance] Failed:', err);
+    } finally {
+        await releaseLock(PARTITION_MAINTENANCE_LOCK_KEY, lockToken);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Start all workers
 // ═══════════════════════════════════════════════════════════════════════════
 export function startWorkers(): void {
@@ -281,9 +306,13 @@ export async function startScheduledJobs(): Promise<void> {
     cleanupExpiredSessions();
     setInterval(cleanupExpiredSessions, 6 * 60 * 60 * 1000);
 
+    // Partition maintenance: run immediately then once a day
+    ensureFuturePartitions();
+    setInterval(ensureFuturePartitions, 24 * 60 * 60 * 1000);
+
     // Backup scheduler: reads schedule from DB and starts cron
     const { startBackupScheduler } = await import('./backup.worker');
     await startBackupScheduler();
 
-    console.log('✅ Scheduled jobs started: session-cleanup (every 6h), backup-scheduler');
+    console.log('✅ Scheduled jobs started: session-cleanup (every 6h), partition-maintenance (daily), backup-scheduler');
 }

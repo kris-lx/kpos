@@ -615,6 +615,11 @@ export const transactionItems = pgTable('transaction_items', {
     total: doublePrecision('total').notNull(),
     note: text('note'),
     modifiers: jsonb('modifiers'),
+    // Denormalized copy of the parent transaction's createdAt — added when
+    // this table was partitioned by month (migration 0029). transaction_items
+    // never had its own timestamp before; a partition key has to live on
+    // the partitioned table itself, not be derived via a join.
+    createdAt: timestamp('created_at').notNull().defaultNow(),
 }, (t) => [
     index('transaction_items_tenant_idx').on(t.tenantId),
     index('transaction_items_transaction_idx').on(t.transactionId),
