@@ -52,6 +52,14 @@
     let pageSize = $state(20);
     const pageSizeOptions = [5, 10, 20, 30, 50, 70, 100];
 
+    // True active/inactive totals across the whole (scoped) result set — NOT
+    // derived from the current page's rows. staffList only ever holds one
+    // page's worth (up to pageSize), so filtering it for "active count"
+    // silently showed the current page's count as if it were the grand
+    // total — correct by coincidence only when everything fits on one page.
+    let activeTotal = $state(0);
+    let inactiveTotal = $state(0);
+
     // Staff data from API
     let staffList = $state<any[]>([]);
 
@@ -114,13 +122,40 @@
         }),
     );
 
-    // Stats
+    // Stats — total/active/inactive are true counts across the whole scoped
+    // result set (from API meta.total via loadStaff/loadStaffCounts), not
+    // just whatever happens to be on the current page.
     let stats = $derived({
-        total: staffList.length,
-        active: staffList.filter((s) => s.isActive === true).length,
-        inactive: staffList.filter((s) => s.isActive === false).length,
+        total: totalItems,
+        active: activeTotal,
+        inactive: inactiveTotal,
         totalSales: 0,
     });
+
+    // Fetches just the counts (limit=1, only meta.total matters) for the
+    // active/inactive stat cards, independent of whatever page/filter the
+    // main list is currently showing.
+    async function loadStaffCounts() {
+        try {
+            const baseParams = new URLSearchParams({ page: "1", limit: "1" });
+            const isTenantWideAdmin = !auth.isSuperAdmin && (auth.roleLevel ?? 7) <= 2;
+            if (auth.activeBranchId && !auth.isSuperAdmin && !isTenantWideAdmin) {
+                baseParams.append("branchId", auth.activeBranchId);
+            }
+            const activeParams = new URLSearchParams(baseParams);
+            activeParams.set("status", "active");
+            const inactiveParams = new URLSearchParams(baseParams);
+            inactiveParams.set("status", "inactive");
+            const [activeRes, inactiveRes] = await Promise.all([
+                api.get(`staff?${activeParams}`).json<any>(),
+                api.get(`staff?${inactiveParams}`).json<any>(),
+            ]);
+            activeTotal = activeRes?.meta?.total ?? 0;
+            inactiveTotal = inactiveRes?.meta?.total ?? 0;
+        } catch (error) {
+            console.error("Failed to load staff counts:", error);
+        }
+    }
 
     // Load staff from API
     async function loadStaff() {
@@ -139,8 +174,15 @@
             if (searchQuery) {
                 params.append("search", searchQuery);
             }
+            // Tenant-wide admins (roleLevel <= 2, e.g. store_owner) should see
+            // every branch's staff by default — same "no restriction" the
+            // backend now applies. This was unconditionally narrowing to the
+            // CURRENT active branch for any non-superadmin, including
+            // tenant-wide owners, silently defeating that backend scope on
+            // every page load regardless of who was asking.
             const staffBranchId = auth.activeBranchId;
-            if (staffBranchId && !auth.isSuperAdmin) params.append("branchId", staffBranchId);
+            const isTenantWideAdmin = !auth.isSuperAdmin && (auth.roleLevel ?? 7) <= 2;
+            if (staffBranchId && !auth.isSuperAdmin && !isTenantWideAdmin) params.append("branchId", staffBranchId);
 
             const response = await api.get(`staff?${params}`).json<any>();
             if (response.success && response.data) {
@@ -205,6 +247,7 @@
                 showDeleteModal = false;
                 selectedStaff = null;
                 await loadStaff();
+                await loadStaffCounts();
             } else {
                 toast.error(response.error?.message || t("error.network"));
             }
@@ -236,6 +279,7 @@
                 selectedStaff = null;
                 formData = { name: "", email: "", password: "", phone: "", role: "staff", storeId: "", branchId: "", roleId: "", isActive: true };
                 await loadStaff();
+                await loadStaffCounts();
             } else {
                 toast.error(response.error?.message || t("error.network"));
             }
@@ -257,6 +301,7 @@
     $effect(() => {
         auth.activeStoreId;
         loadStaff();
+        loadStaffCounts();
     });
 
     onMount(() => {

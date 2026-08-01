@@ -53,7 +53,16 @@ staffRoutes.get('/', authenticate, withTenantTx(), authorize('staff:read'), bran
             conditions.push(eq(users.tenantId, tenantId));
         }
 
-        if (!isSuperAdmin) {
+        // Tenant-wide admins (roleLevel <= 2, e.g. store_owner) see every
+        // staff member across the whole tenant — same "no restriction"
+        // treatment roleLevel <= 2 gets everywhere else in the codebase
+        // (branchFilter middleware, ensureScopeAccess, etc.). Without this,
+        // the owner's list was silently narrowed to whichever ONE store
+        // happened to be their `activeStoreId` at the time — invisible with
+        // a single-store test tenant, but at 100 stores it meant the owner
+        // saw ~100 of their ~10,000 staff instead of all of them.
+        const isTenantWideAdmin = !isSuperAdmin && (authUser?.roleLevel ?? 7) <= 2;
+        if (!isSuperAdmin && !isTenantWideAdmin) {
             const activeStoreId = authUser?.activeStoreId;
             if (activeStoreId) {
                 const usList = await db.query.userStores.findMany({
@@ -74,10 +83,18 @@ staffRoutes.get('/', authenticate, withTenantTx(), authorize('staff:read'), bran
             } else if (branchId) {
                 conditions.push(eq(users.branchId, String(branchId)));
             }
+        } else if (branchId) {
+            // isSuperAdmin or tenant-wide admin explicitly filtering to one
+            // branch (e.g. via a branch-picker dropdown) — no scope check
+            // needed since neither has any restriction in the first place.
+            conditions.push(eq(users.branchId, String(branchId)));
+        }
+
+        // Never show actual platform-level accounts in a tenant's own staff
+        // list, regardless of caller privilege level.
+        if (!isSuperAdmin) {
             conditions.push(eq(users.isSuperAdmin, false));
             conditions.push(notInArray(users.role, ['super_admin', 'admin']));
-        } else if (branchId) {
-            conditions.push(eq(users.branchId, String(branchId)));
         }
 
         if (scopedUserIds !== null) {
@@ -177,7 +194,15 @@ staffRoutes.get('/branches/list', authenticate, withTenantTx(), async (req, res,
         const db = req.tx ?? globalDb;
         const authUser = req.authUser!;
         const isSuperAdmin = authUser.isSuperAdmin;
-        const isAdmin = isSuperAdmin || ['admin', 'hq_admin', 'hq_manager'].includes(authUser.role);
+        // Was a hardcoded role-NAME list ('admin'/'hq_admin'/'hq_manager')
+        // that didn't include 'store_owner' — the most common tenant-admin
+        // role name in this codebase. Any store_owner account got silently
+        // narrowed to only their own directly-assigned branch here, making
+        // it impossible to pick any other branch when creating staff via
+        // this dropdown. roleLevel <= 4 matches the "unrestricted / HQ-tier"
+        // cutoff used consistently elsewhere (branchFilter middleware, etc.)
+        // instead of an incomplete, easily-stale name list.
+        const isAdmin = isSuperAdmin || (authUser.roleLevel ?? 7) <= 4;
 
         const conditions: any[] = [eq(branches.isActive, true)];
 
