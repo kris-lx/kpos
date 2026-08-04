@@ -8,7 +8,7 @@ import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middlew
 import { setRequestContext, setSuperAdminBypassContext } from '@/db/set-tenant-context';
 import { db as globalDb } from '@/config/database.config';
 import { transactions, transactionItems, transactionPayments, products, inventory, stockMovements, paymentMethods, shifts, cashRegisters, cashMovements, heldSales, customers, members, membershipTiers, pointsHistory, pointHistory, settings, coupons, promotions, discounts } from '@/db/schema/tables';
-import { eq, and, or, isNull, ne, ilike, inArray, gte, lte, desc, asc, count, sum, sql } from 'drizzle-orm';
+import { eq, and, or, isNull, ne, ilike, inArray, gte, lte, lt, desc, asc, count, sum, sql } from 'drizzle-orm';
 import { queueActivityLog } from '@/infrastructure/helpers/activity-log.helper';
 import { calcPointsEarned, calcPointsRedeemValue } from '../domain/loyalty-points.js';
 import { validateSplitPayments, validateCoupon } from '../domain/split-payment.js';
@@ -174,13 +174,20 @@ salesRoutes.post('/', authenticate, withTenantTx(), authorize('sales:create'), a
         // ── Promotions, coupons, and item-level discount rules ──────────────
         const promoNow = new Date();
 
-        // Load all active promotions for this tenant
+        // Load all active promotions for this tenant. Promotions/coupons/
+        // discounts each have a `storeId` column (null = tenant-wide, set =
+        // that one store only — same null-means-shared convention as the
+        // product catalog's branchId), but this route never filtered by it,
+        // so a promotion or coupon created for Store A was silently usable
+        // at checkout in Store B within the same tenant. Found via a
+        // per-store/branch checkout retest.
         const promoConds: any[] = [
             eq(promotions.isActive, true),
             lte(promotions.startDate, promoNow),
             or(isNull(promotions.endDate), gte(promotions.endDate, promoNow)),
         ];
         if (saleTenantId && !req.authUser?.isSuperAdmin) promoConds.push(eq(promotions.tenantId, saleTenantId));
+        if (storeId) promoConds.push(or(isNull(promotions.storeId), eq(promotions.storeId, storeId)));
         const activePromos = await db.query.promotions.findMany({ where: and(...promoConds), orderBy: desc(promotions.priority) });
 
         // Load active per-item discount rules
@@ -190,6 +197,7 @@ salesRoutes.post('/', authenticate, withTenantTx(), authorize('sales:create'), a
             or(isNull(discounts.endDate), gte(discounts.endDate, promoNow)),
         ];
         if (saleTenantId && !req.authUser?.isSuperAdmin) discountRuleConds.push(eq(discounts.tenantId, saleTenantId));
+        if (storeId) discountRuleConds.push(or(isNull(discounts.storeId), eq(discounts.storeId, storeId)));
         const activeDiscountRules = await db.query.discounts.findMany({ where: and(...discountRuleConds) });
 
         // Validate and compute coupon discount
@@ -198,6 +206,7 @@ salesRoutes.post('/', authenticate, withTenantTx(), authorize('sales:create'), a
         if (couponCode) {
             const couponConds: any[] = [eq(coupons.code, couponCode.toUpperCase().trim()), eq(coupons.isActive, true)];
             if (saleTenantId && !req.authUser?.isSuperAdmin) couponConds.push(eq(coupons.tenantId, saleTenantId));
+            if (storeId) couponConds.push(or(isNull(coupons.storeId), eq(coupons.storeId, storeId)));
             couponRecord = await db.query.coupons.findFirst({ where: and(...couponConds) });
             if (!couponRecord) return res.status(400).json({ success: false, error: { code: 'INVALID_COUPON', message: 'Coupon not found or inactive' } });
             const couponResult = validateCoupon(couponRecord, promoNow, subtotal);
@@ -424,16 +433,39 @@ salesRoutes.post('/', authenticate, withTenantTx(), authorize('sales:create'), a
                 }
             }
 
-            // 7. Increment coupon and promotion usage counts atomically
+            // 7. Increment coupon and promotion usage counts atomically,
+            // re-checking each usageLimit in the same UPDATE instead of
+            // trusting the plain-read check done earlier (before this
+            // transaction started) — two concurrent checkouts could both
+            // pass that earlier snapshot check and both increment past
+            // usageLimit. Guarding the UPDATE's WHERE clause with the limit
+            // and checking whether a row actually came back closes that
+            // race: whichever checkout loses gets 0 rows updated here and
+            // the whole sale transaction throws/rolls back instead of
+            // completing with a coupon/promotion that was already exhausted.
             for (const promoId of appliedPromoIds) {
-                await tx.update(promotions)
+                const [updatedPromo] = await tx.update(promotions)
                     .set({ usageCount: sql`${promotions.usageCount} + 1` })
-                    .where(eq(promotions.id, promoId));
+                    .where(and(
+                        eq(promotions.id, promoId),
+                        or(isNull(promotions.usageLimit), lt(promotions.usageCount, promotions.usageLimit)),
+                    ))
+                    .returning({ id: promotions.id });
+                if (!updatedPromo) {
+                    throw new Error('PROMOTION_LIMIT_REACHED');
+                }
             }
             if (couponRecord) {
-                await tx.update(coupons)
+                const [updatedCoupon] = await tx.update(coupons)
                     .set({ usageCount: sql`${coupons.usageCount} + 1` })
-                    .where(eq(coupons.id, couponRecord.id));
+                    .where(and(
+                        eq(coupons.id, couponRecord.id),
+                        or(isNull(coupons.usageLimit), lt(coupons.usageCount, coupons.usageLimit)),
+                    ))
+                    .returning({ id: coupons.id });
+                if (!updatedCoupon) {
+                    throw new Error('COUPON_LIMIT_REACHED');
+                }
             }
 
             return newTransaction;
@@ -465,7 +497,13 @@ salesRoutes.post('/', authenticate, withTenantTx(), authorize('sales:create'), a
         queueActivityLog(userId, 'sale_created', 'sales', `ສ້າງການຂາຍ ${transaction.transactionNo} ມູນຄ່າ ${transaction.total}`, { transactionId: transaction.id }, req).catch(() => {});
 
         res.status(201).json({ success: true, data: fullTransaction });
-    } catch (error) {
+    } catch (error: any) {
+        if (error?.message === 'COUPON_LIMIT_REACHED') {
+            return res.status(409).json({ success: false, error: { code: 'COUPON_LIMIT_REACHED', message: 'Coupon usage limit reached' } });
+        }
+        if (error?.message === 'PROMOTION_LIMIT_REACHED') {
+            return res.status(409).json({ success: false, error: { code: 'PROMOTION_LIMIT_REACHED', message: 'Promotion usage limit reached' } });
+        }
         next(error);
     }
 });
