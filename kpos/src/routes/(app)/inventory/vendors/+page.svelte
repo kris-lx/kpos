@@ -58,12 +58,32 @@
         isStarred: false,
     });
 
-    // Stats
+    // True active/starred counts across the whole tenant, not just the
+    // current page — `vendors` only ever holds one page (itemsPerPage), so
+    // deriving these via .filter().length silently showed the current
+    // page's count as the grand total (same bug shape found on the staff,
+    // promotions, and coupons pages).
+    let activeVendorsTotal = $state(0);
+    let starredVendorsTotal = $state(0);
+
     let stats = $derived({
         total: totalItems,
-        active: vendors.filter((v) => v.isActive !== false).length,
-        starred: vendors.filter((v) => v.isStarred).length,
+        active: activeVendorsTotal,
+        starred: starredVendorsTotal,
     });
+
+    async function loadVendorCounts() {
+        try {
+            const [activeRes, starredRes] = await Promise.all([
+                api.get("inventory/vendors?isActive=true&limit=1").json<any>(),
+                api.get("inventory/vendors?all=true").json<any>(),
+            ]);
+            activeVendorsTotal = activeRes?.meta?.total ?? 0;
+            starredVendorsTotal = (starredRes?.data || []).filter((v: any) => v.isStarred).length;
+        } catch (e) {
+            console.error("Failed to load vendor counts:", e);
+        }
+    }
 
     async function loadData() {
         isLoading = true;
@@ -80,6 +100,7 @@
             const res = await api.get(`inventory/vendors?${params}`).json<any>();
             vendors = res.data || [];
             totalItems = res.meta?.total || 0;
+            await loadVendorCounts();
         } catch (e) {
             console.error("Failed to load:", e);
         } finally {

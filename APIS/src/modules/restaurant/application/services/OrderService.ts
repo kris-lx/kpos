@@ -7,6 +7,7 @@ import { orders, orderItems, tables } from '@/db/schema/tables';
 import { eq, and, inArray, gte, count } from 'drizzle-orm';
 import { Order, OrderStatus, OrderType, OrderItem, OrderItemStatus, TableStatus } from '../../domain/entities';
 import { setRequestContext, setSuperAdminBypassContext } from '@/db/set-tenant-context';
+import { runWithTenantOrBypassContext } from '@/shared/tenant-context';
 
 export interface CreateOrderItemDTO {
     productId: string;
@@ -41,7 +42,16 @@ export interface OrderFilters {
     status?: OrderStatus | OrderStatus[];
     type?: OrderType;
     tenantId?: string;
+    page?: number;
+    limit?: number;
 }
+
+// Unfiltered order history grows unboundedly at a busy branch — cap it even
+// when no explicit limit is given, mirroring the cap added to the staff
+// branch-list endpoint after the same "unbounded findMany" pattern showed up
+// at scale there.
+const DEFAULT_ORDER_LIST_LIMIT = 100;
+const MAX_ORDER_LIST_LIMIT = 200;
 
 export class OrderService {
     private generateOrderNumber(): string {
@@ -51,47 +61,67 @@ export class OrderService {
         return `ORD-${date}-${random}`;
     }
 
+    // Every method below runs its query inside runWithTenantOrBypassContext —
+    // `orders`/`order_items`/`tables` all have FORCE ROW LEVEL SECURITY
+    // requiring the `app.current_tenant_id` GUC to be set on the exact
+    // connection running the query. This class used to query the plain
+    // pooled `db` handle directly, which never had that GUC set: every read
+    // here silently returned zero rows (RLS defaults to "tenant_id IS NULL"
+    // only), and every write with a real tenantId threw 42501
+    // insufficient_privilege. Found via a scale/feature retest — the
+    // restaurant orders list was empty for every real tenant regardless of
+    // status filter.
+
     async findAll(filters: OrderFilters = {}): Promise<Order[]> {
-        const conds: any[] = [];
-        if (filters.tenantId) conds.push(eq(orders.tenantId, filters.tenantId));
-        if (filters.branchId) conds.push(eq(orders.branchId, filters.branchId));
-        if (filters.tableId) conds.push(eq(orders.tableId, filters.tableId));
-        if (filters.type) conds.push(eq(orders.type, filters.type));
-        if (filters.status) {
-            if (Array.isArray(filters.status)) {
-                conds.push(inArray(orders.status, filters.status));
-            } else {
-                conds.push(eq(orders.status, filters.status));
+        return runWithTenantOrBypassContext(filters.tenantId, async (tx) => {
+            const conds: any[] = [];
+            if (filters.tenantId) conds.push(eq(orders.tenantId, filters.tenantId));
+            if (filters.branchId) conds.push(eq(orders.branchId, filters.branchId));
+            if (filters.tableId) conds.push(eq(orders.tableId, filters.tableId));
+            if (filters.type) conds.push(eq(orders.type, filters.type));
+            if (filters.status) {
+                if (Array.isArray(filters.status)) {
+                    conds.push(inArray(orders.status, filters.status));
+                } else {
+                    conds.push(eq(orders.status, filters.status));
+                }
             }
-        }
-        const where = conds.length > 0 ? and(...conds) : undefined;
+            const where = conds.length > 0 ? and(...conds) : undefined;
 
-        const rows = await db.query.orders.findMany({
-            where,
-            with: { table: { columns: { name: true } }, items: true },
-            orderBy: (o, { desc }) => desc(o.createdAt),
+            const limit = Math.min(filters.limit || DEFAULT_ORDER_LIST_LIMIT, MAX_ORDER_LIST_LIMIT);
+            const page = filters.page && filters.page > 0 ? filters.page : 1;
+
+            const rows = await tx.query.orders.findMany({
+                where,
+                with: { table: { columns: { name: true } }, items: true },
+                orderBy: (o, { desc }) => desc(o.createdAt),
+                limit,
+                offset: (page - 1) * limit,
+            });
+
+            return rows.map(o => new Order({
+                ...o,
+                items: (o as any).items?.map((i: any) => new OrderItem(i)) || [],
+            } as any));
         });
-
-        return rows.map(o => new Order({
-            ...o,
-            items: (o as any).items?.map((i: any) => new OrderItem(i)) || [],
-        } as any));
     }
 
     async findById(id: string, tenantId?: string): Promise<Order | null> {
-        const conds: any[] = [eq(orders.id, id)];
-        if (tenantId) conds.push(eq(orders.tenantId, tenantId));
-        const order = await db.query.orders.findFirst({
-            where: and(...conds),
-            with: { table: true, items: true },
+        return runWithTenantOrBypassContext(tenantId, async (tx) => {
+            const conds: any[] = [eq(orders.id, id)];
+            if (tenantId) conds.push(eq(orders.tenantId, tenantId));
+            const order = await tx.query.orders.findFirst({
+                where: and(...conds),
+                with: { table: true, items: true },
+            });
+
+            if (!order) return null;
+
+            return new Order({
+                ...order,
+                items: (order as any).items?.map((i: any) => new OrderItem(i)) || [],
+            } as any);
         });
-
-        if (!order) return null;
-
-        return new Order({
-            ...order,
-            items: (order as any).items?.map((i: any) => new OrderItem(i)) || [],
-        } as any);
     }
 
     async create(data: CreateOrderDTO): Promise<Order> {
@@ -111,14 +141,8 @@ export class OrderService {
 
         const subtotal = itemsData.reduce((sum, item) => sum + item.total, 0);
 
-        // Whole order + items + table-status update now run in one transaction
-        // with the RLS context actually set — previously this ran as
-        // sequential unwrapped statements on the plain `db` handle with NO
-        // tenant_id GUC set at all, so under FORCE ROW LEVEL SECURITY every
-        // insert with a non-null tenantId failed outright (42501), and any
-        // that did succeed left the order/items inconsistent if a later step
-        // in the loop threw (e.g. the public e-menu route, reachable with no
-        // auth and thus more exposed to aborted/retried requests).
+        // Whole order + items + table-status update run in one transaction
+        // with the RLS context actually set — see class-level note above.
         const completeOrder = await db.transaction(async (tx) => {
             if (tenantId) {
                 await setRequestContext(tx, { tenantId }, { local: true });
@@ -155,101 +179,109 @@ export class OrderService {
     }
 
     async update(id: string, data: UpdateOrderDTO, tenantId?: string): Promise<Order> {
-        const now = new Date();
-        const updateData: Record<string, unknown> = { ...data };
+        return runWithTenantOrBypassContext(tenantId, async (tx) => {
+            const now = new Date();
+            const updateData: Record<string, unknown> = { ...data };
 
-        if (data.status === OrderStatus.SERVED) updateData.servedAt = now;
-        if (data.status === OrderStatus.COMPLETED) updateData.completedAt = now;
+            if (data.status === OrderStatus.SERVED) updateData.servedAt = now;
+            if (data.status === OrderStatus.COMPLETED) updateData.completedAt = now;
 
-        const updConds: any[] = [eq(orders.id, id)];
-        if (tenantId) updConds.push(eq(orders.tenantId, tenantId));
-        await db.update(orders).set(updateData).where(and(...updConds));
-        const order = await db.query.orders.findFirst({ where: and(...updConds), with: { table: true, items: true } });
+            const updConds: any[] = [eq(orders.id, id)];
+            if (tenantId) updConds.push(eq(orders.tenantId, tenantId));
+            await tx.update(orders).set(updateData).where(and(...updConds));
+            const order = await tx.query.orders.findFirst({ where: and(...updConds), with: { table: true, items: true } });
 
-        if (data.status === OrderStatus.COMPLETED && order?.tableId) {
-            await db.update(tables).set({ status: TableStatus.CLEANING }).where(eq(tables.id, order.tableId));
-        }
+            if (data.status === OrderStatus.COMPLETED && order?.tableId) {
+                await tx.update(tables).set({ status: TableStatus.CLEANING }).where(eq(tables.id, order.tableId));
+            }
 
-        return new Order({
-            ...order,
-            items: (order as any)?.items?.map((i: any) => new OrderItem(i)) || [],
-        } as any);
+            return new Order({
+                ...order,
+                items: (order as any)?.items?.map((i: any) => new OrderItem(i)) || [],
+            } as any);
+        });
     }
 
     async addItems(orderId: string, items: CreateOrderItemDTO[], tenantId?: string | null): Promise<Order> {
-        const newItems = items.map(item => ({
-            tenantId: tenantId || undefined,
-            orderId,
-            productId: item.productId,
-            productName: item.productName,
-            quantity: item.quantity,
-            unitPrice: item.unitPrice,
-            total: item.quantity * item.unitPrice,
-            note: item.note || '',
-            modifiers: item.modifiers ? JSON.parse(JSON.stringify(item.modifiers)) : null,
-            status: OrderItemStatus.PENDING,
-        }));
+        return runWithTenantOrBypassContext(tenantId || undefined, async (tx) => {
+            const newItems = items.map(item => ({
+                tenantId: tenantId || undefined,
+                orderId,
+                productId: item.productId,
+                productName: item.productName,
+                quantity: item.quantity,
+                unitPrice: item.unitPrice,
+                total: item.quantity * item.unitPrice,
+                note: item.note || '',
+                modifiers: item.modifiers ? JSON.parse(JSON.stringify(item.modifiers)) : null,
+                status: OrderItemStatus.PENDING,
+            }));
 
-        for (const oi of newItems) {
-            await db.insert(orderItems).values(oi);
-        }
+            for (const oi of newItems) {
+                await tx.insert(orderItems).values(oi);
+            }
 
-        const itemConds: any[] = [eq(orderItems.orderId, orderId)];
-        if (tenantId) itemConds.push(eq(orderItems.tenantId, tenantId));
-        const allItems = await db.query.orderItems.findMany({ where: and(...itemConds) });
-        const subtotal = allItems.reduce((sum: number, item: any) => sum + item.total, 0);
+            const itemConds: any[] = [eq(orderItems.orderId, orderId)];
+            if (tenantId) itemConds.push(eq(orderItems.tenantId, tenantId));
+            const allItems = await tx.query.orderItems.findMany({ where: and(...itemConds) });
+            const subtotal = allItems.reduce((sum: number, item: any) => sum + item.total, 0);
 
-        const orderConds: any[] = [eq(orders.id, orderId)];
-        if (tenantId) orderConds.push(eq(orders.tenantId, tenantId));
-        await db.update(orders).set({ subtotal, total: subtotal }).where(and(...orderConds));
-        const order = await db.query.orders.findFirst({ where: and(...orderConds), with: { items: true } });
+            const orderConds: any[] = [eq(orders.id, orderId)];
+            if (tenantId) orderConds.push(eq(orders.tenantId, tenantId));
+            await tx.update(orders).set({ subtotal, total: subtotal }).where(and(...orderConds));
+            const order = await tx.query.orders.findFirst({ where: and(...orderConds), with: { items: true } });
 
-        return new Order({
-            ...order,
-            items: (order as any)?.items?.map((i: any) => new OrderItem(i)) || [],
-        } as any);
+            return new Order({
+                ...order,
+                items: (order as any)?.items?.map((i: any) => new OrderItem(i)) || [],
+            } as any);
+        });
     }
 
-    async updateItemStatus(itemId: string, status: OrderItemStatus): Promise<OrderItem> {
-        const now = new Date();
-        const updateData: Record<string, unknown> = { status };
+    async updateItemStatus(itemId: string, status: OrderItemStatus, tenantId?: string): Promise<OrderItem> {
+        return runWithTenantOrBypassContext(tenantId, async (tx) => {
+            const now = new Date();
+            const updateData: Record<string, unknown> = { status };
 
-        if (status === OrderItemStatus.PREPARING) updateData.sentAt = now;
-        if (status === OrderItemStatus.READY) updateData.preparedAt = now;
+            if (status === OrderItemStatus.PREPARING) updateData.sentAt = now;
+            if (status === OrderItemStatus.READY) updateData.preparedAt = now;
 
-        const [item] = await db.update(orderItems).set(updateData).where(eq(orderItems.id, itemId)).returning();
+            const [item] = await tx.update(orderItems).set(updateData).where(eq(orderItems.id, itemId)).returning();
 
-        const order = await db.query.orders.findFirst({
-            where: eq(orders.id, item.orderId), with: { items: true },
-        });
+            const order = await tx.query.orders.findFirst({
+                where: eq(orders.id, item.orderId), with: { items: true },
+            });
 
-        if (order) {
-            const items = (order as any).items || [];
-            if (items.every((i: any) => i.status === 'READY' || i.status === 'SERVED')) {
-                await db.update(orders).set({ status: OrderStatus.READY }).where(eq(orders.id, order.id));
-            } else if (items.some((i: any) => i.status === 'PREPARING')) {
-                await db.update(orders).set({ status: OrderStatus.PREPARING }).where(eq(orders.id, order.id));
+            if (order) {
+                const items = (order as any).items || [];
+                if (items.every((i: any) => i.status === 'READY' || i.status === 'SERVED')) {
+                    await tx.update(orders).set({ status: OrderStatus.READY }).where(eq(orders.id, order.id));
+                } else if (items.some((i: any) => i.status === 'PREPARING')) {
+                    await tx.update(orders).set({ status: OrderStatus.PREPARING }).where(eq(orders.id, order.id));
+                }
             }
-        }
 
-        return new OrderItem(item as any);
+            return new OrderItem(item as any);
+        });
     }
 
     async getKitchenOrders(branchId?: string, tenantId?: string): Promise<Order[]> {
-        const conds: any[] = [inArray(orders.status, [OrderStatus.PENDING, OrderStatus.PREPARING])];
-        if (tenantId) conds.push(eq(orders.tenantId, tenantId));
-        if (branchId) conds.push(eq(orders.branchId, branchId));
+        return runWithTenantOrBypassContext(tenantId, async (tx) => {
+            const conds: any[] = [inArray(orders.status, [OrderStatus.PENDING, OrderStatus.PREPARING])];
+            if (tenantId) conds.push(eq(orders.tenantId, tenantId));
+            if (branchId) conds.push(eq(orders.branchId, branchId));
 
-        const rows = await db.query.orders.findMany({
-            where: and(...conds),
-            with: { table: { columns: { name: true } }, items: true },
-            orderBy: (o, { asc }) => asc(o.createdAt),
+            const rows = await tx.query.orders.findMany({
+                where: and(...conds),
+                with: { table: { columns: { name: true } }, items: true },
+                orderBy: (o, { asc }) => asc(o.createdAt),
+            });
+
+            return rows.map(o => new Order({
+                ...o,
+                items: ((o as any).items || []).filter((i: any) => [OrderItemStatus.PENDING, OrderItemStatus.PREPARING].includes(i.status)).map((i: any) => new OrderItem(i)),
+            } as any));
         });
-
-        return rows.map(o => new Order({
-            ...o,
-            items: ((o as any).items || []).filter((i: any) => [OrderItemStatus.PENDING, OrderItemStatus.PREPARING].includes(i.status)).map((i: any) => new OrderItem(i)),
-        } as any));
     }
 
     async getStats(branchId: string, tenantId?: string): Promise<{
@@ -259,21 +291,23 @@ export class OrderService {
         ready: number;
         completed: number;
     }> {
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
+        return runWithTenantOrBypassContext(tenantId, async (tx) => {
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
 
-        const baseConds: any[] = [eq(orders.branchId, branchId)];
-        if (tenantId) baseConds.push(eq(orders.tenantId, tenantId));
-        const branchCond = and(...baseConds);
-        const [[{ value: total }], [{ value: pending }], [{ value: preparing }], [{ value: ready }], [{ value: completed }]] = await Promise.all([
-            db.select({ value: count() }).from(orders).where(and(branchCond, gte(orders.createdAt, today))),
-            db.select({ value: count() }).from(orders).where(and(branchCond, eq(orders.status, OrderStatus.PENDING))),
-            db.select({ value: count() }).from(orders).where(and(branchCond, eq(orders.status, OrderStatus.PREPARING))),
-            db.select({ value: count() }).from(orders).where(and(branchCond, eq(orders.status, OrderStatus.READY))),
-            db.select({ value: count() }).from(orders).where(and(branchCond, gte(orders.createdAt, today), eq(orders.status, OrderStatus.COMPLETED))),
-        ]);
+            const baseConds: any[] = [eq(orders.branchId, branchId)];
+            if (tenantId) baseConds.push(eq(orders.tenantId, tenantId));
+            const branchCond = and(...baseConds);
+            const [[{ value: total }], [{ value: pending }], [{ value: preparing }], [{ value: ready }], [{ value: completed }]] = await Promise.all([
+                tx.select({ value: count() }).from(orders).where(and(branchCond, gte(orders.createdAt, today))),
+                tx.select({ value: count() }).from(orders).where(and(branchCond, eq(orders.status, OrderStatus.PENDING))),
+                tx.select({ value: count() }).from(orders).where(and(branchCond, eq(orders.status, OrderStatus.PREPARING))),
+                tx.select({ value: count() }).from(orders).where(and(branchCond, eq(orders.status, OrderStatus.READY))),
+                tx.select({ value: count() }).from(orders).where(and(branchCond, gte(orders.createdAt, today), eq(orders.status, OrderStatus.COMPLETED))),
+            ]);
 
-        return { total, pending, preparing, ready, completed };
+            return { total, pending, preparing, ready, completed };
+        });
     }
 }
 

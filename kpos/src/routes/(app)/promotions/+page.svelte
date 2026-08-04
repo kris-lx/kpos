@@ -58,6 +58,28 @@
     let coupons = $state<any[]>([]);
     let discounts = $state<any[]>([]);
 
+    // True active-counts across the whole tenant, not just the current page
+    // — `promotions`/`coupons` only ever hold one page (api.get("promotions")
+    // defaults to limit=20), so filtering those arrays for "active count"
+    // silently showed the current page's count as the grand total, correct
+    // only by coincidence when everything fits on one page (same bug shape
+    // found earlier on the staff page's stat cards).
+    let activePromotionsTotal = $state(0);
+    let activeCouponsTotal = $state(0);
+
+    async function loadActiveCounts() {
+        try {
+            const [promoRes, couponRes] = await Promise.all([
+                api.get("promotions?status=active&limit=1").json<any>(),
+                api.get("promotions/coupons/list?status=active&limit=1").json<any>(),
+            ]);
+            activePromotionsTotal = promoRes?.meta?.total ?? 0;
+            activeCouponsTotal = couponRes?.meta?.total ?? 0;
+        } catch (e) {
+            console.error("Failed to load active promo/coupon counts:", e);
+        }
+    }
+
     // Loyalty points settings
     let loyaltySettings = $state({
         enabled: true,
@@ -140,8 +162,8 @@
 
     // Stats
     let stats = $derived({
-        activePromotions: promotions.filter((p) => getStatus(p) === "active").length,
-        activeCoupons: coupons.filter((c) => getStatus(c) === "active").length,
+        activePromotions: activePromotionsTotal,
+        activeCoupons: activeCouponsTotal,
         totalUsage: promotions.reduce((sum, p) => sum + (p.usageCount || 0), 0),
         totalSaved: promotions.reduce((sum, p) => sum + (p.totalSaved || 0), 0),
     });
@@ -231,6 +253,7 @@
             promotions = promoRes.data || [];
             coupons = couponRes.data || [];
             discounts = discountRes.data || [];
+            await loadActiveCounts();
         } catch (e) {
             console.error("Failed to load:", e);
             toast.error(t("common.loadError"));

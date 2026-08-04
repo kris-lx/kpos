@@ -60,10 +60,32 @@
         isActive: true,
     });
 
+    // True totals across the whole tenant, independent of the currently
+    // selected filter tab/search/page — `coupons` only ever holds one page
+    // of whatever filter is active, so deriving "total"/"active" stat cards
+    // from it (via .length) silently showed the current page/filter's count
+    // as the grand total (same bug shape found earlier on the staff and
+    // promotions pages).
+    let allCouponsTotal = $state(0);
+    let activeCouponsTotal = $state(0);
+
+    async function loadCouponCounts() {
+        try {
+            const [allRes, activeRes] = await Promise.all([
+                api.get("promotions/coupons/list?limit=1").json<any>(),
+                api.get("promotions/coupons/list?status=active&limit=1").json<any>(),
+            ]);
+            allCouponsTotal = allRes?.meta?.total ?? 0;
+            activeCouponsTotal = activeRes?.meta?.total ?? 0;
+        } catch (e) {
+            console.error("Failed to load coupon counts:", e);
+        }
+    }
+
     // Stats
     let stats = $derived({
-        total: coupons.length,
-        active: coupons.filter((c) => getStatus(c) === "active").length,
+        total: allCouponsTotal,
+        active: activeCouponsTotal,
         totalUsage: coupons.reduce((sum, c) => sum + (c.usageCount || 0), 0),
         totalSaved: coupons.reduce((sum, c) => sum + (c.totalSaved || 0), 0),
     });
@@ -139,6 +161,7 @@
             const response = await api.get(`promotions/coupons/list?${params}`).json<any>();
             coupons = response.data || [];
             totalItems = response.meta?.total || coupons.length;
+            await loadCouponCounts();
         } catch (e) {
             console.error("Failed to load:", e);
             coupons = [];

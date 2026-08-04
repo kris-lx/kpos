@@ -523,20 +523,20 @@ productRoutes.get('/generate/barcode', authenticate, withTenantTx(), async (req,
         // Generate unique 14-digit barcode
         const prefix = '0885'; // Packaging indicator (0) + Laos country code (885)
         
-        // Find the last barcode from both products and SKU variants
-        const [lastProduct, lastSKU, allProductBarcodes, allSkuBarcodes] = await Promise.all([
+        // Find the last barcode from both products and SKU variants. Used to
+        // load every existing barcode (two unbounded findMany calls) into a
+        // Set just to check uniqueness — fine at a few hundred products, but
+        // at scale (tens of thousands of products across a tenant) that's a
+        // full-catalog load on every single barcode-generation request. Since
+        // nextNumber already starts one past the last known barcode, a
+        // per-candidate existence check is both cheaper and correct — a
+        // collision here only happens if a barcode was manually entered out
+        // of sequence, which the retry loop below still handles.
+        const [lastProduct, lastSKU] = await Promise.all([
             db.query.products.findFirst({ where: ilike(products.barcode, `${prefix}%`), orderBy: desc(products.barcode), columns: { barcode: true } }),
             db.query.skuVariants.findFirst({ where: ilike(skuVariants.barcode, `${prefix}%`), orderBy: desc(skuVariants.barcode), columns: { barcode: true } }),
-            db.query.products.findMany({ where: isNotNull(products.barcode), columns: { barcode: true } }),
-            db.query.skuVariants.findMany({ where: isNotNull(skuVariants.barcode), columns: { barcode: true } }),
         ]);
-        
-        // Create set of existing barcodes for quick lookup
-        const existingBarcodes = new Set([
-            ...allProductBarcodes.map(p => p.barcode),
-            ...allSkuBarcodes.map(s => s.barcode)
-        ]);
-        
+
         let nextNumber = 1;
         const lastBarcodeValue = [lastProduct?.barcode, lastSKU?.barcode]
             .filter(Boolean)
@@ -562,9 +562,13 @@ productRoutes.get('/generate/barcode', authenticate, withTenantTx(), async (req,
             const checkDigit = (10 - (sum % 10)) % 10;
             
             barcode = barcodeBase + checkDigit;
-            
-            // Check if unique
-            if (!existingBarcodes.has(barcode)) {
+
+            // Check if unique via a targeted lookup instead of a preloaded Set
+            const [existingProduct, existingSku] = await Promise.all([
+                db.query.products.findFirst({ where: eq(products.barcode, barcode), columns: { id: true } }),
+                db.query.skuVariants.findFirst({ where: eq(skuVariants.barcode, barcode), columns: { id: true } }),
+            ]);
+            if (!existingProduct && !existingSku) {
                 break;
             }
             nextNumber++;
@@ -927,19 +931,6 @@ productRoutes.get('/:id', authenticate, withTenantTx(), async (req, res, next) =
     }
 });
 
-// Generate a unique barcode
-productRoutes.get('/generate/barcode', authenticate, withTenantTx(), async (req, res, next) => {
-    try {
-        const db = req.tx ?? globalDb;
-        const timestamp = Date.now().toString();
-        const random = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
-        const barcode = `${timestamp.slice(-9)}${random}`;
-        res.json({ success: true, data: { barcode } });
-    } catch (error) {
-        next(error);
-    }
-});
-
 // Generate a unique SKU
 productRoutes.get('/generate/sku', authenticate, withTenantTx(), async (req, res, next) => {
     try {
@@ -955,7 +946,14 @@ productRoutes.get('/generate/sku', authenticate, withTenantTx(), async (req, res
                 prefix = product.name.slice(0, 3).toUpperCase().replace(/[^A-Z0-9]/g, 'X');
             }
         }
-        const [{ value: total }] = await db.select({ value: count() }).from(skuVariants);
+        // Was an unscoped count() over every tenant's skuVariants — SKU
+        // numbering leaked platform-wide instead of being per-tenant, and at
+        // scale a full-table COUNT(*) on every SKU-generation call gets
+        // slower as the whole platform's catalog grows, not just this
+        // tenant's.
+        const tenantId = req.authUser?.tenantId;
+        const countConds = tenantId && !req.authUser?.isSuperAdmin ? [eq(skuVariants.tenantId, tenantId)] : [];
+        const [{ value: total }] = await db.select({ value: count() }).from(skuVariants).where(countConds.length ? and(...countConds) : undefined);
         const sku = `${prefix}-${String(total + 1).padStart(5, '0')}`;
         res.json({ success: true, data: { sku } });
     } catch (error) {

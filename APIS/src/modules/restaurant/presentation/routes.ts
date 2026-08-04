@@ -259,16 +259,37 @@ restaurantRoutes.get('/zones', authenticate, withTenantTx(), branchFilter(), asy
 restaurantRoutes.get('/orders', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
-        const { branchId, status, tableId } = req.query;
+        const { branchId, status, tableId, page, limit } = req.query;
         const filter = req.branchFilter;
         const effectiveBranchId = (branchId as string) || filter?.branchIds?.[0] || req.authUser?.activeBranchId;
 
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+
+        // The frontend sends status as lowercase single values ("pending"),
+        // uppercase comma lists ("PENDING,PREPARING"), the semantic alias
+        // "active", or "all" — none of which match `orders.status`'s stored
+        // OrderStatus enum values (uppercase, single) via a plain eq(). That
+        // silently returned zero rows for every tab on the orders page.
+        // Normalize all of those shapes here instead of relying on every
+        // caller to send an exact single uppercase value.
+        let statusFilter: OrderStatus | OrderStatus[] | undefined;
+        const rawStatus = status ? String(status) : '';
+        if (rawStatus && rawStatus.toUpperCase() !== 'ALL') {
+            if (rawStatus.toUpperCase() === 'ACTIVE') {
+                statusFilter = [OrderStatus.PENDING, OrderStatus.PREPARING, OrderStatus.READY];
+            } else {
+                const parts = rawStatus.split(',').map(s => s.trim().toUpperCase()).filter(Boolean) as OrderStatus[];
+                statusFilter = parts.length > 1 ? parts : parts[0];
+            }
+        }
+
         const orders = await orderService.findAll({
             branchId: effectiveBranchId,
-            status: status as OrderStatus,
+            status: statusFilter,
             tableId: tableId as string,
             tenantId,
+            page: page ? Number(page) : undefined,
+            limit: limit ? Number(limit) : undefined,
         });
 
         res.json({ success: true, data: orders });
@@ -443,7 +464,8 @@ restaurantRoutes.put('/kitchen/:orderId/items/:itemId', authenticate, withTenant
             res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Item not found or no access' } });
             return;
         }
-        const item = await orderService.updateItemStatus(req.params.itemId, status as OrderItemStatus);
+        const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        const item = await orderService.updateItemStatus(req.params.itemId, status as OrderItemStatus, tenantId);
         res.json({ success: true, data: item });
     } catch (error) {
         next(error);
@@ -468,7 +490,8 @@ restaurantRoutes.patch('/kitchen/items/:id/status', authenticate, withTenantTx()
             res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Item not found or no access' } });
             return;
         }
-        const item = await orderService.updateItemStatus(req.params.id, status as OrderItemStatus);
+        const legacyTenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
+        const item = await orderService.updateItemStatus(req.params.id, status as OrderItemStatus, legacyTenantId);
         res.json({ success: true, data: item });
     } catch (error) {
         next(error);
