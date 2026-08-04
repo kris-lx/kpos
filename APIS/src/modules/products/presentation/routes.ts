@@ -690,6 +690,15 @@ productRoutes.get('/', authenticate, withTenantTx(), branchFilter(), async (req,
         }
         if (categoryId) prodConds.push(eq(products.categoryId, String(categoryId)));
 
+        // `storeId` was destructured from the query above but never actually
+        // used — a tenant-wide admin (whole-tenant scope, no branchIds to
+        // narrow by) always got every store's products regardless of which
+        // store was selected in the UI. The POS page already sends this
+        // param correctly on every store switch; the backend just silently
+        // dropped it. Narrows within whatever the caller's branchFilter
+        // scope already allows — never widens it.
+        if (storeId) prodConds.push(eq(products.storeId, String(storeId)));
+
         const prodWhere = and(...prodConds);
 
         const [productRows, [{ value: total }]] = await Promise.all([
