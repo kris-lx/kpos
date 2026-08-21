@@ -32,7 +32,7 @@
         "svelte-sonner": "^0.3.19",
         "tailwind-merge": "^2.2.1",
         "tailwind-variants": "^0.2.0",
-        "zod": "^3.22.4"
+        "zod": "^4.4.3"
     },
     "devDependencies": {
         "@inlang/paraglide-js": "^2.9.1",
