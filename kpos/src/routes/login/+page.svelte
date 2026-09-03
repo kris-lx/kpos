@@ -9,6 +9,19 @@
     import { page } from "$app/stores";
     import { LOCAL_STORAGE_KEYS } from "$lib/config";
     import { PUBLIC_API_URL } from "$env/static/public";
+    import { onMount } from "svelte";
+    import { dialogStore } from "$lib/stores/dialog.svelte";
+
+    let loginLogo = $state<string | null>(null);
+    onMount(async () => {
+        try {
+            const res = await fetch(`${PUBLIC_API_URL}/admin/public/branding`);
+            const body = await res.json();
+            if (body?.success) loginLogo = body.data?.loginLogo ?? null;
+        } catch {
+            // Branding is cosmetic — silently fall back to the default icon.
+        }
+    });
 
     // Clear any stale auth state so the login form always starts fresh
     if (browser && !auth.isAuthenticated) {
@@ -40,8 +53,12 @@
         }
     }
 
-    function handleSsoClick() {
-        const orgCode = window.prompt(t("auth.ssoOrgCodePrompt"));
+    async function handleSsoClick() {
+        const orgCode = await dialogStore.prompt(t("auth.ssoOrgCodePrompt"), {
+            title: "Single Sign-On",
+            inputLabel: t("auth.ssoOrgCodePrompt"),
+            inputPlaceholder: "organization-code",
+        });
         if (!orgCode) return;
         window.location.href = `${PUBLIC_API_URL}/auth/sso/${encodeURIComponent(orgCode.trim())}`;
     }
@@ -59,6 +76,11 @@
                 goto("/pos");
             } else if (result === 'SERVICE_UNAVAILABLE') {
                 error = "Database is not available. Please ensure PostgreSQL is running.";
+            } else if (typeof result === 'string') {
+                // Server gave a specific reason (pending approval, account
+                // suspended, rate-limited, ...) — show it instead of the
+                // generic wrong-password message.
+                error = result;
             } else {
                 error = t("auth.loginFailed");
             }
@@ -125,9 +147,13 @@
         <!-- Logo & Title -->
         <div class="text-center mb-8">
             <div
-                class="auth-logo-icon inline-flex items-center justify-center rounded-2xl bg-white dark:bg-gray-800 shadow-lg mb-4"
+                class="auth-logo-icon inline-flex items-center justify-center rounded-2xl bg-white dark:bg-gray-800 shadow-lg mb-4 overflow-hidden"
             >
-                <Store class="auth-logo-svg w-8 h-8 text-primary-600" />
+                {#if loginLogo}
+                    <img src={loginLogo} alt={t("app.name")} class="w-full h-full object-cover" />
+                {:else}
+                    <Store class="auth-logo-svg w-8 h-8 text-primary-600" />
+                {/if}
             </div>
             <h1 class="text-3xl font-bold text-white auth-app-title">{t("app.name")}</h1>
             <p class="text-primary-100 mt-1 auth-app-subtitle">{t("app.title")}</p>
@@ -147,7 +173,7 @@
                 </div>
             {/if}
 
-            <form onsubmit={handleSubmit} class="space-y-4">
+            <form onsubmit={handleSubmit} autocomplete="on" class="space-y-4">
                 <!-- Email -->
                 <div>
                     <label
@@ -159,6 +185,8 @@
                     <input
                         type="email"
                         id="email"
+                        name="email"
+                        autocomplete="username"
                         bind:value={email}
                         required
                         class={cn(
@@ -184,6 +212,8 @@
                         <input
                             type={showPassword ? "text" : "password"}
                             id="password"
+                            name="password"
+                            autocomplete="current-password"
                             bind:value={password}
                             required
                             class={cn(

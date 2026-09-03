@@ -8,7 +8,7 @@
 // used to grant access.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { eq, and } from 'drizzle-orm';
+import { eq, and, isNull } from 'drizzle-orm';
 import { userStores } from '@/db/schema/tables';
 
 export interface StoreAssignmentInput {
@@ -22,7 +22,7 @@ export interface StoreAssignmentInput {
 }
 
 /**
- * Upserts one userStores row per store in `assignments`, then enforces that
+ * Upserts one userStores row per scope in `assignments`, then enforces that
  * exactly one of the user's rows (across ALL their store assignments, not
  * just the ones in this call) has isDefault=true — `defaultStoreId` if given
  * and present in `assignments`, else the first entry in `assignments`.
@@ -40,9 +40,24 @@ export async function assignUserToStores(
     const { userId, tenantId, assignments, assignedBy } = params;
     if (assignments.length === 0) return [];
 
+    // Whole-store access supersedes individual branches in the same store.
+    // Otherwise preserve every distinct branch so one accountant can be
+    // assigned to several branches without accidentally replacing the first.
+    const normalized = [...new Map(
+        assignments.map(a => [`${a.storeId}:${a.branchId || '*'}`, a]),
+    ).values()].filter(a => !a.branchId || !assignments.some(other => other.storeId === a.storeId && other.branchId === null));
+
     const results: any[] = [];
-    for (const a of assignments) {
+    for (const a of normalized) {
+        if (a.branchId === null) {
+            await db.delete(userStores).where(and(
+                eq(userStores.userId, userId),
+                eq(userStores.storeId, a.storeId),
+                ...(tenantId ? [eq(userStores.tenantId, tenantId)] : []),
+            ));
+        }
         const existingConds: any[] = [eq(userStores.userId, userId), eq(userStores.storeId, a.storeId)];
+        existingConds.push(a.branchId ? eq(userStores.branchId, a.branchId) : isNull(userStores.branchId));
         if (tenantId) existingConds.push(eq(userStores.tenantId, tenantId));
         const existing = await db.query.userStores.findFirst({ where: and(...existingConds) });
 
@@ -54,7 +69,10 @@ export async function assignUserToStores(
         };
 
         if (existing) {
-            const [updated] = await db.update(userStores).set(values).where(eq(userStores.id, existing.id)).returning();
+            const [updated] = await db.update(userStores)
+                .set({ ...values, assignedBy })
+                .where(eq(userStores.id, existing.id))
+                .returning();
             results.push(updated);
         } else {
             const [created] = await db.insert(userStores).values({
@@ -70,14 +88,17 @@ export async function assignUserToStores(
         }
     }
 
-    const defaultStoreId = params.defaultStoreId && assignments.some(a => a.storeId === params.defaultStoreId)
+    const defaultStoreId = params.defaultStoreId && normalized.some(a => a.storeId === params.defaultStoreId)
         ? params.defaultStoreId
-        : assignments[0].storeId;
+        : normalized[0].storeId;
 
     const allConds: any[] = [eq(userStores.userId, userId)];
     if (tenantId) allConds.push(eq(userStores.tenantId, tenantId));
     await db.update(userStores).set({ isDefault: false }).where(and(...allConds));
-    await db.update(userStores).set({ isDefault: true }).where(and(eq(userStores.userId, userId), eq(userStores.storeId, defaultStoreId)));
+    const defaultRow = results.find(row => row.storeId === defaultStoreId) || results[0];
+    if (defaultRow) {
+        await db.update(userStores).set({ isDefault: true }).where(eq(userStores.id, defaultRow.id));
+    }
 
     return results;
 }

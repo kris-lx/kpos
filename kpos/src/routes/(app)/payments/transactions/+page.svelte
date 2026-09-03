@@ -2,6 +2,7 @@
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
     import { cn, formatCurrency, formatDate, escapeCsvCell, escapeHtml } from "$utils";
+    import { printHtml } from "$utils/printHtml";
     import { api } from "$api";
     import { toast } from "svelte-sonner";
     import {
@@ -164,10 +165,7 @@
 <style>body{font-family:'Noto Sans Lao',sans-serif;padding:20px}h1{text-align:center}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ddd;padding:8px;font-size:12px}th{background:#f5f5f5}.text-right{text-align:right}</style></head>
 <body><h1>ລາຍການຊຳລະ</h1><p style="text-align:center">${new Date().toLocaleDateString('lo-LA')}</p>
 <table><tr><th>ວັນທີ</th><th>ລະຫັດ</th><th>ລູກຄ້າ</th><th>ວິທີຊຳລະ</th><th>ຍອດເງິນ</th><th>ສະຖານະ</th></tr>${rows}</table></body></html>`;
-        const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        const w = window.open(url, '_blank');
-        if (w) w.onload = () => w.print();
+        printHtml(html);
         toast.success(t('common.exportSuccess'));
     }
 

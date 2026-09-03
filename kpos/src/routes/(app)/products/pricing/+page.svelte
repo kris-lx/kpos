@@ -3,6 +3,7 @@
     import { api } from "$lib/api";
     import { formatCurrency, formatDate } from "$lib/utils";
     import { toast } from "svelte-sonner";
+    import { auth, dialogStore } from "$stores";
     import MoneyInput from "$lib/components/MoneyInput.svelte";
     import {
         Plus,
@@ -107,6 +108,11 @@
     // Computed
     let filteredLevels = $derived(priceLevels);
 
+    // CRUD gating — mirrors backend authorize('products:create'/'update'/'delete')
+    let canCreatePricing = $derived(auth.canCreate('products'));
+    let canUpdatePricing = $derived(auth.canUpdate('products'));
+    let canDeletePricing = $derived(auth.canDelete('products'));
+
     // Stats
     let stats = $derived({
         totalLevels: priceLevels.length,
@@ -206,7 +212,7 @@
             toast.error("ບໍ່ສາມາດລົບລະດັບລາຄາ Default ໄດ້");
             return;
         }
-        if (!confirm(`ຕ້ອງການລົບລະດັບລາຄາ "${level.name}" ບໍ?`)) return;
+        if (!(await dialogStore.confirm(`ຕ້ອງການລົບລະດັບລາຄາ "${level.name}" ບໍ?`))) return;
 
         try {
             await api.delete(`products/price-levels/${level.id}`).json();
@@ -266,7 +272,7 @@
     }
 
     async function removeProductPrice(priceId: string) {
-        if (!confirm("ຕ້ອງການລົບລາຄາສິນຄ້ານີ້ບໍ?")) return;
+        if (!(await dialogStore.confirm("ຕ້ອງການລົບລາຄາສິນຄ້ານີ້ບໍ?"))) return;
 
         try {
             await api.delete(`products/price-levels/prices/${priceId}`).json();
@@ -333,6 +339,7 @@
                 <RefreshCw class="w-4 h-4" />
                 ໂຫລດໃໝ່
             </button>
+            {#if canCreatePricing}
             <button
                 onclick={() => openLevelModal()}
                 class="flex items-center gap-2 px-4 py-2.5 bg-success-600 text-white rounded-xl hover:bg-success-700 transition-colors shadow-lg shadow-success-600/25"
@@ -340,6 +347,7 @@
                 <Plus class="w-4 h-4" />
                 ເພີ່ມລະດັບລາຄາ
             </button>
+            {/if}
         </div>
     </div>
 
@@ -422,6 +430,7 @@
             <DollarSign class="w-16 h-16 text-gray-300 dark:text-gray-600 mx-auto mb-4" />
             <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">ບໍ່ພົບລະດັບລາຄາ</h3>
             <p class="text-gray-500 dark:text-gray-400 mb-6">ຍັງບໍ່ມີລະດັບລາຄາໃນລະບົບ ກະລຸນາເພີ່ມໃໝ່</p>
+            {#if canCreatePricing}
             <button
                 onclick={() => openLevelModal()}
                 class="inline-flex items-center gap-2 px-4 py-2 bg-success-600 text-white rounded-lg hover:bg-success-700"
@@ -429,6 +438,7 @@
                 <Plus class="w-4 h-4" />
                 ເພີ່ມລະດັບລາຄາທຳອິດ
             </button>
+            {/if}
         </div>
     {:else if !error}
         <div class="mb-4 flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
@@ -485,6 +495,7 @@
                                 </div>
                             </div>
                             <div class="flex gap-1">
+                                {#if canUpdatePricing}
                                 <button
                                     onclick={() => openLevelModal(level)}
                                     class="p-2 text-gray-400 hover:text-primary-600 hover:bg-primary-50 dark:hover:bg-primary-900/20 rounded-lg transition-colors"
@@ -492,7 +503,8 @@
                                 >
                                     <Edit class="w-4 h-4" />
                                 </button>
-                                {#if !level.isDefault}
+                                {/if}
+                                {#if !level.isDefault && canDeletePricing}
                                     <button
                                         onclick={() => deleteLevel(level)}
                                         class="p-2 text-gray-400 hover:text-danger-600 hover:bg-danger-50 dark:hover:bg-danger-900/20 rounded-lg transition-colors"
@@ -514,7 +526,7 @@
                                     {level.products?.length || 0} ສິນຄ້າ
                                 </span>
                             </div>
-                            {#if !level.isDefault}
+                            {#if !level.isDefault && canUpdatePricing}
                                 <button
                                     onclick={() => setDefaultLevel(level)}
                                     class="text-xs text-primary-600 dark:text-primary-400 hover:underline"

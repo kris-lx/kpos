@@ -1,9 +1,11 @@
 ﻿<script lang="ts">
     import { onMount } from "svelte";
+    import { page } from "$app/stores";
+    import { goto } from "$app/navigation";
     import { t } from "$lib/i18n/index.svelte";
     import { cn, formatDateTime, formatTime } from "$utils";
     import { api } from "$api";
-    import { auth } from "$stores";
+    import { auth, shiftStore } from "$stores";
     import { toast } from "svelte-sonner";
     import MoneyInput from "$lib/components/MoneyInput.svelte";
     import {
@@ -50,6 +52,13 @@
         register?: { name: string };
         transactions?: any[];
         cashMovements?: any[];
+        scheduleStatus?: {
+            canClose: boolean;
+            scheduledStartTime: string;
+            scheduledEndTime: string;
+            timezone: string;
+            minutesRemaining: number;
+        } | null;
     }
 
     interface CashMovement {
@@ -87,6 +96,16 @@
     let movementType = $state<"FLOAT" | "PICKUP" | "PAYOUT">("FLOAT");
     let movementAmount = $state(0);
     let movementReason = $state("");
+    const clockOutBlocked = $derived(Boolean(currentShift?.scheduleStatus && !currentShift.scheduleStatus.canClose));
+
+    function requestCloseShift() {
+        if (clockOutBlocked) {
+            const status = currentShift?.scheduleStatus;
+            toast.warning(`Your scheduled end time is ${status?.scheduledEndTime}. ${status?.minutesRemaining ?? 0} minute(s) remaining.`);
+            return;
+        }
+        showCloseModal = true;
+    }
 
     // Filtered shifts
     let filteredShifts = $derived(
@@ -143,6 +162,7 @@
             const response = await api.get("sales/shifts/current").json<any>();
             if (response.success) {
                 currentShift = response.data;
+                shiftStore.set(response.data ?? null);
             }
         } catch (error) {
             console.error("Failed to load current shift:", error);
@@ -162,8 +182,10 @@
             if (response.success) {
                 toast.success(t("shifts.openSuccess"));
                 currentShift = response.data;
+                shiftStore.set(response.data);
                 showOpenModal = false;
                 openingBalance = 0;
+                await loadCurrentShift();
                 await loadShifts();
             } else {
                 toast.error(response.error?.message || t("error.network"));
@@ -190,6 +212,7 @@
             if (response.success) {
                 toast.success(t("shifts.closeSuccess"));
                 currentShift = null;
+                shiftStore.set(null);
                 showCloseModal = false;
                 closingBalance = 0;
                 closeNotes = "";
@@ -255,7 +278,26 @@
     $effect(() => {
         auth.activeStoreId; // reload on store switch
         loadShifts();
-        loadCurrentShift();
+        loadCurrentShift().then(() => {
+            // The navbar's "clock out" indicator (+layout.svelte) links here
+            // with ?action=close — it used to just navigate to this page and
+            // stop, leaving the user to find and click Close Shift manually
+            // themselves despite the tooltip saying "click to clock out".
+            // Open the modal directly so the navbar click actually clocks
+            // them out in one flow, and drop the param so a later manual
+            // reload of this page doesn't reopen it.
+            if ($page.url.searchParams.get("action") === "close" && currentShift) {
+                requestCloseShift();
+                goto("/staff/shifts", { replaceState: true, noScroll: true, keepFocus: true });
+            }
+        });
+    });
+
+    onMount(() => {
+        const timer = window.setInterval(() => {
+            if (currentShift) loadCurrentShift();
+        }, 60_000);
+        return () => window.clearInterval(timer);
     });
 
     function formatCurrency(amount: number): string {
@@ -348,10 +390,12 @@
                     {t("shifts.cashMovement")}
                 </button>
                 <button
-                    onclick={() => (showCloseModal = true)}
+                    onclick={requestCloseShift}
+                    disabled={clockOutBlocked}
+                    title={clockOutBlocked ? `Available at ${currentShift.scheduleStatus?.scheduledEndTime}` : t("shifts.close")}
                     class={cn(
                         "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all",
-                        "bg-danger-600 text-white hover:bg-danger-700",
+                        "bg-danger-600 text-white hover:bg-danger-700 disabled:cursor-not-allowed disabled:bg-slate-400",
                     )}
                 >
                     <Square class="w-4 h-4" />
@@ -359,6 +403,7 @@
                 </button>
             {:else}
                 <button
+                    data-testid="shift-open"
                     onclick={() => (showOpenModal = true)}
                     class={cn(
                         "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all",
@@ -374,7 +419,7 @@
 
     <!-- Current Shift Card -->
     {#if currentShift}
-        <div class="bg-gradient-to-r from-primary-600 to-primary-700 rounded-xl p-6 mb-6 text-white shadow-lg">
+        <div data-testid="shift-current" class="bg-gradient-to-r from-primary-600 to-primary-700 rounded-xl p-6 mb-6 text-white shadow-lg">
             <!-- Header row: title + badge + End Work button -->
             <div class="flex items-center justify-between mb-4">
                 <div class="flex items-center gap-4">
@@ -398,14 +443,26 @@
                         {t("shifts.cashMovement")}
                     </button>
                     <button
-                        onclick={() => (showCloseModal = true)}
-                        class="flex items-center gap-2 px-5 py-2.5 bg-danger-500 hover:bg-danger-600 rounded-xl text-sm font-semibold transition-colors shadow-lg"
+                        onclick={requestCloseShift}
+                        disabled={clockOutBlocked}
+                        title={clockOutBlocked ? `Available at ${currentShift.scheduleStatus?.scheduledEndTime}` : t("shifts.closeShift")}
+                        class="flex items-center gap-2 px-5 py-2.5 bg-danger-500 hover:bg-danger-600 rounded-xl text-sm font-semibold transition-colors shadow-lg disabled:cursor-not-allowed disabled:bg-white/25 disabled:text-white/70"
                     >
                         <Square class="w-4 h-4" />
                         {t("shifts.closeShift")}
                     </button>
                 </div>
             </div>
+            {#if currentShift.scheduleStatus}
+                <div class="mb-4 flex items-center justify-between rounded-xl border border-white/20 bg-white/10 px-4 py-3 text-sm">
+                    <span>Scheduled {currentShift.scheduleStatus.scheduledStartTime}–{currentShift.scheduleStatus.scheduledEndTime}</span>
+                    {#if clockOutBlocked}
+                        <span class="rounded-full bg-amber-300/20 px-3 py-1 font-semibold text-amber-100">{currentShift.scheduleStatus.minutesRemaining} min remaining</span>
+                    {:else}
+                        <span class="rounded-full bg-emerald-300/20 px-3 py-1 font-semibold text-emerald-100">Clock-out available</span>
+                    {/if}
+                </div>
+            {/if}
             <!-- Stats row -->
             <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div class="text-center bg-white/10 rounded-xl p-3">
@@ -757,12 +814,10 @@
                     </label>
                     <div class="relative">
                         <DollarSign class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                        <input
+                        <MoneyInput
                             id="openingBalance"
-                            type="number"
                             bind:value={openingBalance}
-                            min="0"
-                            step="1000"
+                            min={0}
                             class="w-full pl-10 pr-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                         />
                     </div>
@@ -779,6 +834,7 @@
                     {t("common.cancel")}
                 </button>
                 <button
+                    data-testid="shift-open-confirm"
                     onclick={openShift}
                     disabled={isSubmitting}
                     class="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -831,6 +887,11 @@
                             {t("shifts.openingBalance")}: <span class="font-medium text-gray-900 dark:text-white">{formatCurrency(currentShift.openingBalance)}</span>
                         </p>
                     </div>
+                    {#if currentShift.scheduleStatus && !currentShift.scheduleStatus.canClose}
+                        <div class="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">
+                            Scheduled end: <strong>{currentShift.scheduleStatus.scheduledEndTime}</strong>. Clock-out becomes available in {currentShift.scheduleStatus.minutesRemaining} minute(s).
+                        </div>
+                    {/if}
                 {/if}
 
                 <div>
@@ -839,12 +900,10 @@
                     </label>
                     <div class="relative">
                         <DollarSign class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                        <input
+                        <MoneyInput
                             id="closingBalance"
-                            type="number"
                             bind:value={closingBalance}
-                            min="0"
-                            step="1000"
+                            min={0}
                             class="w-full pl-10 pr-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                         />
                     </div>
@@ -872,7 +931,7 @@
                 </button>
                 <button
                     onclick={closeShift}
-                    disabled={isSubmitting}
+                    disabled={isSubmitting || clockOutBlocked}
                     class="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-danger-600 text-white rounded-lg hover:bg-danger-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                     {#if isSubmitting}

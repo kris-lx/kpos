@@ -4,6 +4,7 @@
     import { t } from "$lib/i18n/index.svelte";
     import { toast } from "svelte-sonner";
     import { api } from "$lib/api";
+    import { auth } from "$lib/stores/auth.svelte";
     import {
         Monitor,
         MonitorOff,
@@ -21,12 +22,10 @@
         Check,
         X,
         Palette,
-        Image,
         Type,
         Layout,
         AlertCircle,
         Info,
-        Loader2,
         Sun,
         Moon,
     } from "lucide-svelte";
@@ -50,6 +49,15 @@
             idleMessage: "ຍິນດີຕ້ອນຮັບ",
             showPrices: true,
             showItemImages: true,
+            showPaymentQr: true,
+            // 'gateway' = live QR from the connected payment gateway (JDB Yes
+            // Pay / Alipay / WeChat), only shows while the cashier is mid-QR
+            // -checkout. 'image'/'emv' are a static payment QR the owner sets
+            // once — a bank/mobile-money QR most small shops already have,
+            // no gateway integration required — shown once the sale total is
+            // finalized so the customer can scan it after checkout.
+            paymentQrMode: "gateway" as "gateway" | "image" | "emv",
+            paymentQrEmvCode: "",
             fontSize: "medium" as "small" | "medium" | "large",
             animation: "slide" as "none" | "slide" | "fade" | "bounce",
         },
@@ -65,6 +73,14 @@
     let showPreview = $state(false);
     let isSaving = $state(false);
     let saveSuccess = $state(false);
+
+    // Menu visibility only requires settings:view (so any staff who can see
+    // the customer display status can open this page), but changing what
+    // shows on the customer-facing screen — including whether it exposes a
+    // payment QR code — is a store-owner-level decision. The backend PUT
+    // already enforces settings:update; this just keeps the button from
+    // appearing usable to someone who will just get a 403.
+    const canEdit = $derived(auth.hasPermission('settings:update'));
 
     const displayModes = [
         {
@@ -127,7 +143,7 @@
             isCustomerDisplayOpen = true;
         }
 
-        return;
+        await loadPaymentsQrImagePreview();
     });
 
     function openCustomerDisplay() {
@@ -179,6 +195,19 @@
         if (customerDisplayWindow && !customerDisplayWindow.closed) {
             customerDisplayWindow.location.reload();
         }
+    }
+
+    // The static payment QR image itself is configured once, on
+    // Settings > Payments (category 'receipt', key 'qrImage' — the same
+    // value ReceiptPrint.svelte already prints on receipts), not duplicated
+    // here. This page only fetches it read-only to preview/confirm it's set.
+    let paymentsQrImagePreview = $state("");
+    async function loadPaymentsQrImagePreview() {
+        try {
+            const res = await api.get('settings/category/receipt').json<any>();
+            const rows: any[] = Array.isArray(res.data) ? res.data : [];
+            paymentsQrImagePreview = rows.find((r: any) => r.key === 'qrImage')?.value || "";
+        } catch { /* leave empty */ }
     }
 
     async function saveConfig() {
@@ -234,6 +263,7 @@
                     ຕັ້ງຄ່າຈໍ POS ແລະ ຈໍສະແດງລູກຄ້າ
                 </p>
             </div>
+            {#if canEdit}
             <button
                 onclick={saveConfig}
                 disabled={isSaving}
@@ -256,6 +286,9 @@
                     ບັນທຶກ
                 {/if}
             </button>
+            {:else}
+                <p class="text-sm text-amber-600 dark:text-amber-400">ສະເພາະເຈົ້າຂອງຮ້ານ ຫຼືຜູ້ທີ່ໄດ້ຮັບສິດ "ຕັ້ງຄ່າ" ເທົ່ານັ້ນທີ່ແກ້ໄຂໜ້ານີ້ໄດ້</p>
+            {/if}
         </div>
     </div>
 
@@ -611,7 +644,96 @@
                                         >ເປີດອັດຕະໂນມັດ</span
                                     >
                                 </label>
+
+                                <label
+                                    class="flex items-center gap-3 p-3 rounded-lg border border-gray-200 dark:border-gray-700 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                                >
+                                    <input
+                                        type="checkbox"
+                                        bind:checked={
+                                            config.customerDisplay.showPaymentQr
+                                        }
+                                        class="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                                    />
+                                    <span
+                                        class="text-sm text-gray-700 dark:text-gray-300"
+                                        >ສະແດງ QR ຊຳລະເງິນຕອນຈົບການຂາຍ</span
+                                    >
+                                </label>
                             </div>
+
+                            {#if config.customerDisplay.showPaymentQr}
+                                <div class="mt-4 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
+                                    <p class="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">ແຫຼ່ງທີ່ມາຂອງ QR ຊຳລະເງິນ</p>
+                                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-4">
+                                        <button
+                                            type="button"
+                                            onclick={() => (config.customerDisplay.paymentQrMode = "gateway")}
+                                            class={cn(
+                                                "p-3 rounded-lg border-2 text-left text-sm transition-all",
+                                                config.customerDisplay.paymentQrMode === "gateway"
+                                                    ? "border-primary-500 bg-primary-50 dark:bg-primary-900/20"
+                                                    : "border-gray-200 dark:border-gray-700",
+                                            )}
+                                        >
+                                            <div class="font-medium text-gray-900 dark:text-white">Payment Gateway</div>
+                                            <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">QR ສົດຈາກລະບົບ Gateway (JDB/Alipay/WeChat) — ຕ້ອງຕັ້ງຄ່າ Gateway ກ່ອນ</div>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onclick={() => (config.customerDisplay.paymentQrMode = "image")}
+                                            class={cn(
+                                                "p-3 rounded-lg border-2 text-left text-sm transition-all",
+                                                config.customerDisplay.paymentQrMode === "image"
+                                                    ? "border-primary-500 bg-primary-50 dark:bg-primary-900/20"
+                                                    : "border-gray-200 dark:border-gray-700",
+                                            )}
+                                        >
+                                            <div class="font-medium text-gray-900 dark:text-white">ຮູບ QR (Image)</div>
+                                            <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">ອັບໂຫລດຮູບ QR ທະນາຄານ/ມືຖືທີ່ມີຢູ່ແລ້ວ</div>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onclick={() => (config.customerDisplay.paymentQrMode = "emv")}
+                                            class={cn(
+                                                "p-3 rounded-lg border-2 text-left text-sm transition-all",
+                                                config.customerDisplay.paymentQrMode === "emv"
+                                                    ? "border-primary-500 bg-primary-50 dark:bg-primary-900/20"
+                                                    : "border-gray-200 dark:border-gray-700",
+                                            )}
+                                        >
+                                            <div class="font-medium text-gray-900 dark:text-white">ລະຫັດ EMV</div>
+                                            <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">ໃສ່ລະຫັດ EMV/QR ແລ້ວລະບົບສ້າງຮູບ QR ໃຫ້ອັດຕະໂນມັດ</div>
+                                        </button>
+                                    </div>
+
+                                    {#if config.customerDisplay.paymentQrMode === "image"}
+                                        <div class="flex items-center gap-4">
+                                            {#if paymentsQrImagePreview}
+                                                <img src={paymentsQrImagePreview} alt="Payment QR" class="w-20 h-20 rounded-lg border border-gray-200 dark:border-gray-700 object-contain bg-white" />
+                                            {/if}
+                                            <div class="flex-1 text-sm text-gray-600 dark:text-gray-300">
+                                                {#if paymentsQrImagePreview}
+                                                    ໃຊ້ຮູບ QR ດຽວກັນກັບໃບບິນ (ຕັ້ງຄ່າຢູ່ Settings &gt; Payments)
+                                                {:else}
+                                                    <span class="text-amber-600 dark:text-amber-400">ຍັງບໍ່ໄດ້ອັບໂຫລດຮູບ QR</span> — ໄປອັບໂຫລດຢູ່ Settings &gt; Payments &gt; ແທັບ QR / EMVco
+                                                {/if}
+                                                <a href="/settings/payments" class="block mt-1 text-primary-600 dark:text-primary-400 hover:underline">ໄປຫາ Settings &gt; Payments →</a>
+                                            </div>
+                                        </div>
+                                    {:else if config.customerDisplay.paymentQrMode === "emv"}
+                                        <label class="block">
+                                            <span class="block text-xs text-gray-500 dark:text-gray-400 mb-1">ລະຫັດ EMV / ຂໍ້ຄວາມ QR (ຄັດລອກຈາກລະບົບທະນາຄານ ຫຼື app ຊຳລະເງິນ)</span>
+                                            <textarea
+                                                bind:value={config.customerDisplay.paymentQrEmvCode}
+                                                rows="3"
+                                                placeholder="00020101021129..."
+                                                class="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-white px-4 py-2.5 font-mono text-xs"
+                                            ></textarea>
+                                        </label>
+                                    {/if}
+                                </div>
+                            {/if}
                         </div>
                     {/if}
                 </div>

@@ -9,6 +9,7 @@ import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middlew
 import { db as globalDb } from '@/config/database.config';
 import { rules, roleRules, roles } from '@/db/schema/tables';
 import { eq, and, or, isNull, ilike, desc, asc, inArray } from 'drizzle-orm';
+import { queueActivityLog } from '@/infrastructure/helpers/activity-log.helper';
 
 export const rulesRoutes = Router();
 
@@ -64,7 +65,7 @@ rulesRoutes.post('/', authenticate, withTenantTx(), authorize('roles:create'), a
     try {
         const db = req.tx ?? globalDb;
         const authUser = req.authUser!;
-        const userLevel = authUser.isSuperAdmin ? 1 : (ROLE_LEVELS[authUser.role] ?? 7);
+        const userLevel = authUser.isSuperAdmin ? 1 : (authUser.roleLevel ?? 7);
         if (userLevel > 3) {
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'HQ Admin or above required to create rules' } });
         }
@@ -75,14 +76,33 @@ rulesRoutes.post('/', authenticate, withTenantTx(), authorize('roles:create'), a
         }
 
         const tenantId = authUser.tenantId;
+
+        // Cannot author a rule granting a permission the caller doesn't
+        // personally hold — a rule's permissions[] feeds authorizeRule() for
+        // every role it's attached to, so an unchecked array here is the same
+        // privilege-escalation shape as staff/roles permission arrays.
+        const rawRulePerms = Array.isArray(rulePerms) ? rulePerms.filter((p: unknown) => typeof p === 'string') : [];
+        const scopedRulePerms = authUser.isSuperAdmin || (authUser.permissions || []).includes('*')
+            ? rawRulePerms
+            : rawRulePerms.filter((p: string) => (authUser.permissions || []).includes(p));
+
         const [row] = await db.insert(rules).values({
             tenantId,
             name, displayName, description, module, icon,
             routes: ruleRoutes ?? [],
-            permissions: rulePerms ?? [],
+            permissions: scopedRulePerms,
             order: order ?? 0,
             isSystem: false,
         }).returning();
+
+        queueActivityLog(
+            authUser.userId,
+            'rule_created',
+            'access',
+            `Created rule ${row.displayName}`,
+            { ruleId: row.id, tenantId: row.tenantId, module: row.module },
+            req,
+        ).catch(() => {});
 
         res.status(201).json({ success: true, data: row });
     } catch (error) {
@@ -112,11 +132,25 @@ rulesRoutes.put('/:id', authenticate, withTenantTx(), authorize('roles:update'),
         if (module !== undefined) data.module = module;
         if (icon !== undefined) data.icon = icon;
         if (ruleRoutes !== undefined) data.routes = ruleRoutes;
-        if (rulePerms !== undefined) data.permissions = rulePerms;
+        if (rulePerms !== undefined) {
+            // Same escalation guard as POST / above.
+            const rawRulePerms = Array.isArray(rulePerms) ? rulePerms.filter((p: unknown) => typeof p === 'string') : [];
+            data.permissions = authUser.isSuperAdmin || (authUser.permissions || []).includes('*')
+                ? rawRulePerms
+                : rawRulePerms.filter((p: string) => (authUser.permissions || []).includes(p));
+        }
         if (order !== undefined) data.order = order;
         if (isActive !== undefined) data.isActive = isActive;
 
         const [updated] = await db.update(rules).set(data as any).where(and(...conds)).returning();
+        queueActivityLog(
+            authUser.userId,
+            'rule_updated',
+            'access',
+            `Updated rule ${updated.displayName}`,
+            { ruleId: updated.id, tenantId: updated.tenantId, module: updated.module },
+            req,
+        ).catch(() => {});
         res.json({ success: true, data: updated });
     } catch (error) {
         next(error);
@@ -139,6 +173,14 @@ rulesRoutes.delete('/:id', authenticate, withTenantTx(), authorize('roles:delete
         }
 
         await db.update(rules).set({ isActive: false, updatedAt: new Date() }).where(and(...conds));
+        queueActivityLog(
+            authUser.userId,
+            'rule_deleted',
+            'access',
+            `Deactivated rule ${existing.displayName}`,
+            { ruleId: existing.id, tenantId: existing.tenantId, module: existing.module },
+            req,
+        ).catch(() => {});
         res.json({ success: true, data: { message: 'Rule deactivated' } });
     } catch (error) {
         next(error);
@@ -230,6 +272,14 @@ rulesRoutes.put('/role-rules/assign', authenticate, withTenantTx(), authorize('r
 
         // Role permissions changed → invalidate cached role-rules for this role.
         invalidateRoleRulesCache(roleId).catch(() => {});
+        queueActivityLog(
+            authUser.userId,
+            'role_rules_updated',
+            'access',
+            `Updated rule assignments for role ${role.name}`,
+            { roleId, roleLevel: role.level, tenantId: role.tenantId, ruleIds },
+            req,
+        ).catch(() => {});
 
         res.json({ success: true, data: { message: 'Rules assigned' } });
     } catch (error) {

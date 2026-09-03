@@ -1,5 +1,6 @@
 ﻿<script lang="ts">
     import { cn, formatCurrency, escapeHtml, escapeCsvCell } from "$utils";
+    import { printHtml } from "$utils/printHtml";
     import { api } from "$api";
     import { t } from "$lib/i18n/index.svelte";
     import { auth } from "$stores";
@@ -62,8 +63,14 @@
             const res = await api.get(`reports/products?${params}`).json<any>();
             productReports = res.data || [];
             totalItems = res.pagination?.total || productReports.length;
-        } catch (e) {
+        } catch (e: any) {
             console.error("Failed to load:", e);
+            let msg = t("common.error");
+            try {
+                const errData = await e?.response?.json();
+                if (errData?.error?.message) msg = errData.error.message;
+            } catch {}
+            toast.error(msg);
         } finally {
             isLoading = false;
         }
@@ -139,12 +146,7 @@
 <table><tr><th>${t("common.rank")}</th><th>${t("products.title")}</th><th>SKU</th><th>${t("reports.salesCount")}</th><th>${t("reports.revenue")}</th></tr>
 ${filteredProducts.map((p, i) => `<tr><td>${i + 1}</td><td>${escapeHtml(p.name || '')}</td><td>${escapeHtml(p.sku || '')}</td><td class="text-right">${p.totalSales || 0}</td><td class="text-right">${formatCurrency(p.revenue || 0)}</td></tr>`).join('')}
 </table></body></html>`;
-        const w = window.open('', '_blank');
-        if (w) {
-            w.document.write(html);
-            w.document.close();
-            w.onload = () => w.print();
-        }
+        printHtml(html);
         toast.success(t("reports.exportSuccess"));
         exporting = false;
     }
@@ -202,8 +204,9 @@ ${filteredProducts.map((p, i) => `<tr><td>${i + 1}</td><td>${escapeHtml(p.name |
                 <option value="year">{t("reports.thisYear")}</option>
             </select>
             <!-- Export Dropdown -->
+            {#if auth.canExport('reports')}
             <div class="relative">
-                <button 
+                <button
                     onclick={() => showExportMenu = !showExportMenu}
                     disabled={exporting}
                     class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium"
@@ -233,6 +236,7 @@ ${filteredProducts.map((p, i) => `<tr><td>${i + 1}</td><td>${escapeHtml(p.name |
                     </div>
                 {/if}
             </div>
+            {/if}
         </div>
     </div>
 

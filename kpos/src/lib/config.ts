@@ -14,6 +14,13 @@ export const LOCAL_STORAGE_KEYS = {
     TENANT_CONFIG: 'kpos_tenant_config',
 } as const;
 
+// localStorage is only a short-lived UI cache. Authentication and permission
+// decisions always come from the API; access/refresh tokens are never stored here.
+export const CLIENT_CACHE = {
+    VERSION: 2,
+    TTL_MS: 15 * 60 * 1000,
+} as const;
+
 /** Polling intervals in milliseconds */
 export const POLL_INTERVALS = {
     NOTIFICATIONS: 60_000,

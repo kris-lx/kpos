@@ -4,7 +4,7 @@
     import { api } from "$lib/api";
     import { formatCurrency, formatDate, escapeCsvCell } from "$lib/utils";
     import { toast } from "svelte-sonner";
-    import { auth } from "$stores";
+    import { auth, dialogStore } from "$stores";
     import { Minus, Search, Package, X, ChevronLeft, ChevronRight, Loader2, Trash2, AlertCircle, Pencil, Download } from "lucide-svelte";
 
     const t = i18n.t;
@@ -136,7 +136,7 @@
     }
 
     async function deleteStockOut(id: string) {
-        if (!confirm(t("common.confirmDelete"))) return;
+        if (!(await dialogStore.confirm(t("common.confirmDelete")))) return;
         try {
             await api.delete(`inventory/stock-out/${id}`).json();
             toast.success(t("common.deleted"));

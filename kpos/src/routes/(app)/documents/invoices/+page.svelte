@@ -4,7 +4,7 @@
     import { formatCurrency, formatDateTime, formatDate, enforcePhoneInput } from "$lib/utils";
     import { toast } from "svelte-sonner";
     import { onMount } from "svelte";
-    import { auth } from "$stores";
+    import { auth, dialogStore } from "$stores";
     import MoneyInput from "$lib/components/MoneyInput.svelte";
     import {
         FileText,
@@ -152,7 +152,17 @@
     }
 
     // Maker/checker
-    let canApprove = $derived(auth.isSuperAdmin || (auth.roleLevel ?? 7) <= 4);
+    let canApprove = $derived(
+        auth.isSuperAdmin
+        || ((auth.roleLevel ?? 7) <= 4
+            && auth.hasPermission('documents:update')
+            && auth.user?.checkerEnabled === true)
+    );
+
+    // CRUD gating — mirrors backend authorize('documents:create'/'update'/'delete')
+    let canCreateInvoice = $derived(auth.canCreate('documents'));
+    let canUpdateInvoice = $derived(auth.canUpdate('documents'));
+    let canDeleteInvoice = $derived(auth.canDelete('documents'));
 
     async function approveInvoice(id: string) {
         try {
@@ -300,7 +310,7 @@
     }
 
     async function deleteInvoice(id: string) {
-        if (!confirm(t("documents.confirmDelete"))) return;
+        if (!(await dialogStore.confirm(t("documents.confirmDelete")))) return;
 
         try {
             await api.delete(`documents/invoices/${id}`).json();
@@ -395,6 +405,7 @@
                 {t("documents.invoicesDesc")}
             </p>
         </div>
+        {#if canCreateInvoice}
         <button
             onclick={() => openModal()}
             class="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary-600 text-white hover:bg-primary-700 transition-colors mt-4 sm:mt-0"
@@ -402,6 +413,7 @@
             <Plus class="w-4 h-4" />
             {t("documents.createInvoice")}
         </button>
+        {/if}
     </div>
 
     <!-- Error State -->
@@ -583,7 +595,7 @@
                                                 <ThumbsDown class="w-4 h-4" />
                                             </button>
                                         {/if}
-                                        {#if invoice.status === "pending"}
+                                        {#if invoice.status === "pending" && canUpdateInvoice}
                                             <button
                                                 onclick={() => markAsPaid(invoice)}
                                                 class="p-2 text-gray-500 hover:text-success-600 dark:text-gray-400 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
@@ -599,6 +611,7 @@
                                                 <Send class="w-4 h-4" />
                                             </button>
                                         {/if}
+                                        {#if canUpdateInvoice}
                                         <button
                                             onclick={() => openModal(invoice)}
                                             class="p-2 text-gray-500 hover:text-primary-600 dark:text-gray-400 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
@@ -606,6 +619,8 @@
                                         >
                                             <Edit class="w-4 h-4" />
                                         </button>
+                                        {/if}
+                                        {#if canDeleteInvoice}
                                         <button
                                             onclick={() => deleteInvoice(invoice.id)}
                                             class="p-2 text-gray-500 hover:text-danger-600 dark:text-gray-400 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
@@ -613,6 +628,7 @@
                                         >
                                             <Trash2 class="w-4 h-4" />
                                         </button>
+                                        {/if}
                                     </div>
                                 </td>
                             </tr>
@@ -984,7 +1000,7 @@
                     <Printer class="w-4 h-4" />
                     {t("documents.print")}
                 </button>
-                {#if viewingInvoice.status === "pending"}
+                {#if viewingInvoice.status === "pending" && canUpdateInvoice}
                     <button
                         onclick={() => markAsPaid(viewingInvoice)}
                         class="flex items-center gap-2 px-4 py-2 rounded-xl bg-success-600 text-white hover:bg-success-700"

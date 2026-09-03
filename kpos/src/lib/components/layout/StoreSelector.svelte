@@ -70,7 +70,11 @@
         )}
         onclick={() => (isOpen = !isOpen)}
     >
-        <Store class="h-4 w-4 text-primary shrink-0" />
+        {#if auth.activeStore?.storeLogo}
+            <img src={auth.activeStore.storeLogo} alt={auth.activeStore.storeName} class="h-4 w-4 rounded object-cover shrink-0" />
+        {:else}
+            <Store class="h-4 w-4 text-primary shrink-0" />
+        {/if}
         <div class="flex flex-col items-start min-w-0 max-w-[7rem] sm:max-w-[10rem]">
             {#if auth.activeStore}
                 <span class="text-sm font-medium truncate w-full">{auth.activeStore.storeName}</span>
@@ -123,6 +127,13 @@
                             )}
                             onclick={() => selectStore(store.storeId)}
                         >
+                            <div class="w-8 h-8 rounded-lg bg-base-200 flex items-center justify-center overflow-hidden shrink-0">
+                                {#if store.storeLogo}
+                                    <img src={store.storeLogo} alt={store.storeName} class="w-full h-full object-cover" />
+                                {:else}
+                                    <Store class="h-4 w-4 text-primary" />
+                                {/if}
+                            </div>
                             <div class="flex-1 min-w-0">
                                 <div class="flex items-center gap-2">
                                     <span class="font-medium truncate">{store.storeName}</span>

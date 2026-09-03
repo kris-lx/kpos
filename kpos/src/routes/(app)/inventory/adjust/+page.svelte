@@ -120,7 +120,27 @@
 
     async function handleSubmit() {
         try {
-            await api.put("inventory/adjustments", { json: formData }).json();
+            // Backend's actual route is PUT /inventory/adjust (singular) —
+            // this called the GET list endpoint's URL (/adjustments,
+            // plural) instead, which has no PUT handler, so every
+            // adjustment submission 404'd silently behind the catch block's
+            // generic error toast. It also expects a differently-shaped
+            // body: a signed `quantity` (positive = increase, negative =
+            // decrease) and a `type` field, not this form's separate
+            // `adjustmentType` string.
+            const signedQuantity = formData.adjustmentType === "decrease"
+                ? -Math.abs(Number(formData.quantity))
+                : Math.abs(Number(formData.quantity));
+            await api.put("inventory/adjust", {
+                json: {
+                    productId: formData.productId,
+                    quantity: signedQuantity,
+                    type: formData.adjustmentType === "decrease" ? "reduce" : "add",
+                    reason: formData.reason,
+                    reference: formData.reference,
+                    branchId: auth.activeBranchId,
+                },
+            }).json();
             toast.success("ປັບສະຕ໋ອກສຳເລັດ");
             showModal = false;
             resetForm();

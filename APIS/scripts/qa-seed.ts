@@ -49,7 +49,7 @@ async function main() {
     await sql`insert into stores (id, tenant_id, name, code, store_path, is_active, is_default, phone, email) values (${storeId}, ${tenantId}, 'QA Store', ${'QAS-' + stamp}, ${'QAS-' + stamp}, true, true, '020123456', ${'store-' + stamp + '@retest.local'})`;
     await sql`insert into branches (id, tenant_id, store_id, name, code, branch_path, is_active, is_main, address) values (${branchAId}, ${tenantId}, ${storeId}, 'Branch A', ${'QBA-' + stamp}, ${'QBA-' + stamp}, true, true, '123 Main St')`;
     await sql`insert into branches (id, tenant_id, store_id, name, code, branch_path, is_active, is_main, address) values (${branchBId}, ${tenantId}, ${storeId}, 'Branch B', ${'QBB-' + stamp}, ${'QBB-' + stamp}, true, false, '456 Side St')`;
-    await sql`insert into roles (id, tenant_id, name, display_name, permissions, is_system) values (${roleId}, ${tenantId}, 'store_owner', 'Store Owner', ${ALL_PERMS}, true)`;
+    await sql`insert into roles (id, tenant_id, name, display_name, permissions, is_system, level) values (${roleId}, ${tenantId}, 'store_owner', 'Store Owner', ${ALL_PERMS}, true, 2)`;
     await sql`insert into users (id, tenant_id, email, password, name, role, role_id, branch_id, store_id, is_active, email_verified, permissions) values (${ownerId}, ${tenantId}, ${email}, ${hashed}, 'QA Full Owner', 'store_owner', ${roleId}, ${branchAId}, ${storeId}, true, true, '{}')`;
     await sql`insert into user_stores (id, user_id, store_id, branch_id, is_default, can_read, can_write, can_delete, can_manage, tenant_id) values (${randomUUID()}, ${ownerId}, ${storeId}, ${branchAId}, true, true, true, true, true, ${tenantId})`;
 

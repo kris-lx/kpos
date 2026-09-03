@@ -7,7 +7,15 @@ export const TEST_USER = {
     password: process.env.E2E_PASSWORD || 'Test@123456',
 };
 
-async function login(page: Page) {
+export const RESTRICTED_USER = {
+    email: process.env.E2E_RESTRICTED_EMAIL || '',
+    password: process.env.E2E_RESTRICTED_PASSWORD || 'TestPass123!',
+};
+
+export async function loginAs(page: Page, credentials: { email: string; password: string }) {
+    await page.context().clearCookies();
+    await page.goto('/login');
+    await page.evaluate(() => localStorage.clear());
     await page.goto('/login');
     // SvelteKit hydrates client-side after the initial (server-rendered)
     // HTML paints — interacting with the form before hydration finishes
@@ -17,8 +25,8 @@ async function login(page: Page) {
     // reliably waits past that window in dev (Vite serves many small ESM
     // module requests on first load, which networkidle waits out).
     await page.waitForLoadState('networkidle');
-    await page.locator('#email').fill(TEST_USER.email);
-    await page.locator('#password').fill(TEST_USER.password);
+    await page.locator('#email').fill(credentials.email);
+    await page.locator('#password').fill(credentials.password);
     await page.locator('button[type="submit"]').click();
     await page.waitForURL('**/pos', { timeout: 15_000 });
 }
@@ -26,7 +34,7 @@ async function login(page: Page) {
 /** Extends Playwright's `test` with a `page` that's already logged in. */
 export const test = base.extend<{ loggedInPage: Page }>({
     loggedInPage: async ({ page }, use) => {
-        await login(page);
+        await loginAs(page, TEST_USER);
         await use(page);
     },
 });

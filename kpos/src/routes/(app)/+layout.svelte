@@ -1,5 +1,5 @@
 ﻿<script lang="ts">
-    import { auth } from "$stores";
+    import { auth, shiftStore } from "$stores";
     import { goto } from "$app/navigation";
     import { page } from "$app/stores";
     import { onDestroy, onMount } from "svelte";
@@ -8,6 +8,7 @@
     import { themeStore } from "$lib/stores/theme.svelte";
     import Sidebar from "$lib/components/layout/Sidebar.svelte";
     import StoreSelector from "$lib/components/layout/StoreSelector.svelte";
+    import OpenShiftDialog from "$lib/components/OpenShiftDialog.svelte";
     import { api } from "$lib/api";
     import { getRealtimeSocket, disconnectRealtimeSocket } from "$lib/realtime/socket";
     import {
@@ -53,8 +54,8 @@
     // granting/revoking settings access through that UI has no effect here.
     const canAccessSettingsMenu = $derived(auth.hasPermission('settings:view'));
 
-    // Inactivity auto-logout — 15 minutes of no user interaction
-    const INACTIVITY_MS = 15 * 60 * 1000;
+    // Inactivity auto-logout — 20 minutes of no user interaction
+    const INACTIVITY_MS = 20 * 60 * 1000;
     const ACTIVITY_EVENTS = ["mousemove", "mousedown", "keydown", "touchstart", "scroll", "wheel"];
     let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
     let notifInterval: ReturnType<typeof setInterval> | null = null;
@@ -90,58 +91,96 @@
         return getResponseStatus(err) === 401 || getResponseStatus(err) === 403;
     }
 
+    // 429 fell through both isNetworkError (not a connection-level failure)
+    // and isAuthError (not 401/403) uncounted, so the failure counter below
+    // never tripped on it — polling kept retrying every 30-60s indefinitely
+    // against an already-rate-limited endpoint, forever, with no backoff,
+    // spamming the console for as long as the tab stayed open.
+    function isRateLimited(err: unknown): boolean {
+        return getResponseStatus(err) === 429;
+    }
+
     async function ensureAuthReady(): Promise<boolean> {
         if (auth.isAuthenticated) return true;
         if (!auth.user) return false;
         return auth.refresh();
     }
 
-    // Shift enforcement — roles that require an open shift are loaded from /roles/levels
-    let shiftRequiredRoles = $state<string[]>([]);
+    // Shift enforcement — who needs the "please clock in" nag banner.
     let showShiftWarning = $state(false);
-    let currentShift = $state<any>(null);
     let shiftCheckDone = $state(false);
+    let currentAttendance = $state<any>(null);
+    let attendanceCheckDone = $state(false);
 
-    async function loadShiftRequiredRoles() {
-        // Level 6+ (branch_manager, staff, cashier) require an open shift
-        try {
-            const res = await api.get('roles/levels').json<{ success: boolean; data: { level: number; name: string }[] }>();
-            if (res.success) {
-                shiftRequiredRoles = res.data.filter(l => l.level >= 6).map(l => l.name);
-            }
-        } catch {
-            // fallback to safe default
-            shiftRequiredRoles = ['cashier', 'store_manager', 'branch_manager', 'inventory_staff', 'waiter', 'kitchen_staff'];
-        }
+    // Who is exempt from the "must open a shift" requirement: super_admin
+    // and store_owner (roleLevel <= 2 — tenant-wide owner tier) only.
+    // Everyone else (managers, supervisors, cashiers, specialists —
+    // roleLevel 3-7) must open a shift with a starting cash amount before
+    // using the system. This used to cut off at roleLevel >= 5 (only
+    // cashier-tier and below), silently exempting branch managers/
+    // supervisors (levels 3-4) who also ring up sales day-to-day.
+    function isShiftExempt(user: { isSuperAdmin?: boolean; requiresShift?: boolean } | null): boolean {
+        // Per-user setting is authoritative. Legacy owner/super-admin accounts
+        // remain exempt when the field is not present.
+        return !!user?.isSuperAdmin || user?.requiresShift === false || auth.roleLevel <= 2;
     }
 
     async function checkActiveShift() {
+        // Always fetch actual shift status, for every role — POS's checkout
+        // guard (openPaymentModal in pos/+page.svelte) reads shiftStore.current
+        // to decide whether to let ANY role start a payment (the backend now
+        // enforces an open shift for every sale, no role exemption). Only the
+        // blocking dialog below is restricted by isShiftExempt — an owner who
+        // already clocked in must not be told "you have no shift" just
+        // because this function skipped fetching their real status.
         const user = auth.user;
-        if (!user || !shiftRequiredRoles.includes(user.role)) {
+        if (!user) {
             shiftCheckDone = true;
             return;
         }
+        const needsShift = !isShiftExempt(user);
         try {
             const res = await api.get('sales/shifts/current').json<any>();
-            currentShift = res.success ? res.data : null;
-            showShiftWarning = !currentShift;
+            shiftStore.set(res.success ? res.data : null);
+            // Cash shifts are opened explicitly by POS operators. They must
+            // never be presented as work attendance or block managers and
+            // non-cash staff at application login.
+            showShiftWarning = false;
         } catch {
-            currentShift = null;
-            showShiftWarning = true;
+            shiftStore.set(null);
+            showShiftWarning = false;
         } finally {
             shiftCheckDone = true;
         }
     }
 
-    async function clockIn() {
+    async function checkAttendance() {
+        if (!auth.hasPermission('attendance:clock')) {
+            currentAttendance = null;
+            attendanceCheckDone = true;
+            return;
+        }
         try {
-            const res = await api.post('sales/shifts/open', { json: { openingBalance: 0 } }).json<any>();
-            if (res.success) {
-                currentShift = res.data;
-                showShiftWarning = false;
-            }
+            const response = await api.get('staff/attendance/current').json<any>();
+            currentAttendance = response.success ? response.data : null;
         } catch {
-            // handled silently
+            currentAttendance = null;
+        } finally {
+            attendanceCheckDone = true;
+        }
+    }
+
+    async function handleOpenShift(openingBalance: number): Promise<boolean> {
+        try {
+            const res = await api.post('sales/shifts/open', { json: { openingBalance } }).json<any>();
+            if (res.success) {
+                shiftStore.set(res.data);
+                showShiftWarning = false;
+                return true;
+            }
+            return false;
+        } catch {
+            return false;
         }
     }
 
@@ -164,7 +203,7 @@
             layoutPollFailures = 0;
         } catch (e) {
             if (isAuthError(e)) return;
-            if (isNetworkError(e)) layoutPollFailures++;
+            if (isNetworkError(e) || isRateLimited(e)) layoutPollFailures++;
         }
     }
 
@@ -177,15 +216,19 @@
             layoutPollFailures = 0;
         } catch (e) {
             if (isAuthError(e)) return;
-            if (isNetworkError(e)) layoutPollFailures++;
+            if (isNetworkError(e) || isRateLimited(e)) layoutPollFailures++;
         }
     }
 
     async function loadPendingRequests() {
         const user = auth.user;
         if (!user) return;
-        const isAdminUser = user.isSuperAdmin || user.role === 'admin' || user.role === 'super_admin';
-        if (!isAdminUser) return;
+        // GET /admin/requests/count requires the platform-only `admin:view`
+        // permission (never granted to any tenant role, including
+        // store_owner) — roleLevel <= 2 also matches a tenant's own owner,
+        // who is NOT a platform admin, so that check alone 403'd this call
+        // on every page load for every store owner. Must be isSuperAdmin only.
+        if (!user.isSuperAdmin) return;
         if (layoutPollFailures >= MAX_LAYOUT_FAILURES) return;
         if (!(await ensureAuthReady())) return;
         try {
@@ -194,7 +237,7 @@
             layoutPollFailures = 0;
         } catch (e) {
             if (isAuthError(e)) return;
-            if (isNetworkError(e)) layoutPollFailures++;
+            if (isNetworkError(e) || isRateLimited(e)) layoutPollFailures++;
         }
     }
 
@@ -255,7 +298,7 @@
 
         // If user has no store access and is not admin/super admin, send to store-request
         const user = auth.user;
-        const isAdmin = user?.isSuperAdmin || user?.role === 'admin' || user?.role === 'super_admin';
+        const isAdmin = user?.isSuperAdmin || auth.roleLevel <= 2;
         const currentPath = $page.url.pathname;
         const storeExemptPaths = ['/store-request', '/help'];
         if (!isAdmin && auth.accessibleStores.length === 0 && !storeExemptPaths.includes(currentPath)) {
@@ -263,21 +306,25 @@
             return;
         }
 
-        // Ensure rules are loaded (safety net for first login or cleared localStorage cache)
-        if (auth.userRules.length === 0) {
-            auth.loadRules();
-        }
-        // Ditto for the menu-derived route fallback — see accessibleMenuRoutes
-        // in the auth store for why this exists (custom roles never get
-        // userRules entries, only the rules system does).
-        if (auth.accessibleMenuRoutes.length === 0) {
-            auth.loadAccessibleMenuRoutes();
+        // Ensure rules + the menu-derived route fallback are loaded (safety
+        // net for first login or cleared localStorage cache). See
+        // accessibleMenuRoutes/rulesAndMenuLoaded in the auth store for why
+        // both exist (custom roles never get userRules entries, only the
+        // rules system does) and why the loaded-flag matters below.
+        if (!auth.rulesAndMenuLoaded && (auth.userRules.length === 0 || auth.accessibleMenuRoutes.length === 0)) {
+            auth.loadRulesAndMenu();
         }
 
         // Route-level permission guard: redirect to dashboard if user has no access to current path.
-        // Always-accessible paths: dashboard, help, profile, settings, pos (pos has its own shift guard).
-        const alwaysAllowed = ['/dashboard', '/help', '/settings', '/pos', '/store-request'];
-        if (!user?.isSuperAdmin && (auth.userRules.length > 0 || auth.accessibleMenuRoutes.length > 0) && currentPath !== '/dashboard') {
+        // Only shell/profile/help routes are universally reachable. Operations
+        // and settings pages must still be derived from backend access so the
+        // UI cannot promise a capability the API will reject.
+        const alwaysAllowed = ['/dashboard', '/help', '/settings/profile', '/store-request', '/staff/attendance'];
+        // Fires once both arrays have settled at least once — either they hold
+        // real entries, or the load genuinely came back empty (a role with no
+        // granted routes), which must fail closed rather than fall through to
+        // "allow everything" for the rest of the session.
+        if (!user?.isSuperAdmin && auth.rulesAndMenuLoaded && !auth.authorizationUnavailable && currentPath !== '/dashboard') {
             const pathAllowed = alwaysAllowed.some(p => currentPath === p || currentPath.startsWith(p + '/'))
                 || auth.hasRouteAccess(currentPath);
             if (!pathAllowed) {
@@ -286,8 +333,8 @@
             }
         }
 
-        // Load shift-required roles from API (removes hardcoded role list)
-        loadShiftRequiredRoles().then(() => checkActiveShift());
+        checkActiveShift();
+        checkAttendance();
 
         // Load notifications from API
         loadNotifications();
@@ -301,9 +348,6 @@
         document.addEventListener('visibilitychange', () => {
             if (!document.hidden) { layoutPollFailures = 0; loadHeldSalesCount(); }
         });
-
-        // Check if user needs to clock in
-        checkActiveShift();
 
         // Handle fullscreen change
         document.addEventListener("fullscreenchange", () => {
@@ -347,10 +391,10 @@
         const menuRoutes = auth.accessibleMenuRoutes;
         const currentPath = $page.url.pathname;
         if (!user || user.isSuperAdmin || (rules.length === 0 && menuRoutes.length === 0)) return;
-        const alwaysAllowed = ['/dashboard', '/help', '/settings', '/pos', '/store-request'];
+        const alwaysAllowed = ['/dashboard', '/help', '/settings/profile', '/store-request', '/staff/attendance'];
         const pathAllowed = alwaysAllowed.some(p => currentPath === p || currentPath.startsWith(p + '/'))
             || auth.hasRouteAccess(currentPath);
-        if (!pathAllowed && currentPath !== '/dashboard') {
+        if (!auth.authorizationUnavailable && !pathAllowed && currentPath !== '/dashboard') {
             goto('/dashboard');
         }
     });
@@ -504,28 +548,45 @@
                     </a>
                 {/if}
 
-                <!-- Shift Status Indicator -->
-                {#if shiftCheckDone && shiftRequiredRoles.includes(auth.user?.role || '')}
-                    {#if currentShift}
+                <!-- Work attendance is separate from the POS cash drawer. -->
+                {#if attendanceCheckDone}
+                    <a
+                        href="/staff/attendance"
+                        class={cn(
+                            "hidden md:flex items-center gap-2 rounded-lg border px-3 py-1.5 transition-colors",
+                            currentAttendance
+                                ? "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300"
+                                : "border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300",
+                        )}
+                        title={currentAttendance ? "ກົດເພື່ອອອກວຽກ" : "ກົດເພື່ອເຂົ້າວຽກ"}
+                    >
+                        <Clock class="h-3.5 w-3.5" />
+                        <span class="text-xs font-semibold">{currentAttendance ? "ກຳລັງເຮັດວຽກ" : (auth.hasPermission('attendance:clock') ? "ເຂົ້າວຽກ" : "Attendance")}</span>
+                    </a>
+                {/if}
+
+                <!-- POS Cash Shift Status Indicator -->
+                {#if shiftCheckDone && !isShiftExempt(auth.user)}
+                    {#if shiftStore.current}
                         <a
-                            href="/staff/shifts"
+                            href="/staff/shifts?action=close"
                             class="hidden md:flex items-center gap-2 px-3 py-1.5 bg-success-50 dark:bg-success-900/20 border border-success-200 dark:border-success-800 rounded-lg hover:bg-danger-50 hover:border-danger-200 dark:hover:bg-danger-900/20 dark:hover:border-danger-800 transition-colors group"
-                            title={t("shifts.clickToClockOut")}
+                            title="ກະເງິນ POS ເປີດຢູ່"
                         >
                             <span class="relative flex h-2.5 w-2.5 group-hover:hidden">
                                 <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-success-400 opacity-75"></span>
                                 <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-success-500"></span>
                             </span>
-                            <span class="text-xs font-medium text-success-700 dark:text-success-400 group-hover:hidden">{t("shifts.working")}</span>
-                            <span class="hidden group-hover:inline text-xs font-medium text-danger-600 dark:text-danger-400">{t("shifts.clockOut")}</span>
+                            <span class="text-xs font-medium text-success-700 dark:text-success-400 group-hover:hidden">ກະເງິນ POS</span>
+                            <span class="hidden group-hover:inline text-xs font-medium text-danger-600 dark:text-danger-400">ປິດກະ</span>
                         </a>
                     {:else}
                         <button
-                            onclick={clockIn}
+                            onclick={() => (showShiftWarning = true)}
                             class="hidden md:flex items-center gap-2 px-3 py-1.5 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg hover:bg-amber-100 dark:hover:bg-amber-900/40 transition-colors"
                         >
                             <Clock class="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-                            <span class="text-xs font-medium text-amber-700 dark:text-amber-400">{t("shifts.clockIn")}</span>
+                            <span class="text-xs font-medium text-amber-700 dark:text-amber-400">ເປີດກະ POS</span>
                         </button>
                     {/if}
                 {/if}
@@ -727,6 +788,9 @@
                 <div class="relative" data-user-menu>
                     <button
                         onclick={() => (isUserMenuOpen = !isUserMenuOpen)}
+                        aria-expanded={isUserMenuOpen}
+                        aria-haspopup="menu"
+                        aria-controls="user-menu"
                         class="flex items-center gap-2 p-1.5 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
                     >
                         <div
@@ -755,6 +819,8 @@
 
                     {#if isUserMenuOpen}
                         <div
+                            id="user-menu"
+                            role="menu"
                             class="absolute right-0 mt-2 w-56 bg-white dark:bg-gray-900 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-50"
                         >
                             <div
@@ -812,35 +878,25 @@
             </div>
         </header>
 
-        <!-- Shift Clock-in Warning Banner -->
-        {#if showShiftWarning && shiftCheckDone}
-            <div class="bg-amber-50 dark:bg-amber-900/30 border-b border-amber-200 dark:border-amber-700 px-4 py-3 flex items-center justify-between gap-4">
-                <div class="flex items-center gap-3">
-                    <Clock class="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0" />
-                    <div>
-                        <p class="text-sm font-semibold text-amber-800 dark:text-amber-200">{t("shifts.notClockedIn")}</p>
-                        <p class="text-xs text-amber-600 dark:text-amber-400">{t("shifts.clockInBeforeWork")}</p>
-                    </div>
-                </div>
-                <div class="flex items-center gap-2 shrink-0">
-                    <button
-                        onclick={clockIn}
-                        class="px-4 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded-lg transition-colors"
-                    >
-                        {t("shifts.clockInNow")}
-                    </button>
-                    <a
-                        href="/staff/shifts"
-                        class="px-4 py-1.5 bg-white dark:bg-gray-800 border border-amber-300 dark:border-amber-600 text-amber-700 dark:text-amber-300 text-sm font-medium rounded-lg hover:bg-amber-50 dark:hover:bg-amber-900/50 transition-colors"
-                    >
-                        {t("shifts.goToShifts")}
-                    </a>
-                </div>
-            </div>
-        {/if}
+        <!-- Cash drawer dialog opens only when the user explicitly requests
+             it. Work attendance uses /staff/attendance and needs no cash. -->
+        <OpenShiftDialog open={showShiftWarning && shiftCheckDone} onSubmit={handleOpenShift} />
 
         <!-- Page Content -->
         <main class="flex-1 min-h-0 overflow-auto overscroll-contain">
+            {#if auth.authorizationUnavailable}
+                <div class="mx-4 mt-4 flex items-center justify-between gap-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-amber-900 shadow-sm dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-100">
+                    <div>
+                        <p class="text-sm font-semibold">ບໍ່ສາມາດໂຫຼດສິດການໃຊ້ງານໄດ້</p>
+                        <p class="text-xs opacity-80">Authorization service unavailable. ກົດ Retry ເພື່ອລອງໃໝ່.</p>
+                    </div>
+                    <button
+                        type="button"
+                        onclick={() => auth.loadRulesAndMenu()}
+                        class="shrink-0 rounded-xl border border-amber-300 bg-white px-3 py-2 text-xs font-semibold text-amber-900 transition hover:bg-amber-100 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100 dark:hover:bg-amber-900/60"
+                    >Retry</button>
+                </div>
+            {/if}
             {#if authReady}
                 {@render children()}
             {:else}

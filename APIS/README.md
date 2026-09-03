@@ -141,7 +141,8 @@ curl -H "Authorization: Bearer <token>" http://localhost:5000/api/v1/products
 | `bun db:push` | Push schema directly to database |
 | `bun db:migrate` | Run pending migrations |
 | `bun db:studio` | Open Drizzle Studio (DB browser) |
-| `bun db:seed` | Seed database with defaults |
+| `bun db:seed` | Seed production system defaults only (roles, rules, permissions, platform menus, and Super Admin) |
+| `bun db:seed:demo` | Seed demo tenant/store data explicitly |
 | `bun test` | Run tests (Vitest) |
 | `bun typecheck` | TypeScript type check (`tsc --noEmit`) |
 

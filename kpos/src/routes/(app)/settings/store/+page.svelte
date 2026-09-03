@@ -4,6 +4,7 @@
     import { t } from "$lib/i18n/index.svelte";
     import { toast } from "svelte-sonner";
     import { Store, Camera, Save, Loader2, ChevronLeft } from "lucide-svelte";
+    import { validateFile, IMAGE_ONLY_FILE_TYPES } from "$utils";
 
     const canUpdateSettings = $derived(auth.hasPermission('settings:update'));
 
@@ -26,7 +27,7 @@
         const input = event.target as HTMLInputElement;
         const file = input.files?.[0];
         if (!file) return;
-        if (file.size > 2 * 1024 * 1024) { toast.error(t("settings.logoTooLarge")); return; }
+        if (!(await validateFile(file, { allowedTypes: IMAGE_ONLY_FILE_TYPES }))) { input.value = ""; return; }
         isUploadingLogo = true;
         try {
             const base64 = await new Promise<string>((resolve, reject) => {

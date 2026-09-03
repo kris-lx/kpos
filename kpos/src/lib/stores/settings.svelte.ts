@@ -9,6 +9,7 @@ import { api } from '$api';
 
 const CACHE_KEY = 'kpos_tenant_config';
 const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const CACHE_VERSION = 2;
 
 export interface TenantConfig {
     // Store / currency
@@ -53,8 +54,8 @@ function createSettingsStore() {
         try {
             const raw = localStorage.getItem(CACHE_KEY);
             if (raw) {
-                const { data, ts } = JSON.parse(raw);
-                if (Date.now() - ts < CACHE_TTL_MS) {
+                const { data, ts, version } = JSON.parse(raw);
+                if (version === CACHE_VERSION && Date.now() - ts < CACHE_TTL_MS) {
                     config = { ...DEFAULTS, ...data };
                     loaded = true;
                 }
@@ -95,7 +96,7 @@ function createSettingsStore() {
             loaded = true;
 
             if (browser) {
-                localStorage.setItem(CACHE_KEY, JSON.stringify({ data: config, ts: Date.now() }));
+                localStorage.setItem(CACHE_KEY, JSON.stringify({ version: CACHE_VERSION, data: config, ts: Date.now() }));
             }
         } catch (err) {
             console.warn('[settings] Failed to load tenant config, using defaults:', err);
@@ -112,7 +113,7 @@ function createSettingsStore() {
     function patch(partial: Partial<TenantConfig>): void {
         config = { ...config, ...partial };
         if (browser) {
-            localStorage.setItem(CACHE_KEY, JSON.stringify({ data: config, ts: Date.now() }));
+            localStorage.setItem(CACHE_KEY, JSON.stringify({ version: CACHE_VERSION, data: config, ts: Date.now() }));
         }
     }
 

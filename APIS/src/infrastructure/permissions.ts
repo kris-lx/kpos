@@ -161,18 +161,51 @@ export function legacyPermTobit(perm: string): PermBit | undefined {
 }
 
 /**
+ * Permission strings that `authorize()` genuinely checks somewhere in the
+ * app but that LEGACY_PERM_MAP deliberately omits — several modules
+ * (branches, categories, documents, promotions, roles) intentionally map
+ * ONLY their view/read verb to a bitmask bit, so a view-only role can't
+ * silently also pass the create/update/delete check via the bitmask
+ * fast-path (see the comments beside those entries in LEGACY_PERM_MAP).
+ * That's the correct call for the bitmask, but it also meant these verbs
+ * were absent from getAllPermissionKeys()/getGroupedPermissionKeys() — the
+ * catalog role creation validates AGAINST — so granting any of them to a
+ * custom role was rejected as "Invalid permissions" even though authorize()
+ * elsewhere accepts exactly that string. Confirmed live: a store owner
+ * could not create a staff role with branches:create or roles:delete.
+ * admin:view/admin:manage are included too (the platform 'admin' role
+ * template holds them) — safe to list here since the separate "cannot grant
+ * a permission you don't personally hold" check at role-creation time
+ * already stops a tenant owner (who never holds admin:*) from granting it.
+ */
+const EXTRA_VALID_PERMISSIONS: string[] = [
+    'admin:view', 'admin:manage', 'audit:view',
+    'attendance:clock', 'attendance:view', 'attendance:manage',
+    'reports:payments', 'reports:promotions',
+    'expenses:view', 'expenses:create', 'expenses:update', 'expenses:approve', 'expenses:pay', 'expenses:export',
+    'finance:manage',
+    'payroll:view', 'payroll:view_detail', 'payroll:view_self', 'payroll:compensation', 'payroll:policy', 'payroll:manage', 'payroll:approve', 'payroll:pay', 'payroll:export',
+    'printing:view', 'printing:receipt', 'printing:label', 'printing:reprint', 'printing:manage',
+    'branches:create', 'branches:update', 'branches:delete',
+    'categories:create', 'categories:update', 'categories:delete',
+    'documents:create', 'documents:update', 'documents:delete',
+    'promotions:create', 'promotions:update', 'promotions:delete',
+    'roles:create', 'roles:update', 'roles:delete',
+    'restaurant:kitchen', 'restaurant:reservations',
+];
+
+/**
  * Every permission string the system actually recognizes (authorize() calls,
- * role assignment, etc.) — derived from LEGACY_PERM_MAP itself so it can
- * never drift out of sync with what authorize() actually checks. This is
- * the canonical catalog: the `permission_groups`/`permissions` DB tables
- * exist for an editable-catalog UI but are seeded by nobody in practice, so
- * every consumer that needs "the full list of valid permission strings"
- * (role-permission validation, the role-editor's checkbox list) should fall
- * back to this rather than silently treating an empty/unseeded DB table as
- * "there are zero valid permissions."
+ * role assignment, etc.). This is the canonical catalog: the
+ * `permission_groups`/`permissions` DB tables exist for an editable-catalog
+ * UI but are seeded by nobody in practice, so every consumer that needs
+ * "the full list of valid permission strings" (role-permission validation,
+ * the role-editor's checkbox list) should fall back to this rather than
+ * silently treating an empty/unseeded DB table as "there are zero valid
+ * permissions."
  */
 export function getAllPermissionKeys(): string[] {
-    return Object.keys(LEGACY_PERM_MAP);
+    return [...new Set([...Object.keys(LEGACY_PERM_MAP), ...EXTRA_VALID_PERMISSIONS])];
 }
 
 /**
@@ -181,7 +214,7 @@ export function getAllPermissionKeys(): string[] {
  */
 export function getGroupedPermissionKeys(): Record<string, string[]> {
     const grouped: Record<string, string[]> = {};
-    for (const key of Object.keys(LEGACY_PERM_MAP)) {
+    for (const key of getAllPermissionKeys()) {
         const [module] = key.split(':');
         (grouped[module] ??= []).push(key);
     }

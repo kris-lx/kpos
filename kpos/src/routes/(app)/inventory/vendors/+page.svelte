@@ -3,7 +3,7 @@
     import { t } from "$lib/i18n/index.svelte";
     import { cn, escapeCsvCell } from "$utils";
     import { api } from "$api";
-    import { auth } from "$stores";
+    import { auth, dialogStore } from "$stores";
     import { toast } from "svelte-sonner";
     import {
         Truck,
@@ -148,7 +148,7 @@
     }
 
     async function handleDelete(vendor: any) {
-        if (!confirm(t('common.deleteMessage'))) return;
+        if (!(await dialogStore.confirm(t('common.deleteMessage')))) return;
         try {
             await api.delete(`inventory/vendors/${vendor.id}`).json();
             toast.success(t('common.deleted'));

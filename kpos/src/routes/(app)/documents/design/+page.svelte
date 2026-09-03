@@ -1,11 +1,14 @@
 ﻿<script lang="ts">
     import { onMount } from "svelte";
-    import { cn, escapeHtml } from "$utils";
+    import { cn, escapeHtml, validateFile, IMAGE_ONLY_FILE_TYPES } from "$utils";
+    import { printHtml } from "$utils/printHtml";
     import { api } from "$api";
     import QRCode from 'qrcode';
+    import JsBarcode from 'jsbarcode';
     import { t } from "$lib/i18n/index.svelte";
     import { toast } from "svelte-sonner";
     import { tenantSettings } from "$lib/stores/settings.svelte";
+    import { generateEMVcoPayload } from "$lib/utils/emvcoQr";
     import {
         Save,
         Eye,
@@ -31,10 +34,17 @@
         ChevronUp,
     } from "lucide-svelte";
 
-    // Receipt paper sizes
+    // Receipt paper sizes — kept in sync with the paper widths Settings >
+    // Printers actually offers (57/58/76/80/110mm); a size configured there
+    // with no matching option here used to silently fall back to 80mm
+    // formatting everywhere downstream (design preview, print CSS), printing
+    // at the wrong physical size for that printer.
     const paperSizes = [
+        { id: "57mm", name: "57mm", width: 47, unit: "mm" },
         { id: "58mm", name: "58mm", width: 48, unit: "mm" },
+        { id: "76mm", name: "76mm", width: 68, unit: "mm" },
         { id: "80mm", name: "80mm", width: 72, unit: "mm" },
+        { id: "110mm", name: "110mm", width: 100, unit: "mm" },
         { id: "A4", name: "A4", width: 210, unit: "mm" },
     ];
 
@@ -92,83 +102,6 @@
     let qrUploadedImageUrl = $state<string>('');
     const QR_PREVIEW_TEXT = 'https://kpos.example.com/receipt/preview';
 
-    // EMVco TLV (Tag-Length-Value) encoding
-    function encodeTLV(tag: string, value: string): string {
-        const length = value.length.toString(16).padStart(2, '0').toUpperCase();
-        return tag + length + value;
-    }
-
-    // Generate EMVco compliant QR code payload
-    function generateEMVcoPayload(data: {
-        merchantAccount?: string;
-        amount?: number;
-        currency?: string;
-        transactionId?: string;
-    }): string {
-        // Payload Format Indicator (ID 00)
-        const payloadFormat = encodeTLV('00', '01');
-        
-        // Point of Initiation Method (ID 01) - 11 = Static, 12 = Dynamic
-        const poiMethod = encodeTLV('01', '12');
-        
-        // Merchant Account Information (ID 26-51)
-        const merchantInfo = encodeTLV('26', data.merchantAccount || '00020101021226580016TH.PROMPTPAY011511234567890352034005802TH530376454541612.34545802TH5910TEST STORE6007BANGKOK6304');
-        
-        // Transaction Currency (ID 53) — from tenant settings
-        const currCode = data.currency || tenantSettings.qrCurrencyCode || tenantSettings.currencyIsoCode;
-        const currency = encodeTLV('53', currCode);
-
-        // Transaction Amount (ID 54)
-        const amount = data.amount ? encodeTLV('54', data.amount.toFixed(2)) : '';
-
-        // Tip or Convenience Fee Indicator (ID 55)
-        const tipIndicator = encodeTLV('55', '02');
-
-        // Transaction Currency (ID 56) — same as main currency
-        const tipCurrency = encodeTLV('56', currCode);
-        
-        // Tip or Convenience Fee Amount (ID 57)
-        const tipAmount = encodeTLV('57', '0.00');
-        
-        // Country Code (ID 58) — from tenant settings
-        const countryCode = encodeTLV('58', tenantSettings.config.country || 'LA');
-
-        // Merchant Name (ID 59)
-        const merchantName = encodeTLV('59', data.merchantAccount?.split(':')[0] || 'STORE');
-
-        // Merchant City (ID 60) — generic placeholder
-        const merchantCity = encodeTLV('60', 'VIENTIANE');
-
-        // Postal Code (ID 61)
-        const postalCode = encodeTLV('61', '01000');
-        
-        // Additional Data Field Template (ID 62)
-        const additionalData = encodeTLV('62', data.transactionId ? encodeTLV('05', data.transactionId) : '');
-        
-        // CRC (ID 63) - CRC16-CCITT
-        const payloadWithoutCrc = payloadFormat + poiMethod + merchantInfo + currency + amount + tipIndicator + tipCurrency + tipAmount + countryCode + merchantName + merchantCity + postalCode + additionalData;
-        const crc = calculateCRC16(payloadWithoutCrc);
-        const crcField = encodeTLV('63', crc);
-        
-        return payloadWithoutCrc + crcField;
-    }
-
-    // CRC16-CCITT calculation for EMVco
-    function calculateCRC16(data: string): string {
-        let crc = 0xFFFF;
-        for (let i = 0; i < data.length; i++) {
-            crc ^= data.charCodeAt(i) << 8;
-            for (let j = 0; j < 8; j++) {
-                if ((crc & 0x8000) !== 0) {
-                    crc = (crc << 1) ^ 0x1021;
-                } else {
-                    crc = crc << 1;
-                }
-            }
-        }
-        return (crc & 0xFFFF).toString(16).padStart(4, '0').toUpperCase();
-    }
-
     async function generateQrPreview(text: string = QR_PREVIEW_TEXT) {
         try {
             let qrData = text;
@@ -181,6 +114,7 @@
                 qrData = generateEMVcoPayload({
                     merchantAccount: emvcoMerchantCode.trim(),
                     currency: tenantSettings.qrCurrencyCode || tenantSettings.currencyIsoCode,
+                    countryCode: tenantSettings.config.country || 'LA',
                 });
             }
             qrDataUrl = await QRCode.toDataURL(qrData, { width: 80, margin: 1, errorCorrectionLevel: 'M' });
@@ -188,8 +122,10 @@
     }
 
     async function handleQrImageUpload(e: Event) {
-        const file = (e.target as HTMLInputElement).files?.[0];
+        const input = e.target as HTMLInputElement;
+        const file = input.files?.[0];
         if (!file) return;
+        if (!(await validateFile(file, { allowedTypes: IMAGE_ONLY_FILE_TYPES }))) { input.value = ""; return; }
         const reader = new FileReader();
         reader.onload = () => {
             qrUploadedImageUrl = reader.result as string;
@@ -207,6 +143,7 @@
         const input = e.target as HTMLInputElement;
         const file = input.files?.[0];
         if (!file) return;
+        if (!(await validateFile(file, { allowedTypes: IMAGE_ONLY_FILE_TYPES }))) { input.value = ""; return; }
         uploadingImageElementId = elementId;
         try {
             const base64 = await new Promise<string>((resolve, reject) => {
@@ -750,12 +687,25 @@
                     ? `<div class="center" style="padding:8px 0"><img src="${escapeHtml(el.content)}" style="max-width:70%;max-height:100px;object-fit:contain"/></div>`
                     : '';
             } else if (el.type === 'qrcode') {
+                // .qr's shared CSS rule (also used by .barcode/.logo) hardcodes
+                // justify-content:center — override per-element via inline
+                // style so the QR block actually follows el.align instead of
+                // always centering regardless of what was picked in the editor.
+                const qrJustify = el.align === 'left' ? 'flex-start' : el.align === 'right' ? 'flex-end' : 'center';
                 const qrSrc = qrDataUrl || '';
                 html += qrSrc
-                    ? `<div class="qr"><img src="${escapeHtml(qrSrc)}" style="width:80px;height:80px" alt="QR Code"/></div>`
-                    : `<div class="qr"><div class="qr-box">QR Code</div></div>`;
+                    ? `<div class="qr" style="justify-content:${qrJustify}"><img src="${escapeHtml(qrSrc)}" style="width:80px;height:80px" alt="QR Code"/></div>`
+                    : `<div class="qr" style="justify-content:${qrJustify}"><div class="qr-box">QR Code</div></div>`;
             } else if (el.type === 'barcode') {
-                html += `<div class="barcode"><div class="barcode-box">Barcode</div></div>`;
+                let barcodeSrc = '';
+                try {
+                    const bcCanvas = document.createElement('canvas');
+                    JsBarcode(bcCanvas, sampleData.receiptNo, { format: 'CODE128', width: 1.5, height: 40, displayValue: true, fontSize: 10, margin: 4 });
+                    barcodeSrc = bcCanvas.toDataURL('image/png');
+                } catch { /* fall back to placeholder below */ }
+                html += barcodeSrc
+                    ? `<div class="barcode"><img src="${barcodeSrc}" style="max-width:100%" alt="Barcode"/></div>`
+                    : `<div class="barcode"><div class="barcode-box">Barcode</div></div>`;
             } else if (el.type === 'storeName') {
                 html += `<div class="${cls}" style="font-size:${fs}px">${escapeHtml(storeName)}</div>`;
             } else if (el.type === 'address') {
@@ -764,16 +714,23 @@
                 html += `<div class="${cls}" style="font-size:${fs}px">${escapeHtml(phone)}</div>`;
             } else if (el.type === 'taxId') {
                 html += `<div class="${cls}" style="font-size:${fs}px">${escapeHtml(taxId)}</div>`;
+            } else if (el.type === 'signature') {
+                // Was falling through to the generic text branch below (raw/
+                // token-replaced `content` string) since this function never
+                // had its own case — the actual print (ReceiptPrint.svelte)
+                // and this editor's own canvas preview both draw a signature
+                // line + label instead, so "Test Print" showed something
+                // different from what a real receipt with this block prints.
+                html += `<div class="center" style="padding-top:12px;padding-bottom:4px">` +
+                    `<div style="border-bottom:1px solid #999;width:96px;margin:0 auto 4px"></div>` +
+                    `<span style="font-size:10px;color:#888">ລາຍເຊັນ</span></div>`;
             } else {
                 html += `<div class="${cls}" style="font-size:${fs}px">${escapeHtml(renderContent(el))}</div>`;
             }
         }
 
         html += `</body></html>`;
-        const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        const w = window.open(url, '_blank', `width=${pw + 40},height=600`);
-        if (w) w.onload = () => { w.print(); };
+        printHtml(html);
     }
 
 </script>
@@ -1055,9 +1012,9 @@
                                         {/if}
                                     </div>
                                 {:else if el.type === 'qrcode'}
-                                    <div class="text-center py-1">
+                                    <div class={cn('py-1', el.align === 'left' ? 'text-left' : el.align === 'right' ? 'text-right' : 'text-center')}>
                                         {#if qrDataUrl}
-                                            <img src={qrDataUrl} alt="QR Code" class="mx-auto" style="width:64px;height:64px" />
+                                            <img src={qrDataUrl} alt="QR Code" class="inline-block" style="width:64px;height:64px" />
                                         {:else}
                                             <div class="inline-block w-16 h-16 border border-gray-400 flex items-center justify-center text-xs text-gray-400">QR</div>
                                         {/if}

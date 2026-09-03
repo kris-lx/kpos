@@ -4,7 +4,7 @@
     import { api } from "$lib/api";
     import { formatCurrency, formatDate, formatDateTime, escapeCsvCell } from "$lib/utils";
     import { toast } from "svelte-sonner";
-    import { auth } from "$stores";
+    import { auth, dialogStore } from "$stores";
     import { Plus, Search, Package, X, ChevronLeft, ChevronRight, Loader2, Trash2, AlertCircle, ChevronsLeft, ChevronsRight, Pencil, Download } from "lucide-svelte";
     import MoneyInput from "$lib/components/MoneyInput.svelte";
 
@@ -177,7 +177,7 @@
     }
 
     async function deleteStockIn(id: string) {
-        if (!confirm(t("common.confirmDelete"))) return;
+        if (!(await dialogStore.confirm(t("common.confirmDelete")))) return;
         try {
             await api.delete(`inventory/stock-in/${id}`).json();
             toast.success(t("common.deleted"));

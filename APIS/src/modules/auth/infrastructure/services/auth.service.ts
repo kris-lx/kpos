@@ -6,7 +6,7 @@ import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import argon2 from 'argon2';
 import { db } from '@/config/database.config';
-import { jwtConfig, appConfig } from '@/config/app.config';
+import { jwtConfig } from '@/config/app.config';
 import { cache } from '@/config/redis.config';
 import { isSessionExpired } from '@/shared/session-cap';
 import { DatabaseConnectionError } from '@/shared/domain/errors';
@@ -67,10 +67,10 @@ const REFRESH_COOKIE_NAME = 'kpos_refresh_token';
 const REFRESH_COOKIE_MAX_AGE = jwtConfig.sessionAbsoluteMs;
 
 /** Set refresh token as HttpOnly cookie (BE-04) */
-function setRefreshCookie(res: Response, refreshToken: string): void {
+function setRefreshCookie(res: Response, refreshToken: string, secure: boolean): void {
     res.cookie(REFRESH_COOKIE_NAME, refreshToken, {
         httpOnly: true,
-        secure: appConfig.isProduction,
+        secure,
         sameSite: 'strict',
         path: '/api/v1/auth',
         maxAge: REFRESH_COOKIE_MAX_AGE,
@@ -78,10 +78,10 @@ function setRefreshCookie(res: Response, refreshToken: string): void {
 }
 
 /** Clear refresh cookie on logout */
-function clearRefreshCookie(res: Response): void {
+function clearRefreshCookie(res: Response, secure = false): void {
     res.clearCookie(REFRESH_COOKIE_NAME, {
         httpOnly: true,
-        secure: appConfig.isProduction,
+        secure,
         sameSite: 'strict',
         path: '/api/v1/auth',
     });
@@ -108,7 +108,7 @@ export class AuthService {
      * Login: authenticate, issue identity-only JWT, set refresh cookie (BE-02..04)
      * @param res - Express Response for setting HttpOnly cookie
      */
-    async login(email: string, password: string, res?: Response): Promise<LoginResponse> {
+    async login(email: string, password: string, res?: Response, secureCookie = false): Promise<LoginResponse> {
         console.log(`[Auth] Login attempt for: ${email.toLowerCase()}`);
 
         let user;
@@ -167,7 +167,7 @@ export class AuthService {
             console.warn('[Auth] Failed to update lastLoginAt:', error instanceof Error ? error.message : error);
         }
 
-        return this.issueSession(user, res);
+        return this.issueSession(user, res, secureCookie);
     }
 
     /**
@@ -178,6 +178,7 @@ export class AuthService {
     private async issueSession(
         user: { id: string; email: string; name: string; role: string; branchId: string | null; tenantId: string | null; isSuperAdmin: boolean | null; avatar: string | null },
         res?: Response,
+        secureCookie = false,
     ): Promise<LoginResponse> {
         const scope = user.isSuperAdmin ? 'platform' : 'tenant';
         const tokens = this.generateTokens(user.id, user.branchId || '', user.tenantId || '', scope);
@@ -200,7 +201,7 @@ export class AuthService {
 
         // Set refresh token as HttpOnly cookie (BE-04)
         if (res) {
-            setRefreshCookie(res, tokens.refreshToken);
+            setRefreshCookie(res, tokens.refreshToken, secureCookie);
         }
 
         // BE-03: No permissions in response, no refreshToken in body
@@ -225,7 +226,7 @@ export class AuthService {
      * user must already exist and be active (admin-created ahead of time).
      * Throws NO_ACCOUNT if no matching local user is found.
      */
-    async loginWithSso(tenantId: string, email: string, res?: Response): Promise<LoginResponse> {
+    async loginWithSso(tenantId: string, email: string, res?: Response, secureCookie = false): Promise<LoginResponse> {
         const user = await db.query.users.findFirst({
             where: and(eq(users.tenantId, tenantId), eq(users.email, email.toLowerCase())),
         });
@@ -240,7 +241,7 @@ export class AuthService {
             console.warn('[Auth] Failed to update lastLoginAt (SSO):', error instanceof Error ? error.message : error);
         }
 
-        return this.issueSession(user, res);
+        return this.issueSession(user, res, secureCookie);
     }
 
     /** Register with tenant-scoped email uniqueness (BE-09) */
@@ -307,7 +308,7 @@ export class AuthService {
      * @param token - refresh token from HttpOnly cookie
      * @param res - Express Response for setting new HttpOnly cookie
      */
-    async refreshToken(token: string, res?: Response): Promise<{ accessToken: string }> {
+    async refreshToken(token: string, res?: Response, secureCookie = false): Promise<{ accessToken: string }> {
         try {
             const decoded = jwt.verify(token, jwtConfig.refreshSecret) as IdentityJwtPayload;
 
@@ -346,7 +347,7 @@ export class AuthService {
 
             // Set new refresh cookie
             if (res) {
-                setRefreshCookie(res, tokens.refreshToken);
+                setRefreshCookie(res, tokens.refreshToken, secureCookie);
             }
 
             return { accessToken: tokens.accessToken };
@@ -361,7 +362,7 @@ export class AuthService {
      * @param userId - user ID for backward compat
      * @param res - Express Response for clearing cookie
      */
-    async logout(accessToken: string | undefined, userId: string, res?: Response): Promise<void> {
+    async logout(accessToken: string | undefined, userId: string, res?: Response, secureCookie = false): Promise<void> {
         // Revoke access token jti (BE-07)
         if (accessToken) {
             try {
@@ -388,7 +389,7 @@ export class AuthService {
 
         // Clear refresh cookie
         if (res) {
-            clearRefreshCookie(res);
+            clearRefreshCookie(res, secureCookie);
         }
     }
 
@@ -429,4 +430,4 @@ export class AuthService {
 export const authService = new AuthService();
 
 // Re-export cookie name for use in auth routes
-export { REFRESH_COOKIE_NAME };
+export { REFRESH_COOKIE_NAME, clearRefreshCookie };

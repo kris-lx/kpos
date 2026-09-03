@@ -3,7 +3,8 @@
 // Process async jobs: stock movements, activity logs, cache invalidation
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { consume, subscribeCacheInvalidation, publish, QUEUES, isRabbitMQConnected } from '@/config/rabbitmq.config';
+import { consume, subscribeCacheInvalidation, publishEnvelope, QUEUES, isRabbitMQConnected, type MessageEnvelope } from '@/config/rabbitmq.config';
+import { claimOutboxBatch, markOutboxFailed, markOutboxPublished, enqueueOutboxMessage, purgePublishedOutbox } from '@/infrastructure/messaging/outbox.service';
 import { computeAuditChecksum } from '@/shared/audit-checksum';
 import { acquireLock, releaseLock } from '@/shared/distributed-lock';
 import { cache } from '@/config/redis.config';
@@ -13,6 +14,7 @@ import { eq, and, lt, isNotNull, sql } from 'drizzle-orm';
 import { SocketEventEmitter } from '@/infrastructure/http/socket';
 import { webPushService } from '@/infrastructure/services/webpush.service';
 import { sendEmail, logEmailResult, type SendEmailParams } from '@/infrastructure/services/email/email.service';
+import { processPrintJob } from '@/modules/settings/application/print-job.service';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Stock Movement Worker
@@ -84,8 +86,12 @@ async function processStockMovement(data: {
 // Activity Log Worker
 // Writes activity logs asynchronously (non-blocking for API responses)
 // ═══════════════════════════════════════════════════════════════════════════
+const AUDIT_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const auditUuid = (value: unknown): string | null => typeof value === 'string' && AUDIT_UUID_PATTERN.test(value) ? value : null;
+
 async function processActivityLog(data: {
     userId: string;
+    tenantId?: string | null;
     action: string;
     resource?: string;
     resourceId?: string;
@@ -98,11 +104,20 @@ async function processActivityLog(data: {
     userAgent?: string;
     checksum?: string;
     ts?: string;
+    storeId?: string | null;
+    branchId?: string | null;
+    oldData?: unknown;
+    newData?: unknown;
 }): Promise<void> {
-    const entityId = data.entityId || data.resourceId;
+    const actorId = auditUuid(data.userId);
+    if (!actorId) {
+        console.warn('Skipping activity log with missing or invalid actor UUID');
+        return;
+    }
+    const entityId = auditUuid(data.entityId) || auditUuid(data.resourceId);
     // Re-compute checksum if not already provided by the publisher
     const checksum = data.checksum || computeAuditChecksum({
-        userId: data.userId,
+        userId: actorId,
         action: data.action,
         resource: data.resource || data.entity || '',
         details: data.details || data.description || '',
@@ -110,12 +125,17 @@ async function processActivityLog(data: {
         ts: data.ts || new Date().toISOString(),
     });
     await db.insert(activityLogs).values({
-        userId: data.userId,
+        userId: actorId,
+        tenantId: auditUuid(data.tenantId),
+        storeId: auditUuid(data.storeId) || auditUuid(data.metadata?.storeId),
+        branchId: auditUuid(data.branchId) || auditUuid(data.metadata?.branchId),
         action: data.action,
         entity: data.entity || data.resource,
         ...(entityId ? { entityId } : {}),
         description: data.details || data.description,
         metadata: data.metadata as any,
+        oldData: data.oldData as any,
+        newData: data.newData as any,
         ip: data.ip,
         userAgent: data.userAgent,
         checksum,
@@ -182,9 +202,14 @@ async function processEmail(data: SendEmailParams & { attempt: number }): Promis
         await logEmailResult({ tenantId: params.tenantId, toEmail: params.to.join(','), templateKey: params.templateKey, status: 'sent' });
     } catch (err: any) {
         if (attempt < EMAIL_RETRY_DELAYS_MS.length) {
-            setTimeout(() => {
-                publish(QUEUES.EMAIL, { ...params, attempt: attempt + 1 });
-            }, EMAIL_RETRY_DELAYS_MS[attempt]);
+            const queued = await enqueueOutboxMessage({
+                queue: QUEUES.EMAIL,
+                eventType: 'email.send.retry',
+                tenantId: params.tenantId,
+                payload: { ...params, attempt: attempt + 1 },
+                availableAt: new Date(Date.now() + EMAIL_RETRY_DELAYS_MS[attempt]),
+            });
+            if (!queued) throw err;
         } else {
             await logEmailResult({ tenantId: params.tenantId, toEmail: params.to.join(','), templateKey: params.templateKey, status: 'failed', error: err?.message || String(err) });
         }
@@ -222,9 +247,14 @@ async function processAssetCleanup(data: {
 export async function queueAssetCleanup(publicIds: string[], reason?: string): Promise<void> {
     if (!publicIds.length) return;
 
-    const { publish, isRabbitMQConnected: isConnected } = await import('@/config/rabbitmq.config');
+    const { isRabbitMQConnected: isConnected } = await import('@/config/rabbitmq.config');
     if (isConnected()) {
-        publish(QUEUES.ASSET_CLEANUP, { publicIds, reason });
+        const queued = await enqueueOutboxMessage({
+            queue: QUEUES.ASSET_CLEANUP,
+            eventType: 'asset.cleanup',
+            payload: { publicIds, reason },
+        });
+        if (!queued) processAssetCleanup({ publicIds, reason }).catch(() => {});
     } else {
         // Sync fallback — delete immediately
         processAssetCleanup({ publicIds, reason }).catch(() => {});
@@ -285,7 +315,53 @@ async function ensureFuturePartitions(): Promise<void> {
 // ═══════════════════════════════════════════════════════════════════════════
 // Start all workers
 // ═══════════════════════════════════════════════════════════════════════════
+let outboxRelayTimer: ReturnType<typeof setInterval> | null = null;
+let outboxRelayRunning = false;
+
+async function relayOutbox(): Promise<void> {
+    if (outboxRelayRunning || !isRabbitMQConnected()) return;
+    outboxRelayRunning = true;
+    try {
+        const messages = await claimOutboxBatch(50);
+        for (const message of messages) {
+            const envelope: MessageEnvelope = {
+                eventId: message.event_id,
+                eventType: message.event_type,
+                tenantId: message.tenant_id,
+                aggregateId: message.aggregate_id,
+                occurredAt: message.created_at instanceof Date
+                    ? message.created_at.toISOString()
+                    : new Date().toISOString(),
+                attempt: message.attempts,
+                payload: message.payload,
+            };
+            if (publishEnvelope(message.queue, envelope)) {
+                await markOutboxPublished(message.event_id);
+            } else {
+                await markOutboxFailed(message.event_id, 'RabbitMQ publish returned false', message.attempts);
+            }
+        }
+    } catch (err) {
+        console.error('[Outbox] Relay failed:', err instanceof Error ? err.message : err);
+    } finally {
+        outboxRelayRunning = false;
+    }
+}
+
+async function processQueuedPrintJob(data: { jobId: string; tenantId: string }): Promise<void> {
+    if (!data?.jobId || !data?.tenantId) throw new Error('Invalid print job message');
+    await processPrintJob(data.jobId, data.tenantId);
+}
+
+export function startOutboxRelay(): void {
+    if (outboxRelayTimer) return;
+    void relayOutbox();
+    outboxRelayTimer = setInterval(() => void relayOutbox(), 1_000);
+    setInterval(() => purgePublishedOutbox().catch(() => {}), 60 * 60 * 1_000);
+}
+
 export function startWorkers(): void {
+    startOutboxRelay();
     if (!isRabbitMQConnected()) {
         console.warn('⚠️  Workers not started - RabbitMQ not connected (sync fallback active)');
         return;
@@ -296,9 +372,10 @@ export function startWorkers(): void {
     consume(QUEUES.NOTIFICATION, processNotification);
     consume(QUEUES.ASSET_CLEANUP, processAssetCleanup);
     consume(QUEUES.EMAIL, processEmail);
+    consume(QUEUES.PRINT_JOB, processQueuedPrintJob);
     subscribeCacheInvalidation(handleCacheInvalidation);
 
-    console.log('✅ Queue workers started: stock-movement, activity-log, notification, asset-cleanup, email, cache-invalidation');
+    console.log('✅ Queue workers started: stock-movement, activity-log, notification, asset-cleanup, email, print-job, cache-invalidation');
 }
 
 export async function startScheduledJobs(): Promise<void> {

@@ -5,7 +5,7 @@
     import { toast } from "svelte-sonner";
     import { auth } from "$lib/stores/auth.svelte";
     import { t } from "$lib/i18n/index.svelte";
-    import { enforcePhoneInput, formatDateTime } from "$lib/utils";
+    import { enforcePhoneInput, formatDateTime, validateFile } from "$lib/utils";
     import { 
         Store, Plus, Clock, CheckCircle, XCircle, Eye, 
         Building2, MapPin, Phone, Mail, FileText, Send,
@@ -99,12 +99,8 @@
         isUploading = true;
         try {
             for (const file of Array.from(input.files)) {
-                // Check file type and size
-                if (file.size > 5 * 1024 * 1024) {
-                    toast.error(`ໄຟລ໌ ${file.name} ໃຫຍ່ເກີນໄປ (ສູງສຸດ 5MB)`);
-                    continue;
-                }
-                
+                if (!(await validateFile(file))) continue;
+
                 const reader = new FileReader();
                 const base64 = await new Promise<string>((resolve) => {
                     reader.onload = () => resolve(reader.result as string);

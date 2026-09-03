@@ -64,7 +64,9 @@
             userStoreId = (user as any).storeId || null;
             
             // Super Admin, Admin ຈັດການທຸກຜູ້ໃຊ້; Shop Admin, Manager ຈັດການຜູ້ໃຊ້ໃນຮ້ານ/ສາຂາຕົນເອງ
-            if (user.isSuperAdmin || ['admin', 'hq_admin', 'hq_manager', 'store_owner', 'branch_admin', 'store_manager'].includes(user.role)) {
+            // Tenant and branch staff are managed from the canonical Staff
+            // page. This page is reserved for platform user administration.
+            if (user.isSuperAdmin) {
                 canAccess = true;
             } else {
                 toast.error(t('common.accessDenied'));
@@ -98,7 +100,9 @@
 
     $effect(() => {
         void searchQuery; void roleFilter; void statusFilter; void currentPage; void pageSize;
-        $usersQuery.refetch();
+        // get() avoids the infinite-refetch-loop footgun — see admin/audit's
+        // equivalent effect for the full explanation.
+        get(usersQuery).refetch();
     });
 
     const rolesQuery = createQuery({
@@ -357,6 +361,7 @@
                         <p class="text-gray-500 dark:text-gray-400">ເບິ່ງ ແລະ ຈັດການຜູ້ໃຊ້ທັງໝົດ</p>
                     </div>
                 </div>
+                {#if auth.canCreate('users')}
                 <button
                     onclick={openAddModal}
                     class="flex items-center gap-2 px-4 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white font-medium rounded-xl shadow-lg shadow-emerald-500/30 transition-all"
@@ -364,6 +369,7 @@
                     <UserPlus class="w-5 h-5" />
                     <span>ເພີ່ມຜູ້ໃຊ້ໃໝ່</span>
                 </button>
+                {/if}
             </div>
 
             <!-- Filters -->
@@ -538,12 +544,16 @@
                                                 <button onclick={() => openDetailModal(user)} class="w-9 h-9 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg flex items-center justify-center text-gray-600 dark:text-gray-300 transition-colors">
                                                     <Eye class="w-4 h-4" />
                                                 </button>
+                                                {#if auth.canUpdate('users')}
                                                 <button onclick={() => openEditModal(user)} class="w-9 h-9 bg-emerald-500 hover:bg-emerald-600 rounded-lg flex items-center justify-center text-white shadow-lg shadow-emerald-500/30 transition-all hover:scale-105">
                                                     <Pencil class="w-4 h-4" />
                                                 </button>
+                                                {/if}
+                                                {#if auth.canDelete('users')}
                                                 <button onclick={() => openDeleteModal(user)} class="w-9 h-9 bg-danger-500 hover:bg-danger-600 rounded-lg flex items-center justify-center text-white shadow-lg shadow-danger-500/30 transition-all hover:scale-105">
                                                     <Trash2 class="w-4 h-4" />
                                                 </button>
+                                                {/if}
                                             </div>
                                         </td>
                                     </tr>
@@ -611,12 +621,16 @@
                                         <button onclick={() => openDetailModal(user)} class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg text-gray-600 dark:text-gray-300 text-sm font-medium">
                                             ເບິ່ງ
                                         </button>
+                                        {#if auth.canUpdate('users')}
                                         <button onclick={() => openEditModal(user)} class="px-3 py-2 bg-emerald-500 text-white rounded-lg text-sm font-medium">
                                             ແກ້ໄຂ
                                         </button>
+                                        {/if}
+                                        {#if auth.canDelete('users')}
                                         <button onclick={() => openDeleteModal(user)} class="px-3 py-2 bg-danger-500 text-white rounded-lg text-sm font-medium">
                                             ລຶບ
                                         </button>
+                                        {/if}
                                     </div>
                                 </div>
                             </div>

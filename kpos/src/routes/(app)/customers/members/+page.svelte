@@ -3,8 +3,10 @@
     import { t } from "$lib/i18n/index.svelte";
     import { cn, escapeCsvCell } from "$utils";
     import { api } from "$api";
+    import { auth, dialogStore } from "$stores";
     import { formatCurrency, formatDate } from "$lib/utils";
     import { toast } from "svelte-sonner";
+    import MoneyInput from "$lib/components/MoneyInput.svelte";
     import {
         Users,
         Plus,
@@ -175,7 +177,7 @@
             }
             showModal = false;
             resetForm();
-            loadData();
+            await loadData();
         } catch (e) {
             console.error("Failed to save:", e);
             toast.error(t("common.error"));
@@ -183,11 +185,11 @@
     }
 
     async function handleDelete(member: any) {
-        if (!confirm(t("common.confirmDelete"))) return;
+        if (!(await dialogStore.confirm(t("common.confirmDelete")))) return;
         try {
             await api.delete(`customers/${member.id}`).json();
             toast.success(t('common.deleted'));
-            loadData();
+            await loadData();
         } catch (e) {
             console.error("Failed to delete:", e);
             toast.error(t("common.error"));
@@ -326,11 +328,15 @@
         </div>
 
         <div class="flex items-center gap-3">
+            {#if auth.canExport('customers')}
             <button onclick={exportToCSV} class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-700 transition-all">
                 <Download class="w-4 h-4" />
                 ສົ່ງອອກ CSV
             </button>
+            {/if}
+            {#if auth.canCreate('customers')}
             <button
+                data-testid="members-add"
                 onclick={() => {
                     resetForm();
                     showModal = true;
@@ -340,6 +346,7 @@
                 <UserPlus class="w-5 h-5" />
                 ເພີ່ມສະມາຊິກ
             </button>
+            {/if}
         </div>
     </div>
 
@@ -463,7 +470,7 @@
                 {@const tierConfig = getTierConfig(computeTier(member.points || 0))}
                 {@const TierIcon = tierConfig.icon}
 
-                <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden hover:shadow-md transition-all">
+                <div data-testid={`customer-card-${member.id}`} class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden hover:shadow-md transition-all">
                     <!-- Header with Tier -->
                     <div class={cn("p-4", tierConfig.bg)}>
                         <div class="flex items-center justify-between">
@@ -525,6 +532,7 @@
                                 <Eye class="w-4 h-4" />
                                 ເບິ່ງ
                             </button>
+                            {#if auth.canUpdate('customers')}
                             <button
                                 onclick={() => openEdit(member)}
                                 class="flex-1 flex items-center justify-center gap-1.5 py-2 text-sm text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded-lg transition-all"
@@ -532,12 +540,18 @@
                                 <Edit class="w-4 h-4" />
                                 ແກ້ໄຂ
                             </button>
+                            {/if}
+                            {#if auth.canDelete('customers')}
                             <button
+                                data-testid={`customer-delete-${member.id}`}
+                                aria-label={t("common.delete")}
+                                title={t("common.delete")}
                                 onclick={() => handleDelete(member)}
                                 class="p-2 text-danger-500 hover:bg-danger-50 dark:hover:bg-danger-900/30 rounded-lg transition-all"
                             >
                                 <Trash2 class="w-4 h-4" />
                             </button>
+                            {/if}
                         </div>
                     </div>
                 </div>
@@ -598,6 +612,7 @@
             </div>
 
             <form
+                data-testid="member-form"
                 onsubmit={(e) => { e.preventDefault(); handleSubmit(); }}
                 class="p-6 space-y-4 max-h-[70vh] overflow-y-auto"
             >
@@ -616,6 +631,7 @@
                 <div>
                     <label for="a11y-app-customers-members-page-svelte-2" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຊື່ *</label>
                     <input id="a11y-app-customers-members-page-svelte-2"
+                        data-testid="member-name"
                         type="text"
                         bind:value={formData.name}
                         required
@@ -685,10 +701,9 @@
                     </div>
                     <div>
                         <label for="a11y-app-customers-members-page-svelte-8" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຍອດໃຊ້ຈ່າຍ</label>
-                        <input id="a11y-app-customers-members-page-svelte-8"
-                            type="number"
+                        <MoneyInput id="a11y-app-customers-members-page-svelte-8"
                             bind:value={formData.totalSpent}
-                            min="0"
+                            min={0}
                             class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
                         />
                     </div>
@@ -712,6 +727,7 @@
                     </button>
                     <button
                         type="submit"
+                        data-testid="member-save"
                         class="px-5 py-2.5 bg-gradient-to-r from-emerald-500 to-teal-600 text-white rounded-xl font-medium hover:from-emerald-600 hover:to-teal-700 transition-all shadow-lg"
                     >
                         {t("common.save")}

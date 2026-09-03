@@ -8,7 +8,7 @@ import argon2 from 'argon2';
 import { authController } from './controllers/auth.controller';
 import { authenticate, invalidateUserStoreCache } from '@/infrastructure/http/middleware/auth.middleware';
 import { validateBody } from '@/infrastructure/http/middleware/validation.middleware';
-import { authRateLimiter } from '@/infrastructure/http/middleware/rateLimit.middleware';
+import { authRateLimiter, refreshRateLimiter } from '@/infrastructure/http/middleware/rateLimit.middleware';
 import { LoginDto, RegisterDto } from '../application/dtos/auth.dto';
 import { db } from '@/config/database.config';
 import { cache } from '@/config/redis.config';
@@ -37,7 +37,7 @@ authRoutes.post('/register',
 );
 
 authRoutes.post('/refresh',
-    authRateLimiter,                 // Prevent refresh token brute-force
+    refreshRateLimiter,               // Separate, larger budget — see rateLimit.middleware.ts
     // No validateBody here on purpose: the browser refresh call sends no
     // body at all (relies solely on the HttpOnly cookie — see
     // authClient.post('auth/refresh') in the frontend), so express.json()

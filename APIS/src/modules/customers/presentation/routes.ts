@@ -512,8 +512,15 @@ customerRoutes.put('/:id', authenticate, withTenantTx(), authorize('customers:up
             if (!existing) {
                 return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Customer not found or no access' } });
             }
-            if (authUser.activeStoreId && existing?.storeId && existing.storeId !== authUser.activeStoreId) {
-                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot modify customer from another store' } });
+            // ensureScopeAccess checks branchId first, falling back to
+            // storeId — this used to only compare storeId against
+            // activeStoreId, so a cashier whose real access is restricted to
+            // one branch (via accessibleBranchIds) could edit a customer
+            // belonging to any sibling branch under the same store, as long
+            // as the store matched. GET /:id already used ensureScopeAccess
+            // correctly; PUT/DELETE had hand-rolled a narrower, wrong check.
+            if (!ensureScopeAccess({ branchId: existing.branchId, storeId: existing.storeId, tenantId: existing.tenantId }, req)) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot modify customer outside your scope' } });
             }
         }
 
@@ -574,11 +581,12 @@ customerRoutes.delete('/:id', authenticate, withTenantTx(), authorize('customers
         if (tenantId && !authUser.isSuperAdmin) {
             delConds.push(eq(customers.tenantId, tenantId));
         }
-        if (!authUser.isSuperAdmin && authUser.activeStoreId) {
+        if (!authUser.isSuperAdmin) {
             const existing = await db.query.customers.findFirst({ where: and(...delConds) });
             if (!existing) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Customer not found or no access' } });
-            if (existing?.storeId && existing.storeId !== authUser.activeStoreId) {
-                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot delete customer from another store' } });
+            // Same branch-first ensureScopeAccess fix as PUT /:id above.
+            if (!ensureScopeAccess({ branchId: existing.branchId, storeId: existing.storeId, tenantId: existing.tenantId }, req)) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot delete customer outside your scope' } });
             }
         }
 

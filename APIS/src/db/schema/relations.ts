@@ -360,6 +360,8 @@ export const documentsRelations = relations(documents, ({ one }) => ({
 
 export const activityLogsRelations = relations(activityLogs, ({ one }) => ({
     user: one(users, { fields: [activityLogs.userId], references: [users.id] }),
+    store: one(stores, { fields: [activityLogs.storeId], references: [stores.id] }),
+    branch: one(branches, { fields: [activityLogs.branchId], references: [branches.id] }),
 }));
 
 // ─── Notification Relations ─────────────────────────────────────────────

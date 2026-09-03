@@ -24,10 +24,16 @@ export default defineConfig({
         rollupOptions: {
             output: {
                 manualChunks(id) {
-                    if (!id.includes('node_modules')) return;
-                    if (id.includes('lucide-svelte')) return 'icons';
-                    if (id.includes('@tanstack')) return 'query';
-                    if (id.includes('svelte')) return 'svelte';
+                    const normalizedId = id.replaceAll('\\', '/');
+                    // Keep the largest third-party runtimes out of the shared
+                    // route chunk without splitting app modules into circular
+                    // dependency groups.
+                    if (!normalizedId.includes('node_modules')) return;
+                    if (normalizedId.includes('lucide-svelte')) return 'icons';
+                    if (normalizedId.includes('@tanstack')) return 'query';
+                    if (normalizedId.includes('/chart.js/')) return 'charts';
+                    if (normalizedId.includes('/jsbarcode/')) return 'barcode';
+                    if (normalizedId.includes('svelte')) return 'svelte';
                     return 'vendor';
                 }
             }

@@ -6,6 +6,7 @@
     import { auth } from "$lib/stores/auth.svelte";
     import { formatDate } from "$lib/utils";
     import { toast } from "svelte-sonner";
+    import { dialogStore } from "$lib/stores/dialog.svelte";
     import {
         ArrowRightLeft,
         Plus,
@@ -51,7 +52,7 @@
             : branches.filter(b => auth.accessibleBranchIds.includes(b.id))
     );
     // "To" dropdown: all branches (can transfer to any branch in tenant) minus selected "from"
-    let toBranches = $derived(branches.filter(b => b.id !== formData.fromBranchId));
+    let toBranches = $derived(accessibleBranches.filter(b => b.id !== formData.fromBranchId));
 
     // Form
     let formData = $state({
@@ -103,7 +104,11 @@
     }
 
     async function rejectTransfer(id: string) {
-        const reason = prompt('ເຫດຜົນໃນການປະຕິເສດ (ທາງເລືອກ):');
+        const reason = await dialogStore.prompt('ເຫດຜົນໃນການປະຕິເສດ (ທາງເລືອກ):', {
+            title: 'ປະຕິເສດການໂອນ',
+            variant: 'warning',
+            inputType: 'textarea',
+        });
         if (reason === null) return; // cancelled
         try {
             await api.patch(`inventory/transfers/${id}/reject`, { json: { reason } }).json();
@@ -139,8 +144,10 @@
             branches = branchRes.data || [];
 
             // Auto-set fromBranchId to user's active branch
-            if (!formData.fromBranchId && auth.activeBranchId) {
+            if (!formData.fromBranchId && auth.activeBranchId && accessibleBranches.some(b => b.id === auth.activeBranchId)) {
                 formData.fromBranchId = auth.activeBranchId;
+            } else if (!formData.fromBranchId && accessibleBranches.length === 1) {
+                formData.fromBranchId = accessibleBranches[0].id;
             }
         } catch (e) {
             console.error("Failed to load:", e);
@@ -405,11 +412,13 @@
                                 </td>
                                 <td class="px-6 py-4 text-center">
                                     {#if transfer.status === 'PENDING' && canApprove}
+                                        {@const isSelfRequested = transfer.requestedBy === auth.user?.id}
                                         <div class="flex items-center justify-center gap-2">
                                             <button
                                                 onclick={() => approveTransfer(transfer.id)}
-                                                class="p-1.5 rounded-lg bg-success-100 hover:bg-success-200 text-success-700 transition-colors"
-                                                title="ອະນຸມັດ"
+                                                disabled={isSelfRequested}
+                                                class="p-1.5 rounded-lg bg-success-100 hover:bg-success-200 text-success-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-success-100"
+                                                title={isSelfRequested ? 'ທ່ານບໍ່ສາມາດອະນຸມັດການໂອນທີ່ຕົນເອງຮ້ອງຂໍໄດ້' : 'ອະນຸມັດ'}
                                             >
                                                 <Check class="w-4 h-4" />
                                             </button>

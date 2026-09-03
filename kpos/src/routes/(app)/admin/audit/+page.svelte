@@ -3,6 +3,7 @@
     import { get } from "svelte/store";
     import { api } from "$lib/api";
     import { goto } from "$app/navigation";
+    import { page } from "$app/stores";
     import { onMount } from "svelte";
     import { toast } from "svelte-sonner";
     import { t } from '$lib/i18n/index.svelte';
@@ -55,8 +56,7 @@
                 goto("/login");
                 return;
             }
-            const auditRoles = ['admin', 'hq_admin', 'hq_manager', 'branch_admin', 'store_owner'];
-            if (user.isSuperAdmin || auditRoles.includes(user.role)) {
+            if (user.isSuperAdmin || auth.hasPermission('audit:view')) {
                 canAccess = true;
             } else {
                 toast.error(t('common.accessDenied'));
@@ -78,6 +78,21 @@
     let showDetailModal = $state(false);
     let selectedLog = $state<any>(null);
 
+    const AUDIT_SECTIONS = [
+        { value: 'overview', label: 'ພາບລວມ', description: 'ສະຫຼຸບກິດຈະກຳທັງໝົດ', icon: History },
+        { value: 'activity', label: 'ປະຫວັດການກະທຳ', description: 'ກວດທຸກ action ຂອງຜູ້ໃຊ້', icon: Activity },
+        { value: 'sales', label: 'ກວດການຂາຍ', description: 'ການຂາຍ, void, refund ແລະ payment', icon: ShoppingCart },
+        { value: 'inventory', label: 'ກວດສາງສິນຄ້າ', description: 'ປັບສະຕອກ, ໂອນ ແລະນັບສະຕອກ', icon: Package },
+        { value: 'staff', label: 'ກວດພະນັກງານ', description: 'ການເພີ່ມ, ແກ້ໄຂ ແລະປິດຜູ້ໃຊ້', icon: User },
+        { value: 'finance', label: 'ກວດການເງິນ', description: 'ລາຍຈ່າຍ, Payroll, ອາກອນ ແລະການຈ່າຍ', icon: FileText },
+        { value: 'access', label: 'ກວດສິດເຂົ້າໃຊ້', description: 'Roles, rules ແລະ permissions', icon: Key },
+        { value: 'approvals', label: 'Maker-Checker', description: 'ການອະນຸມັດ ແລະປະຕິເສດ', icon: CheckCircle },
+        { value: 'security', label: 'ກວດຄວາມປອດໄພ', description: 'Login, logout ແລະ failed login', icon: Shield },
+    ];
+
+    const auditView = $derived($page.url.searchParams.get('view') || 'overview');
+    const activeSection = $derived(AUDIT_SECTIONS.find(section => section.value === auditView) || AUDIT_SECTIONS[0]);
+
     const auditQuery = createQuery({
         queryKey: ["admin-audit-logs"],
         queryFn: async () => {
@@ -86,6 +101,7 @@
             params.append("limit", String(pageSize));
             if (searchQuery) params.append("search", searchQuery);
             if (actionFilter) params.append("action", actionFilter);
+            if (auditView !== 'overview') params.append("category", auditView);
             if (userFilter) params.append("userId", userFilter);
             if (dateFrom) params.append("dateFrom", dateFrom);
             if (dateTo) params.append("dateTo", dateTo);
@@ -96,8 +112,12 @@
     });
 
     $effect(() => {
-        void currentPage; void pageSize; void searchQuery; void actionFilter; void userFilter; void dateFrom; void dateTo;
-        $auditQuery.refetch();
+        void auditView; void currentPage; void pageSize; void searchQuery; void actionFilter; void userFilter; void dateFrom; void dateTo;
+        // get() takes a non-reactive snapshot — the `$`-auto-subscribed form
+        // would make this effect depend on the query's own live state, so
+        // every refetch changes that state and re-triggers this same effect
+        // (an infinite refetch loop — confirmed live on a sibling page).
+        get(auditQuery).refetch();
     });
 
     const usersQuery = createQuery({
@@ -132,6 +152,8 @@
             case 'user_created': return UserPlus;
             case 'user_deleted': return UserMinus;
             case 'user_updated': return Edit;
+            case 'staff_workflow_updated':
+            case 'staff_permissions_updated': return Settings;
             case 'role_created': 
             case 'role_updated':
             case 'role_deleted': return Key;
@@ -166,10 +188,12 @@
 
     function getActionLabel(action: string | undefined) {
         if (!action) return '-';
+        if (action === 'staff_permissions_updated') return 'Staff permissions updated';
         const labels: Record<string, string> = {
             'user_created': 'ສ້າງຜູ້ໃຊ້',
             'user_updated': 'ແກ້ໄຂຜູ້ໃຊ້',
             'user_deleted': 'ລຶບຜູ້ໃຊ້',
+            'staff_workflow_updated': 'ແກ້ໄຂ Maker / Checker / Shift',
             'role_created': 'ສ້າງບົດບາດ',
             'role_updated': 'ແກ້ໄຂບົດບາດ',
             'role_deleted': 'ລຶບບົດບາດ',
@@ -219,6 +243,7 @@
             const params = new URLSearchParams();
             if (searchQuery) params.append("search", searchQuery);
             if (actionFilter) params.append("action", actionFilter);
+            if (auditView !== 'overview') params.append("category", auditView);
             if (userFilter) params.append("userId", userFilter);
             if (dateFrom) params.append("dateFrom", dateFrom);
             if (dateTo) params.append("dateTo", dateTo);
@@ -262,6 +287,7 @@
         <Loader2 class="h-12 w-12 animate-spin text-violet-500" />
     </div>
 {:else}
+    {@const ActiveAuditIcon = activeSection.icon}
     <div class="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100 dark:from-gray-950 dark:via-gray-900 dark:to-gray-950">
         <div class="p-6 lg:p-8 max-w-7xl mx-auto space-y-6">
             <!-- Header -->
@@ -293,6 +319,42 @@
                         <Download class="w-4 h-4" />
                         <span class="hidden sm:inline">ສົ່ງອອກ</span>
                     </button>
+                </div>
+            </div>
+
+            <!-- Audit submenu: the same sections shown in the sidebar, kept
+                 visible here so users always know which audit scope is active. -->
+            <nav aria-label="Audit sections" class="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-8 gap-2">
+                {#each AUDIT_SECTIONS as section (section.value)}
+                    {@const SectionIcon = section.icon}
+                    <a
+                        href={section.value === 'overview' ? '/admin/audit' : `/admin/audit?view=${section.value}`}
+                        aria-current={auditView === section.value ? 'page' : undefined}
+                        class={cn(
+                            "group rounded-xl border px-3 py-3 transition-all",
+                            auditView === section.value
+                                ? "border-indigo-300 bg-indigo-50 text-indigo-700 shadow-sm dark:border-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300"
+                                : "border-gray-200 bg-white text-gray-600 hover:border-indigo-200 hover:bg-indigo-50/50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:border-indigo-800 dark:hover:bg-indigo-900/20"
+                        )}
+                    >
+                        <div class="flex items-center gap-2">
+                            <SectionIcon class="w-4 h-4 shrink-0" />
+                            <span class="text-xs font-semibold truncate">{section.label}</span>
+                        </div>
+                        <p class="mt-1 text-[11px] leading-4 text-gray-500 dark:text-gray-500 line-clamp-2">
+                            {section.description}
+                        </p>
+                    </a>
+                {/each}
+            </nav>
+
+            <div class="flex items-center gap-3 rounded-xl border border-indigo-100 bg-indigo-50/70 px-4 py-3 dark:border-indigo-900/60 dark:bg-indigo-900/20">
+                <div class="flex h-9 w-9 items-center justify-center rounded-lg bg-indigo-600 text-white shadow-sm">
+                    <ActiveAuditIcon class="w-4 h-4" />
+                </div>
+                <div>
+                    <p class="text-sm font-semibold text-indigo-900 dark:text-indigo-200">{activeSection.label}</p>
+                    <p class="text-xs text-indigo-700/80 dark:text-indigo-300/80">{activeSection.description}</p>
                 </div>
             </div>
 
@@ -428,6 +490,22 @@
                             <Loader2 class="w-10 h-10 animate-spin mx-auto text-indigo-500" />
                             <p class="text-gray-500 dark:text-gray-400 mt-4">ກຳລັງໂຫຼດ...</p>
                         </div>
+                    {:else if $auditQuery.isError}
+                        <div class="p-12 text-center">
+                            <div class="w-16 h-16 bg-danger-50 dark:bg-danger-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
+                                <AlertTriangle class="w-8 h-8 text-danger-500" />
+                            </div>
+                            <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">Unable to load audit logs</h3>
+                            <p class="text-gray-500 dark:text-gray-400 mb-5">The audit service did not return data. Check your session and try again.</p>
+                            <button
+                                type="button"
+                                onclick={refreshData}
+                                class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700 transition-colors"
+                            >
+                                <RefreshCw class="w-4 h-4" />
+                                Try again
+                            </button>
+                        </div>
                     {:else if ($auditQuery.data?.data?.length || 0) === 0}
                         <div class="p-16 text-center">
                             <div class="w-20 h-20 bg-gray-100 dark:bg-gray-700 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -442,6 +520,7 @@
                                 <tr>
                                     <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">ກິດຈະກຳ</th>
                                     <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">ຜູ້ໃຊ້</th>
+                                    <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">ຮ້ານ / ສາຂາ</th>
                                     <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">ລາຍລະອຽດ</th>
                                     <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">IP</th>
                                     <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">ເວລາ</th>
@@ -470,6 +549,10 @@
                                                     <p class="text-xs text-gray-500 dark:text-gray-400">{log.user?.email || ''}</p>
                                                 </div>
                                             </div>
+                                        </td>
+                                        <td class="px-4 py-3">
+                                            <p class="text-sm text-gray-700 dark:text-gray-300">{log.store?.name || log.storeId || '-'}</p>
+                                            <p class="text-xs text-gray-500 dark:text-gray-400">{log.branch?.name || log.branch?.code || log.branchId || '-'}</p>
                                         </td>
                                         <td class="px-4 py-3">
                                             <p class="text-sm text-gray-600 dark:text-gray-400 max-w-xs truncate">{log.description || '-'}</p>
@@ -574,6 +657,17 @@
                             <p class="font-medium text-gray-900 dark:text-white font-mono">{selectedLog.ip || '-'}</p>
                         </div>
                     </div>
+
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="bg-gray-50 dark:bg-gray-700/50 rounded-xl p-4">
+                            <p class="text-xs text-gray-500 dark:text-gray-400 mb-1">ຮ້ານ</p>
+                            <p class="font-medium text-gray-900 dark:text-white">{selectedLog.store?.name || selectedLog.storeId || '-'}</p>
+                        </div>
+                        <div class="bg-gray-50 dark:bg-gray-700/50 rounded-xl p-4">
+                            <p class="text-xs text-gray-500 dark:text-gray-400 mb-1">ສາຂາ</p>
+                            <p class="font-medium text-gray-900 dark:text-white">{selectedLog.branch?.name || selectedLog.branch?.code || selectedLog.branchId || '-'}</p>
+                        </div>
+                    </div>
                     
                     {#if selectedLog.description}
                         <div class="bg-gray-50 dark:bg-gray-700/50 rounded-xl p-4">
@@ -586,6 +680,23 @@
                         <div class="bg-gray-50 dark:bg-gray-700/50 rounded-xl p-4">
                             <p class="text-xs text-gray-500 dark:text-gray-400 mb-2">ຂໍ້ມູນເພີ່ມເຕີມ</p>
                             <pre class="text-xs text-gray-700 dark:text-gray-300 overflow-x-auto whitespace-pre-wrap">{JSON.stringify(selectedLog.metadata, null, 2)}</pre>
+                        </div>
+                    {/if}
+
+                    {#if selectedLog.oldData || selectedLog.newData}
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {#if selectedLog.oldData}
+                                <div class="bg-danger-50 dark:bg-danger-900/20 rounded-xl p-4">
+                                    <p class="text-xs text-danger-600 dark:text-danger-300 mb-2">ຂໍ້ມູນກ່ອນແກ້</p>
+                                    <pre class="text-xs text-gray-700 dark:text-gray-300 overflow-x-auto whitespace-pre-wrap">{JSON.stringify(selectedLog.oldData, null, 2)}</pre>
+                                </div>
+                            {/if}
+                            {#if selectedLog.newData}
+                                <div class="bg-emerald-50 dark:bg-emerald-900/20 rounded-xl p-4">
+                                    <p class="text-xs text-emerald-600 dark:text-emerald-300 mb-2">ຂໍ້ມູນຫຼັງແກ້</p>
+                                    <pre class="text-xs text-gray-700 dark:text-gray-300 overflow-x-auto whitespace-pre-wrap">{JSON.stringify(selectedLog.newData, null, 2)}</pre>
+                                </div>
+                            {/if}
                         </div>
                     {/if}
 

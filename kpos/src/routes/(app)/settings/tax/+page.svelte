@@ -4,7 +4,7 @@
     import { cn } from "$utils";
     import { api } from "$api";
     import { toast } from "svelte-sonner";
-    import { auth } from "$stores";
+    import { auth, dialogStore } from "$stores";
     import {
         Receipt,
         Plus,
@@ -78,7 +78,7 @@
     }
 
     async function handleDelete(tax: any) {
-        if (!confirm(t('common.deleteMessage'))) return;
+        if (!(await dialogStore.confirm(t('common.deleteMessage')))) return;
         try {
             await api.delete(`settings/taxes/${tax.id}`).json();
             toast.success(t('common.deleted'));

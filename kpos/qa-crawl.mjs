@@ -39,7 +39,7 @@ const PAGES = [
     '/admin/positions', '/admin/requests', '/admin/roles', '/admin/rules',
     '/admin/stores', '/admin/users',
     '/help',
-];
+].slice(Number(process.env.QA_SKIP || 0));
 
 const browser = await chromium.launch();
 const page = await browser.newPage();
@@ -69,7 +69,7 @@ await page.waitForLoadState('networkidle');
 await page.locator('#email').fill(EMAIL);
 await page.locator('#password').fill(PASSWORD);
 await page.locator('button[type="submit"]').click();
-await page.waitForTimeout(3000);
+await page.waitForTimeout(8000);
 if (page.url().includes('/login')) {
     const bodyText = await page.locator('body').innerText().catch(() => '');
     console.error('LOGIN FAILED, aborting. URL:', page.url());

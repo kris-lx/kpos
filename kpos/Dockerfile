@@ -1,6 +1,5 @@
 FROM oven/bun:1-alpine AS base
 WORKDIR /app
-RUN apk add --no-cache curl
 
 # ── Install dependencies ───────────────────────────────────────────────────
 FROM base AS deps
@@ -17,12 +16,13 @@ COPY . .
 ARG PUBLIC_API_URL=http://localhost/api/v1
 ENV PUBLIC_API_URL=${PUBLIC_API_URL}
 
-RUN bun run build
+# Generate SvelteKit's TypeScript config before Vite reads tsconfig.json.
+# Without this, every Docker build emits a misleading missing-base-config warning.
+RUN bunx svelte-kit sync && bun run build
 
 # ── Production runtime (adapter-node) ─────────────────────────────────────
 FROM node:22-alpine AS production
 WORKDIR /app
-RUN apk add --no-cache curl
 
 # Copy only the built output and production deps.
 # node:alpine ships a built-in non-root `node` user (uid 1000) — use it.

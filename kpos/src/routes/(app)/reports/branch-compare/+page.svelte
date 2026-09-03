@@ -1,5 +1,6 @@
 <script lang="ts">
     import { api } from "$lib/api";
+    import { auth } from "$lib/stores/auth.svelte";
     import { t } from '$lib/i18n/index.svelte';
     import { formatCurrency, escapeCsvCell } from "$lib/utils";
     import { cn } from "$lib/utils";
@@ -152,6 +153,7 @@
             <a href="/reports" class="text-sm text-primary-600 dark:text-primary-400 hover:underline">← ລາຍງານ</a>
             <h1 class="text-2xl font-bold text-gray-900 dark:text-white">ປຽບທຽບສາຂາ</h1>
         </div>
+        {#if auth.canExport('reports')}
         <div class="relative">
             <button
                 onclick={() => showExportMenu = !showExportMenu}
@@ -180,6 +182,7 @@
                 </div>
             {/if}
         </div>
+        {/if}
     </div>
 
     <!-- Date Range Filter -->

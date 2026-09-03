@@ -479,9 +479,12 @@
                 <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
                     {t("notifications.lineNotifyDesc")} <a href="https://notify-bot.line.me/en/" target="_blank" rel="noopener" class="text-primary-600 hover:underline">{t("notifications.getToken")}</a>
                 </p>
-                <div class="flex gap-3">
+                <form onsubmit={(event) => { event.preventDefault(); void saveLineToken(); }} class="flex gap-3">
                     <input
+                        id="line-notification-token"
+                        name="line-notification-token"
                         type="password"
+                        autocomplete="off"
                         bind:value={lineToken}
                         placeholder={t("notifications.lineTokenPlaceholder")}
                         class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:outline-none"
@@ -495,6 +498,7 @@
                         {t("notifications.lineTokenSave")}
                     </button>
                     <button
+                        type="button"
                         onclick={testLineNotify}
                         disabled={testingLine || !lineToken.trim()}
                         class="flex items-center gap-2 px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 disabled:opacity-50 text-sm font-medium transition-colors"
@@ -506,7 +510,7 @@
                         {/if}
                         {t("common.test")}
                     </button>
-                </div>
+                </form>
                 {#if savedLineToken}
                     <p class="text-xs text-green-600 dark:text-green-400 mt-2 flex items-center gap-1">
                         <CheckCircle2 class="w-3 h-3" />{t("notifications.lineSaveHint")}

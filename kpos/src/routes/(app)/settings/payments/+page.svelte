@@ -5,10 +5,12 @@
     import { toast } from "svelte-sonner";
     import { auth } from "$stores";
     import { tenantSettings } from "$lib/stores/settings.svelte";
+    import MoneyInput from "$lib/components/MoneyInput.svelte";
+    import { validateFile, IMAGE_ONLY_FILE_TYPES } from "$utils";
     import {
         Plus, Loader2, X, CreditCard, Wallet, Edit, AlertCircle, RefreshCw, QrCode, Save,
         Banknote, Landmark, Smartphone, HandCoins, Lock, ShieldCheck, ChevronDown, Layers,
-        Globe, Settings2, Percent, BadgeCheck, CircleDashed, Star, Check,
+        Globe, Settings2, Percent, BadgeCheck, CircleDashed, Star, Check, Image, Trash2,
     } from "lucide-svelte";
     const t = i18n.t;
 
@@ -39,6 +41,56 @@
         { code: '978', label: 'EUR — Euro' },
     ];
     let useCustomCurrency = $state(!currencyOptions.some((c) => c.code === tenantSettings.qrCurrencyCode));
+
+    // Stored under category 'receipt' (not 'payments') even though the
+    // control lives on this page — ReceiptPrint.svelte already fetches
+    // `settings/receipt` on every print, so this rides along for free
+    // instead of adding a second request or bloating tenantSettings (which
+    // loads on nearly every page) with a base64 image.
+    let qrImage = $state("");
+    let uploadingQrImage = $state(false);
+
+    async function loadQrImage() {
+        try {
+            const res = await api.get('settings/category/receipt').json<any>();
+            const rows: any[] = Array.isArray(res.data) ? res.data : [];
+            qrImage = rows.find((r: any) => r.key === 'qrImage')?.value || "";
+        } catch { /* leave empty */ }
+    }
+
+    async function handleQrImageUpload(event: Event) {
+        const input = event.target as HTMLInputElement;
+        const file = input.files?.[0];
+        if (!file) return;
+        if (!(await validateFile(file, { allowedTypes: IMAGE_ONLY_FILE_TYPES, maxBytes: 500 * 1024 }))) { input.value = ""; return; }
+        uploadingQrImage = true;
+        try {
+            const dataUrl = await new Promise<string>((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = (e) => resolve(e.target?.result as string);
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+            await api.put('settings/receipt/qrImage', { json: { value: dataUrl } }).json();
+            qrImage = dataUrl;
+            toast.success(t('common.saved'));
+        } catch {
+            toast.error(t('common.saveFailed'));
+        } finally {
+            uploadingQrImage = false;
+            input.value = "";
+        }
+    }
+
+    async function removeQrImage() {
+        try {
+            await api.put('settings/receipt/qrImage', { json: { value: "" } }).json();
+            qrImage = "";
+            toast.success(t('common.saved'));
+        } catch {
+            toast.error(t('common.saveFailed'));
+        }
+    }
 
     async function saveQrSettings() {
         savingQr = true;
@@ -112,6 +164,13 @@
     let gatewaySavingProvider = $state<GatewayProvider | null>(null);
 
     async function loadGatewayConfigs() {
+        // Platform Super Admin sessions have no tenant context. Gateway
+        // configuration is tenant-owned, so avoid a guaranteed 403 request
+        // and leave the catalog empty until a tenant-scoped session is active.
+        if (auth.user?.isSuperAdmin && !auth.user?.tenantId) {
+            gatewayConfigs = {};
+            return;
+        }
         try {
             const res = await api.get('payment-gateways/configs').json<any>();
             const byProvider: Record<string, any> = {};
@@ -216,6 +275,7 @@
     onMount(() => {
         loadPaymentTypes();
         loadGatewayConfigs();
+        loadQrImage();
     });
 
     async function loadPaymentMethods() {
@@ -540,6 +600,28 @@
                         <p class="text-xs text-gray-400 mt-1.5">418 = LAK · 764 = THB · 840 = USD · 978 = EUR</p>
                     </div>
 
+                    <div class="pt-2 border-t border-gray-100 dark:border-gray-700">
+                        <p class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">ຮູບ QR ຄົງທີ່ (ທາງເລືອກ)</p>
+                        <p class="text-xs text-gray-400 mb-3">ຖ້າບໍ່ຮູ້ Merchant Account ດ້ານເທິງ, ອັບໂຫລດຮູບ QR ທະນາຄານ/ມືຖືທີ່ມີຢູ່ແລ້ວແທນໄດ້ — ໃຊ້ສະແດງຢູ່ຈໍລູກຄ້າ (Settings &gt; Display). ໃບບິນຍັງໃຊ້ Merchant Account ຂ້າງເທິງເພື່ອຝັງຈຳນວນເງິນອັດຕະໂນມັດ.</p>
+                        <div class="flex items-center gap-4">
+                            {#if qrImage}
+                                <img src={qrImage} alt="QR ຊຳລະເງິນ" class="w-20 h-20 rounded-lg border border-gray-200 dark:border-gray-700 object-contain bg-white" />
+                            {/if}
+                            <label class="flex-1">
+                                <span class="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-gray-300 dark:border-gray-600 text-sm text-gray-700 dark:text-gray-300 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700">
+                                    {#if uploadingQrImage}<Loader2 class="w-4 h-4 animate-spin" />{:else}<Image class="w-4 h-4" />{/if}
+                                    {qrImage ? "ປ່ຽນຮູບ QR" : "ອັບໂຫລດຮູບ QR"}
+                                </span>
+                                <input type="file" accept="image/png,image/jpeg" class="hidden" onchange={handleQrImageUpload} disabled={uploadingQrImage || !canUpdateSettings} />
+                            </label>
+                            {#if qrImage}
+                                <button type="button" onclick={removeQrImage} disabled={!canUpdateSettings} class="p-2 text-danger-500 hover:bg-danger-50 dark:hover:bg-danger-900/20 rounded-lg disabled:opacity-50" aria-label="ລຶບຮູບ QR">
+                                    <Trash2 class="w-4 h-4" />
+                                </button>
+                            {/if}
+                        </div>
+                    </div>
+
                     <button
                         onclick={saveQrSettings}
                         disabled={savingQr}
@@ -728,14 +810,14 @@
                         </div>
                         <div>
                             <label for="method-min" class="block text-xs text-gray-500 dark:text-gray-400 mb-1">ຕ່ຳສຸດ</label>
-                            <input id="method-min" type="number" min="0"
+                            <MoneyInput id="method-min" min={0}
                                 bind:value={formData.settings.minAmount}
                                 class="w-full px-2.5 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-white text-sm"
                             />
                         </div>
                         <div>
                             <label for="method-max" class="block text-xs text-gray-500 dark:text-gray-400 mb-1">ສູງສຸດ</label>
-                            <input id="method-max" type="number" min="0"
+                            <MoneyInput id="method-max" min={0}
                                 bind:value={formData.settings.maxAmount}
                                 class="w-full px-2.5 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-white text-sm"
                             />

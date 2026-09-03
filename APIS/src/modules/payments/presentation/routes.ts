@@ -3,6 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
+import { queueActivityLog } from '@/infrastructure/helpers/activity-log.helper';
 import { authenticate, authorize, branchFilter, applyScopeFilter, ensureScopeAccess, buildScopeCondition, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
 import { setRequestContext, setSuperAdminBypassContext } from '@/db/set-tenant-context';
@@ -406,6 +407,7 @@ paymentRoutes.post('/refunds', authenticate, withTenantTx(), authorize('payments
             return refundRow;
         });
 
+        queueActivityLog(userId, 'payment_refunded', 'payments', 'Refund ' + refundNo + ': ' + refundAmount, { transactionId, refundId: refund.id, amount: refundAmount }, req).catch(() => {});
         res.status(201).json({ success: true, data: refund });
     } catch (error) {
         next(error);
@@ -455,6 +457,7 @@ paymentRoutes.post('/void/:id', authenticate, withTenantTx(), authorize('payment
             return;
         }
 
+        queueActivityLog(req.authUser?.userId || req.user?.userId || '', 'payment_voided', 'payments', 'Voided payment ' + req.params.id, { transactionId: req.params.id, reason }, req).catch(() => {});
         res.json({ success: true, data: voided });
     } catch (error) {
         next(error);
@@ -580,4 +583,3 @@ paymentRoutes.post('/settlements', authenticate, withTenantTx(), authorize('paym
         next(error);
     }
 });
-

@@ -5,6 +5,7 @@
     import { toast } from 'svelte-sonner';
     import { t } from '$lib/i18n/index.svelte';
     import { Plus, Pencil, Trash2, ToggleLeft, ToggleRight, RefreshCw, ChevronDown, ChevronRight, Tag, Loader2, X, Check, Shield } from 'lucide-svelte';
+    import { dialogStore } from "$stores";
 
     const queryClient = useQueryClient();
 
@@ -98,7 +99,7 @@
     }
 
     async function handleSeed() {
-        if (!confirm('ເພີ່ມຂໍ້ມູນ enum ເລີ່ມຕົ້ນທັງໝົດເຂົ້າ DB? ຂໍ້ມູນທີ່ມີຢູ່ຈະຖືກຂ້າມ.')) return;
+        if (!(await dialogStore.confirm('ເພີ່ມຂໍ້ມູນ enum ເລີ່ມຕົ້ນທັງໝົດເຂົ້າ DB? ຂໍ້ມູນທີ່ມີຢູ່ຈະຖືກຂ້າມ.'))) return;
         seedLoading = true;
         try {
             const res = await api.post('admin/enums/seed').json<any>();
@@ -116,9 +117,9 @@
         $updateMutation.mutate({ id: e.id, body: { isActive: !e.isActive } });
     }
 
-    function confirmDelete(e: any) {
+    async function confirmDelete(e: any) {
         if (e.isSystem) { toast.error('ລຶບ System Enum ບໍ່ໄດ້ — ປິດໃຊ້ງານແທນ'); return; }
-        if (!confirm(`ລຶບ "${e.label}" ອອກ?`)) return;
+        if (!(await dialogStore.confirm(`ລຶບ "${e.label}" ອອກ?`))) return;
         $deleteMutation.mutate(e.id);
     }
 </script>

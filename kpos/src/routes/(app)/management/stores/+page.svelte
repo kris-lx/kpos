@@ -5,9 +5,9 @@
     import { createQuery, createMutation, useQueryClient } from "@tanstack/svelte-query";
     import { get } from "svelte/store";
     import { api } from "$api";
-    import { auth } from "$stores";
+    import { auth, dialogStore } from "$stores";
     import { t } from "$lib/i18n/index.svelte";
-    import { cn } from "$utils";
+    import { cn, validateFile, IMAGE_ONLY_FILE_TYPES } from "$utils";
     import { toast } from "svelte-sonner";
     import {
         Plus,
@@ -74,6 +74,7 @@
         const input = event.target as HTMLInputElement;
         const file = input.files?.[0];
         if (!file) return;
+        if (!(await validateFile(file, { allowedTypes: IMAGE_ONLY_FILE_TYPES }))) { input.value = ""; return; }
         isUploadingLogo = true;
         try {
             const base64 = await new Promise<string>((resolve, reject) => {
@@ -227,7 +228,7 @@
     }
 
     async function handleDelete(store: any) {
-        if (confirm(t("stores.deleteConfirm"))) {
+        if (await dialogStore.confirm(t("stores.deleteConfirm"))) {
             $deleteStoreMutation.mutate(store.id);
         }
     }

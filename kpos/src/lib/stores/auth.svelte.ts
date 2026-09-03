@@ -6,8 +6,9 @@ import { authClientApi } from '$api/auth-client';
 import { api } from '$api';
 import { setToken, refreshAccessToken } from '$api/token';
 import { browser } from '$app/environment';
-import { LOCAL_STORAGE_KEYS } from '$lib/config';
+import { CLIENT_CACHE, LOCAL_STORAGE_KEYS } from '$lib/config';
 import { tenantSettings } from '$lib/stores/settings.svelte';
+import { cart } from '$lib/stores/cart.svelte';
 
 const ACCESS_TOKEN_KEY = LOCAL_STORAGE_KEYS.ACCESS_TOKEN;
 const REFRESH_TOKEN_KEY = LOCAL_STORAGE_KEYS.REFRESH_TOKEN;
@@ -63,9 +64,42 @@ interface User {
     phone?: string;
     avatar?: string | null;
     isSuperAdmin?: boolean;
+    requiresShift?: boolean;
+    checkerEnabled?: boolean;
     permissions?: string[];
-    /** Numeric role level 1-7. Computed client-side from role name. */
+    /** Numeric role level 1-7. Sourced from auth/me (DB-backed, from the
+     *  user's actual `roles` row) — see the `roleLevel` derived value below
+     *  for the client-side ROLE_LEVELS fallback used before it's loaded. */
     roleLevel?: number;
+}
+
+type ClientCacheEnvelope<T> = {
+    version: number;
+    savedAt: number;
+    data: T;
+};
+
+function readClientCache<T>(key: string): T | null {
+    if (!browser) return null;
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    try {
+        const cached = JSON.parse(raw) as ClientCacheEnvelope<T>;
+        if (cached.version !== CLIENT_CACHE.VERSION || Date.now() - cached.savedAt > CLIENT_CACHE.TTL_MS) {
+            localStorage.removeItem(key);
+            return null;
+        }
+        return cached.data;
+    } catch {
+        localStorage.removeItem(key);
+        return null;
+    }
+}
+
+function writeClientCache<T>(key: string, data: T): void {
+    if (!browser) return;
+    const cached: ClientCacheEnvelope<T> = { version: CLIENT_CACHE.VERSION, savedAt: Date.now(), data };
+    localStorage.setItem(key, JSON.stringify(cached));
 }
 
 // Store access interface. Stores are the top-level tier now (Tenant → Store →
@@ -109,6 +143,8 @@ function createAuthStore() {
     let user = $state<User | null>(null);
     let isLoading = $state(true);
     let accessibleStores = $state<StoreAccess[]>([]);
+    // Backend-expanded branch scope for whole-store grants (branchId=null).
+    let serverAccessibleBranchIds = $state<string[]>([]);
     let activeStoreId = $state<string | null>(null);
     let activeBranchId = $state<string | null>(null);
     let userRules = $state<UserRule[]>([]);
@@ -122,42 +158,29 @@ function createAuthStore() {
     // underlying data either way — this closes the frontend UX gap, not a
     // security hole.
     let accessibleMenuRoutes = $state<string[]>([]);
+    // True once both loadRules() and loadAccessibleMenuRoutes() have settled
+    // at least once. Lets the route guard in +layout.svelte tell "still
+    // loading, both arrays are empty" (fail open — don't bounce the user
+    // mid-load) apart from "loaded, both genuinely empty" (fail closed —
+    // a role with zero granted routes shouldn't fall through to "allow all").
+    let rulesAndMenuLoaded = $state(false);
+    // A failed authorization request is different from a valid empty access
+    // result. Keep this visible to the shell so users get Retry instead of a
+    // misleading blank sidebar or a silent redirect to the dashboard.
+    let authorizationUnavailable = $state(false);
 
     // Initialize from localStorage
     if (browser) {
-        let parsedUser: User | null = null;
-        const storedUser = localStorage.getItem(USER_KEY);
-        if (storedUser) {
-            try {
-                parsedUser = JSON.parse(storedUser);
-            } catch {
-                parsedUser = null;
-            }
-        }
+        const parsedUser = readClientCache<User>(USER_KEY);
         user = parsedUser;
 
         // Load store context
-        let parsedStores: StoreAccess[] = [];
-        const storedStores = localStorage.getItem(ACCESSIBLE_STORES_KEY);
-        if (storedStores) {
-            try {
-                parsedStores = JSON.parse(storedStores);
-            } catch {
-                parsedStores = [];
-            }
-        }
+        const parsedStores = readClientCache<StoreAccess[]>(ACCESSIBLE_STORES_KEY) || [];
         accessibleStores = parsedStores;
         activeStoreId = localStorage.getItem(ACTIVE_STORE_KEY);
 
         // Load cached rules
-        const storedRules = localStorage.getItem(RULES_KEY);
-        if (storedRules) {
-            try {
-                userRules = JSON.parse(storedRules);
-            } catch {
-                userRules = [];
-            }
-        }
+        userRules = readClientCache<UserRule[]>(RULES_KEY) || [];
 
         // Set active branch from active store or user's default
         const initStore = parsedStores.find(s => s.storeId === activeStoreId);
@@ -173,10 +196,15 @@ function createAuthStore() {
         // change to the user's store access (reassignment, a store getting
         // deleted, a backend data reset) would keep submitting stale/
         // nonexistent storeIds until the user manually logged out and back in.
-        if (parsedUser) {
+        // Public auth pages must not try to refresh a stale/expired cookie.
+        // Besides being unnecessary, that produces a noisy 401 in the browser
+        // console before the user has submitted the login form.
+        const isPublicAuthRoute = ['/login', '/forgot-password', '/reset-password']
+            .some((route) => window.location.pathname.startsWith(route));
+        if (parsedUser && !isPublicAuthRoute) {
             setTimeout(async () => {
                 const ok = await refresh();
-                if (ok) await Promise.all([refreshProfile(), loadRules(), loadAccessibleMenuRoutes(), loadStoreContext(), tenantSettings.load()]);
+                if (ok) await Promise.all([refreshProfile(), loadRulesAndMenu(),loadStoreContext(), tenantSettings.load()]);
             }, 0);
         }
     }
@@ -185,14 +213,25 @@ function createAuthStore() {
     
     // Derived: Get accessible branch IDs (only rows narrowed to a specific
     // branch — a whole-store grant has branchId=null and contributes none).
-    const accessibleBranchIds = $derived([...new Set(accessibleStores.map(s => s.branchId).filter((id): id is string => !!id))]);
+    const accessibleBranchIds = $derived([
+        ...new Set([
+            ...serverAccessibleBranchIds,
+            ...accessibleStores.map(s => s.branchId).filter((id): id is string => !!id),
+        ]),
+    ]);
 
     // Derived: Current active store object
     const activeStore = $derived(accessibleStores.find(s => s.storeId === activeStoreId) || null);
 
-    // Derived: numeric role level for the current user
+    // Derived: numeric role level for the current user. Prefers the
+    // server-computed value (auth/me's roleLevel, DB-backed via the user's
+    // actual `roles` row — see auth.middleware.ts) since that's authoritative
+    // for custom roles too. ROLE_LEVELS is only a same-tab fallback for the
+    // brief window before refreshProfile() resolves after login/page load —
+    // it still can't see a custom role's real level, so it's deliberately
+    // the least-privileged (7) default is used elsewhere below, not this map.
     const roleLevel = $derived(
-        user?.isSuperAdmin ? 1 : (user ? (ROLE_LEVELS[user.role] ?? 7) : 7)
+        user?.isSuperAdmin ? 1 : (user?.roleLevel ?? (user ? (ROLE_LEVELS[user.role] ?? 7) : 7))
     );
 
     // Derived: true if user can see all branches (system_admin or tenant_admin)
@@ -231,23 +270,34 @@ function createAuthStore() {
 
                 if (browser) {
                     // refreshToken is in HttpOnly cookie (set by server, never in localStorage — NEW-01)
-                    localStorage.setItem(USER_KEY, JSON.stringify(response.data.user));
+                    writeClientCache(USER_KEY, response.data.user);
                 }
 
                 // Load accessible stores, rules, permissions, and tenant config after login
-                await Promise.all([loadStoreContext(), loadRules(), loadAccessibleMenuRoutes(), refreshProfile(), tenantSettings.load()]);
+                await Promise.all([loadStoreContext(), loadRulesAndMenu(),refreshProfile(), tenantSettings.load()]);
 
                 return true;
             }
             return false;
         } catch (error: unknown) {
             console.error('Login failed:', error);
-            // Check for specific HTTP status codes
+            // Surface the server's actual reason (pending approval, account
+            // suspended, rate-limited, etc.) instead of a blanket "wrong
+            // password" — the generic message was misleading users into
+            // retrying a correct password, which risked tripping the login
+            // rate limiter for no reason.
             if (error && typeof error === 'object' && 'response' in error) {
-                const httpError = error as { response: { status: number } };
+                const httpError = error as { response: Response };
                 if (httpError.response?.status === 503) {
                     return 'SERVICE_UNAVAILABLE';
                 }
+                try {
+                    const body = await httpError.response.json();
+                    const message = body?.error?.message;
+                    if (typeof message === 'string' && message.trim()) {
+                        return message;
+                    }
+                } catch { /* body wasn't JSON — fall through to generic failure */ }
             }
             return false;
         } finally {
@@ -262,11 +312,12 @@ function createAuthStore() {
         try {
             const data = await api.get('stores/my-stores').json<{
                 success: boolean;
-                data?: { stores: StoreAccess[] };
+            data?: { stores: StoreAccess[]; accessibleBranchIds?: string[]; activeBranchId?: string | null };
             }>();
             
             if (data.success && data.data) {
                 accessibleStores = data.data.stores || [];
+                serverAccessibleBranchIds = data.data.accessibleBranchIds || [];
                 
                 // Set active store (prefer stored, then default, then first)
                 const storedActiveStore = browser ? localStorage.getItem(ACTIVE_STORE_KEY) : null;
@@ -283,11 +334,11 @@ function createAuthStore() {
                 
                 // Set active branch
                 const activeStoreObj = accessibleStores.find(s => s.storeId === activeStoreId);
-                activeBranchId = activeStoreObj?.branchId || user?.branchId || null;
+                activeBranchId = activeStoreObj?.branchId || data.data.activeBranchId || serverAccessibleBranchIds[0] || user?.branchId || null;
                 
                 // Persist to localStorage
                 if (browser) {
-                    localStorage.setItem(ACCESSIBLE_STORES_KEY, JSON.stringify(accessibleStores));
+                    writeClientCache(ACCESSIBLE_STORES_KEY, accessibleStores);
                     if (activeStoreId) {
                         localStorage.setItem(ACTIVE_STORE_KEY, activeStoreId);
                     }
@@ -372,12 +423,14 @@ function createAuthStore() {
                 const updated = {
                     ...user,
                     permissions: res.data.permissions || [],
+                    roleLevel: res.data.roleLevel,
+                    requiresShift: res.data.requiresShift !== false,
                     name: res.data.name ?? user.name,
                     avatar: res.data.avatar ?? null,
                 };
                 user = updated;
                 if (browser) {
-                    localStorage.setItem(USER_KEY, JSON.stringify(updated));
+                    writeClientCache(USER_KEY, updated);
                 }
             }
         } catch (error) {
@@ -386,18 +439,20 @@ function createAuthStore() {
     }
 
     // Load user rules from API
-    async function loadRules(): Promise<void> {
-        if (!accessToken) return;
+    async function loadRules(): Promise<boolean> {
+        if (!accessToken) return true;
         try {
             const res = await api.get('users/me/rules').json<{ success: boolean; data?: UserRule[] }>();
             if (res.success && res.data) {
                 userRules = res.data;
                 if (browser) {
-                    localStorage.setItem(RULES_KEY, JSON.stringify(userRules));
+                    writeClientCache(RULES_KEY, userRules);
                 }
             }
+            return res.success;
         } catch (error) {
             console.error('Failed to load user rules:', error);
+            return false;
         }
     }
 
@@ -413,15 +468,29 @@ function createAuthStore() {
         return hrefs;
     }
 
-    async function loadAccessibleMenuRoutes(): Promise<void> {
-        if (!accessToken) return;
+    // Loads rules + menu routes together and marks them loaded regardless of
+    // outcome, so the route guard can tell "still loading" from "loaded and
+    // empty" — see rulesAndMenuLoaded above.
+    async function loadRulesAndMenu(): Promise<void> {
+        try {
+            const [rulesOk, menuOk] = await Promise.all([loadRules(), loadAccessibleMenuRoutes()]);
+            authorizationUnavailable = !rulesOk || !menuOk;
+        } finally {
+            rulesAndMenuLoaded = true;
+        }
+    }
+
+    async function loadAccessibleMenuRoutes(): Promise<boolean> {
+        if (!accessToken) return true;
         try {
             const res = await api.get('users/me/menu').json<{ success: boolean; data?: any[] }>();
             if (res.success && Array.isArray(res.data)) {
                 accessibleMenuRoutes = flattenMenuHrefs(res.data);
             }
+            return res.success;
         } catch (error) {
             console.error('Failed to load accessible menu routes:', error);
+            return false;
         }
     }
 
@@ -462,22 +531,54 @@ function createAuthStore() {
         return hasPermission(`${perm}:delete`);
     }
 
+    // Non-CRUD action checks (import/export/void/refund/adjust/...). Unlike
+    // canCreate/canUpdate/canDelete, these have no equivalent in the
+    // module-level {r,c,u,d} userRules — that shape only has 4 flags — so
+    // they go straight to the fine-grained `user.permissions` string array
+    // (e.g. 'products:import', 'reports:export'), which SYSTEM_ROLE_PERMISSIONS
+    // already populates per role even though the frontend rarely checked it.
+    // Buttons for these actions used to render unconditionally for every
+    // role since there was no ergonomic helper to gate them with.
+    function can(module: string, action: string): boolean {
+        if (!user) return false;
+        if (user.isSuperAdmin) return true;
+        const perm = module.split('.').pop() || module;
+        return hasPermission(`${perm}:${action}`);
+    }
+
+    function canImport(module: string): boolean { return can(module, 'import'); }
+    function canExport(module: string): boolean { return can(module, 'export'); }
+
     // Check if user has access to a specific frontend route
     function hasRouteAccess(path: string): boolean {
         if (!user) return false;
         if (user.isSuperAdmin) return true;
         // Help page is always accessible
         if (path === '/help') return true;
-        if (userRules.length > 0) {
-            return userRules.some(r => r.routes.some(route => path === route || path.startsWith(route + '/')));
+        // Rule routes (defaultAccessControl.ts) are bare paths like '/finance'
+        // with no query string, but real menu hrefs can carry one (e.g.
+        // '/finance?tab=payroll' for the Payroll/Expenses/Audit sub-tabs) —
+        // comparing the full path with its query string against a bare rule
+        // route always failed this check, silently hiding those sub-items
+        // whenever the separate accessibleMenuRoutes fallback below hadn't
+        // loaded yet (a race on every fresh page load).
+        const pathNoQuery = path.split('?')[0];
+        if (userRules.some(r => r.routes.some(route => pathNoQuery === route || pathNoQuery.startsWith(route + '/')))) {
+            return true;
         }
-        // No rules configured for this role (the common case for any custom
-        // role created via the Roles UI) — fall back to the menu endpoint's
-        // route list rather than treating "no rules" as "no restriction."
+        // The menu endpoint is permission-filtered by the backend and can
+        // contain granular routes (for example audit/report children) that
+        // are not present in an older roleRules row. Check it as a second
+        // source instead of letting a non-empty stale rule list hide valid
+        // permission-granted routes.
         if (accessibleMenuRoutes.length > 0) {
             return accessibleMenuRoutes.some(route => path === route || path.startsWith(route + '/'));
         }
-        return true;
+        // Both empty: if that's just the load-in-flight state, don't block —
+        // the caller re-checks once rulesAndMenuLoaded flips. If both loads
+        // have genuinely settled empty, this role has zero granted routes —
+        // fail closed rather than falling through to "allow everything."
+        return !rulesAndMenuLoaded;
     }
 
     // Get all accessible routes
@@ -507,14 +608,16 @@ function createAuthStore() {
                 tenantId: res.data.tenantId,
                 avatar: res.data.avatar,
                 isSuperAdmin: res.data.isSuperAdmin,
+                requiresShift: res.data.requiresShift !== false,
                 permissions: res.data.permissions || [],
+                roleLevel: res.data.roleLevel,
             };
 
             if (browser) {
-                localStorage.setItem(USER_KEY, JSON.stringify(user));
+                writeClientCache(USER_KEY, user);
             }
 
-            await Promise.all([loadStoreContext(), loadRules(), loadAccessibleMenuRoutes(), tenantSettings.load()]);
+            await Promise.all([loadStoreContext(), loadRulesAndMenu(),tenantSettings.load()]);
             return true;
         } catch (error) {
             console.error('SSO login completion failed:', error);
@@ -532,6 +635,11 @@ function createAuthStore() {
         activeStoreId = null;
         activeBranchId = null;
         userRules = [];
+
+        // On a shared POS terminal, the outgoing staff member's in-progress
+        // cart (unpaid items, applied discounts/customer) must not carry
+        // over to whoever logs in next — same isolation issue as held sales.
+        cart.clear();
 
         setToken(null);
         if (_refreshTimer) { clearTimeout(_refreshTimer); _refreshTimer = null; }
@@ -634,7 +742,10 @@ function createAuthStore() {
         get userRules() { return userRules; },
         get accessibleRoutes() { return accessibleRoutes; },
         get accessibleMenuRoutes() { return accessibleMenuRoutes; },
+        get rulesAndMenuLoaded() { return rulesAndMenuLoaded; },
+        get authorizationUnavailable() { return authorizationUnavailable; },
         loadAccessibleMenuRoutes,
+        loadRulesAndMenu,
         
         // Auth methods
         login,
@@ -654,6 +765,9 @@ function createAuthStore() {
         canCreate,
         canUpdate,
         canDelete,
+        can,
+        canImport,
+        canExport,
         hasRouteAccess,
         
         // Store methods

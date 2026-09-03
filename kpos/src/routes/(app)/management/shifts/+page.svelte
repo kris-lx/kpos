@@ -58,6 +58,17 @@
             : "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300";
     }
 
+    // The API relation is named `user`; older payloads used `staff`. Keep the
+    // page tolerant of both shapes and of shifts whose cash register was
+    // removed, so one incomplete historical row cannot crash the whole UI.
+    function getShiftUser(shift: any): any {
+        return shift?.user ?? shift?.staff ?? {};
+    }
+
+    function getRegisterName(shift: any): string {
+        return shift?.register?.name || "-";
+    }
+
     $effect(() => {
         if (dateFilter) {
             loadShifts();
@@ -190,13 +201,13 @@
                                         <User class="w-4 h-4 text-primary-600 dark:text-primary-400" />
                                     </div>
                                     <div>
-                                        <p class="font-medium text-gray-900 dark:text-white">{shift.staff.name}</p>
-                                        <p class="text-sm text-gray-500 dark:text-gray-400">{shift.staff.role}</p>
+                                        <p class="font-medium text-gray-900 dark:text-white">{getShiftUser(shift).name || "-"}</p>
+                                        <p class="text-sm text-gray-500 dark:text-gray-400">{getShiftUser(shift).role || "-"}</p>
                                     </div>
                                 </div>
                             </td>
                             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white">
-                                {shift.register.name}
+                                {getRegisterName(shift)}
                             </td>
                             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white">
                                 {formatDateTime(shift.startTime)}
@@ -260,15 +271,15 @@
                         <User class="w-6 h-6 text-primary-600 dark:text-primary-400" />
                     </div>
                     <div>
-                        <p class="font-medium text-gray-900 dark:text-white">{selectedShift.staff.name}</p>
-                        <p class="text-sm text-gray-500 dark:text-gray-400">{selectedShift.staff.role}</p>
+                        <p class="font-medium text-gray-900 dark:text-white">{getShiftUser(selectedShift).name || "-"}</p>
+                        <p class="text-sm text-gray-500 dark:text-gray-400">{getShiftUser(selectedShift).role || "-"}</p>
                     </div>
                 </div>
 
                 <div class="grid grid-cols-2 gap-4">
                     <div>
                         <p class="text-sm text-gray-500 dark:text-gray-400">ເຄົາເຕີ</p>
-                        <p class="font-medium text-gray-900 dark:text-white">{selectedShift.register.name}</p>
+                        <p class="font-medium text-gray-900 dark:text-white">{getRegisterName(selectedShift)}</p>
                     </div>
                     <div>
                         <p class="text-sm text-gray-500 dark:text-gray-400">ສະຖານະ</p>

@@ -2,7 +2,7 @@
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
-    import { auth } from "$stores";
+    import { auth, dialogStore } from "$stores";
     import { formatCurrency } from "$lib/utils";
     import { toast } from "svelte-sonner";
     import MoneyInput from "$lib/components/MoneyInput.svelte";
@@ -379,7 +379,7 @@
     }
 
     async function deleteVariant(variant: SKUVariant) {
-        if (!confirm(`ຕ້ອງການລົບ SKU "${variant.sku}" ບໍ?`)) return;
+        if (!(await dialogStore.confirm(`ຕ້ອງການລົບ SKU "${variant.sku}" ບໍ?`))) return;
 
         try {
             await api.delete(`products/skus/${variant.id}`).json();

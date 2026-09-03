@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { P, hasPerm, combinePerm, mergeMasks, legacyPermTobit, permissionsToMask, maskToStrings, stringsToMask } from './permissions';
+import { P, hasPerm, combinePerm, mergeMasks, legacyPermTobit, permissionsToMask, maskToStrings, stringsToMask, getAllPermissionKeys } from './permissions';
+import { SYSTEM_ROLE_PERMISSIONS } from '../shared/systemRolePermissions';
 
 describe('hasPerm', () => {
     it('returns true when low bit is set', () => {
@@ -108,5 +109,30 @@ describe('permissionsToMask / maskToStrings / stringsToMask round-trip', () => {
         const restored = stringsToMask(serialised);
         expect(restored.low).toBe(original.low);
         expect(restored.high).toBe(original.high);
+    });
+});
+
+describe('payroll policy permission boundary', () => {
+    it('keeps policy configuration separate from compensation and payment permissions', () => {
+        expect(getAllPermissionKeys()).toContain('payroll:policy');
+        expect(SYSTEM_ROLE_PERMISSIONS.merchant_owner).toContain('payroll:policy');
+        expect(SYSTEM_ROLE_PERMISSIONS.store_owner).toContain('payroll:policy');
+        expect(SYSTEM_ROLE_PERMISSIONS.accountant).not.toContain('payroll:policy');
+    });
+});
+
+describe('printing permission boundary', () => {
+    it('publishes all production printing capabilities in the canonical catalog', () => {
+        expect(getAllPermissionKeys()).toEqual(expect.arrayContaining([
+            'printing:view', 'printing:receipt', 'printing:label', 'printing:reprint', 'printing:manage',
+        ]));
+    });
+
+    it('separates printer configuration from ordinary receipt and label printing', () => {
+        expect(SYSTEM_ROLE_PERMISSIONS.merchant_owner).toContain('printing:manage');
+        expect(SYSTEM_ROLE_PERMISSIONS.cashier).toContain('printing:receipt');
+        expect(SYSTEM_ROLE_PERMISSIONS.cashier).not.toContain('printing:manage');
+        expect(SYSTEM_ROLE_PERMISSIONS.inventory_staff).toContain('printing:label');
+        expect(SYSTEM_ROLE_PERMISSIONS.accountant).not.toContain('printing:receipt');
     });
 });

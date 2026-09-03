@@ -1,9 +1,9 @@
 ﻿<script lang="ts">
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
-    import { cn, escapeCsvCell } from "$utils";
+    import { cn, escapeCsvCell, validateFile, IMAGE_ONLY_FILE_TYPES } from "$utils";
     import { api } from "$api";
-    import { auth } from "$stores";
+    import { auth, dialogStore } from "$stores";
     import { formatCurrency } from "$lib/utils";
     import { toast } from "svelte-sonner";
     import MoneyInput from "$lib/components/MoneyInput.svelte";
@@ -46,6 +46,8 @@
     const canUpdateProduct = $derived(auth.canUpdate('products') && hasWriteAccess);
     const canDeleteProduct = $derived(auth.canDelete('products') && hasWriteAccess);
     const canEdit = $derived(canCreateProduct || canUpdateProduct);
+    const canImportProducts = $derived(auth.canImport('products') && hasWriteAccess);
+    const canExportProducts = $derived(auth.canExport('products'));
     
     // State
     let viewMode = $state<"grid" | "list">("grid");
@@ -275,7 +277,7 @@
             }
             showModal = false;
             resetForm();
-            loadData();
+            await loadData();
         } catch (e: any) {
             console.error("Failed to save:", e);
             // Try to parse error message
@@ -300,11 +302,11 @@
     }
 
     async function handleDelete(product: any) {
-        if (!confirm(t("common.confirmDelete"))) return;
+        if (!(await dialogStore.confirm(t("common.confirmDelete")))) return;
         try {
             await api.delete(`products/${product.id}`).json();
             toast.success("ລຶບສິນຄ້າສຳເລັດ");
-            loadData();
+            await loadData();
         } catch (e) {
             console.error("Failed to delete:", e);
             toast.error(t("common.error"));
@@ -409,6 +411,7 @@
         const input = event.target as HTMLInputElement;
         const file = input.files?.[0];
         if (!file) return;
+        if (!(await validateFile(file, { allowedTypes: IMAGE_ONLY_FILE_TYPES }))) { input.value = ""; return; }
 
         isUploading = true;
         try {
@@ -498,9 +501,30 @@
                 await loadData();
             }
         } catch (err: any) {
-            toast.error('ນຳເຂົ້າບໍ່ສຳເລັດ');
+            let msg = 'ນຳເຂົ້າບໍ່ສຳເລັດ';
+            try {
+                const errData = await err?.response?.json();
+                if (errData?.error?.message) msg = errData.error.message;
+            } catch {}
+            toast.error(msg);
         } finally {
             isImporting = false;
+        }
+    }
+
+    async function downloadImportTemplate() {
+        try {
+            const blob = await api.get('products/import/template').blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'kpos-product-import-template.xlsx';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        } catch {
+            toast.error(t('common.error'));
         }
     }
 
@@ -548,6 +572,15 @@
 
         <div class="flex items-center gap-3">
             <StoreBranchSelector onchange={() => loadData()} />
+            {#if canImportProducts}
+            <button
+                onclick={downloadImportTemplate}
+                class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-700 transition-all"
+                title="ດາວໂຫລດແມ່ແບບກ່ອນນຳເຂົ້າ"
+            >
+                <Download class="w-4 h-4" />
+                ແມ່ແບບ
+            </button>
             <label class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-700 transition-all cursor-pointer {isImporting ? 'opacity-60 pointer-events-none' : ''}">
                 {#if isImporting}
                     <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
@@ -557,6 +590,8 @@
                 ນຳເຂົ້າ Excel
                 <input type="file" accept=".xlsx,.xls,.csv" class="hidden" onchange={importFromExcel} disabled={isImporting} />
             </label>
+            {/if}
+            {#if canExportProducts}
             <button
                 onclick={exportToCsv}
                 class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-700 transition-all"
@@ -564,8 +599,10 @@
                 <Download class="w-4 h-4" />
                 ສົ່ງອອກ
             </button>
+            {/if}
             {#if canEdit}
             <button
+                data-testid="products-add"
                 onclick={() => {
                     resetForm();
                     showModal = true;
@@ -726,7 +763,7 @@
                 {@const stockStatus = getStockStatus(product)}
                 {@const stockConfig = getStockConfig(stockStatus)}
 
-                <div 
+                <div data-testid={`product-card-${product.id}`}
                     class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden hover:shadow-md transition-all cursor-pointer group"
                     onclick={() => openDetail(product)}
                     onkeydown={(e) => {
@@ -775,6 +812,9 @@
                             {/if}
                             {#if canDeleteProduct}
                             <button
+                                data-testid={`product-delete-${product.id}`}
+                                aria-label={t("common.delete")}
+                                title={t("common.delete")}
                                 onclick={(e) => { e.stopPropagation(); handleDelete(product); }}
                                 class="p-2 bg-white/90 dark:bg-gray-800/90 rounded-lg shadow hover:bg-danger-50 dark:hover:bg-danger-900/30 transition-all"
                             >
@@ -870,7 +910,7 @@
                             {@const stockStatus = getStockStatus(product)}
                             {@const stockConfig = getStockConfig(stockStatus)}
 
-                            <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-all">
+                            <tr data-testid={`product-row-${product.id}`} class="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-all">
                                 <td class="px-6 py-4">
                                     <div class="flex items-center gap-3">
                                         <div class="w-12 h-12 rounded-lg bg-gray-100 dark:bg-gray-700 overflow-hidden shrink-0">
@@ -952,6 +992,9 @@
                                         {/if}
                                         {#if canDeleteProduct}
                                         <button
+                                            data-testid={`product-delete-${product.id}`}
+                                            aria-label={t("common.delete")}
+                                            title={t("common.delete")}
                                             onclick={() => handleDelete(product)}
                                             class="p-2 text-gray-400 hover:text-danger-500 hover:bg-danger-50 dark:hover:bg-danger-900/30 rounded-lg transition-all"
                                         >
@@ -1011,6 +1054,7 @@
 
             <!-- Modal Content -->
             <form
+                data-testid="product-form"
                 onsubmit={(e) => {
                     e.preventDefault();
                     handleSubmit();
@@ -1054,6 +1098,7 @@
                         ຊື່ສິນຄ້າ *
                     </label>
                     <input id="a11y-app-products-page-svelte-1"
+                        data-testid="product-name"
                         type="text"
                         bind:value={formData.name}
                         required
@@ -1345,6 +1390,7 @@
                     </button>
                     <button
                         type="submit"
+                        data-testid="product-save"
                         class="px-5 py-2.5 bg-gradient-to-r from-blue-500 to-indigo-600 text-white rounded-xl font-medium hover:from-blue-600 hover:to-indigo-700 transition-all shadow-lg"
                     >
                         {t("common.save")}

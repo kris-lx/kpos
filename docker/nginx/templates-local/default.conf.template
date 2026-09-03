@@ -24,6 +24,14 @@ server {
         limit_req zone=api_limit burst=50 nodelay;
         limit_conn conn_limit 20;
 
+        # nginx's own default (1MB) is smaller than Express's body limit
+        # ever was, so it rejected large requests before they even reached
+        # the app. Found live: /admin/register-and-apply 413'd on every
+        # submission with real KYC documents attached (base64-encoded
+        # multi-file uploads, up to 5MB/file per the frontend's own limit).
+        # Matches the 20mb limit set in Express's server.ts.
+        client_max_body_size 20m;
+
         proxy_pass http://api_backend;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;

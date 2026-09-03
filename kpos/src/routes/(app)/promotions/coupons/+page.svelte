@@ -2,8 +2,10 @@
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
     import { api } from "$api";
+    import { auth, dialogStore } from "$stores";
     import { formatCurrency, formatDate } from "$lib/utils";
     import { toast } from "svelte-sonner";
+    import MoneyInput from "$lib/components/MoneyInput.svelte";
     import {
         Ticket,
         Plus,
@@ -220,7 +222,7 @@
     }
 
     async function handleDelete(coupon: any) {
-        if (!confirm(t("common.confirmDelete"))) return;
+        if (!(await dialogStore.confirm(t("common.confirmDelete")))) return;
         try {
             await api.delete(`promotions/coupons/${coupon.id}`).json();
             toast.success(t("common.success"));
@@ -327,6 +329,7 @@
             </div>
         </div>
 
+        {#if auth.canCreate('promotions')}
         <button
             onclick={() => {
                 resetForm();
@@ -337,6 +340,7 @@
             <Plus class="w-5 h-5" />
             ສ້າງຄູປອງໃໝ່
         </button>
+        {/if}
     </div>
 
     <!-- Stats Cards -->
@@ -520,6 +524,7 @@
 
                     <!-- Actions -->
                     <div class="px-4 py-3 bg-gray-50 dark:bg-gray-800/50 border-t border-gray-200 dark:border-gray-700 flex items-center justify-between gap-2">
+                        {#if auth.canUpdate('promotions')}
                         <button
                             onclick={() => toggleStatus(coupon)}
                             class={cn(
@@ -537,19 +542,24 @@
                                 ເປີດ
                             {/if}
                         </button>
+                        {/if}
                         <div class="flex gap-1">
+                            {#if auth.canUpdate('promotions')}
                             <button
                                 onclick={() => openEdit(coupon)}
                                 class="p-2 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg transition-all"
                             >
                                 <Edit class="w-4 h-4" />
                             </button>
+                            {/if}
+                            {#if auth.canDelete('promotions')}
                             <button
                                 onclick={() => handleDelete(coupon)}
                                 class="p-2 text-danger-500 hover:bg-danger-100 dark:hover:bg-danger-900/30 rounded-lg transition-all"
                             >
                                 <Trash2 class="w-4 h-4" />
                             </button>
+                            {/if}
                         </div>
                     </div>
                 </div>
@@ -669,13 +679,23 @@
                         <label for="a11y-app-promotions-coupons-page-svelte-5" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             ມູນຄ່າ *
                         </label>
-                        <input id="a11y-app-promotions-coupons-page-svelte-5"
-                            type="number"
-                            bind:value={formData.value}
-                            required
-                            min="0"
-                            class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                        />
+                        {#if formData.type === "PERCENTAGE"}
+                            <input id="a11y-app-promotions-coupons-page-svelte-5"
+                                type="number"
+                                bind:value={formData.value}
+                                required
+                                min="0"
+                                max="100"
+                                class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                            />
+                        {:else}
+                            <MoneyInput id="a11y-app-promotions-coupons-page-svelte-5"
+                                bind:value={formData.value}
+                                required
+                                min={0}
+                                class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                            />
+                        {/if}
                     </div>
                 </div>
 
@@ -684,10 +704,9 @@
                         <label for="a11y-app-promotions-coupons-page-svelte-6" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             ຊື້ຂັ້ນຕ່ຳ
                         </label>
-                        <input id="a11y-app-promotions-coupons-page-svelte-6"
-                            type="number"
+                        <MoneyInput id="a11y-app-promotions-coupons-page-svelte-6"
                             bind:value={formData.minPurchase}
-                            min="0"
+                            min={0}
                             class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent"
                         />
                     </div>
@@ -695,10 +714,9 @@
                         <label for="a11y-app-promotions-coupons-page-svelte-7" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             ສ່ວນຫຼຸດສູງສຸດ
                         </label>
-                        <input id="a11y-app-promotions-coupons-page-svelte-7"
-                            type="number"
+                        <MoneyInput id="a11y-app-promotions-coupons-page-svelte-7"
                             bind:value={formData.maxDiscount}
-                            min="0"
+                            min={0}
                             class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent"
                         />
                     </div>

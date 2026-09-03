@@ -2,6 +2,7 @@
     import { t } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
     import { formatCurrency, formatNumber, formatDate, escapeHtml, escapeCsvCell } from "$lib/utils";
+    import { printHtml } from "$lib/utils/printHtml";
     import { onMount } from "svelte";
     import { auth } from "$stores";
     import { toast } from "svelte-sonner";
@@ -149,9 +150,8 @@
 <p>ໄລຍະ: ${escapeHtml(dateRange.from)} ຫາ ${escapeHtml(dateRange.to)}</p>
 <p>ລູກຄ້າທັງໝົດ: ${summary.totalCustomers ?? 0} | ລູກຄ້າໃໝ່: ${summary.newCustomers ?? 0} | ລູກຄ້າມີການຊື້: ${summary.activeCustomers ?? 0}</p>
 <table><thead><tr>${rows[0].map(h => `<th>${escapeHtml(h)}</th>`).join('')}</tr></thead><tbody>${tableRows}</tbody></table>
-<script>window.onload=()=>window.print()<\/script></body></html>`;
-        const w = window.open('', '_blank');
-        if (w) { w.document.write(html); w.document.close(); }
+</body></html>`;
+        printHtml(html);
         toast.success(t('reports.exportSuccess'));
     }
 
@@ -215,6 +215,7 @@ ${headerRow}${tableRows}</w:tbl></w:body></w:wordDocument>`;
                     ໂຫຼດ
                 </button>
             </div>
+            {#if auth.canExport('reports')}
             <div class="relative">
                 <button
                     onclick={() => showExportMenu = !showExportMenu}
@@ -238,6 +239,7 @@ ${headerRow}${tableRows}</w:tbl></w:body></w:wordDocument>`;
                     </div>
                 {/if}
             </div>
+            {/if}
         </div>
     </div>
 

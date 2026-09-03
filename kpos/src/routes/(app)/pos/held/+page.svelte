@@ -2,7 +2,7 @@
     import { onMount } from "svelte";
     import { i18n } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
-    import { auth } from "$stores";
+    import { auth, dialogStore } from "$stores";
     import { formatCurrency, formatDateTime } from "$lib/utils";
     import { goto } from "$app/navigation";
     import { toast } from "svelte-sonner";
@@ -93,7 +93,7 @@
     }
 
     async function deleteOrder(order: any) {
-        if (!confirm("ຕ້ອງການລົບອໍເດີນີ້ບໍ?")) return;
+        if (!(await dialogStore.confirm("ຕ້ອງການລົບອໍເດີນີ້ບໍ?"))) return;
         deletingOrderId = order.id;
         try {
             await api.delete(`sales/held/${order.id}`).json();

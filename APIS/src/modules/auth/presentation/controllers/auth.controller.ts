@@ -4,11 +4,12 @@
 
 import type { Request, Response, NextFunction } from 'express';
 import { LoginUseCase, RegisterUseCase, RefreshTokenUseCase } from '../../application';
-import { authService, DatabaseConnectionError, REFRESH_COOKIE_NAME } from '../../infrastructure/services/auth.service';
+import { authService, DatabaseConnectionError, REFRESH_COOKIE_NAME, clearRefreshCookie } from '../../infrastructure/services/auth.service';
 import { BaseController } from '@/shared/application';
 import { db } from '@/config/database.config';
 import { users } from '@/db/schema/tables';
 import { eq } from 'drizzle-orm';
+import { queueActivityLog } from '@/infrastructure/helpers/activity-log.helper';
 
 const loginUseCase = new LoginUseCase(authService);
 const registerUseCase = new RegisterUseCase(authService);
@@ -18,7 +19,7 @@ class AuthController extends BaseController {
     async login(req: Request, res: Response, next: NextFunction): Promise<void> {
         try {
             // Pass res so login can set HttpOnly refresh cookie (BE-04)
-            const result = await loginUseCase.execute({ ...req.body, res });
+            const result = await loginUseCase.execute({ ...req.body, res, secureCookie: req.secure });
 
             if (result.isFailure) {
                 const error = result.error;
@@ -30,6 +31,14 @@ class AuthController extends BaseController {
                 return;
             }
 
+            queueActivityLog(
+                result.value.user.id,
+                'login',
+                'auth',
+                `Login successful: ${result.value.user.email}`,
+                { branchId: result.value.user.branchId, storeId: null },
+                req,
+            ).catch(() => {});
             this.ok(res, result.value);
         } catch (error) {
             next(error);
@@ -56,14 +65,29 @@ class AuthController extends BaseController {
             // BE-06: Read refresh token from HttpOnly cookie, fallback to body for backward compat
             const refreshToken = req.cookies?.[REFRESH_COOKIE_NAME] || req.body?.refreshToken;
             if (!refreshToken) {
-                this.fail(res, 'AUTH_002', 'No refresh token', 401);
+                // Refresh is a silent session-restoration probe. A browser
+                // with no active session should receive a normal JSON result,
+                // not a network-level 401 error in DevTools. Protected API
+                // endpoints still use 401 as usual.
+                res.status(200).json({
+                    success: false,
+                    error: { code: 'AUTH_002', message: 'No active session' },
+                });
                 return;
             }
 
-            const result = await refreshTokenUseCase.execute({ refreshToken, res });
+            const result = await refreshTokenUseCase.execute({ refreshToken, res, secureCookie: req.secure });
 
             if (result.isFailure) {
-                this.fail(res, 'AUTH_002', String(result.error), 401);
+                // A rotated/expired refresh token is no longer useful. Clear
+                // it immediately so every subsequent page load does not send
+                // the same stale cookie. Keep this a normal JSON failure for
+                // the silent refresh probe; the client will redirect to login.
+                clearRefreshCookie(res, req.secure);
+                res.status(200).json({
+                    success: false,
+                    error: { code: 'AUTH_002', message: String(result.error) },
+                });
                 return;
             }
 
@@ -82,7 +106,15 @@ class AuthController extends BaseController {
 
             // BE-07: Pass access token for jti revocation + res for clearing cookie
             const accessToken = req.headers.authorization?.substring(7);
-            await authService.logout(accessToken, req.authUser.userId, res);
+            await authService.logout(accessToken, req.authUser.userId, res, req.secure);
+            queueActivityLog(
+                req.authUser.userId,
+                'logout',
+                'auth',
+                `Logout: ${req.authUser.email}`,
+                { branchId: req.authUser.activeBranchId, storeId: req.authUser.activeStoreId },
+                req,
+            ).catch(() => {});
             this.ok(res, { message: 'Logged out successfully' });
         } catch (error) {
             next(error);
@@ -114,6 +146,9 @@ class AuthController extends BaseController {
                 branchId: req.authUser.activeBranchId,
                 tenantId: req.authUser.tenantId,
                 isSuperAdmin: req.authUser.isSuperAdmin,
+                requiresShift: req.authUser.requiresShift,
+                checkerEnabled: req.authUser.checkerEnabled,
+                roleLevel: req.authUser.roleLevel,
                 permissions: req.authUser.permissions,
                 accessibleStores: req.authUser.accessibleStores,
                 accessibleBranchIds: req.authUser.accessibleBranchIds,

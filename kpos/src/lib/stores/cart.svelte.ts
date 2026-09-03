@@ -4,8 +4,6 @@
 
 import type { Product, Customer } from '$api';
 import { api } from '$api';
-import { browser } from '$app/environment';
-import { LOCAL_STORAGE_KEYS } from '$lib/config';
 import { t } from '$lib/i18n/index.svelte';
 
 export interface CartItem {
@@ -40,10 +38,10 @@ function createCartStore() {
         }
     }
 
-    // Eagerly load tax rate only when authenticated
-    if (browser && localStorage.getItem(LOCAL_STORAGE_KEYS.ACCESS_TOKEN)) {
-        loadTaxRate();
-    }
+    // Tax loading is triggered by the authenticated POS page after mount.
+    // Keeping auth out of this store avoids a cart ↔ auth circular import:
+    // auth clears the cart during logout, while cart only needs the API for
+    // its tax settings.
 
     // Computed values
     const itemCount = $derived(items.reduce((sum, item) => sum + item.quantity, 0));

@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// Absolute session cap (20h from login, regardless of refresh activity).
+// Absolute session cap (SESSION_ABSOLUTE_HOURS from login, regardless of refresh activity).
 // Extracted from auth.middleware.ts / auth.service.ts where this exact check
 // was duplicated inline in two places — single source of truth + testable.
 // ═══════════════════════════════════════════════════════════════════════════

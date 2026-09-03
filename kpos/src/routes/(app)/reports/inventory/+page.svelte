@@ -1,6 +1,7 @@
 ﻿<script lang="ts">
     import { onMount } from "svelte";
     import { cn, formatCurrency, escapeHtml, escapeCsvCell } from "$utils";
+    import { printHtml } from "$utils/printHtml";
     import { api } from "$api";
     import { t } from "$lib/i18n/index.svelte";
     import { auth } from "$stores";
@@ -69,8 +70,14 @@
             inventoryReport = res.data || [];
             totalItems = res.pagination?.total || inventoryReport.length;
             summaryData = res.summary || {};
-        } catch (e) {
+        } catch (e: any) {
             console.error("Failed to load:", e);
+            let msg = t("common.error");
+            try {
+                const errData = await e?.response?.json();
+                if (errData?.error?.message) msg = errData.error.message;
+            } catch {}
+            toast.error(msg);
         } finally {
             isLoading = false;
         }
@@ -147,12 +154,7 @@
 <table><tr><th>ລຳດັບ</th><th>ສິນຄ້າ</th><th>SKU</th><th>ສະຕ໋ອກ</th><th>ຕໍ່າສຸດ</th><th>ລາຄາ</th><th>ມູນຄ່າ</th><th>ສະຖານະ</th></tr>
 ${filteredInventory.map((p, i) => { const st = getStockStatus(p.currentStock || 0, p.minStock || 10); const cls = st.label === 'ໝົດສາງ' ? 'out' : st.label === 'ຕໍ່າ' ? 'low' : 'ok'; return `<tr><td>${i + 1}</td><td>${escapeHtml(p.name || '')}</td><td>${escapeHtml(p.sku || '')}</td><td class="text-right">${p.currentStock || 0}</td><td class="text-right">${p.minStock || 0}</td><td class="text-right">${formatCurrency(p.unitCost || 0)}</td><td class="text-right">${formatCurrency((p.currentStock || 0) * (p.unitCost || 0))}</td><td class="${cls}">${st.label}</td></tr>`; }).join('')}
 </table></body></html>`;
-        const w = window.open('', '_blank');
-        if (w) {
-            w.document.write(html);
-            w.document.close();
-            w.onload = () => w.print();
-        }
+        printHtml(html);
         toast.success(t("reports.exportSuccess"));
         exporting = false;
     }
@@ -203,8 +205,9 @@ ${filteredInventory.map((p, i) => { const st = getStockStatus(p.currentStock || 
         </div>
 
         <!-- Export Dropdown -->
+        {#if auth.canExport('reports')}
         <div class="relative">
-            <button 
+            <button
                 onclick={() => showExportMenu = !showExportMenu}
                 disabled={exporting}
                 class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium"
@@ -234,6 +237,7 @@ ${filteredInventory.map((p, i) => { const st = getStockStatus(p.currentStock || 
                 </div>
             {/if}
         </div>
+        {/if}
     </div>
 
     <!-- Stats -->

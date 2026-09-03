@@ -9,7 +9,7 @@
 
 import { Router } from 'express';
 import { randomUUID } from 'crypto';
-import { authenticate, authorize } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, ensureScopeAccess } from '@/infrastructure/http/middleware/auth.middleware';
 import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
 import { db as globalDb } from '@/config/database.config';
 import { paymentGatewayConfigs, qrPaymentRequests } from '@/db/schema/tables';
@@ -38,7 +38,13 @@ function maskConfig(row: typeof paymentGatewayConfigs.$inferSelect) {
 
 // ── Gateway config CRUD ─────────────────────────────────────────────────────
 
-paymentGatewayRoutes.get('/configs', authenticate, withTenantTx(), authorize('settings:read'), async (req, res, next) => {
+// Gated on sales:create rather than settings:read — this powers the POS
+// checkout's QR-payment-method list (which provider is active), not a
+// settings screen, and maskConfig() already strips every credential field
+// before it leaves the server. Every cashier needs this to offer QR payment
+// at checkout; requiring settings:read silently 403'd them and left the QR
+// payment option permanently empty for any non-admin role.
+paymentGatewayRoutes.get('/configs', authenticate, withTenantTx(), authorize('sales:create'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const tenantId = req.authUser?.tenantId;
@@ -176,6 +182,11 @@ paymentGatewayRoutes.get('/qr/:id/status', authenticate, withTenantTx(), authori
             where: and(eq(qrPaymentRequests.id, req.params.id), eq(qrPaymentRequests.tenantId, tenantId)),
         });
         if (!row) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'QR payment request not found' } });
+        // Tenant-only scope let any branch-scoped cashier poll another
+        // branch's in-flight QR payment status by id.
+        if (!ensureScopeAccess({ branchId: row.branchId, tenantId: row.tenantId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this payment request' } });
+        }
 
         let status = row.status;
 
@@ -221,6 +232,9 @@ paymentGatewayRoutes.post('/qr/:id/link', authenticate, withTenantTx(), authoriz
             where: and(eq(qrPaymentRequests.id, req.params.id), eq(qrPaymentRequests.tenantId, tenantId)),
         });
         if (!row) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'QR payment request not found' } });
+        if (!ensureScopeAccess({ branchId: row.branchId, tenantId: row.tenantId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this payment request' } });
+        }
 
         await db.update(qrPaymentRequests).set({ saleTransactionId: transactionId }).where(eq(qrPaymentRequests.id, row.id));
         res.json({ success: true, data: { message: 'Linked' } });

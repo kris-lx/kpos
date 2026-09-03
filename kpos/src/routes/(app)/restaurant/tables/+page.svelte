@@ -4,6 +4,7 @@
     import { cn } from "$utils";
     import { api } from "$api";
     import { auth } from "$lib/stores/auth.svelte";
+    import { dialogStore } from "$stores";
     import { toast } from "svelte-sonner";
     import {
         Plus,
@@ -56,6 +57,12 @@
 
     async function loadData() {
         isLoading = true;
+        if (!auth.activeBranchId) {
+            tables = [];
+            zones = [];
+            isLoading = false;
+            return;
+        }
         try {
             const [tableRes, zoneRes] = await Promise.all([
                 api.get("restaurant/tables").json<any>(),
@@ -102,7 +109,7 @@
     }
 
     async function handleDelete(id: string) {
-        if (confirm(t("restaurant.confirmDelete"))) {
+        if (await dialogStore.confirm(t("restaurant.confirmDelete"))) {
             try {
                 await api.delete(`restaurant/tables/${id}`).json();
                 toast.success(t("common.success"));

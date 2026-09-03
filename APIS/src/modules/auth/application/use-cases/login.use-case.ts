@@ -13,9 +13,9 @@ export type LoginResult = LoginResponse;
 export class LoginUseCase implements IUseCase<LoginInput, LoginResult> {
     constructor(private readonly authService: AuthService) { }
 
-    async execute(input: LoginInput & { res?: Response }): Promise<Result<LoginResult>> {
+    async execute(input: LoginInput & { res?: Response; secureCookie?: boolean }): Promise<Result<LoginResult>> {
         try {
-            const result = await this.authService.login(input.email, input.password, input.res);
+            const result = await this.authService.login(input.email, input.password, input.res, input.secureCookie);
             return Result.ok(result);
         } catch (error) {
             const err = error instanceof Error ? error : new Error('Login failed');

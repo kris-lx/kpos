@@ -24,7 +24,7 @@
     } from "lucide-svelte";
     import JsBarcode from "jsbarcode";
     import QRCode from "qrcode";
-    import { isUsbPrintUnavailable, markUsbPrintUnavailable } from "$lib/utils/usbPrint";
+    import { createPrintIdempotencyKey, pickStrictPrinter } from "$lib/utils/printerRouting";
 
     interface PrinterConfig {
         id: string;
@@ -134,6 +134,13 @@
         { name: "58mm x 40mm", width: 58, height: 40, type: "receipt2" },
         { name: "80mm x 40mm", width: 80, height: 40, type: "large" },
         { name: "100mm x 50mm", width: 100, height: 50, type: "xlarge" },
+        // 4in x 3in — common shipping/product label size (Zebra/Dymo-style
+        // label rolls). Stored in mm like every other preset here since the
+        // whole print-CSS system (@page size, .print-barcode-item width/
+        // height) is mm-driven — a bare "4in x 3in" value would need a
+        // second unit system threaded through every one of those spots for
+        // no real benefit, since 1in = 25.4mm exactly either way.
+        { name: "4 x 3 inch (101.6mm x 76.2mm)", width: 101.6, height: 76.2, type: "label4x3in" },
         { name: "A4 (21cm x 29.7cm)", width: 210, height: 297, type: "a4" },
         { name: "ກຳນົດເອງ", width: 0, height: 0, type: "custom" },
     ]);
@@ -202,14 +209,7 @@
     }
 
     function pickLabelPrinter(printers: PrinterConfig[]): PrinterConfig | null {
-        const activePrinters = printers.filter((p) => p.isActive !== false);
-        return (
-            activePrinters.find((p) => p.type === "label" && p.isDefault) ||
-            activePrinters.find((p) => p.type === "label") ||
-            activePrinters.find((p) => p.isDefault) ||
-            activePrinters[0] ||
-            null
-        );
+        return pickStrictPrinter(printers, "label");
     }
 
     function applyPrinterLabelSize(printer: PrinterConfig | null) {
@@ -254,8 +254,16 @@
                 ? (skuResponse.data || []).filter((s: any) => s.barcode).map(normalizeSkuForLabel)
                 : [];
             const merged = new Map<string, BarcodeProduct>();
+            // Dedupe by barcode VALUE too, not just source:id — a sku variant
+            // row can carry the same barcode as its parent product (e.g. an
+            // older auto-created default variant from before that stopped
+            // being copied), and source:id alone treats those as two
+            // different rows, showing the same barcode twice.
+            const seenBarcodes = new Set<string>();
             for (const item of [...productLabels, ...skuLabels]) {
-                if (item.barcode) merged.set(`${item.source}:${item.id}`, item);
+                if (!item.barcode || seenBarcodes.has(item.barcode)) continue;
+                seenBarcodes.add(item.barcode);
+                merged.set(`${item.source}:${item.id}`, item);
             }
             if (barcodeResponse?.success) {
                 products = Array.from(merged.values());
@@ -545,14 +553,30 @@
             }
         });
 
-        // Generate QR codes for all canvas elements
+        // Generate QR codes for all canvas elements. Source resolution must
+        // scale with the label size — this used to always render at a fixed
+        // 80px and rely on the print CSS's `.qrcode-canvas { max-width:80%
+        // }` to stretch it up to fill the box, which is fine for the small
+        // presets (20-50mm) but on something like the 4x3in preset
+        // (101.6x76.2mm) an 80px source stretched that far prints visibly
+        // blurry/pixelated — an 80px PNG has nowhere near the pixel density
+        // a real thermal/laser printer resolves at that physical size.
+        // Target ~300dpi (courier/label printer print quality) based on
+        // the smaller label dimension (the QR box is square, capped by
+        // whichever side is tighter), floored at 80 so nothing shrinks
+        // below the old behavior for the small presets.
+        const MM_PER_INCH = 25.4;
+        const TARGET_DPI = 300;
+        const qrBoxMm = Math.min(printLabelWidthMm, printLabelHeightMm) * 0.72;
+        const qrPixelSize = Math.max(80, Math.round((qrBoxMm / MM_PER_INCH) * TARGET_DPI));
+
         const qrCanvases = document.querySelectorAll('.print-barcode-item .qrcode-canvas');
         for (const canvas of qrCanvases) {
             const value = canvas.getAttribute('data-value');
             if (value) {
                 try {
                     await QRCode.toCanvas(canvas, value, {
-                        width: 80,
+                        width: qrPixelSize,
                         margin: 1,
                     });
                 } catch (e) {
@@ -574,16 +598,9 @@
         // MSI and pharmacode have no widely-supported GS k code — fall back to CODE128
     };
 
-    async function findConfiguredUsbPrinter(): Promise<PrinterConfig | null> {
-        if (!configuredLabelPrinter) await loadPrinterConfig();
-        const candidates = printerConfigs.filter((p) => p.connectionType === "usb" && p.isActive !== false);
-        return pickLabelPrinter(candidates);
-    }
-
     async function findConfiguredNetworkPrinter(): Promise<PrinterConfig | null> {
         if (!configuredLabelPrinter) await loadPrinterConfig();
-        const candidates = printerConfigs.filter((p) => p.connectionType === "network" && p.isActive !== false);
-        return pickLabelPrinter(candidates);
+        return pickStrictPrinter(printerConfigs, "label", "network");
     }
 
     // Renders text to a 1-bit raster bitmap for ESC/POS's "GS v 0" raster
@@ -752,16 +769,29 @@
         return printer?.settings?.protocol === "tspl" ? buildTsplLabel(product) : buildEscPosLabel(product);
     }
 
-    async function printViaNetworkPrinter(): Promise<boolean> {
+    async function waitForPrintJob(jobId: string): Promise<void> {
+        for (let attempt = 0; attempt < 30; attempt++) {
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            const response = await api.get(`settings/print-jobs/${jobId}`).json<any>();
+            const job = response?.data;
+            if (job?.status === "PRINTED") return;
+            if (job?.status === "FAILED") throw new Error(job.lastError || t("printing.failed"));
+        }
+        throw new Error(t("printing.timeout"));
+    }
+
+    async function printViaNetworkPrinter(): Promise<void> {
         const printer = await findConfiguredNetworkPrinter();
-        if (!printer) return false;
+        if (!printer) throw new Error(t("printing.labelPrinterRequired"));
 
         const selectedData = getSelectedProductsData();
-        if (selectedData.length === 0) return false;
+        if (selectedData.length === 0) throw new Error(t("barcode.selectProducts"));
 
-        try {
-            const res = await api.post(`settings/printers/${printer.id}/print-labels`, {
-                json: {
+        const reference = `labels:${activeTab}:${selectedData.map((product) => product.id).join(",")}`;
+        const res = await api.post(`settings/printers/${printer.id}/print-labels`, {
+            json: {
+                    reference,
+                    idempotencyKey: createPrintIdempotencyKey(reference),
                     type: activeTab,
                     barcodeFormat: barcodeSettings.format,
                     barcodeWidth: barcodeSettings.width,
@@ -791,65 +821,9 @@
                     }),
                 },
             }).json<any>();
-            if (res?.success) return true;
-            toast.error(res?.error?.message || t("printers.testFailed"));
-        } catch (err: any) {
-            toast.error(err?.message || t("printers.testFailed"));
-        }
-        return false;
-    }
-
-    async function printViaUsb(): Promise<boolean> {
-        if (!("usb" in navigator)) return false;
-        if (isUsbPrintUnavailable()) return false;
-        if (configuredLabelPrinter?.connectionType === "windowsPrint") return false;
-        const printerConfig = await findConfiguredUsbPrinter();
-        if (!printerConfig) return false;
-
-        // Never show the browser's USB device picker here — that "connection"
-        // prompt belongs only to the one-time setup step (Settings → Printers
-        // → Test Print). Reuse a device the user already authorized there; if
-        // none exists yet, fall back to the print dialog instead of prompting
-        // mid-print.
-        const authorizedDevices = await (navigator as any).usb.getDevices();
-        if (authorizedDevices.length === 0) return false;
-
-        let device: any = authorizedDevices[0];
-        try {
-            await device.open();
-            const config = device.configuration || (await device.selectConfiguration(1));
-            const iface = config?.interfaces?.[0];
-            if (!iface) throw new Error("No USB interface found");
-            await device.claimInterface(iface.interfaceNumber);
-            const ep = iface.alternate.endpoints.find((e: any) => e.direction === "out");
-            if (!ep) throw new Error("No OUT endpoint found");
-
-            for (const product of getSelectedProductsData()) {
-                const payload = buildRawLabel(product, printerConfig);
-                await device.transferOut(ep.endpointNumber, payload);
-            }
-
-            await device.releaseInterface(iface.interfaceNumber);
-            await device.close();
-            return true;
-        } catch (err: any) {
-            if (device) {
-                try { await device.close(); } catch { /* already closed */ }
-            }
-            if (err?.name === "SecurityError") {
-                // Windows has bound its own driver to this USB interface (or another
-                // app has it open), blocking raw WebUSB access. This isn't fixable
-                // from here — falls back to the OS print dialog below, and we stop
-                // trying WebUSB for the rest of the session so the device picker
-                // doesn't pop up again on every print click just to fail the same way.
-                markUsbPrintUnavailable();
-                console.warn("USB printer access denied by the OS/driver, falling back to print dialog:", err);
-                toast.error(t("printers.usbAccessDenied"));
-            } else {
-                console.warn("Direct USB print failed, falling back to print dialog:", err);
-            }
-            return false;
-        }
+        const jobId = res?.data?.job?.id;
+        if (!jobId) throw new Error(t("printing.queueFailed"));
+        await waitForPrintJob(jobId);
     }
 
     async function generateBarcodes() {
@@ -860,21 +834,10 @@
         isGenerating = true;
 
         try {
-            const networkPrinted = await printViaNetworkPrinter().catch(() => false);
-            if (networkPrinted) {
-                toast.success(t("barcode.print"));
-                return;
-            }
-
-            const printed = await printViaUsb().catch(() => false);
-            if (printed) {
-                toast.success(t("barcode.print"));
-                return;
-            }
-
-            await generateBarcodesForPrint();
-            await new Promise((resolve) => setTimeout(resolve, 300));
-            window.print();
+            await printViaNetworkPrinter();
+            toast.success(t("printing.completed"));
+        } catch (err) {
+            toast.error(err instanceof Error ? err.message : t("printing.failed"));
         } finally {
             isGenerating = false;
         }
@@ -1003,7 +966,7 @@
 
 <svelte:head>
     <title>{t("barcode.title")} - KPOS</title>
-    {@html `<style>
+    <style>{`
         @media print {
             @page {
                 size: ${
@@ -1051,9 +1014,19 @@
                 flex-shrink: 0;
                 margin: 0;
                 line-height: 1.1;
+                /* Force bold, pure black regardless of the on-screen Tailwind
+                   classes (font-medium is only weight 500, the barcode digits
+                   line has no weight class at all, and the price uses a light
+                   brand blue) — all of those read as too thin/light once
+                   actually printed on a label, especially on a thermal
+                   printer's limited dot density. */
+                font-weight: 700 !important;
+                color: #000 !important;
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
             }
         }
-    </style>`}
+    `}</style>
 </svelte:head>
 
 <div class="min-h-screen bg-gray-50 dark:bg-gray-900 p-4 md:p-6">

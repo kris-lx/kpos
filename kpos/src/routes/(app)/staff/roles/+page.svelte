@@ -2,7 +2,7 @@
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
     import { api } from "$api";
-    import { auth } from "$stores";
+    import { auth, dialogStore } from "$stores";
     import { toast } from "svelte-sonner";
     import { onMount } from "svelte";
     import {
@@ -20,6 +20,8 @@
         ChevronRight,
         AlertCircle,
         RefreshCw,
+        ShieldCheck,
+        Save,
     } from "lucide-svelte";
 
     // CRUD permission gating — use hasPermission directly since rule-based check
@@ -27,19 +29,11 @@
     const canCreate = $derived(auth.hasPermission('roles:create'));
     const canUpdate = $derived(auth.hasPermission('roles:update'));
     const canDelete = $derived(auth.hasPermission('roles:delete'));
+    const canCustomizeSystemRoles = $derived(!auth.isSuperAdmin && auth.roleLevel <= 2);
+    const canEditPolicy = $derived(auth.isSuperAdmin || auth.roleLevel <= 2);
 
-    const ROLE_LEVEL_MAP: Record<string, number> = {
-        platform_super_admin: 1, platform_support: 1, platform_auditor: 1,
-        super_admin: 1, admin: 1,
-        merchant_owner: 2, hq_admin: 2, store_owner: 2, tenant_admin: 2,
-        merchant_manager: 3, accountant: 3, hq_manager: 3,
-        supervisor: 4, branch_admin: 4, branch_manager: 4, store_manager: 4, store_admin: 4, manager: 4,
-        senior_cashier: 5, cashier: 5, staff: 5,
-        inventory_staff: 6, kitchen_staff: 6, waiter: 6,
-    };
-
-    function getRoleLevel(roleName: string): number | null {
-        return ROLE_LEVEL_MAP[roleName] ?? null;
+    function getRoleLevel(role: any): number | null {
+        return Number.isInteger(role?.level) ? role.level : null;
     }
 
     // State
@@ -51,6 +45,11 @@
     let isSaving = $state(false);
     let searchQuery = $state("");
     let expandedRole = $state<string | null>(null);
+    let expandedPermissionCategories = $state<string[]>([]);
+    let policyLoading = $state(true);
+    let policySaving = $state(false);
+    let requireMakerChecker = $state(true);
+    let excludedPermissionCount = $state(0);
 
     // Form state
     let formData = $state({
@@ -60,15 +59,18 @@
         permissions: [] as string[],
     });
 
-    // Permission categories — labels use t() via getter so they react to locale changes
-    const permissionCategories = $derived([
+    // The platform permission catalog is the source for the tenant role editor.
+    // Keep a small fallback so an unseeded catalog does not make the form
+    // unusable during first-time setup.
+    const fallbackPermissionCategories = [
         { name: "dashboard",  label: t("nav.dashboard"),  permissions: ["dashboard:view"] },
         { name: "products",   label: t("nav.products"),   permissions: ["products:view", "products:create", "products:update", "products:delete"] },
         { name: "categories", label: t("nav.categories"), permissions: ["categories:view", "categories:create", "categories:update", "categories:delete"] },
         { name: "inventory",  label: t("nav.inventory"),  permissions: ["inventory:view", "inventory:create", "inventory:update", "inventory:delete"] },
-        { name: "sales",      label: t("nav.sales"),      permissions: ["sales:view", "sales:create", "sales:void", "sales:refund"] },
+        { name: "sales",      label: t("nav.sales"),      permissions: ["sales:view", "sales:create", "sales:void", "sales:refund", "sales:delete"] },
         { name: "customers",  label: t("nav.customers"),  permissions: ["customers:view", "customers:create", "customers:update", "customers:delete"] },
         { name: "staff",      label: t("nav.staff"),      permissions: ["staff:view", "staff:create", "staff:update", "staff:delete"] },
+        { name: "attendance", label: t("nav.attendance"), permissions: ["attendance:clock", "attendance:view", "attendance:manage"] },
         { name: "reports",    label: t("nav.reports"),    permissions: ["reports:view", "reports:export"] },
         { name: "settings",   label: t("nav.settings"),   permissions: ["settings:view", "settings:update"] },
         { name: "branches",   label: t("nav.branches"),   permissions: ["branches:view", "branches:create", "branches:update", "branches:delete"] },
@@ -76,11 +78,72 @@
         { name: "promotions", label: t("nav.promotions"), permissions: ["promotions:view", "promotions:create", "promotions:update", "promotions:delete"] },
         { name: "payments",   label: t("nav.payments"),   permissions: ["payments:view", "payments:manage"] },
         { name: "restaurant", label: t("nav.restaurant"), permissions: ["restaurant:view", "restaurant:manage"] },
-    ]);
+    ];
+    let permissionCategories = $state(fallbackPermissionCategories);
 
     onMount(() => {
         loadRoles();
+        loadPolicy();
+        loadPermissionCatalog();
     });
+
+    async function loadPermissionCatalog() {
+        try {
+            const response = await api.get("roles/permissions").json<any>();
+            const grouped = response.data?.grouped;
+            excludedPermissionCount = Number(response.data?.excludedCount) || 0;
+            if (!grouped || typeof grouped !== "object") return;
+
+            const catalog = Object.entries(grouped)
+                .map(([name, group]: [string, any]) => ({
+                    name,
+                    label: group.label || name,
+                    permissions: Array.isArray(group.permissions)
+                        ? group.permissions.map((permission: any) => permission.key).filter(Boolean)
+                        : [],
+                }))
+                .filter(category => category.permissions.length > 0);
+
+            if (catalog.length > 0) {
+                permissionCategories = catalog;
+                expandedPermissionCategories = catalog.map(category => category.name);
+            }
+        } catch (err) {
+            console.error("Failed to load permission catalog:", err);
+        }
+    }
+
+    async function loadPolicy() {
+        policyLoading = true;
+        try {
+            const response = await api.get("settings/operations").json<{ success: boolean; data?: { requireMakerChecker: boolean } }>();
+            if (response.success && response.data) {
+                requireMakerChecker = response.data.requireMakerChecker;
+            }
+        } catch (err) {
+            console.error("Failed to load maker-checker policy:", err);
+        } finally {
+            policyLoading = false;
+        }
+    }
+
+    async function savePolicy() {
+        if (!canEditPolicy) return;
+        policySaving = true;
+        try {
+            const response = await api.put("settings/operations", { json: { requireMakerChecker } }).json<{ success: boolean }>();
+            if (response.success) {
+                toast.success(t("common.saved"));
+            } else {
+                toast.error(t("common.genericError"));
+            }
+        } catch (err) {
+            console.error("Failed to save maker-checker policy:", err);
+            toast.error(t("common.genericError"));
+        } finally {
+            policySaving = false;
+        }
+    }
 
     async function loadRoles() {
         isLoading = true;
@@ -136,6 +199,13 @@
         editingRole = null;
     }
 
+    function canEditRole(role: any) {
+        return canUpdate && (
+            !role.isSystem ||
+            (canCustomizeSystemRoles && role.tenantId === null)
+        );
+    }
+
     function togglePermission(permission: string) {
         if (formData.permissions.includes(permission)) {
             formData.permissions = formData.permissions.filter(p => p !== permission);
@@ -154,9 +224,40 @@
         }
     }
 
+    function categorySelectedCount(category: typeof permissionCategories[0]): number {
+        return category.permissions.filter(permission => formData.permissions.includes(permission)).length;
+    }
+
+    function isPermissionCategoryExpanded(categoryName: string): boolean {
+        return expandedPermissionCategories.includes(categoryName);
+    }
+
+    function togglePermissionCategory(categoryName: string) {
+        if (isPermissionCategoryExpanded(categoryName)) {
+            expandedPermissionCategories = expandedPermissionCategories.filter(name => name !== categoryName);
+        } else {
+            expandedPermissionCategories = [...expandedPermissionCategories, categoryName];
+        }
+    }
+
+    function expandPermissionCategories() {
+        expandedPermissionCategories = permissionCategories.map(category => category.name);
+    }
+
+    function collapsePermissionCategories() {
+        expandedPermissionCategories = [];
+    }
+
     async function handleSubmit() {
         if (!formData.name || !formData.displayName) {
             toast.error(t("roles.fillRequired"));
+            return;
+        }
+        // A role saved with nothing checked grants nothing but is otherwise
+        // indistinguishable from a real one in the list — found live where
+        // this silently locked out a newly-approved store owner entirely.
+        if (!formData.permissions || formData.permissions.length === 0) {
+            toast.error('ກະລຸນາເລືອກຢ່າງໜ້ອຍໜຶ່ງສິດ — ບົດບາດທີ່ບໍ່ມີສິດຈະໃຊ້ງານບໍ່ໄດ້ເລີຍ');
             return;
         }
 
@@ -173,7 +274,12 @@
             await loadRoles();
         } catch (error) {
             console.error("Failed to save role:", error);
-            toast.error(t("roles.saveFailed"));
+            try {
+                const body = await (error as any)?.response?.json?.();
+                toast.error(body?.error?.message || t("roles.saveFailed"));
+            } catch {
+                toast.error(t("roles.saveFailed"));
+            }
         } finally {
             isSaving = false;
         }
@@ -186,7 +292,7 @@
             return;
         }
         
-        if (!confirm(t("roles.confirmDelete"))) return;
+        if (!(await dialogStore.confirm(t("roles.confirmDelete")))) return;
 
         try {
             await api.delete(`roles/${id}`).json();
@@ -198,9 +304,14 @@
         }
     }
 
-    function getPermissionLabel(permission: string): string {
-        const [module, action] = permission.split(":");
-        return `${action.charAt(0).toUpperCase() + action.slice(1)}`;
+    function getPermissionLabel(permission: unknown): string {
+        // Custom/system role payloads can contain a blank entry while the
+        // permission catalog is being migrated. Keep the roles page usable
+        // instead of calling charAt() on undefined and crashing the route.
+        const permissionKey = typeof permission === "string" ? permission.trim() : "";
+        const [, rawAction] = permissionKey.split(":");
+        const action = (rawAction || permissionKey || "permission").trim();
+        return action.charAt(0).toUpperCase() + action.slice(1);
     }
 </script>
 
@@ -215,9 +326,14 @@
             <h1 class="text-2xl font-bold text-gray-900 dark:text-white">
                 {t("roles.title")}
             </h1>
-            <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                {t("roles.subtitle")}
-            </p>
+                    <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
+                        {t("roles.subtitle")}
+                    </p>
+                    {#if excludedPermissionCount > 0}
+                        <p class="mt-2 max-w-3xl rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+                            ສະແດງສະເພາະສິດທີ່ບັນຊີຂອງທ່ານສາມາດມອບຕໍ່ໄດ້. {excludedPermissionCount} ສິດຖືກຈຳກັດໂດຍ Super Admin.
+                        </p>
+                    {/if}
         </div>
         {#if canCreate}
         <button
@@ -231,6 +347,57 @@
             {t("roles.createNew")}
         </button>
         {/if}
+    </div>
+
+    <!-- Maker-Checker Approval Policy -->
+    <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm mb-6 border border-gray-200 dark:border-gray-700 p-4">
+        <div class="flex items-start gap-3">
+            <div class="p-2 bg-primary-50 dark:bg-primary-900/20 rounded-lg shrink-0">
+                <ShieldCheck class="w-5 h-5 text-primary-600 dark:text-primary-400" />
+            </div>
+            <div class="flex-1 min-w-0">
+                <h2 class="font-semibold text-gray-900 dark:text-white">ນະໂຍບາຍ Maker-Checker</h2>
+                <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
+                    ຜູ້ທີ່ສ້າງລາຍການ (Maker) ຈະບໍ່ສາມາດອະນຸມັດລາຍການຂອງຕົນເອງໄດ້. ກຳນົດສິດ Checker ໃນ Role ແລະເປີດ/ປິດບົດບາດ Maker, Checker ໃຫ້ລາຍຄົນຢູ່ໜ້າ Staff.
+                </p>
+                {#if policyLoading}
+                    <div class="flex items-center gap-2 mt-3 text-sm text-gray-500 dark:text-gray-400">
+                        <Loader2 class="w-4 h-4 animate-spin" /> ກຳລັງໂຫຼດ...
+                    </div>
+                {:else}
+                    <label class="flex items-center justify-between gap-4 mt-3 p-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 max-w-xl">
+                        <span class="text-sm font-medium text-gray-900 dark:text-white">
+                            ບັງຄັບໃຊ້ Maker-Checker (ຫ້າມອະນຸມັດລາຍການຂອງຕົນເອງ)
+                        </span>
+                        <input
+                            type="checkbox"
+                            bind:checked={requireMakerChecker}
+                            disabled={!canEditPolicy}
+                            class="w-5 h-5 shrink-0 disabled:opacity-50"
+                        />
+                    </label>
+                    {#if canEditPolicy}
+                        <button
+                            type="button"
+                            onclick={savePolicy}
+                            disabled={policySaving}
+                            class="flex items-center gap-2 mt-3 px-4 py-2 text-sm rounded-lg bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50"
+                        >
+                            {#if policySaving}
+                                <Loader2 class="w-4 h-4 animate-spin" />
+                            {:else}
+                                <Save class="w-4 h-4" />
+                            {/if}
+                            ບັນທຶກ
+                        </button>
+                    {:else}
+                        <p class="text-xs text-amber-600 dark:text-amber-400 mt-2">
+                            ສະເພາະ owner ຫຼື super admin ເທົ່ານັ້ນທີ່ປ່ຽນນະໂຍບາຍນີ້ໄດ້
+                        </p>
+                    {/if}
+                {/if}
+            </div>
+        </div>
     </div>
 
     <!-- Search -->
@@ -298,9 +465,14 @@
                                             System
                                         </span>
                                     {/if}
-                                    {#if getRoleLevel(role.name) !== null}
+                                    {#if role.isTemplate}
+                                        <span class="px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300 rounded-full">
+                                            Template · Copy to tenant
+                                        </span>
+                                    {/if}
+                                    {#if getRoleLevel(role) !== null}
                                         <span class="px-2 py-0.5 text-xs font-medium bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400 rounded-full">
-                                            {t("common.level")} {getRoleLevel(role.name)}
+                                            {t("common.level")} {getRoleLevel(role)}
                                         </span>
                                     {/if}
                                 </div>
@@ -330,13 +502,17 @@
                                     <ChevronRight class="w-5 h-5" />
                                 {/if}
                             </button>
-                            {#if canUpdate && !role.isSystem}
+                            {#if canEditRole(role)}
                             <button
                                 onclick={() => openModal(role)}
                                 class="p-2 text-gray-500 hover:text-primary-600 dark:text-gray-400 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
                             >
                                 <Edit class="w-4 h-4" />
                             </button>
+                            {:else if role.isSystem}
+                                <span class="p-2 text-gray-400 dark:text-gray-500" title="System role">
+                                    <Lock class="w-4 h-4" />
+                                </span>
                             {/if}
                             {#if canDelete && !role.isSystem}
                                 <button
@@ -445,43 +621,119 @@
                     ></textarea>
                 </div>
 
+                <div class="flex items-start gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-800 dark:bg-emerald-900/20">
+                    <ShieldCheck class="mt-0.5 h-5 w-5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                    <div>
+                        <p class="text-sm font-semibold text-emerald-800 dark:text-emerald-300">Tenant Role — Store / Branch scope</p>
+                        <p class="mt-1 text-xs text-emerald-700 dark:text-emerald-400">
+                            Role ນີ້ໃຊ້ສຳລັບ store/branch ຂອງເຈົ້າເທົ່ານັ້ນ. ໜ້ານີ້ກຳນົດສິດຂອງ Role, ບໍ່ໄດ້ກຳນົດສິດສະເພາະບຸກຄົນ. ການກຳນົດ user override ໃຫ້ເຮັດໃນ Staff → Permissions.
+                        </p>
+                    </div>
+                </div>
+
                 <!-- Permissions -->
                 <div>
-                    <p class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
-                        {t("roles.permissions")}
-                    </p>
-                    <div class="space-y-3 max-h-[300px] overflow-y-auto">
+                    <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                        <div>
+                            <p class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                                {t("roles.permissions")} · Role Permissions
+                            </p>
+                            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                                ເລືອກສິດຕາມ menu ແລະ sub-menu. CRUD ລະດັບ module ກວດ/ແກ້ໃນ Access Control.
+                            </p>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <span class="text-xs font-medium text-primary-700 dark:text-primary-300 bg-primary-50 dark:bg-primary-900/30 px-2.5 py-1 rounded-full">
+                                {formData.permissions.length} / {permissionCategories.reduce((total, category) => total + category.permissions.length, 0)} ສິດ
+                            </span>
+                            <button
+                                type="button"
+                                onclick={expandPermissionCategories}
+                                class="text-xs text-primary-600 dark:text-primary-400 hover:underline"
+                            >
+                                ຂະຫຍາຍທັງໝົດ
+                            </button>
+                            <button
+                                type="button"
+                                onclick={collapsePermissionCategories}
+                                class="text-xs text-gray-500 dark:text-gray-400 hover:underline"
+                            >
+                                ຫຍໍ້ທັງໝົດ
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Permission tree with custom node content -->
+                    <div class="rounded-2xl border border-slate-200/80 bg-gradient-to-br from-slate-50 via-white to-primary-50/50 shadow-inner dark:border-slate-700 dark:from-slate-900 dark:via-gray-800 dark:to-primary-950/20 overflow-hidden max-h-[360px] overflow-y-auto">
                         {#each permissionCategories as category (category.name)}
-                            {@const allSelected = category.permissions.every(p => formData.permissions.includes(p))}
-                            {@const someSelected = category.permissions.some(p => formData.permissions.includes(p))}
-                            <div class="border border-gray-200 dark:border-gray-700 rounded-xl p-3">
-                                <div class="flex items-center justify-between mb-2">
-                                    <label class="flex items-center gap-2 cursor-pointer">
+                            {@const selectedCount = categorySelectedCount(category)}
+                            {@const allSelected = selectedCount === category.permissions.length && category.permissions.length > 0}
+                            {@const someSelected = selectedCount > 0 && !allSelected}
+                            {@const categoryExpanded = isPermissionCategoryExpanded(category.name)}
+                            <div class="border-b last:border-b-0 border-slate-200/80 dark:border-slate-700/80">
+                                <!-- Custom parent node -->
+                                <div class={cn(
+                                    "group flex items-center gap-2 px-3 py-3 transition-colors",
+                                    selectedCount > 0 ? "bg-primary-50/70 dark:bg-primary-950/20" : "bg-white/60 hover:bg-white dark:bg-gray-800/50 dark:hover:bg-gray-700/50"
+                                )}>
+                                    <button
+                                        type="button"
+                                        aria-label={categoryExpanded ? `ຫຍໍ້ ${category.label}` : `ຂະຫຍາຍ ${category.label}`}
+                                        aria-expanded={categoryExpanded}
+                                        onclick={() => togglePermissionCategory(category.name)}
+                                        class="p-1.5 rounded-lg text-slate-400 hover:text-primary-700 dark:text-slate-500 dark:hover:text-primary-300 hover:bg-primary-100 dark:hover:bg-primary-900/30 transition-colors"
+                                    >
+                                        {#if categoryExpanded}
+                                            <ChevronDown class="w-4 h-4" />
+                                        {:else}
+                                            <ChevronRight class="w-4 h-4" />
+                                        {/if}
+                                    </button>
+                                    <label class="flex flex-1 min-w-0 items-center gap-2 cursor-pointer">
                                         <input
                                             type="checkbox"
                                             checked={allSelected}
                                             indeterminate={someSelected && !allSelected}
                                             onchange={() => toggleCategory(category)}
-                                            class="rounded border-gray-300 dark:border-gray-600 text-primary-600 focus:ring-primary-500"
+                                            class="h-4 w-4 rounded border-slate-300 text-primary-600 focus:ring-primary-500 dark:border-slate-600"
                                         />
-                                        <span class="font-medium text-gray-900 dark:text-white">{category.label}</span>
+                                        <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-primary-500 to-cyan-500 text-xs font-bold text-white shadow-sm shadow-primary-500/25">{category.label.charAt(0).toUpperCase()}</span>
+                                        <span class="font-semibold text-gray-900 dark:text-white truncate">{category.label}</span>
+                                        <span class="ml-auto shrink-0 rounded-full bg-white/80 px-2 py-1 text-[11px] font-semibold text-slate-500 ring-1 ring-slate-200 dark:bg-slate-800/80 dark:text-slate-300 dark:ring-slate-700">
+                                            {selectedCount}/{category.permissions.length}
+                                        </span>
                                     </label>
                                 </div>
-                                <div class="flex flex-wrap gap-2 ml-6">
-                                    {#each category.permissions as permission (permission)}
-                                        <label class="flex items-center gap-1.5 cursor-pointer">
-                                            <input
-                                                type="checkbox"
-                                                checked={formData.permissions.includes(permission)}
-                                                onchange={() => togglePermission(permission)}
-                                                class="rounded border-gray-300 dark:border-gray-600 text-primary-600 focus:ring-primary-500"
-                                            />
-                                            <span class="text-sm text-gray-600 dark:text-gray-400">
-                                                {getPermissionLabel(permission)}
-                                            </span>
-                                        </label>
-                                    {/each}
-                                </div>
+                                {#if categoryExpanded}
+                                    <!-- Custom child nodes -->
+                                    <div role="group" class="relative ml-9 border-l border-dashed border-primary-200 pb-3 pl-5 pr-3 dark:border-primary-900/60">
+                                        {#each category.permissions as permission (permission)}
+                                            {@const action = String(permission).split(':').pop()?.toUpperCase() || 'VIEW'}
+                                            {@const selected = formData.permissions.includes(permission)}
+                                            <label class={cn(
+                                                "relative flex items-center gap-2 rounded-xl px-2.5 py-2 cursor-pointer transition-all",
+                                                selected ? "bg-white shadow-sm ring-1 ring-primary-200 dark:bg-slate-800 dark:ring-primary-900/70" : "hover:bg-white/80 dark:hover:bg-slate-800/70"
+                                            )}>
+                                                <input
+                                                    type="checkbox"
+                                                    checked={selected}
+                                                    onchange={() => togglePermission(permission)}
+                                                    class="h-4 w-4 rounded border-slate-300 text-primary-600 focus:ring-primary-500 dark:border-slate-600"
+                                                />
+                                                <span class={cn(
+                                                    "inline-flex min-w-12 justify-center rounded-md px-1.5 py-0.5 text-[10px] font-bold tracking-wide",
+                                                    selected ? "bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300" : "bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-300"
+                                                )}>{action}</span>
+                                                <span class={cn("text-sm", selected ? "font-medium text-slate-900 dark:text-white" : "text-slate-600 dark:text-slate-300")}>
+                                                    {getPermissionLabel(permission)}
+                                                </span>
+                                                <code class="ml-auto hidden text-[10px] text-slate-400 dark:text-slate-500 sm:inline">
+                                                    {permission}
+                                                </code>
+                                            </label>
+                                        {/each}
+                                    </div>
+                                {/if}
                             </div>
                         {/each}
                     </div>

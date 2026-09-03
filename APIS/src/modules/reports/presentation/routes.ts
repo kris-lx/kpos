@@ -6,7 +6,8 @@ import { Router } from 'express';
 import { authenticate, authorize, branchFilter, applyScopeFilter, buildScopeCondition, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
 import { db as globalDb } from '@/config/database.config';
-import { transactions, transactionItems, transactionPayments, products, customers, inventory, users, promotions, coupons, pointsHistory, members, membershipTiers, branches, shifts } from '@/db/schema/tables';
+import { transactions, transactionItems, transactionPayments, products, customers, inventory, users, promotions, coupons, pointsHistory, members, membershipTiers, branches, shifts, expenses, payrollPeriods } from '@/db/schema/tables';
+import { queryInChunks } from '@/infrastructure/helpers/chunked-query.helper';
 import { eq, and, or, not, ilike, inArray, isNotNull, isNull, gte, lte, lt, desc, asc, count, sum, sql } from 'drizzle-orm';
 import { computeDerivedFields, sortByTotalSales, summarise } from '../domain/branch-compare.js';
 
@@ -15,7 +16,7 @@ export const reportRoutes = Router();
 // ═══════════════════════════════════════════════════════════════════════════
 // DASHBOARD SUMMARY
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/summary', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
+reportRoutes.get('/summary', authenticate, withTenantTx(), authorize('reports:sales'), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const dbRead = db;
@@ -119,7 +120,7 @@ reportRoutes.get('/summary', authenticate, withTenantTx(), branchFilter(), async
 // ═══════════════════════════════════════════════════════════════════════════
 // SALES REPORT
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/sales', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
+reportRoutes.get('/sales', authenticate, withTenantTx(), authorize('reports:sales'), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const dbRead = db;
@@ -191,7 +192,7 @@ reportRoutes.get('/sales', authenticate, withTenantTx(), branchFilter(), async (
 // ═══════════════════════════════════════════════════════════════════════════
 // TOP PRODUCTS REPORT
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/top-products', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
+reportRoutes.get('/top-products', authenticate, withTenantTx(), authorize('reports:products'), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const dbRead = db;
@@ -248,7 +249,7 @@ reportRoutes.get('/top-products', authenticate, withTenantTx(), branchFilter(), 
 // ═══════════════════════════════════════════════════════════════════════════
 // INVENTORY REPORT
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/inventory', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
+reportRoutes.get('/inventory', authenticate, withTenantTx(), authorize('reports:inventory'), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const dbRead = db;
@@ -344,7 +345,7 @@ reportRoutes.get('/inventory', authenticate, withTenantTx(), branchFilter(), asy
 // ═══════════════════════════════════════════════════════════════════════════
 // PAYMENT METHODS REPORT
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/payments', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
+reportRoutes.get('/payments', authenticate, withTenantTx(), authorize('reports:payments'), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const dbRead = db;
@@ -393,7 +394,7 @@ reportRoutes.get('/payments', authenticate, withTenantTx(), branchFilter(), asyn
 // ═══════════════════════════════════════════════════════════════════════════
 // CUSTOMER REPORT
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/customers', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
+reportRoutes.get('/customers', authenticate, withTenantTx(), authorize('reports:customers'), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const dbRead = db;
@@ -544,7 +545,7 @@ reportRoutes.get('/customers', authenticate, withTenantTx(), branchFilter(), asy
 // ═══════════════════════════════════════════════════════════════════════════
 // PRODUCTS REPORT (with sales data)
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/products', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
+reportRoutes.get('/products', authenticate, withTenantTx(), authorize('reports:products'), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const dbRead = db;
@@ -649,6 +650,7 @@ reportRoutes.get('/financial', authenticate, withTenantTx(), authorize('reports:
         // Calculate date range based on period
         const now = new Date();
         let start: Date;
+        let currentEnd: Date = new Date(now);
         let previousStart: Date;
         let previousEnd: Date;
 
@@ -656,6 +658,8 @@ reportRoutes.get('/financial', authenticate, withTenantTx(), authorize('reports:
             case 'day':
                 start = new Date(now);
                 start.setHours(0, 0, 0, 0);
+                currentEnd = new Date(start);
+                currentEnd.setDate(currentEnd.getDate() + 1);
                 previousStart = new Date(start);
                 previousStart.setDate(previousStart.getDate() - 1);
                 previousEnd = new Date(start);
@@ -682,7 +686,7 @@ reportRoutes.get('/financial', authenticate, withTenantTx(), authorize('reports:
                 previousEnd = new Date(start);
         }
 
-        const finConds: any[] = [eq(transactions.type, 'SALE'), eq(transactions.status, 'COMPLETED'), gte(transactions.createdAt, start)];
+        const finConds: any[] = [eq(transactions.type, 'SALE'), eq(transactions.status, 'COMPLETED'), gte(transactions.createdAt, start), lt(transactions.createdAt, currentEnd)];
         // BE-76: Tenant isolation
         const tenantId = req.authUser?.tenantId;
         if (tenantId && !req.authUser?.isSuperAdmin) finConds.push(eq(transactions.tenantId, tenantId));
@@ -696,17 +700,20 @@ reportRoutes.get('/financial', authenticate, withTenantTx(), authorize('reports:
         if (!filter && branchId)prevConds.push(eq(transactions.branchId, branchId));
 
         const [[currentSales], [previousSales]] = await Promise.all([
-            dbRead.select({ total: sum(transactions.total), tax: sum(transactions.taxAmount), discount: sum(transactions.discountAmount) }).from(transactions).where(and(...finConds)),
-            dbRead.select({ total: sum(transactions.total) }).from(transactions).where(and(...prevConds)),
+            dbRead.select({ subtotal: sum(transactions.subtotal), tax: sum(transactions.taxAmount), discount: sum(sql`${transactions.discountAmount} + ${transactions.pointsRedeemAmount}`) }).from(transactions).where(and(...finConds)),
+            dbRead.select({ subtotal: sum(transactions.subtotal), discount: sum(sql`${transactions.discountAmount} + ${transactions.pointsRedeemAmount}`) }).from(transactions).where(and(...prevConds)),
         ]);
 
         const finTxIds = await dbRead.query.transactions.findMany({ where: and(...finConds), columns: { id: true } });
         const transactionIds = finTxIds.map(t => t.id);
+        const prevTxIds = await dbRead.query.transactions.findMany({ where: and(...prevConds), columns: { id: true } });
+        const previousTransactionIds = prevTxIds.map(t => t.id);
 
         let cogs = 0;
+        let previousCogs = 0;
         let payments: { methodName: string | null; total: string | null; cnt: number }[] = [];
         if (transactionIds.length > 0) {
-            const [cogsRow] = await dbRead.select({ cost: sum(transactionItems.cost) }).from(transactionItems).where(inArray(transactionItems.transactionId, transactionIds));
+            const [cogsRow] = await dbRead.select({ cost: sum(sql`${transactionItems.cost} * ${transactionItems.quantity}`) }).from(transactionItems).where(inArray(transactionItems.transactionId, transactionIds));
             cogs = Number(cogsRow.cost) || 0;
 
             payments = await dbRead.select({
@@ -717,10 +724,43 @@ reportRoutes.get('/financial', authenticate, withTenantTx(), authorize('reports:
                 .where(inArray(transactionPayments.transactionId, transactionIds))
                 .groupBy(transactionPayments.methodName);
         }
+        if (previousTransactionIds.length > 0) {
+            const [previousCogsRow] = await dbRead.select({ cost: sum(sql`${transactionItems.cost} * ${transactionItems.quantity}`) }).from(transactionItems).where(inArray(transactionItems.transactionId, previousTransactionIds));
+            previousCogs = Number(previousCogsRow.cost) || 0;
+        }
 
-        const revenue = Number(currentSales.total) || 0;
-        const expenses = cogs;
-        const profit = revenue - expenses;
+        const revenue = Number(currentSales.subtotal || 0) - Number(currentSales.discount || 0);
+        const previousRevenue = Number(previousSales.subtotal || 0) - Number(previousSales.discount || 0);
+
+        const ledgerScope = buildScopeCondition(filter, { storeId: expenses.storeId, branchId: expenses.branchId }, 'storeId');
+        const expenseConds: any[] = [gte(expenses.expenseDate, start), lt(expenses.expenseDate, currentEnd), inArray(expenses.status, ['APPROVED', 'PAID'])];
+        const previousExpenseConds: any[] = [gte(expenses.expenseDate, previousStart), lt(expenses.expenseDate, previousEnd), inArray(expenses.status, ['APPROVED', 'PAID'])];
+        if (tenantId && !req.authUser?.isSuperAdmin) { expenseConds.push(eq(expenses.tenantId, tenantId)); previousExpenseConds.push(eq(expenses.tenantId, tenantId)); }
+        if (ledgerScope) { expenseConds.push(ledgerScope); previousExpenseConds.push(ledgerScope); }
+        if (!filter && branchId) { expenseConds.push(eq(expenses.branchId, branchId)); previousExpenseConds.push(eq(expenses.branchId, branchId)); }
+        const [[expenseTotal], [previousExpenseTotal]] = await Promise.all([
+            dbRead.select({ total: sum(expenses.amount) }).from(expenses).where(and(...expenseConds)),
+            dbRead.select({ total: sum(expenses.amount) }).from(expenses).where(and(...previousExpenseConds)),
+        ]);
+        const operatingExpenses = Number(expenseTotal?.total || 0);
+        const previousOperatingExpenses = Number(previousExpenseTotal?.total || 0);
+
+        const payrollScope = buildScopeCondition(filter, { storeId: payrollPeriods.storeId, branchId: payrollPeriods.branchId }, 'storeId');
+        const payrollConds: any[] = [gte(payrollPeriods.periodStart, start), lt(payrollPeriods.periodStart, currentEnd), inArray(payrollPeriods.status, ['APPROVED', 'PARTIALLY_PAID', 'PAID', 'CLOSED'])];
+        const previousPayrollConds: any[] = [gte(payrollPeriods.periodStart, previousStart), lt(payrollPeriods.periodStart, previousEnd), inArray(payrollPeriods.status, ['APPROVED', 'PARTIALLY_PAID', 'PAID', 'CLOSED'])];
+        if (tenantId && !req.authUser?.isSuperAdmin) { payrollConds.push(eq(payrollPeriods.tenantId, tenantId)); previousPayrollConds.push(eq(payrollPeriods.tenantId, tenantId)); }
+        if (payrollScope) { payrollConds.push(payrollScope); previousPayrollConds.push(payrollScope); }
+        if (!filter && branchId) { payrollConds.push(eq(payrollPeriods.branchId, branchId)); previousPayrollConds.push(eq(payrollPeriods.branchId, branchId)); }
+        const [[payrollTotal], [previousPayrollTotal]] = await Promise.all([
+            dbRead.select({ total: sum(payrollPeriods.totalEmployerCost) }).from(payrollPeriods).where(and(...payrollConds)),
+            dbRead.select({ total: sum(payrollPeriods.totalEmployerCost) }).from(payrollPeriods).where(and(...previousPayrollConds)),
+        ]);
+        const payrollExpense = Number(payrollTotal?.total || 0);
+        const previousPayrollExpense = Number(previousPayrollTotal?.total || 0);
+        const grossProfit = revenue - cogs;
+        const totalExpenses = cogs + operatingExpenses + payrollExpense;
+        const profit = grossProfit - operatingExpenses - payrollExpense;
+        const previousExpenses = previousCogs + previousOperatingExpenses + previousPayrollExpense;
 
         const totalPaymentAmount = payments.reduce((s, p) => s + (Number(p.total) || 0), 0) || 1;
         const paymentMethods = payments.map(p => ({
@@ -735,7 +775,7 @@ reportRoutes.get('/financial', authenticate, withTenantTx(), authorize('reports:
 
         const dailyTransactions = await dbRead.query.transactions.findMany({
             where: and(...finConds),
-            columns: { id: true, total: true, createdAt: true },
+            columns: { id: true, subtotal: true, discountAmount: true, pointsRedeemAmount: true, taxAmount: true, createdAt: true },
             with: { items: { columns: { cost: true, quantity: true } } },
             orderBy: asc(transactions.createdAt),
         });
@@ -744,7 +784,7 @@ reportRoutes.get('/financial', authenticate, withTenantTx(), authorize('reports:
         for (const t of dailyTransactions) {
             const date = t.createdAt.toISOString().split('T')[0];
             if (!dailyMap[date]) dailyMap[date] = { revenue: 0, expenses: 0, transactions: 0 };
-            dailyMap[date].revenue += t.total;
+            dailyMap[date].revenue += (t.subtotal || 0) - (t.discountAmount || 0) - (t.pointsRedeemAmount || 0);
             dailyMap[date].expenses += (t.items || []).reduce((sum: number, item: any) => sum + ((item.cost || 0) * (item.quantity || 1)), 0);
             dailyMap[date].transactions += 1;
         }
@@ -759,11 +799,16 @@ reportRoutes.get('/financial', authenticate, withTenantTx(), authorize('reports:
             success: true,
             data: {
                 revenue,
-                expenses,
+                expenses: totalExpenses,
                 profit,
                 profitMargin: revenue > 0 ? Math.round((profit / revenue) * 100 * 10) / 10 : 0,
-                previousRevenue: Number(previousSales.total) || 0,
-                previousExpenses: 0,
+                grossSales: Number(currentSales.subtotal || 0),
+                grossProfit,
+                operatingExpenses,
+                payrollExpense,
+                netProfit: profit,
+                previousRevenue,
+                previousExpenses,
                 cogs,
                 taxCollected: Number(currentSales.tax) || 0,
                 discountsGiven: Number(currentSales.discount) || 0,
@@ -779,7 +824,7 @@ reportRoutes.get('/financial', authenticate, withTenantTx(), authorize('reports:
 // ═══════════════════════════════════════════════════════════════════════════
 // STAFF REPORT
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/staff', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
+reportRoutes.get('/staff', authenticate, withTenantTx(), authorize('reports:staff'), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const dbRead = db;
@@ -932,7 +977,7 @@ reportRoutes.get('/staff', authenticate, withTenantTx(), branchFilter(), async (
 // ═══════════════════════════════════════════════════════════════════════════
 // R-01  PERIOD COMPARE
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/period-compare', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
+reportRoutes.get('/period-compare', authenticate, withTenantTx(), authorize('reports:sales'), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const dbRead = db;
@@ -976,7 +1021,7 @@ reportRoutes.get('/period-compare', authenticate, withTenantTx(), branchFilter()
 // ═══════════════════════════════════════════════════════════════════════════
 // R-03  STAFF PERFORMANCE (enhanced: voidCount + discountTotal)
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/staff-performance', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
+reportRoutes.get('/staff-performance', authenticate, withTenantTx(), authorize('reports:staff'), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const dbRead = db;
@@ -1016,7 +1061,7 @@ reportRoutes.get('/staff-performance', authenticate, withTenantTx(), branchFilte
 // ═══════════════════════════════════════════════════════════════════════════
 // R-04  BEST-SELLING PRODUCTS (with cost + gross profit)
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/products/best-selling', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
+reportRoutes.get('/products/best-selling', authenticate, withTenantTx(), authorize('reports:products'), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const dbRead = db;
@@ -1049,7 +1094,7 @@ reportRoutes.get('/products/best-selling', authenticate, withTenantTx(), branchF
 // ═══════════════════════════════════════════════════════════════════════════
 // R-05  PROMOTIONS PERFORMANCE
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/promotions', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
+reportRoutes.get('/promotions', authenticate, withTenantTx(), authorize('reports:promotions'), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const dbRead = db;
@@ -1098,7 +1143,7 @@ reportRoutes.get('/promotions', authenticate, withTenantTx(), branchFilter(), as
 // ═══════════════════════════════════════════════════════════════════════════
 // R-06  LOYALTY STATS
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/loyalty', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
+reportRoutes.get('/loyalty', authenticate, withTenantTx(), authorize('reports:customers'), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const dbRead = db;
@@ -1130,7 +1175,7 @@ reportRoutes.get('/loyalty', authenticate, withTenantTx(), branchFilter(), async
 // ═══════════════════════════════════════════════════════════════════════════
 // R-02  BRANCH COMPARE
 // ═══════════════════════════════════════════════════════════════════════════
-reportRoutes.get('/branch-compare', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
+reportRoutes.get('/branch-compare', authenticate, withTenantTx(), authorize('reports:sales'), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const dbRead = db;
@@ -1163,38 +1208,47 @@ reportRoutes.get('/branch-compare', authenticate, withTenantTx(), branchFilter()
 
         const branchIds = branchRows.map(b => b.id);
 
-        // Fetch sales per branch for the period
-        const salesRows = await dbRead
-            .select({
-                branchId: transactions.branchId,
-                totalSales: sum(transactions.total),
-                orderCount: count(),
-                discountTotal: sum(transactions.discountAmount),
-                taxTotal: sum(transactions.taxAmount),
-            })
-            .from(transactions)
-            .where(and(
-                eq(transactions.type, 'SALE'),
-                eq(transactions.status, 'COMPLETED'),
-                gte(transactions.createdAt, start),
-                lte(transactions.createdAt, end),
-                inArray(transactions.branchId, branchIds),
-                ...(tenantId && !isSuperAdmin ? [eq(transactions.tenantId, tenantId)] : []),
-            ))
-            .groupBy(transactions.branchId);
+        // Fetch sales per branch for the period. Chunked — an unscoped
+        // super_admin call here can pull 100k+ branch ids (this repo's
+        // largest scale-test tenant), and a single inArray() over all of
+        // them blows past Postgres's 65,534-bound-parameter limit
+        // (MAX_PARAMETERS_EXCEEDED, the exact error this endpoint was
+        // 500ing on for super_admin).
+        const salesRows = await queryInChunks(branchIds, (batch) =>
+            dbRead
+                .select({
+                    branchId: transactions.branchId,
+                    totalSales: sum(transactions.total),
+                    orderCount: count(),
+                    discountTotal: sum(transactions.discountAmount),
+                    taxTotal: sum(transactions.taxAmount),
+                })
+                .from(transactions)
+                .where(and(
+                    eq(transactions.type, 'SALE'),
+                    eq(transactions.status, 'COMPLETED'),
+                    gte(transactions.createdAt, start),
+                    lte(transactions.createdAt, end),
+                    inArray(transactions.branchId, batch),
+                    ...(tenantId && !isSuperAdmin ? [eq(transactions.tenantId, tenantId)] : []),
+                ))
+                .groupBy(transactions.branchId)
+        );
 
         // Fetch void count per branch
-        const voidRows = await dbRead
-            .select({ branchId: transactions.branchId, voidCount: count() })
-            .from(transactions)
-            .where(and(
-                eq(transactions.status, 'VOIDED'),
-                gte(transactions.createdAt, start),
-                lte(transactions.createdAt, end),
-                inArray(transactions.branchId, branchIds),
-                ...(tenantId && !isSuperAdmin ? [eq(transactions.tenantId, tenantId)] : []),
-            ))
-            .groupBy(transactions.branchId);
+        const voidRows = await queryInChunks(branchIds, (batch) =>
+            dbRead
+                .select({ branchId: transactions.branchId, voidCount: count() })
+                .from(transactions)
+                .where(and(
+                    eq(transactions.status, 'VOIDED'),
+                    gte(transactions.createdAt, start),
+                    lte(transactions.createdAt, end),
+                    inArray(transactions.branchId, batch),
+                    ...(tenantId && !isSuperAdmin ? [eq(transactions.tenantId, tenantId)] : []),
+                ))
+                .groupBy(transactions.branchId)
+        );
 
         const salesMap = new Map(salesRows.map(r => [r.branchId, r]));
         const voidMap = new Map(voidRows.map(r => [r.branchId, Number(r.voidCount) || 0]));

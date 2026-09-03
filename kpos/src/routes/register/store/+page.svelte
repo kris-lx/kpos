@@ -2,7 +2,7 @@
     import { themeStore } from "$stores";
     import { goto } from "$app/navigation";
     import { api } from "$lib/api";
-    import { onMount } from "svelte";
+    import { onMount, onDestroy } from "svelte";
     import {
         Store, Sun, Moon, Building2,
         MapPin, Phone, Mail, FileText, Upload,
@@ -12,7 +12,7 @@
     } from "lucide-svelte";
     import { toast } from "svelte-sonner";
     import { t } from '$lib/i18n/index.svelte';
-    import { cn, enforcePhoneInput, isValidLaoPhone } from "$utils";
+    import { cn, enforcePhoneInput, isValidLaoPhone, validateFile } from "$utils";
 
     // Steps: 1=Account, 2=Business, 3=KYC, 4=Review
     let currentStep = $state(1);
@@ -25,6 +25,27 @@
     let isSubmitted = $state(false);
     let error = $state("");
     let submittedUserId = $state("");
+
+    // Auto-redirect to /login after a countdown — standard international
+    // SaaS/ERP onboarding UX (Odoo, Stripe Connect, QuickBooks all redirect
+    // to a sign-in/status screen after a pending-approval submission rather
+    // than leaving the user stranded on a dead-end success page). The
+    // manual button stays as a fallback for anyone who wants to leave sooner.
+    const REDIRECT_SECONDS = 8;
+    let redirectCountdown = $state(REDIRECT_SECONDS);
+    let redirectTimer: ReturnType<typeof setInterval> | null = null;
+
+    function startRedirectCountdown() {
+        redirectCountdown = REDIRECT_SECONDS;
+        if (redirectTimer) clearInterval(redirectTimer);
+        redirectTimer = setInterval(() => {
+            redirectCountdown--;
+            if (redirectCountdown <= 0) {
+                if (redirectTimer) clearInterval(redirectTimer);
+                goto("/login");
+            }
+        }, 1000);
+    }
 
     // Password strength
     let passwordStrength = $derived.by(() => {
@@ -127,21 +148,22 @@
     function next() { if (validateStep() && currentStep < totalSteps) currentStep++; }
     function prev() { if (currentStep > 1) currentStep--; }
 
-    function handleFileUpload(e: Event) {
-        const t = e.target as HTMLInputElement;
-        if (t.files) {
-            const maxSize = 5 * 1024 * 1024; // 5MB
-            const validFiles = Array.from(t.files).filter(f => {
-                if (f.size > maxSize) {
-                    toast.error(`${f.name} ມີຂະໜາດໃຫຍ່ເກີນ (ສູງສຸດ 5MB)`);
-                    return false;
-                }
-                return true;
-            });
+    async function handleFileUpload(e: Event) {
+        const input = e.target as HTMLInputElement;
+        if (input.files) {
+            const validFiles: File[] = [];
+            for (const f of Array.from(input.files)) {
+                if (await validateFile(f)) validFiles.push(f);
+            }
             form.documents = [...form.documents, ...validFiles];
+            input.value = "";
         }
     }
     function removeFile(i: number) { form.documents = form.documents.filter((_, idx) => idx !== i); }
+
+    onDestroy(() => {
+        if (redirectTimer) clearInterval(redirectTimer);
+    });
 
     function fileToBase64(file: File): Promise<string> {
         return new Promise((resolve, reject) => {
@@ -191,6 +213,7 @@
                 submittedUserId = res.data?.userId || "";
                 isSubmitted = true;
                 toast.success("ສົ່ງຄຳຮ້ອງສຳເລັດ! ລໍຖ້າການອະນຸມັດ");
+                startRedirectCountdown();
             } else {
                 error = res.error?.message || "ສົ່ງຄຳຮ້ອງບໍ່ສຳເລັດ";
             }
@@ -251,6 +274,9 @@
                 <a href="/login" class="inline-flex items-center gap-2 px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white rounded-xl font-medium transition-colors">
                     ໄປໜ້າເຂົ້າສູ່ລະບົບ
                 </a>
+                <p class="text-gray-400 dark:text-gray-500 text-xs mt-4">
+                    ຈະໄປໜ້າເຂົ້າສູ່ລະບົບອັດຕະໂນມັດໃນ {redirectCountdown} ວິນາທີ...
+                </p>
             </div>
         {:else}
             <!-- Progress Steps -->
@@ -316,7 +342,7 @@
                         <label for="s1-pw" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ລະຫັດຜ່ານ * (ຢ່າງໜ້ອຍ 8 ຕົວ)</label>
                         <div class="relative">
                             <Lock class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                            <input id="s1-pw" type={showPassword ? "text" : "password"} bind:value={form.password} placeholder="••••••••" class="w-full pl-10 pr-10 py-3 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors" />
+                            <input id="s1-pw" name="password" autocomplete="new-password" type={showPassword ? "text" : "password"} bind:value={form.password} placeholder="••••••••" class="w-full pl-10 pr-10 py-3 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors" />
                             <button type="button" onclick={() => showPassword = !showPassword} class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
                                 {#if showPassword}<EyeOff class="w-5 h-5" />{:else}<Eye class="w-5 h-5" />{/if}
                             </button>
@@ -339,7 +365,7 @@
                         <label for="s1-cpw" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">ຢືນຢັນລະຫັດຜ່ານ *</label>
                         <div class="relative">
                             <Lock class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                            <input id="s1-cpw" type={showConfirmPassword ? "text" : "password"} bind:value={form.confirmPassword} placeholder="••••••••" class="w-full pl-10 pr-10 py-3 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors" />
+                            <input id="s1-cpw" name="confirm-password" autocomplete="new-password" type={showConfirmPassword ? "text" : "password"} bind:value={form.confirmPassword} placeholder="••••••••" class="w-full pl-10 pr-10 py-3 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors" />
                             <button type="button" onclick={() => showConfirmPassword = !showConfirmPassword} class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
                                 {#if showConfirmPassword}<EyeOff class="w-5 h-5" />{:else}<Eye class="w-5 h-5" />{/if}
                             </button>

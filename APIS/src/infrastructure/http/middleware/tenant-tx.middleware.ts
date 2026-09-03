@@ -68,9 +68,11 @@ export function withTenantTx() {
 
         let reserved: Awaited<ReturnType<typeof primaryClient.reserve>> | undefined;
         let released = false;
+        let watchdog: NodeJS.Timeout | undefined;
         const releaseConnection = async (): Promise<void> => {
             if (released || !reserved) return;
             released = true;
+            if (watchdog) clearTimeout(watchdog);
             try {
                 await resetRequestContext(drizzle(reserved, { schema }));
             } catch {
@@ -107,6 +109,20 @@ export function withTenantTx() {
 
         res.on('finish', releaseConnection);
         res.on('close', releaseConnection);
+        // Safety net: under concurrent load we've observed 'finish'/'close'
+        // occasionally never firing on some Node/Express versions (the
+        // response completes from the client's perspective but the event
+        // never reaches this listener), which leaks the reserved connection
+        // forever — with a capped pool (15 dev / 20 prod), a handful of
+        // requests hitting this is enough to exhaust it and hang every
+        // subsequent authenticated request, including login, site-wide.
+        // A bounded lease bounds the damage to "briefly slower", not "down".
+        watchdog = setTimeout(() => {
+            if (!released) {
+                console.warn(`[withTenantTx] connection not released after 30s — force-releasing (leak guard). ${req.method} ${req.originalUrl}`);
+                releaseConnection();
+            }
+        }, 30_000);
         next();
     };
 }

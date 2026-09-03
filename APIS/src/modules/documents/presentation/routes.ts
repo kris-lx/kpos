@@ -3,7 +3,8 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, branchFilter, applyScopeFilter, ensureScopeAccess, buildScopeCondition, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, branchFilter, applyScopeFilter, ensureScopeAccess, buildScopeCondition, isMakerCheckerEnforced, requireChecker, tenantHasOtherEligibleUser, userIsEligibleChecker, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { queueActivityLog } from '@/infrastructure/helpers/activity-log.helper';
 import { DEFAULT_SETTINGS } from '@/shared/constants';
 import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
 import { db as globalDb } from '@/config/database.config';
@@ -67,6 +68,10 @@ documentRoutes.get('/invoices', authenticate, withTenantTx(), branchFilter(), as
                 dueDate: docData?.dueDate || null,
                 notes: docData?.notes || '',
                 status: doc.status?.toLowerCase() || 'pending',
+                approvedBy: doc.approvedBy,
+                approvedAt: doc.approvedAt,
+                rejectedBy: doc.rejectedBy,
+                rejectedAt: doc.rejectedAt,
                 printCount: doc.printCount,
                 createdAt: doc.createdAt,
                 updatedAt: doc.updatedAt,
@@ -209,6 +214,13 @@ documentRoutes.put('/invoices/:id', authenticate, withTenantTx(), authorize('doc
         if (!existing) {
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Invoice not found or no access' } });
         }
+        // The tax-invoice equivalents of every mutation in this file
+        // (PUT/DELETE/issue/cancel) already call ensureScopeAccess — this
+        // plain-invoice route never did, so a branch-scoped user with
+        // documents:update could edit another branch's invoice.
+        if (!ensureScopeAccess(existing, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this invoice' } });
+        }
 
         const { customerId, customerName, customerEmail, customerPhone, customerAddress, items, subtotal, tax, total, dueDate, notes } = req.body;
         const existingData = existing.data as Record<string, unknown>;
@@ -247,6 +259,9 @@ documentRoutes.delete('/invoices/:id', authenticate, withTenantTx(), authorize('
         if (!existing) {
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Invoice not found or no access' } });
         }
+        if (!ensureScopeAccess(existing, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this invoice' } });
+        }
 
         await db.delete(documents).where(and(...delConds));
 
@@ -265,6 +280,7 @@ documentRoutes.put('/invoices/:id/mark-paid', authenticate, withTenantTx(), auth
         if (tenantId && !req.authUser?.isSuperAdmin) conds.push(eq(documents.tenantId, tenantId));
         const existing = await db.query.documents.findFirst({ where: and(...conds) });
         if (!existing) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Invoice not found' } });
+        if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this invoice' } });
 
         const [invoice] = await db.update(documents).set({ status: 'PAID', updatedAt: new Date() }).where(and(...conds)).returning();
 
@@ -283,6 +299,7 @@ documentRoutes.post('/invoices/:id/send', authenticate, withTenantTx(), authoriz
         if (tenantId && !req.authUser?.isSuperAdmin) conds.push(eq(documents.tenantId, tenantId));
         const existing = await db.query.documents.findFirst({ where: and(...conds) });
         if (!existing) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Invoice not found' } });
+        if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this invoice' } });
 
         const [invoice] = await db.update(documents).set({ status: 'SENT', updatedAt: new Date() }).where(and(...conds)).returning();
 
@@ -295,7 +312,7 @@ documentRoutes.post('/invoices/:id/send', authenticate, withTenantTx(), authoriz
 });
 
 // Approve invoice (maker/checker)
-documentRoutes.patch('/invoices/:id/approve', authenticate, withTenantTx(), authorize('documents:update'), async (req, res, next) => {
+documentRoutes.patch('/invoices/:id/approve', authenticate, withTenantTx(), authorize('documents:update'), requireChecker(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const roleLevel = req.authUser?.roleLevel ?? 7;
@@ -307,10 +324,34 @@ documentRoutes.patch('/invoices/:id/approve', authenticate, withTenantTx(), auth
         if (tenantId && !req.authUser?.isSuperAdmin) conds.push(eq(documents.tenantId, tenantId));
         const existing = await db.query.documents.findFirst({ where: and(...conds) });
         if (!existing) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Invoice not found' } });
+        if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this invoice' } });
         if (!['PENDING_APPROVAL', 'PENDING'].includes(existing.status)) {
             return res.status(400).json({ success: false, error: { code: 'INVALID_STATE', message: `Invoice is already ${existing.status}` } });
         }
-        const [invoice] = await db.update(documents).set({ status: 'APPROVED', updatedAt: new Date() }).where(and(...conds)).returning();
+        const existingData = (existing.data || {}) as Record<string, unknown>;
+        const userId = req.authUser!.userId;
+        if (existingData.createdBy === userId
+            && !(await userIsEligibleChecker(db, userId, 'documents:update'))
+            && await isMakerCheckerEnforced(db, existing.tenantId)
+            && await tenantHasOtherEligibleUser(db, existing.tenantId, userId, 'documents:update')) {
+            return res.status(403).json({ success: false, error: { code: 'SELF_APPROVAL', message: 'The invoice maker cannot approve this invoice' } });
+        }
+        const [invoice] = await db.update(documents).set({
+            status: 'APPROVED',
+            approvedBy: userId,
+            approvedAt: new Date(),
+            rejectedBy: null,
+            rejectedAt: null,
+            updatedAt: new Date(),
+        }).where(and(...conds)).returning();
+        await queueActivityLog(userId, 'invoice_approved', 'documents', `Invoice ${invoice.documentNo} approved`, {
+            documentType: 'INVOICE',
+            status: 'APPROVED',
+            storeId: invoice.storeId,
+            branchId: invoice.branchId,
+        }, req, {
+            entity: 'document', entityId: invoice.id, oldData: { status: existing.status }, newData: { status: invoice.status, approvedBy: userId },
+        });
         res.json({ success: true, data: { id: invoice.id, status: 'approved' } });
     } catch (error) {
         next(error);
@@ -318,7 +359,7 @@ documentRoutes.patch('/invoices/:id/approve', authenticate, withTenantTx(), auth
 });
 
 // Reject invoice (maker/checker)
-documentRoutes.patch('/invoices/:id/reject', authenticate, withTenantTx(), authorize('documents:update'), async (req, res, next) => {
+documentRoutes.patch('/invoices/:id/reject', authenticate, withTenantTx(), authorize('documents:update'), requireChecker(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const roleLevel = req.authUser?.roleLevel ?? 7;
@@ -331,11 +372,32 @@ documentRoutes.patch('/invoices/:id/reject', authenticate, withTenantTx(), autho
         if (tenantId && !req.authUser?.isSuperAdmin) conds.push(eq(documents.tenantId, tenantId));
         const existing = await db.query.documents.findFirst({ where: and(...conds) });
         if (!existing) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Invoice not found' } });
+        if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this invoice' } });
         if (!['PENDING_APPROVAL', 'PENDING'].includes(existing.status)) {
             return res.status(400).json({ success: false, error: { code: 'INVALID_STATE', message: `Invoice is already ${existing.status}` } });
         }
         const existingData = existing.data as Record<string, unknown>;
-        const [invoice] = await db.update(documents).set({ status: 'REJECTED', data: { ...existingData, rejectionReason: reason }, updatedAt: new Date() }).where(and(...conds)).returning();
+        const userId = req.authUser!.userId;
+        if (existingData.createdBy === userId
+            && !(await userIsEligibleChecker(db, userId, 'documents:update'))
+            && await isMakerCheckerEnforced(db, existing.tenantId)
+            && await tenantHasOtherEligibleUser(db, existing.tenantId, userId, 'documents:update')) {
+            return res.status(403).json({ success: false, error: { code: 'SELF_APPROVAL', message: 'The invoice maker cannot reject this invoice' } });
+        }
+        const [invoice] = await db.update(documents).set({
+            status: 'REJECTED',
+            data: { ...existingData, rejectionReason: reason },
+            rejectedBy: userId,
+            rejectedAt: new Date(),
+            approvedBy: null,
+            approvedAt: null,
+            updatedAt: new Date(),
+        }).where(and(...conds)).returning();
+        await queueActivityLog(userId, 'invoice_rejected', 'documents', `Invoice ${invoice.documentNo} rejected`, {
+            documentType: 'INVOICE', reason: reason || null, status: 'REJECTED', storeId: invoice.storeId, branchId: invoice.branchId,
+        }, req, {
+            entity: 'document', entityId: invoice.id, oldData: { status: existing.status }, newData: { status: invoice.status, rejectedBy: userId, reason: reason || null },
+        });
         res.json({ success: true, data: { id: invoice.id, status: 'rejected' } });
     } catch (error) {
         next(error);
@@ -396,6 +458,10 @@ documentRoutes.get('/tax-invoices', authenticate, withTenantTx(), branchFilter()
                 total: docData?.total || 0,
                 status: doc.status?.toLowerCase() || 'pending',
                 issuedAt: docData?.issuedAt || null,
+                approvedBy: doc.approvedBy,
+                approvedAt: doc.approvedAt,
+                rejectedBy: doc.rejectedBy,
+                rejectedAt: doc.rejectedAt,
                 printCount: doc.printCount,
                 createdAt: doc.createdAt,
                 updatedAt: doc.updatedAt,
@@ -590,7 +656,7 @@ documentRoutes.put('/tax-invoices/:id/issue', authenticate, withTenantTx(), auth
 });
 
 // Approve tax invoice (maker/checker) — HQ/admin only
-documentRoutes.patch('/tax-invoices/:id/approve', authenticate, withTenantTx(), authorize('documents:update'), async (req, res, next) => {
+documentRoutes.patch('/tax-invoices/:id/approve', authenticate, withTenantTx(), authorize('documents:update'), requireChecker(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const roleLevel = req.authUser?.roleLevel ?? 7;
@@ -602,15 +668,32 @@ documentRoutes.patch('/tax-invoices/:id/approve', authenticate, withTenantTx(), 
         if (tenantId && !req.authUser?.isSuperAdmin) conds.push(eq(documents.tenantId, tenantId));
         const existing = await db.query.documents.findFirst({ where: and(...conds) });
         if (!existing) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Tax invoice not found' } });
+        if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this tax invoice' } });
         if (!['PENDING_APPROVAL', 'PENDING'].includes(existing.status)) {
             return res.status(400).json({ success: false, error: { code: 'INVALID_STATE', message: `Tax invoice is already ${existing.status}` } });
         }
         const existingData = existing.data as Record<string, unknown>;
+        const userId = req.authUser!.userId;
+        if (existingData.createdBy === userId
+            && !(await userIsEligibleChecker(db, userId, 'documents:update'))
+            && await isMakerCheckerEnforced(db, existing.tenantId)
+            && await tenantHasOtherEligibleUser(db, existing.tenantId, userId, 'documents:update')) {
+            return res.status(403).json({ success: false, error: { code: 'SELF_APPROVAL', message: 'The tax invoice maker cannot approve this invoice' } });
+        }
         const [invoice] = await db.update(documents).set({
             status: 'ISSUED',
             data: { ...existingData, issuedAt: new Date().toISOString(), issuedBy: req.authUser?.userId },
+            approvedBy: userId,
+            approvedAt: new Date(),
+            rejectedBy: null,
+            rejectedAt: null,
             updatedAt: new Date(),
         }).where(and(...conds)).returning();
+        await queueActivityLog(userId, 'tax_invoice_approved', 'documents', `Tax invoice ${invoice.documentNo} approved`, {
+            documentType: 'TAX_INVOICE', status: 'ISSUED', storeId: invoice.storeId, branchId: invoice.branchId,
+        }, req, {
+            entity: 'document', entityId: invoice.id, oldData: { status: existing.status }, newData: { status: invoice.status, approvedBy: userId },
+        });
         res.json({ success: true, data: { id: invoice.id, status: 'issued' } });
     } catch (error) {
         next(error);
@@ -618,7 +701,7 @@ documentRoutes.patch('/tax-invoices/:id/approve', authenticate, withTenantTx(), 
 });
 
 // Reject tax invoice (maker/checker) — HQ/admin only
-documentRoutes.patch('/tax-invoices/:id/reject', authenticate, withTenantTx(), authorize('documents:update'), async (req, res, next) => {
+documentRoutes.patch('/tax-invoices/:id/reject', authenticate, withTenantTx(), authorize('documents:update'), requireChecker(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const roleLevel = req.authUser?.roleLevel ?? 7;
@@ -631,15 +714,32 @@ documentRoutes.patch('/tax-invoices/:id/reject', authenticate, withTenantTx(), a
         if (tenantId && !req.authUser?.isSuperAdmin) conds.push(eq(documents.tenantId, tenantId));
         const existing = await db.query.documents.findFirst({ where: and(...conds) });
         if (!existing) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Tax invoice not found' } });
+        if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this tax invoice' } });
         if (!['PENDING_APPROVAL', 'PENDING'].includes(existing.status)) {
             return res.status(400).json({ success: false, error: { code: 'INVALID_STATE', message: `Tax invoice is already ${existing.status}` } });
         }
         const existingData = existing.data as Record<string, unknown>;
+        const userId = req.authUser!.userId;
+        if (existingData.createdBy === userId
+            && !(await userIsEligibleChecker(db, userId, 'documents:update'))
+            && await isMakerCheckerEnforced(db, existing.tenantId)
+            && await tenantHasOtherEligibleUser(db, existing.tenantId, userId, 'documents:update')) {
+            return res.status(403).json({ success: false, error: { code: 'SELF_APPROVAL', message: 'The tax invoice maker cannot reject this invoice' } });
+        }
         const [invoice] = await db.update(documents).set({
             status: 'CANCELLED',
-            data: { ...existingData, rejectionReason: reason, rejectedBy: req.authUser?.userId },
+            data: { ...existingData, rejectionReason: reason },
+            rejectedBy: userId,
+            rejectedAt: new Date(),
+            approvedBy: null,
+            approvedAt: null,
             updatedAt: new Date(),
         }).where(and(...conds)).returning();
+        await queueActivityLog(userId, 'tax_invoice_rejected', 'documents', `Tax invoice ${invoice.documentNo} rejected`, {
+            documentType: 'TAX_INVOICE', reason: reason || null, status: 'CANCELLED', storeId: invoice.storeId, branchId: invoice.branchId,
+        }, req, {
+            entity: 'document', entityId: invoice.id, oldData: { status: existing.status }, newData: { status: invoice.status, rejectedBy: userId, reason: reason || null },
+        });
         res.json({ success: true, data: { id: invoice.id, status: 'cancelled' } });
     } catch (error) {
         next(error);

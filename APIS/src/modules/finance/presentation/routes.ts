@@ -15,16 +15,25 @@ import {
     transactions, transactionItems, transactionPayments,
     activityLogs, users, branches, stores,
     stockMovements, cashMovements, shifts, settlements,
+    expenses, payrollPeriods, payrollPayments,
 } from '@/db/schema/tables';
-import { eq, and, or, gte, lte, desc, asc, count, sum, sql, inArray, ilike, isNotNull } from 'drizzle-orm';
+import { eq, and, or, gte, lte, lt, desc, asc, count, sum, sql, inArray, ilike, isNotNull } from 'drizzle-orm';
+import { financeLedgerRoutes } from './ledger-routes';
 
 export const financeRoutes = Router();
+financeRoutes.use('/', financeLedgerRoutes);
 
 // ─── Helper: parse date range from query ─────────────────────────────────────
 function parseDateRange(from: any, to: any) {
     const start = from ? new Date(String(from)) : (() => { const d = new Date(); d.setDate(1); d.setHours(0,0,0,0); return d; })();
     const end = to ? new Date(String(to)) : new Date();
-    end.setHours(23, 59, 59, 999);
+    // The UI sends an inclusive YYYY-MM-DD end date. Convert it to a
+    // half-open interval so milliseconds at the boundary cannot be missed or
+    // counted twice by adjacent reports.
+    if (to && /^\d{4}-\d{2}-\d{2}$/.test(String(to))) {
+        end.setHours(0, 0, 0, 0);
+        end.setDate(end.getDate() + 1);
+    }
     return { start, end };
 }
 
@@ -46,7 +55,7 @@ financeRoutes.get('/pl', authenticate, withTenantTx(), authorize('reports:financ
             eq(transactions.status, 'COMPLETED'),
             eq(transactions.type, 'SALE'),
             gte(transactions.createdAt, start),
-            lte(transactions.createdAt, end),
+            lt(transactions.createdAt, end),
         ];
         if (tenantId && !isSuperAdmin) baseConds.push(eq(transactions.tenantId, tenantId));
 
@@ -90,12 +99,14 @@ financeRoutes.get('/pl', authenticate, withTenantTx(), authorize('reports:financ
             if (scopeCond) baseConds.push(scopeCond);
         }
 
-        // Revenue: sum of completed sales
+        // Revenue is based on the stored pre-tax subtotal. Discount includes
+        // both explicit discount and loyalty redemption, so `total` is never
+        // reused as revenue (it already includes tax and payment reductions).
         const revenueRows = await dbRead
             .select({
                 branchId: transactions.branchId,
-                revenue: sum(transactions.total),
-                discount: sum(transactions.discountAmount),
+                grossSales: sum(transactions.subtotal),
+                discount: sum(sql`${transactions.discountAmount} + ${transactions.pointsRedeemAmount}`),
                 tax: sum(transactions.taxAmount),
                 txCount: count(),
             })
@@ -106,11 +117,15 @@ financeRoutes.get('/pl', authenticate, withTenantTx(), authorize('reports:financ
         // COGS: sum of (cost * qty) from transaction items in the same period
         const cogsConds: any[] = [
             gte(transactions.createdAt, start),
-            lte(transactions.createdAt, end),
+            lt(transactions.createdAt, end),
             eq(transactions.status, 'COMPLETED'),
         ];
         if (tenantId && !isSuperAdmin) cogsConds.push(eq(transactions.tenantId, tenantId));
         if (effectiveBranchId) cogsConds.push(eq(transactions.branchId, effectiveBranchId));
+        else {
+            const scopeCond = buildScopeCondition(filter, { branchId: transactions.branchId }, 'branchId');
+            if (scopeCond) cogsConds.push(scopeCond);
+        }
 
         const cogsRows = await dbRead
             .select({
@@ -124,32 +139,81 @@ financeRoutes.get('/pl', authenticate, withTenantTx(), authorize('reports:financ
 
         const cogsMap = new Map(cogsRows.map((r: any) => [r.branchId, Number(r.cogs || 0)]));
 
+        // Approved expenses are operating costs; COGS is derived from sold
+        // items and must never be entered into this ledger a second time.
+        const expenseConds: any[] = [
+            gte(expenses.expenseDate, start), lt(expenses.expenseDate, end),
+            inArray(expenses.status, ['APPROVED', 'PAID']),
+        ];
+        if (tenantId && !isSuperAdmin) expenseConds.push(eq(expenses.tenantId, tenantId));
+        if (effectiveBranchId) expenseConds.push(eq(expenses.branchId, effectiveBranchId));
+        else {
+            const scopeCond = buildScopeCondition(filter, { branchId: expenses.branchId, storeId: expenses.storeId }, 'storeId');
+            if (scopeCond) expenseConds.push(scopeCond);
+        }
+        const expenseRows = await dbRead.select({ branchId: expenses.branchId, total: sum(expenses.amount) })
+            .from(expenses).where(and(...expenseConds)).groupBy(expenses.branchId);
+        const expenseMap = new Map(expenseRows.map((r: any) => [r.branchId, Number(r.total || 0)]));
+
+        // Payroll is an accrual expense once approved and is paid cash only
+        // once the period reaches PAID. The same amount is therefore not read
+        // again from a separate generic expense row.
+        const payrollConds: any[] = [
+            inArray(payrollPeriods.status, ['APPROVED', 'PARTIALLY_PAID', 'PAID', 'CLOSED']),
+            gte(payrollPeriods.periodStart, start),
+            lte(payrollPeriods.periodEnd, end),
+        ];
+        if (tenantId && !isSuperAdmin) payrollConds.push(eq(payrollPeriods.tenantId, tenantId));
+        if (effectiveBranchId) payrollConds.push(eq(payrollPeriods.branchId, effectiveBranchId));
+        else {
+            const scopeCond = buildScopeCondition(filter, { branchId: payrollPeriods.branchId, storeId: payrollPeriods.storeId }, 'storeId');
+            if (scopeCond) payrollConds.push(scopeCond);
+        }
+        const payrollRows = await dbRead.select({ branchId: payrollPeriods.branchId, total: sum(payrollPeriods.totalEmployerCost) })
+            .from(payrollPeriods).where(and(...payrollConds)).groupBy(payrollPeriods.branchId);
+        const payrollMap = new Map(payrollRows.map((r: any) => [r.branchId, Number(r.total || 0)]));
+
         // Load branch names
-        const branchIds = [...new Set(revenueRows.map((r: any) => r.branchId).filter(Boolean))];
+        const branchIds = [...new Set([
+            ...revenueRows.map((r: any) => r.branchId),
+            ...cogsRows.map((r: any) => r.branchId),
+            ...expenseRows.map((r: any) => r.branchId),
+            ...payrollRows.map((r: any) => r.branchId),
+        ].filter(Boolean))];
         const branchRows = branchIds.length
             ? await dbRead.select({ id: branches.id, name: branches.name, code: branches.code }).from(branches).where(inArray(branches.id, branchIds as string[]))
             : [];
         const branchMap = new Map(branchRows.map(b => [b.id, b]));
 
-        const plData = revenueRows.map((r: any) => {
-            const revenue = Number(r.revenue || 0);
+        const branchSet = new Set(branchIds);
+        const salesMap = new Map(revenueRows.map((r: any) => [r.branchId, r]));
+        const plData = [...branchSet].map((branchId: any) => {
+            const r = salesMap.get(branchId) || {};
+            const revenue = Number(r.grossSales || 0);
             const discount = Number(r.discount || 0);
             const tax = Number(r.tax || 0);
-            const cogs = cogsMap.get(r.branchId) || 0;
+            const cogs = cogsMap.get(branchId) || 0;
+            const operatingExpenses = expenseMap.get(branchId) || 0;
+            const payrollExpense = payrollMap.get(branchId) || 0;
             const netRevenue = revenue - discount;
             const grossProfit = netRevenue - cogs;
+            const netProfit = grossProfit - operatingExpenses - payrollExpense;
             const grossMargin = netRevenue > 0 ? (grossProfit / netRevenue) * 100 : 0;
-            const branch = branchMap.get(r.branchId);
+            const branch = branchMap.get(branchId);
             return {
-                branchId: r.branchId,
+                branchId,
                 branchName: branch?.name || 'Unknown',
                 branchCode: branch?.code || '',
                 revenue,
+                grossSales: revenue,
                 discount,
                 netRevenue,
                 tax,
                 cogs,
+                operatingExpenses,
+                payrollExpense,
                 grossProfit,
+                netProfit,
                 grossMargin: Math.round(grossMargin * 100) / 100,
                 txCount: Number(r.txCount || 0),
             };
@@ -162,9 +226,12 @@ financeRoutes.get('/pl', authenticate, withTenantTx(), authorize('reports:financ
             netRevenue: acc.netRevenue + r.netRevenue,
             tax: acc.tax + r.tax,
             cogs: acc.cogs + r.cogs,
+            operatingExpenses: acc.operatingExpenses + r.operatingExpenses,
+            payrollExpense: acc.payrollExpense + r.payrollExpense,
             grossProfit: acc.grossProfit + r.grossProfit,
+            netProfit: acc.netProfit + r.netProfit,
             txCount: acc.txCount + r.txCount,
-        }), { revenue: 0, discount: 0, netRevenue: 0, tax: 0, cogs: 0, grossProfit: 0, txCount: 0 });
+        }), { revenue: 0, discount: 0, netRevenue: 0, tax: 0, cogs: 0, operatingExpenses: 0, payrollExpense: 0, grossProfit: 0, netProfit: 0, txCount: 0 });
 
         res.json({
             success: true,
@@ -194,7 +261,7 @@ financeRoutes.get('/tax-summary', authenticate, withTenantTx(), authorize('repor
             eq(transactions.status, 'COMPLETED'),
             eq(transactions.type, 'SALE'),
             gte(transactions.createdAt, start),
-            lte(transactions.createdAt, end),
+            lt(transactions.createdAt, end),
         ];
         if (tenantId && !isSuperAdmin) conds.push(eq(transactions.tenantId, tenantId));
         const scopeCond = buildScopeCondition(filter, { branchId: transactions.branchId }, 'branchId');
@@ -211,8 +278,8 @@ financeRoutes.get('/tax-summary', authenticate, withTenantTx(), authorize('repor
             .select({
                 period: dateTrunc,
                 branchId: transactions.branchId,
-                grossSales: sum(transactions.total),
-                discount: sum(transactions.discountAmount),
+                grossSales: sum(transactions.subtotal),
+                discount: sum(sql`${transactions.discountAmount} + ${transactions.pointsRedeemAmount}`),
                 taxAmount: sum(transactions.taxAmount),
                 txCount: count(),
             })
@@ -268,7 +335,7 @@ financeRoutes.get('/audit-trail', authenticate, withTenantTx(), authorize('repor
 
         const conds: any[] = [
             gte(activityLogs.createdAt, start),
-            lte(activityLogs.createdAt, end),
+            lt(activityLogs.createdAt, end),
         ];
         if (tenantId && !isSuperAdmin) conds.push(eq(activityLogs.tenantId, tenantId));
         if (action) conds.push(eq(activityLogs.action, String(action)));
@@ -346,7 +413,7 @@ financeRoutes.get('/cash-flow', authenticate, withTenantTx(), authorize('reports
 
         const conds: any[] = [
             gte(cashMovements.createdAt, start),
-            lte(cashMovements.createdAt, end),
+            lt(cashMovements.createdAt, end),
         ];
         // Cash movements don't have tenantId directly — scope via shift → branch
         const shiftConds: any[] = [];
@@ -366,16 +433,43 @@ financeRoutes.get('/cash-flow', authenticate, withTenantTx(), authorize('reports
             .where(and(...conds, ...shiftConds))
             .groupBy(shifts.branchId, cashMovements.type);
 
-        // Pivot by branch
+        // Normalize legacy shift movement names in one place. The previous
+        // implementation only recognized the literal string "IN", so SALE,
+        // CASH_IN and DEPOSIT were incorrectly reported as cash-out.
         const pivotMap = new Map<string, any>();
+        const ensureBranch = (branchId: string) => {
+            if (!pivotMap.has(branchId)) pivotMap.set(branchId, { branchId, cashIn: 0, cashOut: 0, netCash: 0 });
+            return pivotMap.get(branchId);
+        };
+        const cashInTypes = new Set(['CASH_IN', 'SALE', 'DEPOSIT', 'FLOAT', 'IN']);
         for (const r of rows) {
             const branchId = r.branchId || 'unknown';
-            if (!pivotMap.has(branchId)) pivotMap.set(branchId, { branchId, cashIn: 0, cashOut: 0, netCash: 0 });
-            const entry = pivotMap.get(branchId);
+            const entry = ensureBranch(branchId);
             const amt = Number(r.total || 0);
-            if (String(r.type).toUpperCase() === 'IN') entry.cashIn += amt;
+            if (cashInTypes.has(String(r.type).toUpperCase())) entry.cashIn += amt;
             else entry.cashOut += amt;
         }
+
+        // Expense and payroll payments may not belong to an open register,
+        // therefore they are read directly from their ledgers instead of
+        // being forced into cash_movements with a fake shift id.
+        const expenseConds: any[] = [gte(expenses.paidAt, start), lt(expenses.paidAt, end), eq(expenses.status, 'PAID')];
+        if (tenantId && !isSuperAdmin) expenseConds.push(eq(expenses.tenantId, tenantId));
+        const expenseScope = buildScopeCondition(filter, { branchId: expenses.branchId, storeId: expenses.storeId }, 'storeId');
+        if (expenseScope) expenseConds.push(expenseScope);
+        const paidExpenseRows = await dbRead.select({ branchId: expenses.branchId, total: sum(expenses.amount) })
+            .from(expenses).where(and(...expenseConds)).groupBy(expenses.branchId);
+        for (const row of paidExpenseRows) ensureBranch(row.branchId).cashOut += Number(row.total || 0);
+
+        const payrollConds: any[] = [gte(payrollPayments.paidAt, start), lt(payrollPayments.paidAt, end)];
+        if (tenantId && !isSuperAdmin) payrollConds.push(eq(payrollPayments.tenantId, tenantId));
+        const payrollScope = buildScopeCondition(filter, { branchId: payrollPeriods.branchId, storeId: payrollPeriods.storeId }, 'storeId');
+        if (payrollScope) payrollConds.push(payrollScope);
+        const paidPayrollRows = await dbRead.select({ branchId: payrollPeriods.branchId, total: sum(payrollPayments.amount) })
+            .from(payrollPayments).innerJoin(payrollPeriods, eq(payrollPayments.periodId, payrollPeriods.id))
+            .where(and(...payrollConds)).groupBy(payrollPeriods.branchId);
+        for (const row of paidPayrollRows) if (row.branchId) ensureBranch(row.branchId).cashOut += Number(row.total || 0);
+
         const branchIds = [...pivotMap.keys()].filter(id => id !== 'unknown');
         const branchRows = branchIds.length
             ? await dbRead.select({ id: branches.id, name: branches.name }).from(branches).where(inArray(branches.id, branchIds))

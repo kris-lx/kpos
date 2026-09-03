@@ -3,7 +3,7 @@
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
     import { api } from "$api";
-    import { auth } from "$stores";
+    import { auth, dialogStore } from "$stores";
     import { formatDate } from "$lib/utils";
     import { toast } from "svelte-sonner";
     import {
@@ -42,6 +42,11 @@
     // Pagination
     let currentPage = $state(1);
     let itemsPerPage = $state(10);
+
+    // Backend gates reservation writes on authorize('restaurant:reservations', 'restaurant:manage')
+    // — only 'restaurant:manage' is actually granted to any system role today,
+    // so gate on that (matches what the server will actually allow).
+    let canManageReservations = $derived(auth.hasPermission('restaurant:manage'));
 
     let formData = $state({
         customerName: "",
@@ -148,6 +153,12 @@
 
     async function loadData() {
         isLoading = true;
+        if (!auth.activeBranchId) {
+            reservations = [];
+            tables = [];
+            isLoading = false;
+            return;
+        }
         try {
             const [resRes, tableRes] = await Promise.all([
                 api.get(`restaurant/reservations?date=${selectedDate}`).json<any>(),
@@ -206,7 +217,7 @@
     }
 
     async function handleDelete(id: string) {
-        if (confirm(t("restaurant.confirmDelete"))) {
+        if (await dialogStore.confirm(t("restaurant.confirmDelete"))) {
             try {
                 await api.delete(`restaurant/reservations/${id}`).json();
                 toast.success(t("common.success"));
@@ -279,6 +290,7 @@
             </div>
         </div>
         
+        {#if canManageReservations}
         <button
             onclick={() => {
                 resetForm();
@@ -289,6 +301,7 @@
             <Plus class="w-5 h-5" />
             {t("restaurant.addReservation")}
         </button>
+        {/if}
     </div>
 
     <!-- Stats Cards -->
@@ -499,7 +512,7 @@
                     <!-- Actions -->
                     <div class="px-4 py-3 bg-gray-50 dark:bg-gray-800/50 border-t border-gray-200 dark:border-gray-700 flex items-center justify-between gap-2">
                         <div class="flex gap-2">
-                            {#if r.status === "confirmed"}
+                            {#if r.status === "confirmed" && canManageReservations}
                                 <button
                                     onclick={() => updateStatus(r.id, "seated")}
                                     class="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-all flex items-center gap-1.5"
@@ -508,7 +521,7 @@
                                     {t("restaurant.seat")}
                                 </button>
                             {/if}
-                            {#if r.status === "pending"}
+                            {#if r.status === "pending" && canManageReservations}
                                 <button
                                     onclick={() => updateStatus(r.id, "confirmed")}
                                     class="px-3 py-1.5 bg-success-600 text-white rounded-lg text-sm font-medium hover:bg-success-700 transition-all flex items-center gap-1.5"
@@ -519,13 +532,15 @@
                             {/if}
                         </div>
                         <div class="flex gap-1">
+                            {#if canManageReservations}
                             <button
                                 onclick={() => editReservation(r)}
                                 class="p-2 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg transition-all"
                             >
                                 <Edit class="w-4 h-4" />
                             </button>
-                            {#if r.status !== "cancelled" && r.status !== "completed"}
+                            {/if}
+                            {#if r.status !== "cancelled" && r.status !== "completed" && canManageReservations}
                                 <button
                                     onclick={() => handleDelete(r.id)}
                                     class="p-2 text-danger-500 hover:bg-danger-100 dark:hover:bg-danger-900/30 rounded-lg transition-all"

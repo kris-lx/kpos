@@ -24,40 +24,16 @@ export const ROLES = {
 
 export type RoleName = (typeof ROLES)[keyof typeof ROLES];
 
-/** Numeric role levels — lower = broader access. Matches ROLE_LEVELS in auth.middleware.ts. */
-export const ROLE_LEVEL_MAP: Record<string, number> = {
-    [ROLES.SUPER_ADMIN]:     1,
-    [ROLES.SYSTEM_ADMIN]:    1,
-    [ROLES.ADMIN]:           2,
-    [ROLES.TENANT_ADMIN]:    2,
-    [ROLES.HQ_ADMIN]:        3,
-    [ROLES.HQ_MANAGER]:      4,
-    [ROLES.STORE_OWNER]:     5,
-    [ROLES.BRANCH_ADMIN]:    5,
-    [ROLES.BRANCH_MANAGER]:  6,
-    [ROLES.MANAGER]:         6,
-    [ROLES.STORE_MANAGER]:   6,
-    [ROLES.CASHIER]:         7,
-    [ROLES.STAFF]:           7,
-    [ROLES.KITCHEN_STAFF]:   7,
-    [ROLES.WAITER]:          7,
-    [ROLES.INVENTORY_STAFF]: 7,
-};
-
-/** Returns the numeric level for a role name. Unknown roles default to 7 (most restricted). */
-export function getRoleLevelByName(role: string): number {
-    return ROLE_LEVEL_MAP[role] ?? 7;
-}
-
-/** True if the role is admin-level (level ≤ 2: super_admin, system_admin, admin, tenant_admin). */
-export function isAdminRole(role: string, isSuperAdmin = false): boolean {
-    return isSuperAdmin || getRoleLevelByName(role) <= 2;
-}
-
-/** True if the role is manager-or-above (level ≤ 5). */
-export function isManagerOrAbove(role: string, isSuperAdmin = false): boolean {
-    return isSuperAdmin || getRoleLevelByName(role) <= 5;
-}
+// A numeric role-level map + getRoleLevelByName()/isAdminRole()/
+// isManagerOrAbove() used to live here, claiming to "match ROLE_LEVELS in
+// auth.middleware.ts" — it didn't (e.g. this file had store_owner at level
+// 5; the real, request-authorizing ROLE_LEVELS in auth.middleware.ts has it
+// at level 2). It was also dead code (nothing imported it), which is worse
+// than a live bug: it looked like a ready-made "role level helper" for
+// anyone who went looking for one, and would have silently misclassified
+// admin/manager roles if anyone had ever wired it up. Removed rather than
+// fixed — auth.middleware.ts's `ROLE_LEVELS`/`getRoleLevel()` is the one
+// real source of truth; import from there instead of adding a new copy here.
 
 // ─── Default system settings ────────────────────────────────────────────────
 // Single source of truth used by seed scripts, settings routes, and API defaults.

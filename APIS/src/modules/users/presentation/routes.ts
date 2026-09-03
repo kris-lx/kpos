@@ -3,11 +3,11 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, branchFilter, ensureScopeAccess, getRoleLevel, invalidateUserStoreCache } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, branchFilter, ensureScopeAccess, invalidateUserStoreCache, resolveAssignableRole } from '@/infrastructure/http/middleware/auth.middleware';
 import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
 import { db as globalDb } from '@/config/database.config';
 import { users, userStores, branches, transactions, menuPermissions, rules, roleRules, roles } from '@/db/schema/tables';
-import { eq, and, or, ilike, inArray, notInArray, desc, asc, count, isNull } from 'drizzle-orm';
+import { eq, and, or, ilike, inArray, notInArray, lt, desc, asc, count, isNull } from 'drizzle-orm';
 import argon2 from 'argon2';
 import { invalidateUserPermissions } from '@/infrastructure/services/permission.service';
 
@@ -25,16 +25,21 @@ function stripSensitive<T extends { password?: unknown; twoFASecret?: unknown }>
     return safe;
 }
 
-function canManageUserRecord(req: any, target: { id: string; tenantId?: string | null; role?: string | null; isSuperAdmin?: boolean | null }): boolean {
+function canManageUserRecord(req: any, target: { id: string; tenantId?: string | null; isSuperAdmin?: boolean | null; branchId?: string | null; storeId?: string | null; roleRelation?: { level: number } | null }): boolean {
     const authUser = req.authUser;
     if (!authUser) return false;
     if (authUser.isSuperAdmin) return true;
     if (target.tenantId !== authUser.tenantId) return false;
     if (target.isSuperAdmin) return false;
-    return getRoleLevel(target.role || 'staff', false) > (authUser.roleLevel ?? 7);
+    // DB-backed level from the target's own linked `roles` row — see the
+    // matching comment in staff/presentation/routes.ts's canManageStaffRecord
+    // for why a name-based getRoleLevel() lookup silently let any custom
+    // role through regardless of its actual privilege.
+    if ((target.roleRelation?.level ?? 7) <= (authUser.roleLevel ?? 7)) return false;
+    return ensureScopeAccess({ tenantId: target.tenantId, branchId: target.branchId, storeId: target.storeId }, req);
 }
 
-function canViewUserRecord(req: any, target: { id: string; tenantId?: string | null; role?: string | null; isSuperAdmin?: boolean | null }): boolean {
+function canViewUserRecord(req: any, target: { id: string; tenantId?: string | null; isSuperAdmin?: boolean | null; branchId?: string | null; storeId?: string | null; roleRelation?: { level: number } | null }): boolean {
     if (req.authUser?.userId === target.id) return true;
     return canManageUserRecord(req, target);
 }
@@ -82,7 +87,14 @@ userRoutes.get('/', authenticate, withTenantTx(), authorize('users:read'), branc
                 }
             }
             conditions.push(eq(users.isSuperAdmin, false));
-            conditions.push(notInArray(users.role, ['super_admin', 'admin']));
+            // Ladder rule keyed off the target's own linked `roles.level`
+            // (DB-backed) via a subquery — isSuperAdmin=false above is the
+            // primary boundary; this is defense-in-depth against a
+            // privileged CUSTOM role (a name-based exclusion list could never
+            // catch this, since it doesn't know about tenant-created roles).
+            const callerLevel = authUser?.roleLevel ?? 7;
+            const higherRoleIds = db.select({ id: roles.id }).from(roles).where(lt(roles.level, callerLevel));
+            conditions.push(or(isNull(users.roleId), notInArray(users.roleId, higherRoleIds))!);
         }
 
         if (scopedUserIds !== null) {
@@ -215,23 +227,29 @@ userRoutes.post('/', authenticate, withTenantTx(), authorize('users:create'), as
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot create user in a branch outside your scope' } });
         }
 
-        let finalRoleId = roleId || undefined;
-        let finalRole = role || 'staff';
-        if (finalRoleId) {
-            const roleConds: any[] = [eq(roles.id, finalRoleId)];
-            if (tenantId && !req.authUser?.isSuperAdmin) roleConds.push(or(eq(roles.tenantId, tenantId), isNull(roles.tenantId)));
-            const roleRow = await db.query.roles.findFirst({ where: and(...roleConds), columns: { id: true, name: true, tenantId: true } });
-            if (!roleRow) {
-                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Role not found or no access' } });
+        // Resolves the role via the same visibility + ladder + "cannot grant
+        // permissions you don't personally hold" checks as staff creation —
+        // see resolveAssignableRole for why a name-only ladder check isn't
+        // enough on its own (any custom role name defaults to the lowest
+        // privilege tier, making the ladder a no-op for it regardless of
+        // what permissions it actually holds).
+        let finalRoleId: string | undefined;
+        let finalRole = 'staff';
+        if (roleId || role) {
+            const resolved = await resolveAssignableRole(db, {
+                roleId: roleId || undefined,
+                roleName: role || undefined,
+                callerTenantId: tenantId ?? null,
+                callerBranchId: req.authUser?.activeBranchId,
+                callerRoleLevel: req.authUser?.roleLevel ?? 7,
+                callerIsSuperAdmin: req.authUser?.isSuperAdmin ?? false,
+                callerPermissions: req.authUser?.permissions || [],
+            });
+            if (!resolved) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Role not found or not assignable' } });
             }
-            finalRole = roleRow.name;
-        }
-
-        if (!req.authUser?.isSuperAdmin) {
-            const targetRoleLevel = getRoleLevel(finalRole, false);
-            if (targetRoleLevel <= (req.authUser?.roleLevel ?? 7)) {
-                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot create a user with equal or higher privileges' } });
-            }
+            finalRoleId = resolved.id;
+            finalRole = resolved.name;
         }
 
         // Hash password
@@ -273,7 +291,7 @@ userRoutes.put('/:id', authenticate, withTenantTx(), authorize('users:update'), 
         const tenantId = req.authUser?.tenantId;
         const existingConds: any[] = [eq(users.id, id)];
         if (tenantId && !req.authUser?.isSuperAdmin) existingConds.push(eq(users.tenantId, tenantId));
-        const existing = await db.query.users.findFirst({ where: and(...existingConds) });
+        const existing = await db.query.users.findFirst({ where: and(...existingConds), with: { roleRelation: { columns: { level: true } } } });
         if (!existing) {
             return res.status(404).json({
                 success: false,
@@ -306,25 +324,35 @@ userRoutes.put('/:id', authenticate, withTenantTx(), authorize('users:update'), 
         if (avatar !== undefined) updateData.avatar = avatar;
         if (roleId !== undefined) {
             if (roleId) {
-                const roleConds: any[] = [eq(roles.id, roleId)];
-                if (existing.tenantId && !req.authUser?.isSuperAdmin) roleConds.push(or(eq(roles.tenantId, existing.tenantId), isNull(roles.tenantId)));
-                const roleRow = await db.query.roles.findFirst({ where: and(...roleConds), columns: { id: true, name: true } });
-                if (!roleRow) {
-                    return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Role not found or no access' } });
+                const resolved = await resolveAssignableRole(db, {
+                    roleId,
+                    callerTenantId: existing.tenantId ?? null,
+                    callerBranchId: req.authUser?.activeBranchId,
+                    callerRoleLevel: req.authUser?.roleLevel ?? 7,
+                    callerIsSuperAdmin: req.authUser?.isSuperAdmin ?? false,
+                    callerPermissions: req.authUser?.permissions || [],
+                });
+                if (!resolved) {
+                    return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Role not found or not assignable' } });
                 }
-                if (!req.authUser?.isSuperAdmin && getRoleLevel(roleRow.name, false) <= (req.authUser?.roleLevel ?? 7)) {
-                    return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot assign equal or higher role' } });
-                }
-                updateData.roleId = roleRow.id;
-                updateData.role = roleRow.name;
+                updateData.roleId = resolved.id;
+                updateData.role = resolved.name;
             } else {
                 updateData.roleId = null;
             }
         } else if (role) {
-            if (!req.authUser?.isSuperAdmin && getRoleLevel(role, false) <= (req.authUser?.roleLevel ?? 7)) {
-                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot assign equal or higher role' } });
+            const resolved = await resolveAssignableRole(db, {
+                roleName: role,
+                callerTenantId: existing.tenantId ?? null,
+                callerBranchId: req.authUser?.activeBranchId,
+                callerRoleLevel: req.authUser?.roleLevel ?? 7,
+                callerIsSuperAdmin: req.authUser?.isSuperAdmin ?? false,
+                callerPermissions: req.authUser?.permissions || [],
+            });
+            if (!resolved) {
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Role not found or not assignable' } });
             }
-            updateData.role = role;
+            updateData.role = resolved.name;
         }
         if (branchId) {
             const branchConds: any[] = [eq(branches.id, branchId)];
@@ -370,7 +398,7 @@ userRoutes.delete('/:id', authenticate, withTenantTx(), authorize('users:delete'
         const tenantId = req.authUser?.tenantId;
         const existingConds: any[] = [eq(users.id, id)];
         if (tenantId && !req.authUser?.isSuperAdmin) existingConds.push(eq(users.tenantId, tenantId));
-        const existing = await db.query.users.findFirst({ where: and(...existingConds) });
+        const existing = await db.query.users.findFirst({ where: and(...existingConds), with: { roleRelation: { columns: { level: true } } } });
         if (!existing) {
             return res.status(404).json({
                 success: false,
@@ -426,7 +454,7 @@ userRoutes.patch('/:id/toggle-active', authenticate, withTenantTx(), authorize('
         const tenantId = req.authUser?.tenantId;
         const existingConds: any[] = [eq(users.id, id)];
         if (tenantId && !req.authUser?.isSuperAdmin) existingConds.push(eq(users.tenantId, tenantId));
-        const existing = await db.query.users.findFirst({ where: and(...existingConds) });
+        const existing = await db.query.users.findFirst({ where: and(...existingConds), with: { roleRelation: { columns: { level: true } } } });
         if (!existing) {
             return res.status(404).json({
                 success: false,
@@ -542,7 +570,11 @@ userRoutes.get('/:id/permissions', authenticate, withTenantTx(), authorize('user
 // ═══════════════════════════════════════════════════════════════════════════
 // UPDATE USER PERMISSIONS
 // ═══════════════════════════════════════════════════════════════════════════
-userRoutes.put('/:id/permissions', authenticate, withTenantTx(), authorize('users:update'), async (req, res) => {
+// Direct permission changes are staff-management changes. Keep this legacy
+// endpoint behind the same owner-granted staff:update permission as the
+// dedicated /staff/:id/permissions endpoint, so users:update cannot be used
+// as a privilege-escalation bypass.
+userRoutes.put('/:id/permissions', authenticate, withTenantTx(), authorize('staff:update'), async (req, res) => {
     try {
         const db = req.tx ?? globalDb;
         const { permissions } = req.body;
@@ -560,7 +592,11 @@ userRoutes.put('/:id/permissions', authenticate, withTenantTx(), authorize('user
         const tenantId = req.authUser?.tenantId;
         const targetConds: any[] = [eq(users.id, req.params.id)];
         if (tenantId && !req.authUser?.isSuperAdmin) targetConds.push(eq(users.tenantId, tenantId));
-        const targetUser = await db.query.users.findFirst({ where: and(...targetConds), columns: { id: true, tenantId: true, role: true, isSuperAdmin: true } });
+        const targetUser = await db.query.users.findFirst({
+            where: and(...targetConds),
+            columns: { id: true, tenantId: true, isSuperAdmin: true, branchId: true, storeId: true },
+            with: { roleRelation: { columns: { level: true } } },
+        });
         if (!targetUser || !canManageUserRecord(req, targetUser)) {
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot modify this user permissions' } });
         }
@@ -828,20 +864,39 @@ userRoutes.get('/me/menu', authenticate, withTenantTx(), async (req, res) => {
             return res.json({ success: true, data: [] });
         }
 
+        // Filter children by their OWN permission first, then decide whether
+        // to keep the parent category based on the surviving children —
+        // not the parent's own requiredPermission in isolation. The old
+        // order filtered on the parent's permission FIRST, so a child with
+        // a lower/different permission requirement than its parent (e.g.
+        // "Shifts" needing only sales:create, nested under "Management"
+        // which needs staff:view) was unreachable no matter what the child
+        // itself allowed — a plain cashier who could open/close their own
+        // shift never saw the parent category at all, so the child never
+        // even got evaluated.
         const filteredMenus = menus
-            .filter(menu => !menu.requiredPermission || hasPermission(menu.requiredPermission))
             .map(menu => ({
                 ...menu,
                 children: (menu.children || []).filter(
                     child => !child.requiredPermission || hasPermission(child.requiredPermission),
                 ),
             }))
-            .filter(menu => menu.children.length > 0 || menu.path);
+            .filter(menu =>
+                menu.children.length > 0 ||
+                (!menu.path ? false : (!menu.requiredPermission || hasPermission(menu.requiredPermission)))
+            );
 
         res.json({ success: true, data: filteredMenus });
     } catch (error) {
         console.error('Get user menu error:', error);
-        res.json({ success: true, data: [] });
+        // An empty menu is a valid authorization result, but it is not a safe
+        // fallback for a database/cache failure. Returning success here made
+        // the frontend hide navigation and incorrectly treat infrastructure
+        // errors as "no permissions".
+        res.status(503).json({
+            success: false,
+            error: { code: 'AUTHORIZATION_UNAVAILABLE', message: 'Menu authorization is temporarily unavailable' },
+        });
     }
 });
 
@@ -909,6 +964,15 @@ userRoutes.get('/me/rules', authenticate, withTenantTx(), async (req, res) => {
             }
         }
 
+        const rolePermissions = new Set(authUser.permissions || []);
+        const hasLegacyAction = (module: string, action: 'read' | 'create' | 'update' | 'delete'): boolean => {
+            if (rolePermissions.has('*')) return true;
+            if (rolePermissions.has(`${module}:${action}`)) return true;
+            if (action === 'read' && rolePermissions.has(`${module}:view`)) return true;
+            if (action === 'read' && rolePermissions.has(`${module}:read`)) return true;
+            return false;
+        };
+
         const data = rrRows
             .filter(rr => rr.rule?.isActive)
             .sort((a, b) => (a.rule?.order ?? 0) - (b.rule?.order ?? 0))
@@ -920,17 +984,25 @@ userRoutes.get('/me/rules', authenticate, withTenantTx(), async (req, res) => {
                 routes: rr.rule!.routes,
                 permissions: rr.rule!.permissions,
                 crud: {
-                    read: rr.canRead,
-                    create: rr.canCreate,
-                    update: rr.canUpdate,
-                    delete: rr.canDelete,
+                    // roleRules and the legacy role permission projection can
+                    // coexist during migration. A grant from either source
+                    // must not make the UI stricter than the API permission
+                    // check, otherwise buttons disappear while the request is
+                    // actually authorized.
+                    read: rr.canRead || hasLegacyAction(rr.rule!.module, 'read'),
+                    create: rr.canCreate || hasLegacyAction(rr.rule!.module, 'create'),
+                    update: rr.canUpdate || hasLegacyAction(rr.rule!.module, 'update'),
+                    delete: rr.canDelete || hasLegacyAction(rr.rule!.module, 'delete'),
                 },
             }));
 
         res.json({ success: true, data });
     } catch (error) {
         console.error('Get user rules error:', error);
-        res.json({ success: true, data: [] });
+        res.status(503).json({
+            success: false,
+            error: { code: 'AUTHORIZATION_UNAVAILABLE', message: 'Rule authorization is temporarily unavailable' },
+        });
     }
 });
 

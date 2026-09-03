@@ -9,8 +9,9 @@ function makeReq(overrides: Partial<{
     permissions: string[];
     maskLow: string;
     maskHigh: string;
+    roleLevel: number;
 }>): Request {
-    const { isSuperAdmin = false, permissions = [], maskLow = '0', maskHigh = '0' } = overrides;
+    const { isSuperAdmin = false, permissions = [], maskLow = '0', maskHigh = '0', roleLevel = 5 } = overrides;
     return {
         user: { userId: 'u1', email: 'x@x.com', role: 'cashier', branchId: 'b1', tenantId: 't1' },
         authUser: {
@@ -20,7 +21,7 @@ function makeReq(overrides: Partial<{
             isSuperAdmin,
             maskLow,
             maskHigh,
-            roleLevel: 5,
+            roleLevel,
             accessibleStores: [], accessibleBranchIds: [],
             accessibleBranchPaths: [], accessibleStoreIds: [],
             activeStoreId: undefined, activeBranchId: 'b1', activeBranchPath: undefined,
@@ -128,7 +129,7 @@ describe('ensureScopeAccess()', () => {
     });
 
     it('allows tenant admins inside their own tenant', () => {
-        const req = makeReq({ permissions: ['*'] });
+        const req = makeReq({ permissions: ['*'], roleLevel: 2 });
         expect(ensureScopeAccess({ tenantId: 't1', branchId: 'b9', storeId: 's9' }, req)).toBe(true);
     });
 

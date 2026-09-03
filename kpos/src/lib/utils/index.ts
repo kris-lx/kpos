@@ -53,6 +53,48 @@ export function escapeCsvCell(value: unknown): string {
     return str;
 }
 
+// Mirrors the backend's DEFAULT_ALLOWED_MIME_TYPES / MAX_UPLOAD_FILE_BYTES
+// (APIS/src/infrastructure/services/upload.service.ts) — this is only a UX
+// shortcut so users see a dialog immediately instead of waiting on a round
+// trip; the server enforces the real limit regardless of what the client sends.
+export const MAX_UPLOAD_FILE_BYTES = 10 * 1024 * 1024; // 10MB
+export const DEFAULT_ALLOWED_FILE_TYPES = [
+    'image/png',
+    'image/jpeg',
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+];
+export const IMAGE_ONLY_FILE_TYPES = ['image/png', 'image/jpeg'];
+
+/**
+ * Validate a File before upload (type + 10MB size cap). Shows a dialog
+ * (via dialogStore) and returns false on rejection — callers should bail
+ * out of their upload handler when this resolves false.
+ */
+export async function validateFile(
+    file: File,
+    options: { allowedTypes?: string[]; maxBytes?: number } = {}
+): Promise<boolean> {
+    const allowedTypes = options.allowedTypes ?? DEFAULT_ALLOWED_FILE_TYPES;
+    const maxBytes = options.maxBytes ?? MAX_UPLOAD_FILE_BYTES;
+    const { dialogStore } = await import('$stores');
+    const { t } = await import('$lib/i18n/index.svelte');
+
+    if (!allowedTypes.includes(file.type)) {
+        await dialogStore.alert(t('upload.fileTypeNotAllowed'), { title: t('upload.invalidFile'), variant: 'danger' });
+        return false;
+    }
+    if (file.size > maxBytes) {
+        await dialogStore.alert(
+            t('upload.fileTooLarge', { size: (file.size / (1024 * 1024)).toFixed(1), max: String(maxBytes / (1024 * 1024)) }),
+            { title: t('upload.invalidFile'), variant: 'danger' }
+        );
+        return false;
+    }
+    return true;
+}
+
 // Lazy import to avoid circular dependency — settings store imports api which imports utils
 function getCurrencySymbol(): string {
     if (typeof window === 'undefined') return '₭';
@@ -146,7 +188,8 @@ export function getDateLocale(locale?: string): string {
 /**
  * Format date respecting current app locale (lo/th/zh/ja/en)
  */
-export function formatDate(date: Date | string, options?: Intl.DateTimeFormatOptions, locale?: string): string {
+export function formatDate(date: Date | string | null | undefined, options?: Intl.DateTimeFormatOptions, locale?: string): string {
+    if (date == null) return '-';
     const d = typeof date === 'string' ? new Date(date) : date;
     if (isNaN(d.getTime())) return '-';
     return new Intl.DateTimeFormat(getDateLocale(locale), {
@@ -160,7 +203,7 @@ export function formatDate(date: Date | string, options?: Intl.DateTimeFormatOpt
 /**
  * Format date with time respecting current app locale
  */
-export function formatDateTime(date: Date | string, locale?: string): string {
+export function formatDateTime(date: Date | string | null | undefined, locale?: string): string {
     return formatDate(date, {
         hour: '2-digit',
         minute: '2-digit',
@@ -170,7 +213,8 @@ export function formatDateTime(date: Date | string, locale?: string): string {
 /**
  * Format time only
  */
-export function formatTime(date: Date | string, locale?: string): string {
+export function formatTime(date: Date | string | null | undefined, locale?: string): string {
+    if (date == null) return '-';
     const d = typeof date === 'string' ? new Date(date) : date;
     if (isNaN(d.getTime())) return '-';
     return new Intl.DateTimeFormat(getDateLocale(locale), {

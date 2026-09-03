@@ -2,6 +2,7 @@
     import { t } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
     import { cn, formatCurrency, formatDateTime, escapeHtml, escapeCsvCell } from "$lib/utils";
+    import { printHtml } from "$lib/utils/printHtml";
     import { onMount } from "svelte";
     import { toast } from "svelte-sonner";
     import { auth } from "$stores";
@@ -174,16 +175,7 @@
 </body>
 </html>`;
 
-            const printWindow = window.open('', '_blank');
-            if (printWindow) {
-                printWindow.document.write(html);
-                printWindow.document.close();
-            }
-            if (printWindow) {
-                printWindow.onload = () => {
-                    printWindow.print();
-                };
-            }
+            printHtml(html);
             toast.success(t("reports.exportSuccess"));
         } catch (e) {
             console.error('Export failed:', e);
@@ -333,12 +325,7 @@ body { font-family: 'Noto Sans Lao', 'Phetsarath OT', monospace; font-size: 12px
 ${lines.map(l => l === divider ? '<div class="divider"></div>' : `<div${l === 'KPOS' || l === title ? ' class="center bold"' : ''}>${l}</div>`).join('\n')}
 </body></html>`;
 
-        const win = window.open('', '_blank', 'width=320,height=600');
-        if (win) {
-            win.document.write(html);
-            win.document.close();
-            win.onload = () => win.print();
-        }
+        printHtml(html);
     }
 </script>
 
@@ -381,8 +368,9 @@ ${lines.map(l => l === divider ? '<div class="divider"></div>' : `<div${l === 'K
             </button>
 
             <!-- Export Dropdown -->
+            {#if auth.canExport('reports')}
             <div class="relative">
-                <button 
+                <button
                     onclick={() => showExportMenu = !showExportMenu}
                     disabled={exporting}
                     class="flex items-center gap-2 px-4 py-2 border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700"
@@ -438,6 +426,7 @@ ${lines.map(l => l === divider ? '<div class="divider"></div>' : `<div${l === 'K
                     </div>
                 {/if}
             </div>
+            {/if}
         </div>
     </div>
 
@@ -457,7 +446,7 @@ ${lines.map(l => l === divider ? '<div class="divider"></div>' : `<div${l === 'K
             </button>
         </div>
     {:else}
-        <!-- Summary Cards — R-08/R-11: real period data, R-07: no hardcoded % -->
+        <!-- Summary Cards — R-08/R-11: real period data, R-07: no fixed % -->
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
             <div class="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
                 <div class="flex items-center justify-between mb-4">

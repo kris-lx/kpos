@@ -47,6 +47,7 @@
         if (!previewDoc) return null;
         return {
             transactionNo: previewDoc.transactionNo,
+            customerId: previewDoc.customer?.id,
             items: (previewDoc.items || []).map((item: any) => ({
                 productId: item.productId,
                 productName: item.productName,

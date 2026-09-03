@@ -3,7 +3,7 @@
     import { api } from "$lib/api";
     import { onMount } from "svelte";
     import { toast } from "svelte-sonner";
-    import { auth } from "$stores";
+    import { auth, dialogStore } from "$stores";
     import { Loader2, Save, Puzzle, Link, Settings, X, Plus, Key, Copy, Trash2, Edit, RefreshCw, Shield, Mail, Send, FileText, History, CheckCircle2, XCircle } from "lucide-svelte";
     const t = i18n.t;
 
@@ -100,7 +100,7 @@
     }
 
     async function deleteSsoProvider(provider: any) {
-        if (!confirm("ຕ້ອງການລຶບ SSO provider ນີ້ບໍ?")) return;
+        if (!(await dialogStore.confirm("ຕ້ອງການລຶບ SSO provider ນີ້ບໍ?"))) return;
         try {
             await api.delete(`settings/sso/${provider.id}`).json();
             toast.success("ລຶບແລ້ວ");
@@ -225,7 +225,7 @@
     }
 
     async function deleteEmailProvider(provider: any) {
-        if (!confirm("ຕ້ອງການລຶບ email provider ນີ້ບໍ?")) return;
+        if (!(await dialogStore.confirm("ຕ້ອງການລຶບ email provider ນີ້ບໍ?"))) return;
         try {
             await api.delete(`settings/email/${provider.id}`).json();
             toast.success("ລຶບແລ້ວ");
@@ -439,7 +439,7 @@
     }
 
     async function deleteKey(key: any) {
-        if (!confirm(t("integrations.confirmDelete"))) return;
+        if (!(await dialogStore.confirm(t("integrations.confirmDelete")))) return;
         try {
             await api.delete(`settings/api-keys/${key.id}`).json();
             toast.success(t("integrations.deleteSuccess"));
@@ -487,7 +487,7 @@
     }
 
     async function disconnect(integrationId: string) {
-        if (!confirm("ຕ້ອງການຍົກເລີກການເຊື່ອມຕໍ່ບໍ?")) return;
+        if (!(await dialogStore.confirm("ຕ້ອງການຍົກເລີກການເຊື່ອມຕໍ່ບໍ?"))) return;
         try {
             await api.post(`settings/integrations/${integrationId}/disconnect`).json();
             toast.success("ຍົກເລີກການເຊື່ອມຕໍ່ແລ້ວ");

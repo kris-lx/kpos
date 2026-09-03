@@ -832,8 +832,10 @@ productRoutes.post('/', authenticate, withTenantTx(), branchFilter(), authorize(
         // inventory row lazily on its own first stock-in.
         if (stock !== undefined && stock > 0 && productData.branchId) {
             await db.insert(inventory).values({
+                tenantId: product.tenantId,
                 productId: product.id,
                 branchId: productData.branchId,
+                storeId: productData.storeId || null,
                 quantity: stock,
                 available: stock,
             });
@@ -846,7 +848,15 @@ productRoutes.post('/', authenticate, withTenantTx(), branchFilter(), authorize(
                     productId: product.id,
                     tenantId: product.tenantId,
                     sku: product.sku,
-                    barcode: product.barcode || undefined,
+                    // Deliberately NOT copying product.barcode here — this
+                    // auto-created row is an internal default-variant record,
+                    // not a distinct sellable/scannable item (POS barcode
+                    // scan only ever looks up products.barcode, never
+                    // sku_variants.barcode for this row). Copying it made the
+                    // same barcode value appear twice on the Barcode/QR label
+                    // page (once from /products/barcodes, once from
+                    // /products/skus), since those are merged by row id, not
+                    // by barcode value.
                     name: product.name,
                     attributes: {},
                     price: product.price || 0,
@@ -940,36 +950,6 @@ productRoutes.get('/:id', authenticate, withTenantTx(), async (req, res, next) =
     }
 });
 
-// Generate a unique SKU
-productRoutes.get('/generate/sku', authenticate, withTenantTx(), async (req, res, next) => {
-    try {
-        const db = req.tx ?? globalDb;
-        const { productId } = req.query;
-        let prefix = 'SKU';
-        if (productId) {
-            const product = await db.query.products.findFirst({
-                where: eq(products.id, String(productId)),
-                columns: { name: true },
-            });
-            if (product?.name) {
-                prefix = product.name.slice(0, 3).toUpperCase().replace(/[^A-Z0-9]/g, 'X');
-            }
-        }
-        // Was an unscoped count() over every tenant's skuVariants — SKU
-        // numbering leaked platform-wide instead of being per-tenant, and at
-        // scale a full-table COUNT(*) on every SKU-generation call gets
-        // slower as the whole platform's catalog grows, not just this
-        // tenant's.
-        const tenantId = req.authUser?.tenantId;
-        const countConds = tenantId && !req.authUser?.isSuperAdmin ? [eq(skuVariants.tenantId, tenantId)] : [];
-        const [{ value: total }] = await db.select({ value: count() }).from(skuVariants).where(countConds.length ? and(...countConds) : undefined);
-        const sku = `${prefix}-${String(total + 1).padStart(5, '0')}`;
-        res.json({ success: true, data: { sku } });
-    } catch (error) {
-        next(error);
-    }
-});
-
 // Update product (scope-checked)
 productRoutes.put('/:id', authenticate, withTenantTx(), authorize('products:update'), async (req, res, next) => {
     try {
@@ -1046,6 +1026,33 @@ productRoutes.delete('/:id', authenticate, withTenantTx(), authorize('products:d
 // ═══════════════════════════════════════════════════════════════════════════
 // IMPORT PRODUCTS FROM EXCEL
 // ═══════════════════════════════════════════════════════════════════════════
+
+// Single source of truth for both the downloadable template's header row and
+// the upload validator below — the importer only ever recognizes rows keyed
+// by one of these column names.
+const IMPORT_TEMPLATE_HEADERS = ['name', 'ຊື່ສິນຄ້າ', 'sku', 'SKU', 'barcode', 'ບາໂຄດ', 'price', 'ລາຄາຂາຍ', 'cost', 'ລາຄາທຶນ', 'unit', 'ໜ່ວຍ', 'category', 'ໝວດໝູ່', 'lowStockThreshold'];
+// The actual columns written into the generated template (one canonical
+// header per field, not every recognized alias).
+const IMPORT_TEMPLATE_COLUMNS = ['ຊື່ສິນຄ້າ', 'SKU', 'ບາໂຄດ', 'ລາຄາຂາຍ', 'ລາຄາທຶນ', 'ໜ່ວຍ', 'ໝວດໝູ່', 'lowStockThreshold'];
+
+// GET /products/import/template — the only file the import endpoint below
+// will accept. Requested by super_admin: import must reject arbitrary
+// spreadsheets and only accept the system's own exported template, so the
+// header row here is also the allowlist the importer validates against.
+productRoutes.get('/import/template', authenticate, authorize('products:import'), async (req, res, next) => {
+    try {
+        const worksheet = XLSX.utils.aoa_to_sheet([IMPORT_TEMPLATE_COLUMNS]);
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, worksheet, 'Products');
+        const out = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', 'attachment; filename="kpos-product-import-template.xlsx"');
+        res.send(out);
+    } catch (error) {
+        next(error);
+    }
+});
+
 productRoutes.post('/import/excel', authenticate, withTenantTx(), authorize('products:import'), upload.single('file'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
@@ -1065,11 +1072,45 @@ productRoutes.post('/import/excel', authenticate, withTenantTx(), authorize('pro
 
         if (!branchId) return res.status(400).json({ success: false, error: { code: 'BAD_REQUEST', message: 'branchId is required' } });
 
+        // storeId is a required column on products (every product belongs to
+        // exactly one store/brand) — this importer used to omit it entirely,
+        // so every single row failed with a `store_id` not-null violation and
+        // the import silently reported "0 created" no matter what the file
+        // contained. Same resolution chain as the single-product POST route:
+        // the target branch's owning store > caller's activeStoreId.
+        let storeId: string | undefined = req.body.storeId || req.authUser?.activeStoreId;
+        if (!storeId) {
+            const owningBranch = await db.query.branches.findFirst({ where: eq(branches.id, branchId), columns: { storeId: true } });
+            storeId = owningBranch?.storeId;
+        }
+        if (!storeId) return res.status(400).json({ success: false, error: { code: 'BAD_REQUEST', message: 'Could not resolve storeId for this branch' } });
+
         const workbook = XLSX.read(buf, { type: 'buffer' });
         const sheet = workbook.Sheets[workbook.SheetNames[0]];
         const rows: any[] = XLSX.utils.sheet_to_json(sheet, { defval: '' });
 
         if (!rows.length) return res.status(400).json({ success: false, error: { code: 'BAD_REQUEST', message: 'Excel file is empty' } });
+
+        // Only accept files whose header row matches the downloadable
+        // template (GET /products/import/template) — every column must be a
+        // recognized field, and the two required fields (name, price) must
+        // both be present. Rejects arbitrary spreadsheets up front instead of
+        // silently importing whatever happens to parse, or worse, importing
+        // nothing while reporting a confusing per-row error for every row.
+        const headerKeys = Object.keys(rows[0]);
+        const unknownHeaders = headerKeys.filter(h => !IMPORT_TEMPLATE_HEADERS.includes(h));
+        const hasName = headerKeys.some(h => h === 'name' || h === 'ຊື່ສິນຄ້າ');
+        const hasPrice = headerKeys.some(h => h === 'price' || h === 'ລາຄາຂາຍ');
+        if (unknownHeaders.length > 0 || !hasName || !hasPrice) {
+            return res.status(400).json({
+                success: false,
+                error: {
+                    code: 'INVALID_TEMPLATE',
+                    message: 'File does not match the product import template. Please download the template (GET /products/import/template) and fill it in without changing the column headers.',
+                    details: { unknownHeaders, hasName, hasPrice },
+                },
+            });
+        }
 
         // Fetch categories for name→id lookup
         const catRows = await db.query.categories.findMany({ columns: { id: true, name: true } });
@@ -1100,6 +1141,7 @@ productRoutes.post('/import/excel', authenticate, withTenantTx(), authorize('pro
                 unit: String(row['unit'] || row['ໜ່ວຍ'] || 'piece').trim(),
                 categoryId,
                 branchId,
+                storeId,
                 tenantId: tenantId ?? null,
                 isActive: true,
                 isVat: true,

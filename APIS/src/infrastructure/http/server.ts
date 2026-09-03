@@ -63,6 +63,17 @@ export class AppServer {
             typeof value === 'bigint' ? value.toString() : value
         );
 
+        // Every request reaches this process through exactly one reverse
+        // proxy (nginx), which sets X-Forwarded-For correctly. Without this,
+        // Express ignores that header and req.ip resolves to nginx's own
+        // container IP for every request — meaning express-rate-limit (which
+        // keys by req.ip by default) puts ALL users behind the proxy into
+        // ONE shared bucket per limiter. Found live: a single test session
+        // exhausted the platform-wide 1000/15min general limit and got every
+        // other route 429'd simultaneously. `1` = trust exactly one hop, so
+        // a client can't spoof X-Forwarded-For to fake a different IP.
+        this.app.set('trust proxy', 1);
+
         // Security
         this.app.use(helmet());
         this.app.use(cors({
@@ -78,9 +89,22 @@ export class AppServer {
         // going through OTLP for metrics too.
         this.app.use(metricsMiddleware);
 
-        // Body parsing + cookies — tight global limit; upload routes override per-route
-        this.app.use(express.json({ limit: '2mb' }));
-        this.app.use(express.urlencoded({ extended: true, limit: '2mb' }));
+        // Body parsing + cookies. This limit is truly global — Express has no
+        // way to let a specific route "override" it per-route once a global
+        // express.json() has already run ahead of routing (the comment here
+        // used to claim upload routes did that; none actually could, since
+        // this middleware parses/rejects the body before any route-specific
+        // middleware ever runs). 20mb covers the largest legitimate payload
+        // in this app: /admin/register-and-apply's base64-encoded KYC
+        // document uploads (frontend allows multiple files up to 5MB each,
+        // and base64 adds ~33% overhead) — found live: registration 413'd
+        // on every submission with real documents attached, well before
+        // this limit was the bottleneck (nginx's default 1MB client_max_body_size
+        // rejected it even earlier; see docker/nginx's conf.d for that fix).
+        // The public register endpoint is separately protected from abuse by
+        // authRateLimiter (frequency), not by a tight body-size cap.
+        this.app.use(express.json({ limit: '20mb' }));
+        this.app.use(express.urlencoded({ extended: true, limit: '20mb' }));
         this.app.use(cookieParser());
 
         // Security: input sanitization + no-cache API headers

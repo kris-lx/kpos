@@ -6,7 +6,8 @@
 import { db } from '@/config/database.config';
 import { notifications, settings } from '@/db/schema/tables';
 import { eq, and, desc, count } from 'drizzle-orm';
-import { publish, QUEUES, isRabbitMQConnected } from '@/config/rabbitmq.config';
+import { QUEUES, isRabbitMQConnected } from '@/config/rabbitmq.config';
+import { enqueueOutboxMessage } from '@/infrastructure/messaging/outbox.service';
 import { SocketEventEmitter } from '@/infrastructure/http/socket';
 import { webPushService } from './webpush.service';
 
@@ -103,7 +104,12 @@ class NotificationService {
     }
 
     async queue(dto: CreateNotificationDTO): Promise<void> {
-        const queued = isRabbitMQConnected() && publish(QUEUES.NOTIFICATION, dto as unknown as Record<string, unknown>);
+        const queued = isRabbitMQConnected() && await enqueueOutboxMessage({
+            queue: QUEUES.NOTIFICATION,
+            eventType: 'notification.create',
+            tenantId: dto.tenantId,
+            payload: dto as unknown as Record<string, unknown>,
+        });
         if (!queued) {
             await this.send(dto);
         }

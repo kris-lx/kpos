@@ -73,9 +73,25 @@ restaurantRoutes.get('/tables', authenticate, withTenantTx(), branchFilter(), as
     try {
         const db = req.tx ?? globalDb;
         const { branchId, status, zone, floor } = req.query;
-        const filter = req.branchFilter;
-        const effectiveBranchId = (branchId as string) || filter?.branchIds?.[0] || req.authUser?.activeBranchId;
-        
+        // A client-supplied branchId went straight to tableService.findAll()
+        // with no check the caller actually has access to it — any tenant
+        // user (including one restricted to a single branch) could read
+        // another branch's full table list by passing ?branchId=<sibling>.
+        // resolveScopedBranch() (already used by the sibling /tables/stats
+        // route) validates the id belongs to this tenant AND passes
+        // ensureScopeAccess before it's trusted.
+        const scopedBranch = await resolveScopedBranch(req, branchId as string | undefined);
+        if (!scopedBranch) {
+            // A platform super admin can exist before the first tenant/branch
+            // is created. Keep the global admin UI usable in that state while
+            // still rejecting an explicitly invalid branch id.
+            if (req.authUser?.isSuperAdmin && !(branchId || req.authUser.activeBranchId || req.user?.branchId)) {
+                return res.json({ success: true, data: [] });
+            }
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+        }
+        const effectiveBranchId = scopedBranch.id;
+
         // BE-76: Tenant isolation
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
 
@@ -218,8 +234,14 @@ restaurantRoutes.delete('/tables/:id', authenticate, withTenantTx(), authorize('
 restaurantRoutes.get('/zones', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
-        const filter = req.branchFilter;
-        const effectiveBranchId = (req.query.branchId as string) || filter?.branchIds?.[0] || req.authUser?.activeBranchId;
+        const scopedBranch = await resolveScopedBranch(req, req.query.branchId as string | undefined);
+        if (!scopedBranch) {
+            if (req.authUser?.isSuperAdmin && !(req.query.branchId || req.authUser.activeBranchId || req.user?.branchId)) {
+                return res.json({ success: true, data: [], floors: [] });
+            }
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+        }
+        const effectiveBranchId = scopedBranch.id;
 
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         const allTables = await tableService.findAll({ branchId: effectiveBranchId, tenantId });
@@ -260,8 +282,14 @@ restaurantRoutes.get('/orders', authenticate, withTenantTx(), branchFilter(), as
     try {
         const db = req.tx ?? globalDb;
         const { branchId, status, tableId, page, limit } = req.query;
-        const filter = req.branchFilter;
-        const effectiveBranchId = (branchId as string) || filter?.branchIds?.[0] || req.authUser?.activeBranchId;
+        const scopedBranch = await resolveScopedBranch(req, branchId as string | undefined);
+        if (!scopedBranch) {
+            if (req.authUser?.isSuperAdmin && !(branchId || req.authUser.activeBranchId || req.user?.branchId)) {
+                return res.json({ success: true, data: [] });
+            }
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+        }
+        const effectiveBranchId = scopedBranch.id;
 
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
 
@@ -436,8 +464,14 @@ restaurantRoutes.get('/kitchen', authenticate, withTenantTx(), branchFilter(), a
     try {
         const db = req.tx ?? globalDb;
         const { branchId } = req.query;
-        const filter = req.branchFilter;
-        const effectiveBranchId = (branchId as string) || filter?.branchIds?.[0] || req.authUser?.activeBranchId;
+        const scopedBranch = await resolveScopedBranch(req, branchId as string | undefined);
+        if (!scopedBranch) {
+            if (req.authUser?.isSuperAdmin && !(branchId || req.authUser.activeBranchId || req.user?.branchId)) {
+                return res.json({ success: true, data: [] });
+            }
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+        }
+        const effectiveBranchId = scopedBranch.id;
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         const orders = await orderService.getKitchenOrders(effectiveBranchId, tenantId);
         res.json({ success: true, data: orders });
@@ -507,8 +541,14 @@ restaurantRoutes.get('/reservations', authenticate, withTenantTx(), branchFilter
     try {
         const db = req.tx ?? globalDb;
         const { branchId, status, date, page, limit } = req.query;
-        const filter = req.branchFilter;
-        const effectiveBranchId = (branchId as string) || filter?.branchIds?.[0] || req.authUser?.activeBranchId;
+        const scopedBranch = await resolveScopedBranch(req, branchId as string | undefined);
+        if (!scopedBranch) {
+            if (req.authUser?.isSuperAdmin && !(branchId || req.authUser.activeBranchId || req.user?.branchId)) {
+                return res.json({ success: true, data: [], meta: { total: 0, page: 1, limit: 50, totalPages: 0 } });
+            }
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+        }
+        const effectiveBranchId = scopedBranch.id;
 
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         const result = await reservationService.findAll({

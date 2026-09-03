@@ -3,6 +3,7 @@
     import { goto } from "$app/navigation";
     import { api } from "$lib/api";
     import { auth } from "$lib/stores/auth.svelte";
+    import { dialogStore } from "$stores";
     import { toast } from "svelte-sonner";
     import { t } from '$lib/i18n/index.svelte';
     import { cn } from "$lib/utils";
@@ -85,6 +86,17 @@
         displayName: string;
         description?: string;
         isSystem?: boolean;
+        permissions?: string[];
+    }
+
+    interface MenuNode {
+        key: string;
+        label: string;
+        labelLao?: string | null;
+        icon?: string | null;
+        path?: string | null;
+        requiredPermission?: string | null;
+        children?: MenuNode[];
     }
 
     type CrudFlags = { r: boolean; c: boolean; u: boolean; d: boolean };
@@ -104,12 +116,14 @@
     let savedMatrix = $state<string>('');
     let roleStats = $state<RoleStats>({});
     let searchQuery = $state('');
-    let activeTab = $state<'matrix' | 'by-role' | 'preview'>('matrix');
+    let activeTab = $state<'matrix' | 'by-role' | 'preview'>('by-role');
     let previewRoleId = $state<string | null>(null);
     let showCopyModal = $state(false);
     let copyTargetRoleId = $state<string | null>(null);
     let copySourceRoleId = $state<string | null>(null);
     let collapsedRoles = $state<Set<string>>(new Set());
+    let collapsedModules = $state<Set<string>>(new Set());
+    let menus = $state<MenuNode[]>([]);
 
     // ── Derived ──
     const hasUnsavedChanges = $derived(JSON.stringify(matrix) !== savedMatrix);
@@ -122,6 +136,17 @@
             r.name.toLowerCase().includes(q) ||
             r.module.toLowerCase().includes(q)
         );
+    });
+
+    const groupedRules = $derived.by(() => {
+        const groups = new Map<string, { module: string; label: string; rules: Rule[] }>();
+        for (const rule of filteredRules) {
+            const key = rule.module || rule.name;
+            const group = groups.get(key) || { module: key, label: rule.displayName, rules: [] };
+            group.rules.push(rule);
+            groups.set(key, group);
+        }
+        return [...groups.values()];
     });
 
     const visibleRoles = $derived(roles.filter(r => r.name !== 'super_admin'));
@@ -158,7 +183,7 @@
 
     // ── Lifecycle ──
     onMount(async () => {
-        if (auth.roleLevel > 5) {
+        if (!auth.isSuperAdmin) {
             goto("/dashboard");
             return;
         }
@@ -176,6 +201,7 @@
                 rules = res.data.rules || [];
                 matrix = res.data.matrix || {};
                 roleStats = res.data.roleStats || {};
+                menus = res.data.menus || [];
                 savedMatrix = JSON.stringify(matrix);
             }
         } catch (error) {
@@ -225,6 +251,14 @@
         collapsedRoles = next;
     }
 
+    function toggleModuleCollapse(roleId: string, module: string) {
+        const key = `${roleId}:${module}`;
+        const next = new Set(collapsedModules);
+        if (next.has(key)) next.delete(key);
+        else next.add(key);
+        collapsedModules = next;
+    }
+
     // ── Save ──
     async function saveAll() {
         isSaving = true;
@@ -248,7 +282,7 @@
 
     // ── Seed ──
     async function seedRules() {
-        if (!confirm('ການ Seed ຈະລົບ Rules ເກົ່າທັງໝົດແລ້ວສ້າງໃໝ່. ດຳເນີນການຕໍ່ບໍ?')) return;
+        if (!(await dialogStore.confirm('ການ Seed ຈະລົບ Rules ເກົ່າທັງໝົດແລ້ວສ້າງໃໝ່. ດຳເນີນການຕໍ່ບໍ?'))) return;
         isSeeding = true;
         try {
             await api.post('admin/roles/seed').json<any>();
@@ -340,6 +374,60 @@
         return result;
     });
 
+    function permissionMatches(granted: Set<string>, required: string | null | undefined): boolean {
+        if (!required) return true;
+        if (granted.has('*') || granted.has(required)) return true;
+        const [module] = required.split(':');
+        if (granted.has(`${module}:*`) || granted.has(module)) return true;
+        if (required.endsWith(':view') && granted.has(required.replace(':view', ':read'))) return true;
+        if (required.endsWith(':read') && granted.has(required.replace(':read', ':view'))) return true;
+        return false;
+    }
+
+    const menuPreviewItemsByRole = $derived.by(() => {
+        const result: Record<string, { key: string; label: string; depth: number; path?: string | null; requiredPermission?: string | null; allowed: boolean }[]> = {};
+        for (const role of visibleRoles) {
+            const granted = new Set<string>(role.permissions || []);
+            for (const rule of rules) {
+                if (matrix[role.id]?.[rule.id]?.r) {
+                    granted.add(rule.name);
+                    for (const permission of rule.permissions || []) granted.add(permission);
+                }
+            }
+
+            const rows: { key: string; label: string; depth: number; path?: string | null; requiredPermission?: string | null; allowed: boolean }[] = [];
+            const visit = (items: MenuNode[], depth: number): boolean => {
+                let anyAllowed = false;
+                for (const item of items) {
+                    const children = item.children || [];
+                    const ownAllowed = !!item.path && permissionMatches(granted, item.requiredPermission);
+                    // A parent menu is visible when it has an accessible page or
+                    // at least one accessible descendant. Checking only immediate
+                    // children made nested sub-menus appear locked incorrectly.
+                    const childStart = rows.length;
+                    const childAllowed = visit(children, depth + 1);
+                    rows.push({
+                        key: item.key,
+                        label: item.labelLao || item.label,
+                        depth,
+                        path: item.path,
+                        requiredPermission: item.requiredPermission,
+                        allowed: ownAllowed || childAllowed,
+                    });
+                    // The recursive call appends children first, so move the
+                    // current node before them to keep the tree order intact.
+                    const current = rows.pop()!;
+                    rows.splice(childStart, 0, current);
+                    anyAllowed = anyAllowed || current.allowed;
+                }
+                return anyAllowed;
+            };
+            visit(menus, 0);
+            result[role.id] = rows;
+        }
+        return result;
+    });
+
     const CRUD_DEFS = [
         { key: 'r' as const, label: 'R', full: 'Read', icon: Eye, bg: 'bg-blue-100 dark:bg-blue-900/40', text: 'text-blue-600 dark:text-blue-400', ring: 'ring-blue-300 dark:ring-blue-700' },
         { key: 'c' as const, label: 'C', full: 'Create', icon: Plus, bg: 'bg-success-100 dark:bg-success-900/40', text: 'text-success-600 dark:text-success-400', ring: 'ring-success-300 dark:ring-success-700' },
@@ -349,7 +437,7 @@
 </script>
 
 <svelte:head>
-    <title>Rules Management - KPOS</title>
+    <title>Access Control - KPOS</title>
 </svelte:head>
 
 {#if !canAccess}
@@ -372,14 +460,14 @@
             </div>
             <div>
                 <div class="flex items-center gap-2">
-                    <h1 class="text-2xl font-bold text-gray-900 dark:text-white">Rules Management</h1>
+                    <h1 class="text-2xl font-bold text-gray-900 dark:text-white">Access Control</h1>
                     {#if hasUnsavedChanges}
                         <span class="px-2 py-0.5 text-xs font-semibold rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400 animate-pulse">
                             ยັງບໍ່ໄດ້ບັນທຶກ
                         </span>
                     {/if}
                 </div>
-                <p class="text-sm text-gray-500 dark:text-gray-400">ຈັດການ CRUD Matrix — ກຳນົດສິດການເຂົ້າເຖິງຕາມບົດບາດ</p>
+                <p class="text-sm text-gray-500 dark:text-gray-400">ກຳນົດສິດຕາມ Role ແລະ Module — ເບິ່ງຜົນເມນູກ່ອນບັນທຶກ</p>
             </div>
         </div>
 
@@ -454,7 +542,7 @@
                     </div>
                     <div>
                         <p class="text-2xl font-bold text-gray-900 dark:text-white">{rules.length}</p>
-                        <p class="text-xs text-gray-500 dark:text-gray-400">Rules (ໂມດູນ)</p>
+                        <p class="text-xs text-gray-500 dark:text-gray-400">Modules / Rules</p>
                     </div>
                 </div>
             </div>
@@ -493,19 +581,18 @@
             </div>
         </div>
 
-        <!-- ═══ Tab Switcher ═══ -->
+        <div class="mb-5 rounded-2xl border border-blue-200 bg-blue-50/80 px-4 py-3 dark:border-blue-900/60 dark:bg-blue-950/30">
+            <div class="flex items-start gap-3">
+                <Info class="mt-0.5 h-5 w-5 shrink-0 text-blue-600 dark:text-blue-400" />
+                <div class="text-sm text-blue-900 dark:text-blue-100">
+                    <p class="font-semibold">ວິທີອ່ານໜ້ານີ້</p>
+                    <p class="mt-1 text-blue-800/80 dark:text-blue-200/80">Module ແມ່ນພາກສ່ວນງານ, CRUD ແມ່ນສິດພື້ນຖານ, ແລະ Permission ສີຟ້າ/ສີເທົາດ້ານລຸ່ມແມ່ນ action ລະອຽດ. Menu Preview ເປັນການເບິ່ງຜົນ ບໍ່ແມ່ນບ່ອນແກ້ສິດ.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══ Access views ═══ -->
         <div class="flex items-center gap-1 mb-4 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-1 w-fit">
-            <button
-                onclick={() => activeTab = 'matrix'}
-                class={cn(
-                    "px-4 py-2 rounded-lg text-sm font-medium transition-all",
-                    activeTab === 'matrix'
-                        ? "bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300"
-                        : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
-                )}
-            >
-                Unified Matrix
-            </button>
             <button
                 onclick={() => activeTab = 'by-role'}
                 class={cn(
@@ -515,7 +602,7 @@
                         : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
                 )}
             >
-                By Role
+                Role Access Tree
             </button>
             <button
                 onclick={() => { activeTab = 'preview'; if (!previewRoleId && visibleRoles.length > 0) previewRoleId = visibleRoles[0].id; }}
@@ -639,7 +726,7 @@
                     <div class="space-y-2">
                         {#each visibleRoles as role (role.id)}
                             {@const perms = menuPreviewByRole[role.id] || []}
-                            {@const visibleCount = perms.filter(p => p.canRead).length}
+                            {@const visibleCount = (menuPreviewItemsByRole[role.id] || []).filter(item => item.allowed).length}
                             <button
                                 onclick={() => previewRoleId = role.id}
                                 class={cn(
@@ -654,7 +741,7 @@
                                 </div>
                                 <div class="min-w-0 flex-1">
                                     <p class="font-semibold text-gray-900 dark:text-white text-sm">{role.displayName}</p>
-                                    <p class="text-xs text-gray-500 dark:text-gray-400">{visibleCount} / {rules.length} ໂມດູນທີ່ເຂົ້າເຖິງໄດ້</p>
+                                    <p class="text-xs text-gray-500 dark:text-gray-400">{visibleCount} ເມນູ/ເມນູຍ່ອຍທີ່ເຂົ້າເຖິງໄດ້</p>
                                 </div>
                                 {#if previewRoleId === role.id}
                                     <Check class="w-4 h-4 text-emerald-500 shrink-0" />
@@ -670,59 +757,45 @@
                         {@const selectedRole = visibleRoles.find(r => r.id === previewRoleId)}
                         {@const perms = menuPreviewByRole[previewRoleId] || []}
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <!-- Sidebar Preview -->
+                            <!-- Sidebar Preview from the real menu tree -->
                             <div class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
                                 <div class="px-4 py-3 bg-gray-50 dark:bg-gray-700/50 border-b border-gray-200 dark:border-gray-700">
-                                    <p class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">Sidebar ທີ່ເຫັນ</p>
+                                    <p class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">Menu ທີ່ເຫັນຈິງ</p>
                                     <p class="text-sm font-bold text-gray-900 dark:text-white mt-0.5">{selectedRole?.displayName}</p>
                                 </div>
-                                <!-- Mini sidebar mockup -->
+                                <!-- This list comes from /admin/rules/matrix -> menu_permissions. -->
                                 <div class="p-3 space-y-0.5 max-h-96 overflow-y-auto">
-                                    {#each perms as perm (perm.ruleId)}
-                                        {@const menuDef = RULE_MENU_MAP[perm.ruleName]}
-                                        {#if menuDef}
-                                            {@const MenuIcon = menuDef.icon}
-                                            <!-- Parent menu item -->
-                                            <div class={cn(
-                                                "flex items-center gap-2 px-3 py-2 rounded-lg text-sm",
-                                                perm.canRead
-                                                    ? "text-gray-800 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700/50"
-                                                    : "text-gray-300 dark:text-gray-600"
-                                            )}>
-                                                {#if perm.canRead}
-                                                    <MenuIcon class="w-4 h-4 text-gray-500 dark:text-gray-400 shrink-0" />
-                                                {:else}
-                                                    <Lock class="w-4 h-4 text-gray-300 dark:text-gray-600 shrink-0" />
-                                                {/if}
-                                                <span class={cn("flex-1", !perm.canRead && "line-through")}>{menuDef.labelLao}</span>
-                                                {#if perm.canRead}
-                                                    <span class="text-[10px] font-bold text-emerald-500">✓</span>
-                                                {:else}
-                                                    <span class="text-[10px] font-bold text-danger-400">✗</span>
-                                                {/if}
-                                            </div>
-                                            <!-- Submenu children -->
-                                            {#if menuDef.children.length > 0}
-                                                <div class="ml-6 space-y-0.5 mb-1">
-                                                    {#each menuDef.children as child (child)}
-                                                        <div class={cn(
-                                                            "flex items-center gap-2 px-3 py-1.5 rounded-md text-xs",
-                                                            perm.canRead
-                                                                ? "text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/30"
-                                                                : "text-gray-300 dark:text-gray-600"
-                                                        )}>
-                                                            <span class="w-1 h-1 rounded-full shrink-0 {perm.canRead ? 'bg-gray-400' : 'bg-gray-200 dark:bg-gray-700'}"></span>
-                                                            <span class={cn("flex-1", !perm.canRead && "line-through")}>{child}</span>
-                                                            {#if perm.canRead}
-                                                                <span class="text-[10px] text-emerald-500">✓</span>
-                                                            {:else}
-                                                                <span class="text-[10px] text-danger-400">✗</span>
-                                                            {/if}
-                                                        </div>
-                                                    {/each}
-                                                </div>
+                                    {#each (menuPreviewItemsByRole[previewRoleId] || []) as item (item.key)}
+                                        <div
+                                            class={cn(
+                                                "flex items-center gap-2 rounded-lg px-3 py-2 text-sm",
+                                                item.allowed
+                                                    ? "text-gray-800 dark:text-gray-200"
+                                                    : "text-gray-400 dark:text-gray-600"
+                                            )}
+                                            style={`padding-left: ${12 + item.depth * 18}px`}
+                                        >
+                                            {#if item.allowed}
+                                                <span class="h-2 w-2 rounded-full bg-emerald-500"></span>
+                                            {:else}
+                                                <Lock class="h-3.5 w-3.5 text-gray-400 dark:text-gray-600" />
                                             {/if}
-                                        {/if}
+                                            <span class={cn("flex-1", !item.allowed && "line-through")}>{item.label}</span>
+                                            {#if item.requiredPermission}
+                                                <code class="hidden text-[10px] text-gray-400 sm:inline">{item.requiredPermission}</code>
+                                            {/if}
+                                            <span class={cn(
+                                                "text-[10px] font-medium",
+                                                item.allowed
+                                                    ? "text-emerald-600 dark:text-emerald-400"
+                                                    : "text-danger-500 dark:text-danger-400"
+                                            )}>{item.allowed ? 'ອະນຸຍາດ' : 'ບໍ່ອະນຸຍາດ'}</span>
+                                        </div>
+                                    {:else}
+                                        <div class="px-3 py-8 text-center">
+                                            <Lock class="mx-auto mb-2 h-8 w-8 text-gray-300 dark:text-gray-600" />
+                                            <p class="text-sm text-gray-400 dark:text-gray-500">ຍັງບໍ່ມີ Menu catalog</p>
+                                        </div>
                                     {/each}
                                 </div>
                             </div>
@@ -737,12 +810,12 @@
                                     {#each perms.filter(p => p.canRead) as perm (perm.ruleId)}
                                         {@const menuDef = RULE_MENU_MAP[perm.ruleName]}
                                         {@const ruleDef = rules.find(r => r.id === perm.ruleId)}
-                                        {#if menuDef}
-                                            {@const MenuIcon = menuDef.icon}
+                                        {#if ruleDef}
+                                            {@const MenuIcon = menuDef?.icon || Shield}
                                             <div class="px-4 py-2.5">
                                                 <div class="flex items-center gap-2 mb-1.5">
                                                     <MenuIcon class="w-3.5 h-3.5 text-gray-400 shrink-0" />
-                                                    <span class="text-xs font-semibold text-gray-700 dark:text-gray-300">{menuDef.label}</span>
+                                                    <span class="text-xs font-semibold text-gray-700 dark:text-gray-300">{menuDef?.label || ruleDef.displayName}</span>
                                                 </div>
                                                 <div class="flex items-center gap-1.5 ml-5">
                                                     {#each CRUD_DEFS as def}
@@ -774,12 +847,13 @@
                             <div class="flex items-start gap-2">
                                 <Info class="w-4 h-4 text-blue-500 shrink-0 mt-0.5" />
                                 <div class="text-xs text-blue-700 dark:text-blue-300 space-y-1">
-                                    <p><strong>ວິທີໃຊ້:</strong> Preview ນີ້ສະແດງສິ່ງທີ່ user ຈະເຫັນໃນ sidebar ຫຼັງ login</p>
-                                    <p>• <strong>Read (R)</strong> = ເຫັນເມນູ + ເຂົ້າໜ້ານັ້ນໄດ້</p>
+                                    <p><strong>ວິທີໃຊ້:</strong> Preview ນີ້ສະແດງທັງ Menu ທີ່ເຫັນ ແລະ Menu ທີ່ຖືກລັອກ</p>
+                                    <p>• <strong>ອະນຸຍາດ</strong> = Role ເຫັນເມນູ ແລະເຂົ້າໜ້າໄດ້</p>
+                                    <p>• <strong>ບໍ່ອະນຸຍາດ</strong> = ສະແດງໄວ້ເພື່ອກວດສິດ, ຜູ້ໃຊ້ຈິງຈະບໍ່ເຫັນ</p>
                                     <p>• <strong>Create (C)</strong> = ເຫັນປຸ່ມ "ເພີ່ມ" ໃນໜ້ານັ້ນ</p>
                                     <p>• <strong>Update (U)</strong> = ເຫັນປຸ່ມ "ແກ້ໄຂ" ໃນໜ້ານັ້ນ</p>
                                     <p>• <strong>Delete (D)</strong> = ເຫັນປຸ່ມ "ລົບ" ໃນໜ້ານັ້ນ</p>
-                                    <p class="mt-1">ການປ່ຽນ Matrix ດ້ານເທິງຈະ update preview ນີ້ທັນທີ. <strong>ບັນທຶກ</strong>ເພື່ອໃຫ້ໃຊ້ງານໄດ້ຈິງ.</p>
+                                    <p class="mt-1">ການປ່ຽນ Role Access Tree ຈະ update preview ທັນທີ. ກົດ <strong>ບັນທຶກ</strong> ເພື່ອໃຫ້ໃຊ້ງານຈິງ.</p>
                                 </div>
                             </div>
                         </div>
@@ -865,53 +939,69 @@
                                 </button>
                             </div>
 
-                            <!-- CRUD Table -->
-                            <div class="overflow-x-auto">
-                                <table class="w-full text-sm">
-                                    <thead>
-                                        <tr class="border-b border-gray-200 dark:border-gray-700">
-                                            <th class="text-left px-4 py-2.5 font-semibold text-gray-700 dark:text-gray-300 w-56">Rule</th>
-                                            {#each CRUD_DEFS as def}
-                                                <th class="text-center px-3 py-2.5 w-20">
-                                                    <div class="flex flex-col items-center gap-0.5">
-                                                        <def.icon class={cn("w-3.5 h-3.5", def.text)} />
-                                                        <span class="text-[10px] font-medium text-gray-500 dark:text-gray-400">{def.full}</span>
-                                                    </div>
-                                                </th>
-                                            {/each}
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {#each filteredRules as rule (rule.id)}
-                                            {@const crud = matrix[role.id]?.[rule.id] || { r: false, c: false, u: false, d: false }}
-                                            <tr class="border-b border-gray-50 dark:border-gray-700/30 hover:bg-gray-50 dark:hover:bg-gray-700/20 transition-colors">
-                                                <td class="px-4 py-2">
-                                                    <span class="font-medium text-gray-900 dark:text-white">{rule.displayName}</span>
-                                                    <p class="text-[10px] text-gray-400 mt-0.5">{rule.module} — {rule.routes.length} routes</p>
-                                                </td>
-                                                {#each CRUD_DEFS as def}
-                                                    <td class="text-center px-3 py-2">
-                                                        <button
-                                                            onclick={() => toggleCrud(role.id, rule.id, def.key)}
-                                                            class={cn(
-                                                                "w-8 h-8 rounded-lg flex items-center justify-center transition-all",
-                                                                crud[def.key]
-                                                                    ? cn(def.bg, def.text, "ring-1.5", def.ring, "shadow-sm")
-                                                                    : "bg-gray-100 dark:bg-gray-700/60 text-gray-300 dark:text-gray-600 hover:bg-gray-200 dark:hover:bg-gray-600"
-                                                            )}
-                                                        >
-                                                            {#if crud[def.key]}
-                                                                <Check class="w-4 h-4" />
-                                                            {:else}
-                                                                <X class="w-3 h-3" />
+                            <!-- Role -> Module -> Permission tree -->
+                            <div class="divide-y divide-gray-100 dark:divide-gray-700/60">
+                                {#each groupedRules as group (group.module)}
+                                    {@const moduleKey = `${role.id}:${group.module}`}
+                                    {@const moduleCollapsed = collapsedModules.has(moduleKey)}
+                                    <div class="bg-white dark:bg-gray-800">
+                                        <button
+                                            type="button"
+                                            onclick={() => toggleModuleCollapse(role.id, group.module)}
+                                            class="flex w-full items-center gap-3 px-5 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-700/30"
+                                        >
+                                            {#if moduleCollapsed}
+                                                <ChevronRight class="h-4 w-4 text-gray-400" />
+                                            {:else}
+                                                <ChevronDown class="h-4 w-4 text-gray-400" />
+                                            {/if}
+                                            <div class="h-8 w-1 rounded-full bg-violet-500"></div>
+                                            <div class="min-w-0 flex-1">
+                                                <p class="font-semibold text-gray-900 dark:text-white">{group.label}</p>
+                                                <p class="text-[11px] text-gray-500 dark:text-gray-400">Module: {group.module} · {group.rules.length} Rule</p>
+                                            </div>
+                                            <span class="rounded-full bg-gray-100 px-2 py-1 text-[10px] font-medium text-gray-500 dark:bg-gray-700 dark:text-gray-300">ເລືອກສິດດ້ານລຸ່ມ</span>
+                                        </button>
+
+                                        {#if !moduleCollapsed}
+                                            {#each group.rules as rule (rule.id)}
+                                                {@const crud = matrix[role.id]?.[rule.id] || { r: false, c: false, u: false, d: false }}
+                                                <div class="border-t border-gray-100 px-6 py-4 dark:border-gray-700/50">
+                                                    <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                                                        <div class="min-w-0 flex-1 pl-5">
+                                                            <p class="font-medium text-gray-800 dark:text-gray-100">{rule.displayName}</p>
+                                                            <p class="mt-0.5 text-[11px] text-gray-400">{rule.name} · {rule.routes.length} routes</p>
+                                                            {#if rule.permissions.length > 0}
+                                                                <div class="mt-2 flex flex-wrap gap-1.5">
+                                                                    {#each rule.permissions as permission (permission)}
+                                                                        <span class="rounded-md border border-gray-200 bg-gray-50 px-2 py-1 font-mono text-[10px] text-gray-500 dark:border-gray-700 dark:bg-gray-900/50 dark:text-gray-400">{permission}</span>
+                                                                    {/each}
+                                                                </div>
                                                             {/if}
-                                                        </button>
-                                                    </td>
-                                                {/each}
-                                            </tr>
-                                        {/each}
-                                    </tbody>
-                                </table>
+                                                        </div>
+                                                        <div class="flex shrink-0 items-center gap-1.5 pl-5 lg:pl-0">
+                                                            {#each CRUD_DEFS as def}
+                                                                <button
+                                                                    type="button"
+                                                                    onclick={() => toggleCrud(role.id, rule.id, def.key)}
+                                                                    title={`${def.full} — ${role.displayName} / ${rule.displayName}`}
+                                                                    class={cn(
+                                                                        "flex h-9 min-w-9 items-center justify-center rounded-lg px-2 text-[10px] font-bold transition-all",
+                                                                        crud[def.key]
+                                                                            ? cn(def.bg, def.text, "ring-1", def.ring, "shadow-sm")
+                                                                            : "bg-gray-100 text-gray-300 hover:bg-gray-200 dark:bg-gray-700/60 dark:text-gray-600 dark:hover:bg-gray-600"
+                                                                    )}
+                                                                >
+                                                                    {def.label}
+                                                                </button>
+                                                            {/each}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            {/each}
+                                        {/if}
+                                    </div>
+                                {/each}
                             </div>
                         {/if}
                     </div>

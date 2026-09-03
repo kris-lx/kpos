@@ -64,7 +64,14 @@
 
     $effect(() => {
         void statusFilter; void typeFilter; void debouncedSearch; void currentPage; void pageSize;
-        $requestsQuery.refetch();
+        // get() takes a non-reactive snapshot — `$requestsQuery.refetch()` (the
+        // auto-subscribed form) would make this effect depend on the query's
+        // own live state, so every refetch (including the one below) changes
+        // that state and re-triggers this same effect — an infinite refetch
+        // loop. Confirmed live: approving a request called refetch() once,
+        // which alone produced 1200+ GET /requests calls in 16 seconds and
+        // froze the tab.
+        get(requestsQuery).refetch();
     });
 
     const approveMutation = createMutation({

@@ -2,8 +2,10 @@
     import { t } from "$lib/i18n/index.svelte";
     import { api } from "$lib/api";
     import { formatCurrency, formatDate, formatDateTime, escapeHtml } from "$lib/utils";
+    import { printHtml } from "$lib/utils/printHtml";
     import { onMount } from "svelte";
     import { auth } from "$stores";
+    import MoneyInput from "$lib/components/MoneyInput.svelte";
     import {
         FileText,
         Eye,
@@ -280,7 +282,17 @@
     }
 
     // Maker/checker
-    let canApprove = $derived(auth.isSuperAdmin || (auth.roleLevel ?? 7) <= 4);
+    let canApprove = $derived(
+        auth.isSuperAdmin
+        || ((auth.roleLevel ?? 7) <= 4
+            && auth.hasPermission('documents:update')
+            && auth.user?.checkerEnabled === true)
+    );
+
+    // CRUD gating — mirrors backend authorize('documents:create'/'update'/'delete')
+    let canCreateTaxInvoice = $derived(auth.canCreate('documents'));
+    let canUpdateTaxInvoice = $derived(auth.canUpdate('documents'));
+    let canDeleteTaxInvoice = $derived(auth.canDelete('documents'));
 
     async function approveTaxInvoice(id: string) {
         try {
@@ -365,12 +377,7 @@
                 </div>
             </body></html>`;
 
-            const blob = new Blob([html], { type: "text/html;charset=utf-8" });
-            const url = URL.createObjectURL(blob);
-            const printWindow = window.open(url, "_blank");
-            if (printWindow) {
-                printWindow.onload = () => printWindow.print();
-            }
+            printHtml(html);
             showToast("ກຳລັງພິມໃບກຳກັບພາສີ", "info");
         } catch (error) {
             console.error("Failed to print invoice:", error);
@@ -422,12 +429,7 @@
     function exportInvoiceToPdf(invoice: any) {
         const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Tax Invoice - ${escapeHtml(invoice.invoiceNumber)}</title>
             <style>@media print { body { margin: 0; } }</style></head><body>${buildInvoiceHtml(invoice)}</body></html>`;
-        const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        const printWindow = window.open(url, '_blank');
-        if (printWindow) {
-            printWindow.onload = () => printWindow.print();
-        }
+        printHtml(html);
         showToast("ກຳລັງສົ່ງອອກ PDF", "info");
     }
 
@@ -467,12 +469,7 @@
                 <td style="border:1px solid #ddd;padding:8px;"></td>
             </tr></tfoot></table></body></html>`;
 
-        const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        const printWindow = window.open(url, '_blank');
-        if (printWindow) {
-            printWindow.onload = () => printWindow.print();
-        }
+        printHtml(html);
         showToast("ກຳລັງສົ່ງອອກ PDF", "info");
     }
 
@@ -615,6 +612,7 @@
                 <Download class="w-4 h-4" />
                 Word
             </button>
+            {#if canCreateTaxInvoice}
             <button
                 onclick={openCreateModal}
                 class="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
@@ -622,6 +620,7 @@
                 <Plus class="w-5 h-5" />
                 ສ້າງໃບກຳກັບພາສີ
             </button>
+            {/if}
         </div>
     </div>
 
@@ -809,7 +808,7 @@
                                                 <ThumbsDown class="w-4 h-4" />
                                             </button>
                                         {/if}
-                                        {#if invoice.status === "pending"}
+                                        {#if invoice.status === "pending" && canUpdateTaxInvoice}
                                             <button
                                                 onclick={() => openEditModal(invoice)}
                                                 class="p-1.5 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded transition-colors"
@@ -841,7 +840,7 @@
                                         >
                                             <Download class="w-4 h-4" />
                                         </button>
-                                        {#if invoice.status !== "cancelled"}
+                                        {#if invoice.status !== "cancelled" && canUpdateTaxInvoice}
                                             <button
                                                 onclick={() => cancelInvoice(invoice)}
                                                 class="p-1.5 text-danger-600 dark:text-danger-400 hover:bg-danger-50 dark:hover:bg-danger-900/30 rounded transition-colors"
@@ -850,7 +849,7 @@
                                                 <X class="w-4 h-4" />
                                             </button>
                                         {/if}
-                                        {#if invoice.status === "pending"}
+                                        {#if invoice.status === "pending" && canDeleteTaxInvoice}
                                             <button
                                                 onclick={() => openDeleteModal(invoice)}
                                                 class="p-1.5 text-danger-600 dark:text-danger-400 hover:bg-danger-50 dark:hover:bg-danger-900/30 rounded transition-colors"
@@ -1097,14 +1096,12 @@
                             <label for="tax-invoice-subtotal" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                                 ມູນຄ່າກ່ອນພາສີ <span class="text-danger-500">*</span>
                             </label>
-                            <input
+                            <MoneyInput
                                 id="tax-invoice-subtotal"
-                                type="number"
                                 bind:value={formData.subtotal}
                                 required
-                                min="0"
+                                min={0}
                                 class="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500"
-                                placeholder="0"
                             />
                         </div>
                         <div>

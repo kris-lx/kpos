@@ -1,9 +1,11 @@
 ﻿<script lang="ts">
     import { createQuery, createMutation, useQueryClient } from "@tanstack/svelte-query";
+    import { get } from "svelte/store";
     import { api } from "$lib/api";
     import { toast } from "svelte-sonner";
     import { t } from '$lib/i18n/index.svelte';
     import { auth } from "$lib/stores/auth.svelte";
+    import { dialogStore } from "$stores";
     import { formatPhone, formatDate } from "$utils";
     import { goto } from "$app/navigation";
     import { 
@@ -62,14 +64,16 @@
         enabled: !!auth.activeStoreId
     });
 
-    // Refetch all when active store changes
+    // Refetch all when active store changes. get() avoids the
+    // infinite-refetch-loop footgun — see admin/audit's equivalent effect
+    // for the full explanation.
     $effect(() => {
         void auth.activeStoreId;
         if (auth.activeStoreId) {
-            $storeQuery.refetch();
-            $statsQuery.refetch();
-            $branchesQuery.refetch();
-            $usersQuery.refetch();
+            get(storeQuery).refetch();
+            get(statsQuery).refetch();
+            get(branchesQuery).refetch();
+            get(usersQuery).refetch();
         }
     });
 
@@ -160,7 +164,7 @@
     }
 
     async function deleteBranch(branch: any) {
-        if (!confirm(`ລຶບສາຂາ "${branch.name}"?`)) return;
+        if (!(await dialogStore.confirm(`ລຶບສາຂາ "${branch.name}"?`))) return;
         try {
             await api.delete(`branches/${branch.id}`).json();
             toast.success("ລຶບສາຂາສຳເລັດ");

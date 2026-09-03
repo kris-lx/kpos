@@ -5,6 +5,25 @@
 
 import { v2 as cloudinary } from 'cloudinary';
 import { cloudinaryConfig } from '@/config/cloudinary.config';
+import { ApiError } from '@/infrastructure/http/middleware/error.middleware';
+
+// Every upload that goes through uploadSingle()/uploadMultiple() is capped
+// here, in one place, rather than relying on Express's/nginx's body-size
+// limits alone — those bound the whole request (which may legitimately carry
+// several files), not any one file. Found live: KYC document uploads had no
+// per-file cap or type allowlist at all, so a single request could smuggle
+// an oversized or arbitrary-type (e.g. .exe renamed with an image mimetype
+// header) attachment as long as the overall request stayed under the global
+// body limit.
+export const MAX_UPLOAD_FILE_BYTES = 10 * 1024 * 1024; // 10MB per file
+export const DEFAULT_ALLOWED_MIME_TYPES = [
+    'image/png',
+    'image/jpeg',
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+];
+export const IMAGE_ONLY_MIME_TYPES = ['image/png', 'image/jpeg'];
 
 // Configure Cloudinary SDK
 if (cloudinaryConfig.isConfigured) {
@@ -35,6 +54,11 @@ export interface UploadOptions {
     /** Original filename from the client — when given, the asset is stored under this
      *  name (sanitized) instead of a Cloudinary-generated random public_id. */
     originalFilename?: string;
+    /** Overrides DEFAULT_ALLOWED_MIME_TYPES. Pass IMAGE_ONLY_MIME_TYPES for
+     *  logo/avatar-style uploads that should never accept a PDF/Word doc. */
+    allowedMimeTypes?: string[];
+    /** Overrides MAX_UPLOAD_FILE_BYTES. */
+    maxBytes?: number;
 }
 
 class UploadService {
@@ -119,6 +143,31 @@ class UploadService {
         const mime = this.detectMimeType(file);
         const resourceType = options.resourceType || this.resolveResourceType(mime);
         const isImageType = resourceType === 'image';
+
+        // Type allowlist — rejects anything outside png/jpeg/pdf/doc(x) by
+        // default (or images-only when the caller passes IMAGE_ONLY_MIME_TYPES).
+        // Checked against the sniffed magic-byte/data-URI mime, not a
+        // client-supplied filename extension, so renaming a disallowed file
+        // doesn't bypass this.
+        const allowedTypes = options.allowedMimeTypes || DEFAULT_ALLOWED_MIME_TYPES;
+        if (!allowedTypes.includes(mime)) {
+            throw new ApiError(
+                `File type "${mime}" is not allowed. Allowed types: ${allowedTypes.join(', ')}`,
+                400, 'UPLOAD_TYPE_NOT_ALLOWED', { mime, allowedTypes }
+            );
+        }
+
+        // Size cap — computed from the actual decoded byte length, not the
+        // base64 string length (~33% larger than the real file).
+        const base64Payload = file.includes(',') ? file.slice(file.indexOf(',') + 1) : file;
+        const byteLength = Math.floor(base64Payload.length * 0.75) - (base64Payload.endsWith('==') ? 2 : base64Payload.endsWith('=') ? 1 : 0);
+        const maxBytes = options.maxBytes ?? MAX_UPLOAD_FILE_BYTES;
+        if (byteLength > maxBytes) {
+            throw new ApiError(
+                `File is too large (${(byteLength / (1024 * 1024)).toFixed(1)}MB). Maximum allowed size is ${(maxBytes / (1024 * 1024)).toFixed(0)}MB.`,
+                400, 'UPLOAD_TOO_LARGE', { byteLength, maxBytes }
+            );
+        }
 
         // Build transformation (only for images)
         const transformation: Record<string, unknown>[] = [];

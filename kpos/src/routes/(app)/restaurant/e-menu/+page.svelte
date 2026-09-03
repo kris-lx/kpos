@@ -74,6 +74,16 @@
     async function loadMenu() {
         isLoading = true;
         error = null;
+        // The internal e-menu screen needs a concrete branch. A platform
+        // admin may legitimately have no branch yet (fresh installation), so
+        // do not call the public endpoint with a missing branchId.
+        if (!branchId) {
+            categories = [];
+            menuItems = [];
+            error = t("branches.noBranches");
+            isLoading = false;
+            return;
+        }
         try {
             const params = new URLSearchParams();
             if (branchId) params.set("branchId", branchId);

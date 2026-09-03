@@ -41,8 +41,9 @@
                 goto("/login");
                 return;
             }
-            const permRoles = ['admin', 'hq_admin', 'hq_manager', 'branch_admin', 'store_owner'];
-            if (user.isSuperAdmin || permRoles.includes(user.role)) {
+            // Permission catalog is platform-owned. Tenant and branch admins
+            // only assign the catalog through tenant roles/staff workflows.
+            if (user.isSuperAdmin) {
                 canAccess = true;
             } else {
                 toast.error(t('common.accessDenied'));
@@ -55,6 +56,7 @@
 
     const permissionsQuery = createQuery({
         queryKey: ["admin-permissions-manage"],
+        enabled: () => canAccess,
         queryFn: async () => {
             const response = await api.get("admin/permissions").json<any>();
             return response.data || [];
@@ -196,7 +198,7 @@
 </script>
 
 <svelte:head>
-    <title>ຈັດການສິດ - Super Admin</title>
+    <title>Platform Permission Catalog - KPOS</title>
 </svelte:head>
 
 {#if !canAccess}
@@ -216,7 +218,7 @@
                         <Shield class="w-7 h-7 text-white" />
                     </div>
                     <div>
-                        <h1 class="text-2xl lg:text-3xl font-bold text-gray-900 dark:text-white">ຈັດການສິດ</h1>
+                        <h1 class="text-2xl lg:text-3xl font-bold text-gray-900 dark:text-white">Platform Permission Catalog</h1>
                         <p class="text-gray-500 dark:text-gray-400">ກຳນົດ menu ແລະ sub menu ສິດ</p>
                     </div>
                 </div>

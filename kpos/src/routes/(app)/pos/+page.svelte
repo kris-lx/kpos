@@ -1,14 +1,16 @@
 ﻿<script lang="ts">
-    import { cart, auth } from "$stores";
+    import { cart, auth, shiftStore, dialogStore } from "$stores";
     import { cn, formatCurrency } from "$utils";
     import { t } from "$lib/i18n/index.svelte";
     import { createQuery, useQueryClient } from "@tanstack/svelte-query";
+    import { get } from "svelte/store";
     import { api, productsApi, type Product } from "$api";
     import { toast } from "svelte-sonner";
     import { onMount, onDestroy } from "svelte";
     import { goto } from "$app/navigation";
     import { enqueueSale, getPendingSales, removePendingSale, pendingSaleCount } from "$lib/offlineQueue";
     import ReceiptPrint from "$lib/components/ReceiptPrint.svelte";
+    import MoneyInput from "$lib/components/MoneyInput.svelte";
     import QRCode from "qrcode";
     import {
         Search,
@@ -147,7 +149,15 @@
         }, 3000);
     }
 
-    function openPaymentModal() {
+    async function openPaymentModal() {
+        // Keep the UI guard aligned with the per-user workflow policy enforced
+        // by POST /sales. Users explicitly configured with requiresShift=false
+        // must be able to sell without opening a cash shift.
+        const requiresShift = auth.user?.requiresShift !== false;
+        if (requiresShift && !shiftStore.current) {
+            await dialogStore.alert(t('pos.shiftRequired'), { variant: 'warning', title: t('shifts.notClockedIn') });
+            return;
+        }
         showPaymentModal = true;
         resetQrPayment();
         loadQrProviders();
@@ -207,8 +217,20 @@
     let showReceiptModal = $state(false);
     let receiptData = $state<any>(null);
 
-    // BroadcastChannel for customer display sync
-    let displayChannel: BroadcastChannel | null = null;
+    // BroadcastChannel for customer display sync. Must be $state, not a
+    // plain let: it's created asynchronously in onMount, after the sync
+    // $effect below has already run once. On that first run displayChannel
+    // is still null, so the `if (displayChannel)` guard short-circuits
+    // before ever reading cart.items — and since Svelte 5's effects only
+    // track whatever was actually *read* during execution, cart.items never
+    // gets registered as a dependency, so the effect never fires again even
+    // once displayChannel is set. Found live: the customer display stayed
+    // stuck on the idle screen forever, no matter what was added to cart,
+    // because postMessage() was never once called after mount. Making this
+    // $state means assigning it in onMount is itself a tracked change that
+    // reruns the effect — which this time reads cart.items too, fixing the
+    // dependency for every cart change after.
+    let displayChannel = $state<BroadcastChannel | null>(null);
 
     // Customer-facing second-screen display — auto-open on the first item
     // added to an empty cart, mirroring the "auto open" setting in
@@ -290,6 +312,7 @@
         window.addEventListener('online', onOnline);
         window.addEventListener('offline', onOffline);
         pendingOfflineSales = await pendingSaleCount();
+        await cart.loadTaxRate();
         loadPriceLevels();
         loadCustomerDisplayConfig();
 
@@ -377,6 +400,27 @@
             displayChannel.postMessage({
                 type: "transaction_update",
                 payload: transactionData
+            });
+        }
+    });
+
+    // Sync the payment QR to the customer display as soon as it's
+    // generated — well before checkout is confirmed, since the customer is
+    // meant to scan it while qrPaymentStatus is still "pending" and the
+    // cashier's own Checkout button stays disabled until the gateway
+    // confirms. This is a lightweight partial update (no items/totals) —
+    // the display shallow-merges it onto whatever the cart-sync effect
+    // above last sent, and explicitly clears qrImageDataUrl to "" on
+    // reset/cancel so a stale QR never lingers after the payment method is
+    // switched away from "qr" or the sale completes.
+    $effect(() => {
+        if (displayChannel) {
+            displayChannel.postMessage({
+                type: "transaction_update",
+                payload: {
+                    paymentMethod,
+                    qrImageDataUrl: paymentMethod === "qr" ? qrImageDataUrl : "",
+                },
             });
         }
     });
@@ -514,25 +558,44 @@
     const splitTotal = $derived(splitPayments.reduce((s, p) => s + (p.amount || 0), 0));
     const splitChange = $derived(Math.max(0, splitTotal - effectiveTotal));
 
-    // Refetch products when store or category changes. Skip the very first
-    // run — createQuery() already fires its own initial fetch on mount, so
-    // refetching again here just doubles the network round-trip before the
-    // page's first data (including the member list) is ready.
-    let productsEffectRan = false;
+    // Refetch products whenever store or category changes — including the
+    // very first run. The previous version skipped the first run on the
+    // assumption that createQuery()'s own initial fetch already used the
+    // correct activeStoreId, but on a hard reload activeStoreId is first
+    // restored (stale) from localStorage synchronously, then corrected
+    // asynchronously once loadStoreContext() resolves — createQuery's
+    // initial auto-fetch can fire with that stale value before the
+    // correction lands, and "skip first run" then never issues the refetch
+    // needed to fix it, leaving the wrong/empty product list until the user
+    // manually reloads again. Always refetching costs one harmless extra
+    // request on a normal load in exchange for never getting stuck stale.
     $effect(() => {
         void activeStoreId;
         void selectedCategory;
-        if (productsEffectRan) $productsQuery.refetch();
-        productsEffectRan = true;
+        // get() avoids the infinite-refetch-loop footgun — see admin/audit's
+        // equivalent effect for the full explanation.
+        get(productsQuery).refetch();
     });
 
-    // Refetch other store-scoped queries when active store changes.
+    // Refetch other store-scoped queries when active store changes. Unlike
+    // productsQuery above, these two don't read activeStoreId inside their
+    // queryFn at all (they're scoped server-side via the X-Active-Store
+    // header, not a query param), so there's no "stale value captured on
+    // first read" risk here — the only reason to watch activeStoreId is to
+    // react to it actually CHANGING later. Calling refetch() on the very
+    // first run instead races createQuery's own initial auto-fetch and
+    // leaves the query's isLoading stuck true forever (found live: the
+    // customer-select modal on POS spun on "loading" indefinitely even
+    // after the underlying request had already returned 200). Keep the
+    // skip-first-run guard here.
     let storeScopedEffectRan = false;
     $effect(() => {
         void activeStoreId;
         if (storeScopedEffectRan) {
-            $categoriesQuery.refetch();
-            $customersQuery.refetch();
+            // get() avoids the infinite-refetch-loop footgun — see
+            // admin/audit's equivalent effect for the full explanation.
+            get(categoriesQuery).refetch();
+            get(customersQuery).refetch();
         }
         storeScopedEffectRan = true;
     });
@@ -829,16 +892,20 @@
             queryClient.invalidateQueries({ queryKey: ["inventory-stats"] });
             queryClient.invalidateQueries({ queryKey: ["dashboard"] });
 
-            // Broadcast complete status
+            // Broadcast complete status — the actual sale total, not 0.
+            // Previously hardcoded to 0 here, which made the customer
+            // display's "Payment Amount" render as "₭0.00" (easy to misread
+            // as "OK" at a glance) on every completed sale regardless of
+            // what was actually paid.
             if (displayChannel) {
                 displayChannel.postMessage({
                     type: "transaction_update",
                     payload: {
                         items: [],
-                        subtotal: 0,
-                        discount: 0,
-                        tax: 0,
-                        total: 0,
+                        subtotal: receiptSubtotal,
+                        discount: receiptDiscount,
+                        tax: receiptTax,
+                        total: receiptTotal,
                         change: paymentMethod === "cash" ? change : undefined,
                         status: "complete"
                     }
@@ -848,6 +915,7 @@
             // Set receipt data and show print modal
             receiptData = {
                 transactionNo: response?.data?.transactionNo || `TXN-${Date.now()}`,
+                customerId: cart.customer?.id,
                 items: receiptItems,
                 subtotal: receiptSubtotal,
                 discountAmount: receiptDiscount,
@@ -857,6 +925,7 @@
                 change: receiptChange,
                 paymentMethod: receiptPaymentMethod,
                 customerName: receiptCustomerName,
+                cashierName: auth.user?.name,
                 createdAt: new Date(),
             };
 
@@ -887,9 +956,16 @@
                 if (code === 'INVALID_COUPON') msg = t('pos.invalidCoupon');
                 else if (code === 'COUPON_EXPIRED') msg = t('coupon.expired');
                 else if (code === 'COUPON_LIMIT_REACHED') msg = t('coupon.limitReached');
-                else if (code === 'COUPON_MIN_PURCHASE') msg = errData?.error?.message || t('pos.couponMinPurchase');
+                else if (code === 'COUPON_MIN_PURCHASE') msg = t('pos.couponMinPurchase', { amount: formatCurrency(errData?.error?.details?.minPurchase ?? 0) });
                 else if (code === 'COUPON_NOT_STARTED') msg = t('coupon.notStarted');
                 else if (code === 'SPLIT_PAYMENT_INSUFFICIENT') msg = t('pos.splitPaymentInsufficient');
+                else if (code === 'INSUFFICIENT_STOCK') msg = t('pos.insufficientStock');
+                else if (code === 'SHIFT_REQUIRED') msg = t('pos.shiftRequired');
+                else if (code === 'PRODUCT_NOT_FOUND') msg = errData?.error?.message || t('pos.paymentError');
+                else if (code === 'INSUFFICIENT_POINTS') msg = t('pos.insufficientPoints');
+                else if (code === 'POINTS_MIN') msg = t('pos.pointsMin');
+                else if (code === 'POINTS_MAX') msg = t('pos.pointsMax');
+                else if (errData?.error?.message) msg = errData.error.message;
             } catch { /* response not JSON */ }
             toast.error(msg);
             console.error(error);
@@ -1141,6 +1217,7 @@
                         {@const displayStock = Math.max(0, (product.stock ?? 0) - (cartItem?.quantity ?? 0))}
                         {@const isSkeletonStock = skeletonStockIds.has(product.id)}
                         <button
+                            data-testid={`pos-product-${product.id}`}
                             onclick={(e) => addToCart(product, e)}
                             class={cn(
                                 "relative bg-white dark:bg-gray-800 rounded-xl p-4 text-left transition-all",
@@ -1250,6 +1327,7 @@
             <!-- Customer -->
             <div class="flex items-center gap-2">
                 <button
+                    data-testid="pos-customer-selector"
                     onclick={() => (showCustomerModal = true)}
                     class={cn(
                         "flex-1 flex items-center gap-3 p-3 rounded-xl border border-dashed transition-colors",
@@ -1490,6 +1568,7 @@
 
             <!-- Checkout Button -->
             <button
+                data-testid="pos-checkout"
                 onclick={openPaymentModal}
                 disabled={cart.itemCount === 0}
                 class={cn(
@@ -1704,11 +1783,9 @@
                                     <option value="card">{t('pos.card')}</option>
                                     <option value="qr">QR</option>
                                 </select>
-                                <input
-                                    type="number"
+                                <MoneyInput
                                     bind:value={payment.amount}
-                                    min="0"
-                                    placeholder="0"
+                                    min={0}
                                     class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-right text-sm focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500 outline-none"
                                 />
                                 {#if splitPayments.length > 1}
@@ -1804,6 +1881,7 @@
                                 </button>
                             {/each}
                             <button
+                                data-testid="pos-exact-amount"
                                 onclick={() => { cashReceived = effectiveTotal; numpadInput = String(effectiveTotal); }}
                                 class="px-4 py-2 rounded-lg text-sm font-medium bg-success-100 text-success-700 hover:bg-success-200"
                             >
@@ -1925,13 +2003,11 @@
                         <div>
                             <label class="block">
                                 <span class="text-sm font-medium text-gray-700 dark:text-gray-300">{t('pos.creditDeposit')}</span>
-                                <input
-                                    type="number"
+                                <MoneyInput
                                     bind:value={creditInitialPayment}
-                                    min="0"
+                                    min={0}
                                     max={cart.total}
                                     class="mt-1 w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800 text-right text-lg font-bold focus:ring-2 focus:ring-primary-500"
-                                    placeholder="0"
                                 />
                             </label>
                             <p class="text-xs text-gray-500 mt-1">{t('pos.creditBalance')}: {formatCurrency(cart.total - creditInitialPayment)}</p>
@@ -1990,6 +2066,7 @@
                     {t('common.cancel')}
                 </button>
                 <button
+                    data-testid="pos-confirm-payment"
                     onclick={processPayment}
                     disabled={!canCheckout || isProcessing}
                     class={cn(
@@ -2114,25 +2191,11 @@
                             placeholder="0"
                         />
                     {:else}
-                        <input
+                        <MoneyInput
                             id="discount-value"
-                            type="text"
-                            inputmode="decimal"
-                            value={cart.discountValue > 0 ? new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(cart.discountValue) : ''}
-                            oninput={(e) => {
-                                const raw = e.currentTarget.value.replace(/,/g, '');
-                                const num = Math.round(parseFloat(raw) * 100) / 100;
-                                if (!isNaN(num)) cart.setDiscount('FIXED', num);
-                                else if (raw === '' || raw === '.') cart.setDiscount('FIXED', 0);
-                            }}
-                            onblur={(e) => {
-                                const raw = e.currentTarget.value.replace(/,/g, '');
-                                const num = parseFloat(raw) || 0;
-                                e.currentTarget.value = num > 0 ? new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(num) : '';
-                                cart.setDiscount('FIXED', num);
-                            }}
+                            value={cart.discountValue}
+                            onchange={(num) => cart.setDiscount('FIXED', num)}
                             class="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-gray-700 dark:bg-gray-800 text-right text-xl font-bold focus:ring-2 focus:ring-primary-500"
-                            placeholder="0.00"
                         />
                     {/if}
                 </div>

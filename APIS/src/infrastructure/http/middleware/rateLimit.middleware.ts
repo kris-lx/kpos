@@ -5,7 +5,9 @@
 import type { Request, Response, NextFunction } from 'express';
 import rateLimit from 'express-rate-limit';
 import { RedisStore } from 'rate-limit-redis';
+import jwt from 'jsonwebtoken';
 import { cache, getRedisClient } from '@/config/redis.config';
+import { jwtConfig } from '@/config/app.config';
 
 // Explicit check: isDev is only true when NODE_ENV === 'development'.
 // Using !=='production' would disable rate limits if NODE_ENV is unset or typo'd.
@@ -54,9 +56,35 @@ function redisStore(prefix: string): RedisStore | undefined {
     });
 }
 
+// KPOS is typically deployed per-store: several cashier terminals sitting
+// behind one shop router, so they all share a single public IP. A plain
+// per-IP bucket means one busy store's own terminals compete with each
+// other for the same quota (found live: a single dev machine running heavy
+// testing alongside a real browser session exhausted the whole-IP budget
+// and 429'd normal polling for ~15 minutes). Key by authenticated user
+// instead, when a token is present and verifies — each cashier/terminal
+// then gets their own bucket regardless of how many share the router.
+// Falls back to IP for anything unauthenticated (can't be keyed by user
+// yet, and pre-auth traffic is exactly what per-IP limiting should cover).
+function identityKeyGenerator(req: Request): string {
+    const authHeader = req.headers.authorization;
+    if (authHeader?.startsWith('Bearer ')) {
+        try {
+            const decoded = jwt.verify(authHeader.substring(7), jwtConfig.secret) as { sub?: string; userId?: string };
+            const userId = decoded.sub || decoded.userId;
+            if (userId) return `user:${userId}`;
+        } catch {
+            // Invalid/expired token — fall through to IP keying below.
+        }
+    }
+    return req.ip ?? '';
+}
+
 export const rateLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: isDev ? 0 : 1000,    // 0 = unlimited in dev; 1000/15min in production
+    max: isDev ? 0 : 3000,    // 0 = unlimited in dev; 3000/15min per user (or per IP pre-auth) in production —
+                              // nginx's limit_req_zone (100r/s, burst 50) already guards true volumetric bursts
+                              // at the edge, so this is a secondary per-identity ceiling, not the primary defense.
     message: {
         success: false,
         error: {
@@ -67,6 +95,7 @@ export const rateLimiter = rateLimit({
     standardHeaders: true,
     legacyHeaders: false,
     skip: (req) => req.path === '/health' || isDev,
+    keyGenerator: identityKeyGenerator,
     store: isDev ? undefined : redisStore('kpos:rl:'),
     passOnStoreError: true,
 });
@@ -84,6 +113,31 @@ export const authRateLimiter = rateLimit({
     standardHeaders: true,
     legacyHeaders: false,
     store: isDev ? undefined : redisStore('kpos:rl-auth:'),
+    passOnStoreError: true,
+});
+
+// /auth/refresh used to share authRateLimiter's 20/15min bucket with
+// /login, /register, /forgot-password and /reset-password — all keyed by
+// IP. Refresh fires on every hard reload / new tab (not just once per
+// session), so normal usage (multiple tabs, an office behind one NAT IP,
+// a shift with a few page reloads) burned through that budget on refresh
+// calls alone, then blocked /login too since it shared the same counter —
+// locking users out of a session they couldn't even re-authenticate into
+// for 15 minutes. Refresh tokens are opaque HttpOnly-cookie values, not
+// brute-forceable in this range, so they get their own, much larger budget.
+export const refreshRateLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: isDev ? 500 : 120, // prod: 120/15min per IP — generous enough for many tabs/reloads
+    message: {
+        success: false,
+        error: {
+            code: 'RATE_LIMIT',
+            message: 'Too many requests, please try again later',
+        },
+    },
+    standardHeaders: true,
+    legacyHeaders: false,
+    store: isDev ? undefined : redisStore('kpos:rl-refresh:'),
     passOnStoreError: true,
 });
 

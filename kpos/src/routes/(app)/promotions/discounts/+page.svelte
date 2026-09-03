@@ -2,8 +2,10 @@
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
     import { api } from "$api";
+    import { auth, dialogStore } from "$stores";
     import { formatCurrency, formatDate } from "$lib/utils";
     import { toast } from "svelte-sonner";
+    import MoneyInput from "$lib/components/MoneyInput.svelte";
     import {
         BadgePercent,
         Plus,
@@ -177,7 +179,7 @@
     }
 
     async function handleDelete(discount: any) {
-        if (!confirm(t("common.confirmDelete"))) return;
+        if (!(await dialogStore.confirm(t("common.confirmDelete")))) return;
         try {
             await api.delete(`promotions/discounts/${discount.id}`).json();
             toast.success(t("common.success"));
@@ -284,6 +286,7 @@
             </div>
         </div>
 
+        {#if auth.canCreate('promotions')}
         <button
             onclick={() => {
                 resetForm();
@@ -294,6 +297,7 @@
             <Plus class="w-5 h-5" />
             ສ້າງສ່ວນຫຼຸດໃໝ່
         </button>
+        {/if}
     </div>
 
     <!-- Stats Cards -->
@@ -417,6 +421,7 @@
                                 <span class="text-xl font-bold text-success-600 dark:text-success-400">{formatCurrency(discount.discountValue)}</span>
                             {/if}
                         </div>
+                        {#if auth.canUpdate('promotions')}
                         <button
                             onclick={() => toggleActive(discount)}
                             class="p-1"
@@ -427,6 +432,7 @@
                                 <ToggleLeft class="w-8 h-8 text-gray-400" />
                             {/if}
                         </button>
+                        {/if}
                     </div>
 
                     <!-- Content -->
@@ -479,18 +485,22 @@
 
                     <!-- Actions -->
                     <div class="px-4 py-3 bg-gray-50 dark:bg-gray-800/50 border-t border-gray-200 dark:border-gray-700 flex items-center justify-end gap-1">
+                        {#if auth.canUpdate('promotions')}
                         <button
                             onclick={() => openEdit(discount)}
                             class="p-2 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg transition-all"
                         >
                             <Edit class="w-4 h-4" />
                         </button>
+                        {/if}
+                        {#if auth.canDelete('promotions')}
                         <button
                             onclick={() => handleDelete(discount)}
                             class="p-2 text-danger-500 hover:bg-danger-100 dark:hover:bg-danger-900/30 rounded-lg transition-all"
                         >
                             <Trash2 class="w-4 h-4" />
                         </button>
+                        {/if}
                     </div>
                 </div>
             {/each}
@@ -607,13 +617,23 @@
                         <label for="a11y-app-promotions-discounts-page-svelte-4" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             ມູນຄ່າ *
                         </label>
-                        <input id="a11y-app-promotions-discounts-page-svelte-4"
-                            type="number"
-                            bind:value={formData.discountValue}
-                            required
-                            min="0"
-                            class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-orange-500 focus:border-transparent"
-                        />
+                        {#if formData.discountType === "PERCENTAGE"}
+                            <input id="a11y-app-promotions-discounts-page-svelte-4"
+                                type="number"
+                                bind:value={formData.discountValue}
+                                required
+                                min="0"
+                                max="100"
+                                class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-orange-500 focus:border-transparent"
+                            />
+                        {:else}
+                            <MoneyInput id="a11y-app-promotions-discounts-page-svelte-4"
+                                bind:value={formData.discountValue}
+                                required
+                                min={0}
+                                class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-orange-500 focus:border-transparent"
+                            />
+                        {/if}
                     </div>
                     <div>
                         <label for="a11y-app-promotions-discounts-page-svelte-5" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">

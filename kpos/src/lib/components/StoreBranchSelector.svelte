@@ -53,7 +53,11 @@
                 compact ? "text-sm" : "text-base"
             )}
         >
-            <Store class={cn("text-primary-500", compact ? "w-4 h-4" : "w-5 h-5")} />
+            {#if activeStore?.storeLogo}
+                <img src={activeStore.storeLogo} alt={activeStore.storeName} class={cn("rounded-md object-cover shrink-0", compact ? "w-4 h-4" : "w-5 h-5")} />
+            {:else}
+                <Store class={cn("text-primary-500", compact ? "w-4 h-4" : "w-5 h-5")} />
+            {/if}
             <span class="font-medium truncate max-w-[150px]">
                 {activeStore?.storeName || t("stores.selectStore")}
             </span>
@@ -78,12 +82,16 @@
                             )}
                         >
                             <div class={cn(
-                                "w-8 h-8 rounded-lg flex items-center justify-center",
+                                "w-8 h-8 rounded-lg flex items-center justify-center overflow-hidden shrink-0",
                                 activeStore?.storeId === store.storeId
                                     ? "bg-primary-100 dark:bg-primary-800"
                                     : "bg-gray-100 dark:bg-gray-700"
                             )}>
-                                <Store class="w-4 h-4" />
+                                {#if store.storeLogo}
+                                    <img src={store.storeLogo} alt={store.storeName} class="w-full h-full object-cover" />
+                                {:else}
+                                    <Store class="w-4 h-4" />
+                                {/if}
                             </div>
                             <div class="flex-1 min-w-0">
                                 <p class="font-medium truncate">{store.storeName}</p>

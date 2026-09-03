@@ -1,13 +1,14 @@
 // KPOS – Production Seed
 //
-// Seeds ONLY the immutable system data that every fresh deployment needs:
-//   • Menu items (full navigation tree)
-//   • System roles  (DEFAULT_ROLES)
-//   • System rules  (DEFAULT_RULES)
-//   • Role-rule mappings (DEFAULT_ROLE_RULES)
-//   • One superadmin user
+// Seeds ONLY the platform catalog that every fresh deployment needs:
+//   • Full navigation menu tree
+//   • One system role (Super Admin)
+//   • One system rule (Admin / Platform Management)
+//   • Full editable permission catalog
+//   • One Super Admin user
 //
-// Safe to re-run (fully idempotent – upserts only).
+// Safe to re-run. Platform rows outside this initial catalog are removed;
+// tenant-created roles/rules/users are preserved.
 // Does NOT create any tenant, branch, store, product or demo data.
 //
 // Usage:
@@ -17,8 +18,8 @@
 import 'dotenv/config';
 import postgres from 'postgres';
 import argon2 from 'argon2';
-import { DEFAULT_ROLES, DEFAULT_RULES, DEFAULT_ROLE_RULES } from '../shared/defaultAccessControl';
-import { permissionsToMask } from '../infrastructure/permissions';
+import { DEFAULT_ROLES, DEFAULT_RULES } from '../shared/defaultAccessControl';
+import { getGroupedPermissionKeys, permissionsToMask } from '../infrastructure/permissions';
 
 // Seeds write across all tenants (and creates the platform superadmin) — needs
 // the superuser/migration connection, not the restricted kpos_app role
@@ -41,6 +42,20 @@ if (!process.env.SEED_ADMIN_PASSWORD) {
     process.exit(1);
 }
 const SUPER_ADMIN_PASSWORD = process.env.SEED_ADMIN_PASSWORD;
+
+// The platform seed intentionally starts with one role and one rule. All
+// other roles/rules are created by Super Admin through the admin UI.
+const SEEDED_ROLES = DEFAULT_ROLES.filter((role) => role.name === 'super_admin');
+const SEEDED_RULES = DEFAULT_RULES.filter((rule) => rule.name === 'admin');
+const SEEDED_ROLE_RULES = {
+    super_admin: {
+        admin: { r: true, c: true, u: true, d: true },
+    },
+};
+
+if (SEEDED_ROLES.length !== 1 || SEEDED_RULES.length !== 1) {
+    throw new Error('Bootstrap seed contract requires exactly one platform role and one platform rule');
+}
 
 // This script is idempotent by design (safe to re-run on every deploy), but that
 // must not mean silently rotating a live admin's password on every run. Password
@@ -83,6 +98,7 @@ async function ensureRole(role: (typeof DEFAULT_ROLES)[number]): Promise<Row> {
                 description  = ${role.description},
                 permissions  = ${role.permissions},
                 is_system    = ${role.isSystem},
+                level        = ${role.level},
                 mask_low     = ${mask.low.toString()},
                 mask_high    = ${mask.high.toString()},
                 updated_at   = now()
@@ -93,11 +109,11 @@ async function ensureRole(role: (typeof DEFAULT_ROLES)[number]): Promise<Row> {
     return first(await sql`
         insert into roles (
             tenant_id, branch_id, name, display_name, description,
-            permissions, is_system, mask_low, mask_high
+            permissions, is_system, level, mask_low, mask_high
         ) values (
             null, null,
             ${role.name}, ${role.displayName}, ${role.description},
-            ${role.permissions}, ${role.isSystem},
+            ${role.permissions}, ${role.isSystem}, ${role.level},
             ${mask.low.toString()}, ${mask.high.toString()}
         )
         returning *
@@ -142,6 +158,56 @@ async function ensureRule(rule: (typeof DEFAULT_RULES)[number]): Promise<Row> {
     `);
 }
 
+// Keep the editable permission catalog in sync with the canonical permission
+// keys used by authorize() and the tenant role editor. This is an upsert, so
+// role references remain valid across repeated production seed runs.
+async function ensurePermissionCatalog(): Promise<number> {
+    const grouped = getGroupedPermissionKeys();
+    const groupKeys = Object.keys(grouped);
+    const permissionKeys = Object.values(grouped).flat();
+
+    await sql`delete from permissions where not (key = any(${permissionKeys}))`;
+    await sql`delete from permission_groups where not (key = any(${groupKeys}))`;
+
+    let count = 0;
+    for (const [groupKey, keys] of Object.entries(grouped)) {
+        const label = groupKey.charAt(0).toUpperCase() + groupKey.slice(1);
+        const existingGroup = optional(await sql`
+            select id from permission_groups where key = ${groupKey} limit 1
+        `);
+        const group = existingGroup
+            ? first(await sql`
+                update permission_groups set
+                    label = ${label}, icon = 'Shield', color = 'from-gray-500 to-slate-500',
+                    "order" = ${groupKeys.indexOf(groupKey)}, is_active = true, updated_at = now()
+                where id = ${existingGroup.id}
+                returning id
+            `)
+            : first(await sql`
+                insert into permission_groups (key, label, icon, color, "order", is_active)
+                values (${groupKey}, ${label}, 'Shield', 'from-gray-500 to-slate-500', ${groupKeys.indexOf(groupKey)}, true)
+                returning id
+            `);
+
+        for (let index = 0; index < keys.length; index++) {
+            const key = keys[index];
+            const permissionLabel = key.split(':').slice(1).join(':') || key;
+            await sql`
+                insert into permissions (key, label, group_id, "order", is_active)
+                values (${key}, ${permissionLabel}, ${group.id}, ${index}, true)
+                on conflict (key) do update set
+                    label = excluded.label,
+                    group_id = excluded.group_id,
+                    "order" = excluded."order",
+                    is_active = true,
+                    updated_at = now()
+            `;
+            count++;
+        }
+    }
+    return count;
+}
+
 // ── role-rule mappings ────────────────────────────────────────────────────────
 
 async function ensureRoleRule(input: {
@@ -177,6 +243,36 @@ async function ensureRoleRule(input: {
 }
 
 // ── menu ─────────────────────────────────────────────────────────────────────
+
+async function removeNonSeededAccessControl(): Promise<void> {
+    const seededRole = SEEDED_ROLES[0];
+    const seededRule = SEEDED_RULES[0];
+    if (!seededRole || !seededRule) throw new Error('Seed role/rule definition is missing');
+
+    // Remove platform users before deleting their old role rows. This keeps
+    // repeatable seeds safe even when a previous deployment created extra
+    // platform accounts that still reference a non-seeded role.
+    await sql`
+        delete from users
+        where tenant_id is null and branch_id is null and email <> ${SUPER_ADMIN_EMAIL}
+    `;
+    await sql`
+        delete from role_rules
+        where tenant_id is null
+          and (
+            role_id not in (select id from roles where tenant_id is null and branch_id is null and name = ${seededRole.name})
+            or rule_id not in (select id from rules where tenant_id is null and name = ${seededRule.name})
+          )
+    `;
+    await sql`
+        delete from roles
+        where tenant_id is null and branch_id is null and name <> ${seededRole.name}
+    `;
+    await sql`
+        delete from rules
+        where tenant_id is null and name <> ${seededRule.name}
+    `;
+}
 
 async function ensureMenuItem(item: MenuItem, parentId: string | null, order: number): Promise<Row> {
     const existing = optional(await sql`
@@ -216,6 +312,28 @@ async function seedMenu(items: MenuItem[], parentId: string | null = null): Prom
         const item = items[i];
         const row  = await ensureMenuItem(item, parentId, i);
         if (item.children?.length) await seedMenu(item.children, row.id);
+    }
+}
+
+async function validateBootstrapContract(expectedMenuCount: number, expectedPermissionCount: number): Promise<void> {
+    const [counts] = await sql`
+        select
+            (select count(*)::int from roles where tenant_id is null and branch_id is null) as platform_roles,
+            (select count(*)::int from rules where tenant_id is null) as platform_rules,
+            (select count(*)::int from users where tenant_id is null and branch_id is null) as platform_users,
+            (select count(*)::int from menu_permissions where is_active = true) as active_menus,
+            (select count(*)::int from permissions where is_active = true) as active_permissions
+    `;
+    const actual = {
+        roles: Number(counts.platform_roles),
+        rules: Number(counts.platform_rules),
+        users: Number(counts.platform_users),
+        menus: Number(counts.active_menus),
+        permissions: Number(counts.active_permissions),
+    };
+    if (actual.roles !== 1 || actual.rules !== 1 || actual.users !== 1
+        || actual.menus !== expectedMenuCount || actual.permissions !== expectedPermissionCount) {
+        throw new Error(`Bootstrap seed contract failed: ${JSON.stringify({ actual, expected: { roles: 1, rules: 1, users: 1, menus: expectedMenuCount, permissions: expectedPermissionCount } })}`);
     }
 }
 
@@ -375,18 +493,29 @@ const MENU_STRUCTURE: MenuItem[] = [
         key: 'reports', label: 'Reports', labelLao: 'ລາຍງານ',
         icon: 'BarChart3', requiredPermission: 'reports:view',
         children: [
-            { key: 'reports.sales',          label: 'Sales Report',       path: '/reports',                    icon: 'BarChart3',    requiredPermission: 'reports:view'      },
-            { key: 'reports.products',       label: 'Product Report',     path: '/reports/products',           icon: 'Package',      requiredPermission: 'reports:view'      },
-            { key: 'reports.inventory',      label: 'Inventory Report',   path: '/reports/inventory',          icon: 'Boxes',        requiredPermission: 'reports:view'      },
-            { key: 'reports.financial',      label: 'Financial Report',   path: '/reports/financial',          icon: 'DollarSign',   requiredPermission: 'reports:view'      },
-            { key: 'reports.staff',          label: 'Staff Report',       path: '/reports/staff',              icon: 'UserCog',      requiredPermission: 'reports:view'      },
-            { key: 'reports.customers',      label: 'Members Report',     path: '/reports/customers',          icon: 'Users',        requiredPermission: 'reports:view'      },
-            { key: 'reports.promotions',     label: 'Promotions Report',  path: '/reports/promotions',         icon: 'Gift',         requiredPermission: 'reports:view'      },
-            { key: 'reports.period-compare', label: 'Period Compare',     path: '/reports/period-compare',     icon: 'CalendarRange',requiredPermission: 'reports:view'      },
-            { key: 'reports.branch-compare', label: 'Branch Compare',     path: '/reports/branch-compare',     icon: 'GitCompare',   requiredPermission: 'reports:view'      },
+            { key: 'reports.sales',          label: 'Sales Report',       path: '/reports',                    icon: 'BarChart3',    requiredPermission: 'reports:sales'      },
+            { key: 'reports.products',       label: 'Product Report',     path: '/reports/products',           icon: 'Package',      requiredPermission: 'reports:products'   },
+            { key: 'reports.inventory',      label: 'Inventory Report',   path: '/reports/inventory',          icon: 'Boxes',        requiredPermission: 'reports:inventory'  },
+            { key: 'reports.financial',      label: 'Financial Report',   path: '/reports/financial',          icon: 'DollarSign',   requiredPermission: 'reports:financial'  },
+            { key: 'reports.staff',          label: 'Staff Report',       path: '/reports/staff',              icon: 'UserCog',      requiredPermission: 'reports:staff'      },
+            { key: 'reports.customers',      label: 'Members Report',     path: '/reports/customers',          icon: 'Users',        requiredPermission: 'reports:customers'  },
+            { key: 'reports.promotions',     label: 'Promotions Report',  path: '/reports/promotions',         icon: 'Gift',         requiredPermission: 'reports:promotions' },
+            { key: 'reports.period-compare', label: 'Period Compare',     path: '/reports/period-compare',     icon: 'CalendarRange',requiredPermission: 'reports:sales'      },
+            { key: 'reports.branch-compare', label: 'Branch Compare',     path: '/reports/branch-compare',     icon: 'GitCompare',   requiredPermission: 'reports:sales'      },
             { key: 'reports.gl',             label: 'GL / Finance & Compliance', path: '/reports/gl',          icon: 'BookOpen',     requiredPermission: 'reports:financial' },
         ],
     },
+    {
+        key: 'finance', label: 'Finance', labelLao: 'ການເງິນ',
+        icon: 'WalletCards', requiredPermission: 'reports:financial',
+        children: [
+            { key: 'finance.overview',     label: 'Finance Overview', labelLao: 'ພາບລວມການເງິນ', path: '/finance',              icon: 'LayoutDashboard', requiredPermission: 'reports:financial' },
+            { key: 'finance.expenses',     label: 'Expenses',         labelLao: 'ລາຍຈ່າຍ',         path: '/finance?tab=expenses', icon: 'ReceiptText',     requiredPermission: 'expenses:view' },
+            { key: 'finance.payroll',      label: 'Payroll',          labelLao: 'ເງິນເດືອນ',        path: '/finance?tab=payroll',  icon: 'BadgeDollarSign', requiredPermission: 'payroll:view' },
+            { key: 'finance.audit',        label: 'Finance Audit',    labelLao: 'ກວດກາການເງິນ',    path: '/reports/gl?tab=audit',  icon: 'ShieldCheck',     requiredPermission: 'audit:view' },
+        ],
+    },
+    { key: 'my-payslips', label: 'My Payslips', labelLao: 'ໃບເງິນເດືອນຂອງຂ້ອຍ', path: '/my-payslips', icon: 'BadgeDollarSign', requiredPermission: 'payroll:view_self' },
     {
         key: 'management', label: 'Management', labelLao: 'ຈັດການ',
         icon: 'Building2', requiredPermission: 'staff:view',
@@ -394,9 +523,10 @@ const MENU_STRUCTURE: MenuItem[] = [
             { key: 'management.branches',       label: 'Branches',        path: '/branches',                   icon: 'Building2',  requiredPermission: 'branches:view' },
             { key: 'management.stores',         label: 'Stores',          path: '/management/stores',          icon: 'Store',      requiredPermission: 'stores:view'   },
             { key: 'management.staff',          label: 'Staff',           path: '/staff',                      icon: 'UserCog',    requiredPermission: 'staff:view'    },
+            { key: 'management.attendance',     label: 'Attendance',      path: '/staff/attendance',           icon: 'CalendarClock' },
             { key: 'management.roles',          label: 'Roles',           path: '/staff/roles',                icon: 'Shield',     requiredPermission: 'roles:view'    },
             { key: 'management.cashregisters',  label: 'Cash Registers',  path: '/management/cashregisters',   icon: 'Monitor',    requiredPermission: 'stores:view'   },
-            { key: 'management.shifts',         label: 'Shifts',          path: '/staff/shifts',               icon: 'Timer',      requiredPermission: 'staff:view'    },
+            { key: 'management.shifts',         label: 'Cash Shifts',     path: '/staff/shifts',               icon: 'Banknote',   requiredPermission: 'sales:create'  },
         ],
     },
     {
@@ -410,6 +540,7 @@ const MENU_STRUCTURE: MenuItem[] = [
             { key: 'settings.payments',      label: 'Payments',      path: '/settings/payments',          icon: 'CreditCard', requiredPermission: 'settings:update' },
             { key: 'settings.printers',      label: 'Printers',      path: '/settings/printers',          icon: 'Printer',    requiredPermission: 'settings:update' },
             { key: 'settings.notifications', label: 'Notifications', path: '/settings/notifications',     icon: 'Bell',       requiredPermission: 'settings:view'   },
+            { key: 'settings.operations',    label: 'Approval Policy', path: '/settings/operations',      icon: 'ShieldCheck', requiredPermission: 'settings:update' },
         ],
     },
     {
@@ -424,10 +555,28 @@ const MENU_STRUCTURE: MenuItem[] = [
             { key: 'admin.roles',       label: 'System Roles',     path: '/admin/roles',        icon: 'Key',         requiredPermission: 'admin:manage' },
             { key: 'admin.rules',       label: 'Rules',            path: '/admin/rules',        icon: 'ShieldCheck', requiredPermission: 'admin:manage' },
             { key: 'admin.permissions', label: 'Permissions',      path: '/admin/permissions',  icon: 'Shield',      requiredPermission: 'admin:manage' },
-            { key: 'admin.audit',       label: 'Audit Log',        path: '/admin/audit',        icon: 'History',     requiredPermission: 'admin:view'   },
+            { key: 'admin.audit',       label: 'Audit',            icon: 'History',     requiredPermission: 'audit:view', children: [
+                { key: 'admin.audit.overview',   label: 'Overview',       path: '/admin/audit',                    icon: 'LayoutDashboard', requiredPermission: 'audit:view' },
+                { key: 'admin.audit.activity',   label: 'Activity Log',   path: '/admin/audit?view=activity',     icon: 'Activity',        requiredPermission: 'audit:view' },
+                { key: 'admin.audit.sales',      label: 'Sales Audit',    path: '/admin/audit?view=sales',        icon: 'ShoppingCart',    requiredPermission: 'audit:view' },
+                { key: 'admin.audit.inventory',  label: 'Inventory Audit',path: '/admin/audit?view=inventory',    icon: 'Boxes',           requiredPermission: 'audit:view' },
+                { key: 'admin.audit.staff',      label: 'Staff Audit',    path: '/admin/audit?view=staff',        icon: 'Users',           requiredPermission: 'audit:view' },
+                { key: 'admin.audit.access',     label: 'Access Audit',   path: '/admin/audit?view=access',       icon: 'Key',             requiredPermission: 'audit:view' },
+                { key: 'admin.audit.approvals',  label: 'Maker-Checker',  path: '/admin/audit?view=approvals',    icon: 'ShieldCheck',     requiredPermission: 'audit:view' },
+                { key: 'admin.audit.security',   label: 'Security Audit', path: '/admin/audit?view=security',     icon: 'Lock',            requiredPermission: 'audit:view' },
+            ] },
         ],
     },
 ];
+
+function menuKeys(items: MenuItem[]): string[] {
+    return items.flatMap((item) => [item.key, ...menuKeys(item.children ?? [])]);
+}
+
+async function removeNonSeededMenuItems(): Promise<void> {
+    const keys = menuKeys(MENU_STRUCTURE);
+    await sql`delete from menu_permissions where not (key = any(${keys}))`;
+}
 
 // ── main ──────────────────────────────────────────────────────────────────────
 
@@ -437,25 +586,32 @@ async function main() {
     console.log('└─────────────────────────────────────────────┘\n');
 
     // 1. Roles
-    console.log(`Seeding ${DEFAULT_ROLES.length} system roles…`);
+    console.log(`Seeding ${SEEDED_ROLES.length} system role…`);
     const roleMap: Record<string, Row> = {};
-    for (const role of DEFAULT_ROLES) {
+    for (const role of SEEDED_ROLES) {
         roleMap[role.name] = await ensureRole(role);
         process.stdout.write(`  ✓ ${role.name.padEnd(20)} ${role.displayName}\n`);
     }
 
     // 2. Rules
-    console.log(`\nSeeding ${DEFAULT_RULES.length} system rules…`);
+    console.log(`\nSeeding ${SEEDED_RULES.length} system rule…`);
     const ruleMap: Record<string, Row> = {};
-    for (const rule of DEFAULT_RULES) {
+    for (const rule of SEEDED_RULES) {
         ruleMap[rule.name] = await ensureRule(rule);
         process.stdout.write(`  ✓ ${rule.name.padEnd(25)} ${rule.displayName}\n`);
     }
 
-    // 3. Role-rule mappings
+    await removeNonSeededAccessControl();
+
+    // 3. Permission catalog
+    console.log('\nSeeding permission catalog…');
+    const permissionCount = await ensurePermissionCatalog();
+    console.log(`  ✓ ${permissionCount} permission rows upserted`);
+
+    // 4. Role-rule mappings
     console.log('\nSeeding role-rule mappings…');
     let mappingCount = 0;
-    for (const [roleName, entries] of Object.entries(DEFAULT_ROLE_RULES)) {
+    for (const [roleName, entries] of Object.entries(SEEDED_ROLE_RULES)) {
         const role = roleMap[roleName];
         if (!role) { console.warn(`  ⚠  Role '${roleName}' not in roleMap – skipping`); continue; }
         for (const [ruleName, flags] of Object.entries(entries)) {
@@ -467,28 +623,33 @@ async function main() {
     }
     console.log(`  ✓ ${mappingCount} role-rule rows upserted`);
 
-    // 4. Menu
-    console.log('\nSeeding menu tree…');
+    // 5. Menu
+    console.log('\nSeeding full platform menu tree…');
     const totalMenuItems = (items: MenuItem[]): number =>
         items.reduce((n, i) => n + 1 + totalMenuItems(i.children ?? []), 0);
+    await removeNonSeededMenuItems();
     await seedMenu(MENU_STRUCTURE);
     console.log(`  ✓ ${totalMenuItems(MENU_STRUCTURE)} menu items upserted`);
 
-    // 5. Super admin
+    // 6. Super admin
     console.log('\nSeeding superadmin user…');
     const saRole = roleMap['super_admin'];
     if (!saRole) throw new Error("'super_admin' role not found after seeding – this should not happen");
     const sa = await ensureSuperAdmin(saRole.id);
     console.log(`  ✓ ${sa.email}  (id: ${sa.id})`);
 
+    await validateBootstrapContract(totalMenuItems(MENU_STRUCTURE), permissionCount);
+    console.log('  ✓ Bootstrap contract validated (1 role, 1 rule, 1 user)');
+
     // Summary
     console.log('\n┌─────────────────────────────────────────────┐');
     console.log('│  Production seed completed successfully ✅   │');
     console.log('└─────────────────────────────────────────────┘');
     console.log(`
-  Roles    : ${DEFAULT_ROLES.length}
-  Rules    : ${DEFAULT_RULES.length}
+  Roles    : ${SEEDED_ROLES.length}
+  Rules    : ${SEEDED_RULES.length}
   Mappings : ${mappingCount}
+  Permissions: ${permissionCount}
   Menu     : ${totalMenuItems(MENU_STRUCTURE)} items
   User     : ${SUPER_ADMIN_EMAIL}
 

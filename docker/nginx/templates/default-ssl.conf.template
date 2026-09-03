@@ -36,6 +36,11 @@ server {
         limit_req zone=api_limit burst=50 nodelay;
         limit_conn conn_limit 20;
 
+        # Matches the 20mb limit set in Express's server.ts — see
+        # templates-local/default.conf.template for the full explanation
+        # (413s found live on /admin/register-and-apply's KYC uploads).
+        client_max_body_size 20m;
+
         proxy_pass http://api_backend;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;

@@ -13,6 +13,7 @@
         Hash,
         ChevronRight,
         User,
+        ShieldCheck,
     } from "lucide-svelte";
     import { t } from "$lib/i18n/index.svelte";
 
@@ -57,6 +58,7 @@
             items: [
                 { href: "/settings/profile", icon: User, labelKey: "settings.profile", descKey: "settings.profileDesc" },
                 { href: "/settings/backup", icon: Database, labelKey: "settings.backup", descKey: "settings.backupDesc" },
+                { href: "/settings/operations", icon: ShieldCheck, labelKey: "settings.operations", descKey: "settings.operationsDesc" },
             ],
         },
     ];

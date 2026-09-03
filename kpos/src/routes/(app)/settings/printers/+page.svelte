@@ -3,8 +3,7 @@
     import { api } from "$lib/api";
     import { onMount } from "svelte";
     import { toast } from "svelte-sonner";
-    import { auth } from "$stores";
-    import { escapeHtml } from "$utils";
+    import { auth, dialogStore } from "$stores";
     import {
         Loader2, Save, Printer, Plus, Trash2, Edit, AlertCircle,
         RefreshCw, ChevronLeft, Wifi, Bluetooth, Usb, Settings2,
@@ -82,11 +81,11 @@
     ]);
 
     const connectionTypes = $derived([
-        { value: "network",      label: t("printers.network") },
-        { value: "usb",          label: t("printers.usb") },
-        { value: "bluetooth",    label: t("printers.bluetooth") },
-        { value: "serial",       label: t("printers.serial") },
-        { value: "windowsPrint", label: t("printers.windowsPrint") },
+        { value: "network",      label: t("printers.network"), supported: true },
+        { value: "usb",          label: t("printers.usb"), supported: false },
+        { value: "bluetooth",    label: t("printers.bluetooth"), supported: false },
+        { value: "serial",       label: t("printers.serial"), supported: false },
+        { value: "windowsPrint", label: t("printers.windowsPrint"), supported: false },
     ]);
 
     const paperWidths = $derived([
@@ -165,6 +164,10 @@
     // ── Save ──────────────────────────────────────────────────────────────────
     async function savePrinter() {
         if (!form.name.trim()) return;
+        if (form.connectionType !== "network") {
+            toast.error(t("printing.agentRequired"));
+            return;
+        }
         saving = true;
         try {
             const labelWidthMm = Number(form.settings.labelWidthMm || form.paperWidth || 58);
@@ -199,7 +202,7 @@
 
     // ── Delete ────────────────────────────────────────────────────────────────
     async function deletePrinter(p: PrinterConfig) {
-        if (!confirm(t("printers.confirmDelete"))) return;
+        if (!(await dialogStore.confirm(t("printers.confirmDelete")))) return;
         try {
             await api.delete(`settings/printers/${p.id}`).json();
             toast.success(t("printers.deleteSuccess"));
@@ -213,70 +216,10 @@
     async function testPrint(p: PrinterConfig) {
         testingId = p.id;
         try {
-            if (p.connectionType === "windowsPrint") {
-                // System print dialog — open a test page in a new window
-                const w = window.open("", "_blank", "width=400,height=300");
-                if (w) {
-                    w.document.write(`<html><body style="font-family:monospace;text-align:center">
-                        <h2>** KPOS TEST PRINT **</h2>
-                        <hr/><p>Printer: ${escapeHtml(p.name)}</p>
-                        <p>Time: ${new Date().toLocaleString()}</p>
-                        <hr/><p>PRINTER OK</p>
-                    </body></html>`);
-                    w.document.close();
-                    w.print();
-                    w.close();
-                }
-                toast.success(t("printers.testSuccess"));
+            if (p.connectionType !== "network") {
+                toast.error(t("printing.agentRequired"));
                 return;
             }
-
-            if (p.connectionType === "usb" && "usb" in navigator) {
-                // Try Web USB API — this is the deliberate one-time authorization
-                // step, so requestDevice() showing the picker here is expected.
-                let device: any;
-                try {
-                    device = await (navigator as any).usb.requestDevice({ filters: [] });
-                    await device.open();
-                    const config = device.configuration || await device.selectConfiguration(1);
-                    const iface = config?.interfaces?.[0];
-                    if (!iface) throw new Error("No USB interface found");
-                    await device.claimInterface(iface.interfaceNumber);
-                    const ep = iface.alternate.endpoints.find((e: any) => e.direction === "out");
-                    if (!ep) throw new Error("No OUT endpoint found");
-                    const ESC = 0x1B; const GS = 0x1D;
-                    const data = new Uint8Array([
-                        ESC, 0x40,
-                        ESC, 0x61, 0x01,
-                        ...new TextEncoder().encode("** KPOS TEST **\nPRINTER OK\n\n\n"),
-                        GS, 0x56, 0x41, 0x03,
-                    ]);
-                    await device.transferOut(ep.endpointNumber, data);
-                    await device.releaseInterface(iface.interfaceNumber);
-                    await device.close();
-                    toast.success(t("printers.testSuccess"));
-                    return;
-                } catch (usbErr: any) {
-                    if (device) {
-                        try { await device.close(); } catch { /* already closed */ }
-                    }
-                    if (usbErr?.name === "NotFoundError") {
-                        toast.error("No USB printer selected");
-                        return;
-                    }
-                    if (usbErr?.name === "SecurityError") {
-                        // Windows has bound its own driver to this USB interface,
-                        // blocking raw WebUSB access — report this honestly
-                        // instead of silently claiming success below.
-                        toast.error(t("printers.usbAccessDenied"));
-                        return;
-                    }
-                    toast.error(`${t("printers.testFailed")}: ${usbErr?.message || usbErr}`);
-                    return;
-                }
-            }
-
-            // For network and others: call backend
             const res = await api.post(`settings/printers/${p.id}/test`, {}).json<any>();
             if (res.success) {
                 toast.success(t("printers.testSuccess"));
@@ -293,17 +236,7 @@
 
     // ── USB detection ─────────────────────────────────────────────────────────
     async function detectUsb() {
-        if (!("usb" in navigator)) {
-            toast.error("Web USB API is not supported in this browser. Use Chrome or Edge.");
-            return;
-        }
-        try {
-            const device = await (navigator as any).usb.requestDevice({ filters: [] });
-            form = { ...form, connectionType: "usb", usbDevice: device.productName || device.serialNumber || "USB Printer" };
-            toast.success(`Found: ${device.productName || "USB Device"}`);
-        } catch (err: any) {
-            if (err?.name !== "NotFoundError") toast.error("USB detection failed");
-        }
+        toast.error(t("printing.agentRequired"));
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -343,11 +276,13 @@
                 <p class="text-sm text-gray-500 dark:text-gray-400">{t("printers.subtitle")}</p>
             </div>
         </div>
+        {#if auth.hasPermission('printing:manage')}
         <button onclick={openAdd}
             class="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 text-sm font-medium transition-colors">
             <Plus class="w-4 h-4" />
             {t("printers.addPrinter")}
         </button>
+        {/if}
     </div>
 
     <!-- Content -->
@@ -359,11 +294,13 @@
         <div class="flex flex-col items-center justify-center py-16 text-center bg-white dark:bg-gray-900 rounded-xl border border-gray-100 dark:border-gray-800">
             <Printer class="w-12 h-12 text-gray-300 dark:text-gray-600 mb-4" />
             <p class="text-gray-500 dark:text-gray-400 mb-4">{t("printers.noPrinters")}</p>
+            {#if auth.hasPermission('printing:manage')}
             <button onclick={openAdd}
                 class="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 text-sm font-medium">
                 <Plus class="w-4 h-4" />
                 {t("printers.addPrinter")}
             </button>
+            {/if}
         </div>
     {:else}
         <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -437,6 +374,7 @@
 
                     <!-- Actions -->
                     <div class="flex gap-2 border-t border-gray-100 dark:border-gray-800 pt-3 mt-auto">
+                        {#if auth.hasPermission('printing:manage')}
                         <button onclick={() => testPrint(printer)} disabled={testingId === printer.id}
                             class="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 text-xs font-medium rounded-lg bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 disabled:opacity-50 transition-colors">
                             {#if testingId === printer.id}
@@ -447,16 +385,21 @@
                                 {t("printers.testPrint")}
                             {/if}
                         </button>
+                        {/if}
+                        {#if auth.hasPermission('printing:manage')}
                         <button onclick={() => openEdit(printer)}
                             class="flex items-center gap-1 px-2 py-1.5 text-xs font-medium rounded-lg text-primary-600 dark:text-primary-400 hover:bg-primary-50 dark:hover:bg-primary-900/20 transition-colors">
                             <Edit class="w-3 h-3" />
                             {t("common.edit")}
                         </button>
+                        {/if}
+                        {#if auth.hasPermission('printing:manage')}
                         <button onclick={() => deletePrinter(printer)}
                             class="flex items-center gap-1 px-2 py-1.5 text-xs font-medium rounded-lg text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors">
                             <Trash2 class="w-3 h-3" />
                             {t("common.delete")}
                         </button>
+                        {/if}
                     </div>
                 </div>
             {/each}
@@ -508,7 +451,9 @@
                             <select id="pr-conn" bind:value={form.connectionType}
                                 class="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-primary-500 focus:outline-none text-sm">
                                 {#each connectionTypes as ct}
-                                    <option value={ct.value}>{ct.label}</option>
+                                    <option value={ct.value} disabled={!ct.supported}>
+                                        {ct.label}{ct.supported ? "" : " — Print Agent required"}
+                                    </option>
                                 {/each}
                             </select>
                         </div>
@@ -552,14 +497,14 @@
                                     {t("printers.detectUsb")}
                                 </button>
                             </div>
-                            <p class="text-xs text-gray-400 mt-1">Requires Chrome or Edge browser</p>
+                            <p class="text-xs text-amber-600 mt-1">{t("printing.agentRequired")}</p>
                         </div>
                     {/if}
 
                     <!-- System print info -->
                     {#if form.connectionType === "windowsPrint"}
                         <div class="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg text-sm text-blue-700 dark:text-blue-300">
-                            Uses the browser's built-in print dialog — works with any OS printer (Windows, macOS, Linux). No driver needed.
+                            {t("printing.agentRequired")}
                         </div>
                     {/if}
 

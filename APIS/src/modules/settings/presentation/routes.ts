@@ -7,7 +7,7 @@ import { authenticate, authorize, ensureScopeAccess, isAdmin } from '@/infrastru
 import { DEFAULT_SETTINGS } from '@/shared/constants';
 import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
 import { db as globalDb } from '@/config/database.config';
-import { settings, documents, documentTemplates, notifications, systemEnums, branches, emailProviders, emailTemplates, emailLogs, ssoProviders, transactions } from '@/db/schema/tables';
+import { settings, documents, documentTemplates, notifications, systemEnums, branches, emailProviders, emailTemplates, emailLogs, ssoProviders, transactions, printJobs } from '@/db/schema/tables';
 import { eq, and, or, isNull, inArray, desc, asc, count, sql, gte } from 'drizzle-orm';
 import { encryptJson, decryptJson } from '@/shared/crypto';
 import { invalidateProviderCache, testProviderConnection, sendTestEmail } from '@/infrastructure/services/email/email.service';
@@ -15,23 +15,39 @@ import { invalidateSsoProviderCache, testOidcConnection } from '@/infrastructure
 import { resolveIntegration, saveIntegration, disconnectIntegration, getIntegrationStatus } from '@/infrastructure/services/integrations/integration.service';
 import { verifyChannelToken, broadcastMessage, LineApiError } from '@/infrastructure/services/integrations/line.client';
 import { parseServiceAccountJson, verifyAccess as verifyGoogleSheetsAccess, appendRows, GoogleSheetsApiError, type ServiceAccountJson } from '@/infrastructure/services/integrations/google-sheets.client';
+import { randomUUID } from 'node:crypto';
+import { QUEUES } from '@/config/rabbitmq.config';
+import { enqueueOutboxMessage } from '@/infrastructure/messaging/outbox.service';
+import { queueActivityLog } from '@/infrastructure/helpers/activity-log.helper';
+import { decodePrintPayload, isPrivatePrinterAddress, sendRawPrinterPayload } from '@/modules/settings/application/print-job.service';
 
 export const settingRoutes = Router();
 
 /* eslint-disable no-restricted-syntax -- these 3 helpers take tenantId as an explicit parameter, already used in the WHERE/VALUES clause below */
 // Helper: find or create a setting
-async function upsertSetting(category: string, key: string, value: any, branchId: string | null | undefined, tenantId?: string | null) {
+//
+// `db` MUST be the caller's `req.tx` (tenant-scoped connection with the RLS
+// GUCs already set by withTenantTx()) — `settings` has FORCE ROW LEVEL
+// SECURITY, and this used to always write through the unscoped `globalDb`
+// pool instead. For any real (non-super-admin) tenant user that made every
+// write here fail with `42501: new row violates row-level security policy`,
+// since the INSERT/UPDATE's WITH CHECK has no tenant GUC to match against.
+// Super-admin calls happened to succeed anyway (they write tenantId: null,
+// which satisfies the policy's "global row" branch), which is why this went
+// unnoticed — same bug shape as the email-provider RLS read bug, just on the
+// write side and for every settings category instead of just one.
+async function upsertSetting(db: any, category: string, key: string, value: any, branchId: string | null | undefined, tenantId?: string | null) {
     const bid = branchId || null; // normalize '' to null — PostgreSQL UUID column rejects empty string
     const tid = tenantId || null;
     const conditions = [eq(settings.category, category), eq(settings.key, key)];
     conditions.push(bid ? eq(settings.branchId, bid) : isNull(settings.branchId));
     if (tid) conditions.push(eq(settings.tenantId, tid));
-    const existing = await globalDb.query.settings.findFirst({ where: and(...conditions) });
+    const existing = await db.query.settings.findFirst({ where: and(...conditions) });
     if (existing) {
-        const [updated] = await globalDb.update(settings).set({ value, updatedAt: new Date() }).where(eq(settings.id, existing.id)).returning();
+        const [updated] = await db.update(settings).set({ value, updatedAt: new Date() }).where(eq(settings.id, existing.id)).returning();
         return updated;
     }
-    const [created] = await globalDb.insert(settings).values({ category, key, value, branchId: bid, tenantId: tid }).returning();
+    const [created] = await db.insert(settings).values({ category, key, value, branchId: bid, tenantId: tid }).returning();
     return created;
 }
 
@@ -233,6 +249,13 @@ settingRoutes.get('/', authenticate, withTenantTx(), async (req, res, next) => {
         const db = req.tx ?? globalDb;
         const { category, branchId } = req.query;
         const targetBranchId = branchId ? String(branchId) : req.user!.branchId;
+        // A client-supplied branchId was trusted with no check the caller
+        // actually has access to it — same bug shape already fixed on
+        // GET/POST /printers below (see that comment for the concrete
+        // impact: reading another branch's settings).
+        if (branchId && !ensureScopeAccess({ branchId: targetBranchId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+        }
 
         const branchCond = targetBranchId
             ? or(isNull(settings.branchId), eq(settings.branchId, targetBranchId))
@@ -271,6 +294,9 @@ settingRoutes.get('/category/:category', authenticate, withTenantTx(), async (re
         const db = req.tx ?? globalDb;
         const { category } = req.params;
         const branchId = req.query.branchId ? String(req.query.branchId) : req.user!.branchId;
+        if (req.query.branchId && !ensureScopeAccess({ branchId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+        }
 
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         const settingsRows = await getSettingsForBranch(db, category, branchId, tenantId);
@@ -294,6 +320,9 @@ settingRoutes.get('/receipt/design', authenticate, withTenantTx(), async (req, r
     try {
         const db = req.tx ?? globalDb;
         const branchId = req.query.branchId ? String(req.query.branchId) : (req.authUser?.activeBranchId || req.user!.branchId);
+        if (req.query.branchId && !ensureScopeAccess({ branchId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+        }
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
 
         const rows = await getSettingsForBranch(db, 'receipt', branchId, tenantId);
@@ -314,10 +343,13 @@ settingRoutes.put('/receipt/design', authenticate, withTenantTx(), authorize('se
     try {
         const db = req.tx ?? globalDb;
         const branchId = req.body.branchId || req.authUser?.activeBranchId || req.user!.branchId;
+        if (req.body.branchId && !ensureScopeAccess({ branchId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+        }
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         const { value } = req.body;
 
-        const setting = await upsertSetting('receipt', 'design', value, branchId, tenantId);
+        const setting = await upsertSetting(db, 'receipt', 'design', value, branchId, tenantId);
         res.json({ success: true, data: setting });
     } catch (error) {
         next(error);
@@ -342,7 +374,7 @@ settingRoutes.post('/bulk', authenticate, withTenantTx(), authorize('settings:up
 
         for (const [category, values] of Object.entries(settings as Record<string, Record<string, unknown>>)) {
             for (const [key, value] of Object.entries(values)) {
-                const setting = await upsertSetting(category, key, value as any, branchId, tenantId);
+                const setting = await upsertSetting(db, category, key, value as any, branchId, tenantId);
                 results.push(setting);
             }
         }
@@ -415,6 +447,9 @@ settingRoutes.post('/initialize', authenticate, withTenantTx(), authorize('setti
     try {
         const db = req.tx ?? globalDb;
         const branchId = req.body.branchId || req.user!.branchId;
+        if (req.body.branchId && !ensureScopeAccess({ branchId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+        }
 
         const defaultSettings: Record<string, Record<string, unknown>> = {
             store: {
@@ -482,17 +517,21 @@ settingRoutes.post('/store/logo', authenticate, withTenantTx(), authorize('setti
             return res.status(400).json({ success: false, error: { code: 'VALIDATION_001', message: 'Image data is required' } });
         }
 
-        const { uploadService } = await import('@/infrastructure/services/upload.service');
+        const { uploadService, IMAGE_ONLY_MIME_TYPES } = await import('@/infrastructure/services/upload.service');
         const result = await uploadService.uploadSingle(image, {
             folder: 'kpos/logos',
             maxWidth: 512,
             maxHeight: 512,
             quality: 90,
+            allowedMimeTypes: IMAGE_ONLY_MIME_TYPES,
         });
 
         // Save logo URL to store settings
         const branchId = req.body.branchId || req.authUser?.activeBranchId || req.user?.branchId;
-        await upsertSetting('store', 'logo', result.url, branchId || null);
+        if (req.body.branchId && !ensureScopeAccess({ branchId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+        }
+        await upsertSetting(db, 'store', 'logo', result.url, branchId || null);
 
         res.json({ success: true, data: { url: result.url, publicId: result.publicId } });
     } catch (error) {
@@ -509,6 +548,9 @@ settingRoutes.get('/integrations', authenticate, withTenantTx(), async (req, res
     try {
         const db = req.tx ?? globalDb;
         const branchId = req.query.branchId ? String(req.query.branchId) : req.user!.branchId;
+        if (req.query.branchId && !ensureScopeAccess({ branchId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+        }
 
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         const settingsRows = await getSettingsForBranchMultiCategory(db, ['integrations', 'integration'], branchId, tenantId);
@@ -546,10 +588,13 @@ settingRoutes.put('/integrations/:integrationId', authenticate, withTenantTx(), 
         const { integrationId } = req.params;
         const { enabled, config } = req.body;
         const branchId = req.body.branchId || req.user!.branchId;
-        
+        if (req.body.branchId && !ensureScopeAccess({ branchId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+        }
+
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         const value = { enabled, config, updatedAt: new Date().toISOString() };
-        const setting = await upsertSetting('integrations', integrationId, value, branchId, tenantId);
+        const setting = await upsertSetting(db, 'integrations', integrationId, value, branchId, tenantId);
         
         res.json({ success: true, data: setting });
     } catch (error) {
@@ -674,6 +719,9 @@ settingRoutes.get('/receipt', authenticate, withTenantTx(), async (req, res, nex
     try {
         const db = req.tx ?? globalDb;
         const branchId = req.query.branchId ? String(req.query.branchId) : (req.authUser?.activeBranchId || req.user!.branchId);
+        if (req.query.branchId && !ensureScopeAccess({ branchId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+        }
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
 
         const [settingsRows, branch] = await Promise.all([
@@ -720,6 +768,9 @@ settingRoutes.put('/receipt', authenticate, withTenantTx(), authorize('settings:
     try {
         const db = req.tx ?? globalDb;
         const branchId = req.body.branchId || req.authUser?.activeBranchId || req.user!.branchId;
+        if (req.body.branchId && !ensureScopeAccess({ branchId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+        }
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         const {
             headerHtml, footerText, showLogo, showTaxDetails, showQrCode,
@@ -738,7 +789,7 @@ settingRoutes.put('/receipt', authenticate, withTenantTx(), authorize('settings:
         };
         for (const [key, value] of Object.entries(receiptFields)) {
             if (key === 'branchId' || value === undefined) continue;
-            const setting = await upsertSetting('receipt', key, value as any, branchId, tenantId);
+            const setting = await upsertSetting(db, 'receipt', key, value as any, branchId, tenantId);
             results.push(setting);
         }
 
@@ -780,6 +831,9 @@ settingRoutes.get('/receipt/preview', authenticate, withTenantTx(), async (req, 
     try {
         const db = req.tx ?? globalDb;
         const branchId = req.query.branchId ? String(req.query.branchId) : (req.authUser?.activeBranchId || req.user!.branchId);
+        if (req.query.branchId && !ensureScopeAccess({ branchId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+        }
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
 
         const branch = branchId
@@ -843,12 +897,63 @@ settingRoutes.get('/receipt/preview', authenticate, withTenantTx(), async (req, 
 // TAXES
 // ═══════════════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════════════
+// OPERATIONS POLICY — maker-checker self-approval enforcement
+// ═══════════════════════════════════════════════════════════════════════════
+// GET current policy
+settingRoutes.get('/operations', authenticate, withTenantTx(), async (req, res, next) => {
+    try {
+        const db = req.tx ?? globalDb;
+        const tenantId = req.authUser?.tenantId;
+        if (!tenantId) {
+            return res.json({ success: true, data: { requireMakerChecker: true } });
+        }
+        const row = await db.query.settings.findFirst({
+            where: and(eq(settings.category, 'operations'), eq(settings.key, 'requireMakerChecker'), eq(settings.tenantId, tenantId), isNull(settings.branchId)),
+        });
+        const value = row?.value;
+        res.json({ success: true, data: { requireMakerChecker: value === undefined || value === null ? true : value !== false && value !== 'false' } });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// UPDATE policy — tenant-wide, owner-level only (roleLevel <= 2). This is a
+// security control (whether the same person can both create AND approve a
+// stock count/transfer/PO, or void/refund their own sale), so it must not be
+// changeable by an ordinary settings:update-holding manager the way the rest
+// of this module's settings are — only super_admin or the tenant's own
+// owner-tier account.
+settingRoutes.put('/operations', authenticate, withTenantTx(), async (req, res, next) => {
+    try {
+        if (!req.authUser?.isSuperAdmin && (req.authUser?.roleLevel ?? 7) > 2) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Only the store owner can change this policy' } });
+        }
+        const db = req.tx ?? globalDb;
+        const tenantId = req.authUser?.tenantId;
+        if (!tenantId) {
+            return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'No tenant context' } });
+        }
+        const { requireMakerChecker } = req.body;
+        if (typeof requireMakerChecker !== 'boolean') {
+            return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'requireMakerChecker must be a boolean' } });
+        }
+        const setting = await upsertSetting(db, 'operations', 'requireMakerChecker', requireMakerChecker, null, tenantId);
+        res.json({ success: true, data: { requireMakerChecker } , setting });
+    } catch (error) {
+        next(error);
+    }
+});
+
 // Get all taxes
 settingRoutes.get('/taxes', authenticate, withTenantTx(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const branchId = req.query.branchId ? String(req.query.branchId) : req.user!.branchId;
-        
+        if (req.query.branchId && !ensureScopeAccess({ branchId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+        }
+
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         const settingsRows = await getSettingsForBranch(db, 'tax', branchId, tenantId);
         
@@ -868,6 +973,9 @@ settingRoutes.post('/taxes', authenticate, withTenantTx(), authorize('settings:u
     try {
         const db = req.tx ?? globalDb;
         const branchId = (req.body.branchId || req.user!.branchId) || null;
+        if (req.body.branchId && !ensureScopeAccess({ branchId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+        }
         const { name, rate, isActive = true, isDefault = false } = req.body;
 
         const key = `tax_${Date.now()}`;
@@ -900,7 +1008,14 @@ settingRoutes.put('/taxes/:id', authenticate, withTenantTx(), authorize('setting
         if (!existing) {
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Tax not found or no access' } });
         }
-        
+        // Fetched by settings.id + tenantId only — never checked the row's
+        // OWN branchId against the caller's scope, so a branch-scoped user
+        // could edit another branch's tax rate just by knowing/guessing its
+        // settings row id.
+        if (!ensureScopeAccess({ branchId: existing.branchId, tenantId: existing.tenantId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this tax' } });
+        }
+
         const currentValue = (existing.value || {}) as Record<string, unknown>;
         const updatedValue = {
             ...currentValue,
@@ -926,7 +1041,15 @@ settingRoutes.delete('/taxes/:id', authenticate, withTenantTx(), authorize('sett
         const tenantId = req.authUser?.tenantId;
         const delConds: any[] = [eq(settings.id, req.params.id)];
         if (tenantId && !req.authUser?.isSuperAdmin) delConds.push(eq(settings.tenantId, tenantId));
-        await db.delete(settings).where(and(...delConds));
+        const existing = await db.query.settings.findFirst({ where: and(...delConds) });
+        if (!existing) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Tax not found or no access' } });
+        }
+        // Same branch-scope gap as PUT /taxes/:id above.
+        if (!ensureScopeAccess({ branchId: existing.branchId, tenantId: existing.tenantId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this tax' } });
+        }
+        await db.delete(settings).where(eq(settings.id, existing.id));
         res.json({ success: true, data: { message: 'Tax deleted' } });
     } catch (error) {
         next(error);
@@ -938,7 +1061,7 @@ settingRoutes.delete('/taxes/:id', authenticate, withTenantTx(), authorize('sett
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all printers
-settingRoutes.get('/printers', authenticate, withTenantTx(), async (req, res, next) => {
+settingRoutes.get('/printers', authenticate, withTenantTx(), authorize('printing:view'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const branchId = req.query.branchId ? String(req.query.branchId) : req.user!.branchId;
@@ -962,7 +1085,7 @@ settingRoutes.get('/printers', authenticate, withTenantTx(), async (req, res, ne
 });
 
 // Create printer
-settingRoutes.post('/printers', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
+settingRoutes.post('/printers', authenticate, withTenantTx(), authorize('printing:manage'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const branchId = req.body.branchId || req.user!.branchId;
@@ -1010,7 +1133,7 @@ settingRoutes.post('/printers', authenticate, withTenantTx(), authorize('setting
 });
 
 // Update printer
-settingRoutes.put('/printers/:id', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
+settingRoutes.put('/printers/:id', authenticate, withTenantTx(), authorize('printing:manage'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         // BE-76: Tenant-scoped printer update
@@ -1021,7 +1144,14 @@ settingRoutes.put('/printers/:id', authenticate, withTenantTx(), authorize('sett
         if (!existing) {
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Printer not found or no access' } });
         }
-        
+        // The sibling POST/GET /printers routes already check branch scope
+        // (see the comment on POST above) — this PUT never got the same fix,
+        // so a branch-scoped user could edit another branch's printer config
+        // by its settings row id.
+        if (!ensureScopeAccess({ branchId: existing.branchId, tenantId: existing.tenantId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this printer' } });
+        }
+
         const currentValue = (existing.value || {}) as Record<string, unknown>;
         const updatedValue = { ...currentValue, ...req.body };
         delete (updatedValue as any).branchId;
@@ -1036,6 +1166,7 @@ settingRoutes.put('/printers/:id', authenticate, withTenantTx(), authorize('sett
 
 // ESC/POS TCP test print helper
 async function sendEscPosTestPage(ip: string, port: number): Promise<void> {
+    if (!isPrivatePrinterAddress(ip)) throw new Error('Printer address must be a private LAN IP address');
     const { createConnection } = await import('net');
     return new Promise((resolve, reject) => {
         const client = createConnection({ host: ip, port, timeout: 5000 });
@@ -1233,17 +1364,81 @@ function buildTsplLabelPayload(body: any): Buffer {
 }
 
 async function sendEscPosPayload(ip: string, port: number, payload: Buffer): Promise<void> {
-    const { createConnection } = await import('net');
-    return new Promise((resolve, reject) => {
-        const client = createConnection({ host: ip, port, timeout: 5000 });
-        client.on('connect', () => { client.write(payload, () => { client.end(); resolve(); }); });
-        client.on('timeout', () => { client.destroy(); reject(new Error('Connection timeout (5s)')); });
-        client.on('error', (err) => { client.destroy(); reject(err); });
-    });
+    return sendRawPrinterPayload(ip, port, payload);
+}
+
+function publicPrintJob(job: any) {
+    const { payload: _payload, ...safe } = job;
+    return safe;
+}
+
+async function queueDirectPrintJob(req: any, printerRow: any, input: {
+    documentType: 'receipt' | 'label';
+    protocol: 'escpos' | 'tspl';
+    dataBase64: string;
+    reference?: string;
+    idempotencyKey?: string;
+}) {
+    // Decode before persisting so malformed/oversized payloads never enter the
+    // durable queue. The worker repeats this validation as defense in depth.
+    decodePrintPayload(input.dataBase64);
+
+    const tenantId = printerRow.tenantId || req.authUser?.tenantId;
+    const requestedBy = req.authUser?.userId || req.user?.userId;
+    if (!tenantId || !requestedBy) throw new Error('Tenant and user context are required for printing');
+
+    const idempotencyKey = String(input.idempotencyKey || req.headers?.['idempotency-key'] || randomUUID()).slice(0, 200);
+    const db = req.tx ?? globalDb;
+    const [created] = await db.insert(printJobs).values({
+        tenantId,
+        storeId: printerRow.storeId || req.authUser?.activeStoreId || req.authUser?.storeId || null,
+        branchId: printerRow.branchId || req.authUser?.activeBranchId || req.authUser?.branchId || null,
+        printerSettingId: printerRow.id,
+        documentType: input.documentType,
+        reference: input.reference?.slice(0, 200) || null,
+        idempotencyKey,
+        status: 'QUEUED',
+        transport: 'network',
+        protocol: input.protocol,
+        payload: { dataBase64: input.dataBase64 },
+        requestedBy,
+    }).onConflictDoNothing({
+        target: [printJobs.tenantId, printJobs.idempotencyKey],
+    }).returning();
+
+    if (!created) {
+        const existing = await db.query.printJobs.findFirst({
+            where: and(eq(printJobs.tenantId, tenantId), eq(printJobs.idempotencyKey, idempotencyKey)),
+        });
+        return { job: existing, duplicate: true };
+    }
+
+    const queued = await enqueueOutboxMessage({
+        queue: QUEUES.PRINT_JOB,
+        eventType: 'printing.job.queued',
+        tenantId,
+        aggregateId: created.id,
+        payload: { jobId: created.id, tenantId },
+    }, db);
+    if (!queued) {
+        throw new Error('Unable to persist print queue message');
+    }
+
+    queueActivityLog(
+        requestedBy,
+        'print_job_queued',
+        'printing',
+        `${input.documentType} print job queued`,
+        { jobId: created.id, tenantId, branchId: created.branchId, storeId: created.storeId, reference: created.reference },
+        req,
+        { entity: 'print_job', entityId: created.id, newData: { status: 'QUEUED', documentType: input.documentType } },
+    ).catch(() => {});
+
+    return { job: created, duplicate: false };
 }
 
 // Test printer
-settingRoutes.post('/printers/:id/test', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
+settingRoutes.post('/printers/:id/test', authenticate, withTenantTx(), authorize('printing:manage'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const tenantId = req.authUser?.tenantId;
@@ -1252,6 +1447,9 @@ settingRoutes.post('/printers/:id/test', authenticate, withTenantTx(), authorize
         const existing = await db.query.settings.findFirst({ where: and(...tConds) });
         if (!existing) {
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Printer not found or no access' } });
+        }
+        if (!ensureScopeAccess({ branchId: existing.branchId, tenantId: existing.tenantId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this printer' } });
         }
 
         const printer = existing.value as any;
@@ -1277,7 +1475,7 @@ settingRoutes.post('/printers/:id/test', authenticate, withTenantTx(), authorize
 });
 
 // Print barcode/QR labels through a configured network ESC/POS printer
-settingRoutes.post('/printers/:id/print-labels', authenticate, withTenantTx(), authorize('products:view'), async (req, res, next) => {
+settingRoutes.post('/printers/:id/print-labels', authenticate, withTenantTx(), authorize('printing:label'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const tenantId = req.authUser?.tenantId;
@@ -1286,6 +1484,9 @@ settingRoutes.post('/printers/:id/print-labels', authenticate, withTenantTx(), a
         const existing = await db.query.settings.findFirst({ where: and(...pConds) });
         if (!existing) {
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Printer not found or no access' } });
+        }
+        if (!ensureScopeAccess({ branchId: existing.branchId, tenantId: existing.tenantId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this printer' } });
         }
 
         const printer = existing.value as any;
@@ -1299,10 +1500,22 @@ settingRoutes.post('/printers/:id/print-labels', authenticate, withTenantTx(), a
             return res.status(400).json({ success: false, error: { code: 'VALIDATION_001', message: 'No labels provided' } });
         }
 
+        if (!isPrivatePrinterAddress(String(printer.ipAddress))) {
+            return res.status(400).json({ success: false, error: { code: 'INVALID_PRINTER_ADDRESS', message: 'Printer must use a private LAN IP address' } });
+        }
         const protocol = printer?.settings?.protocol === 'escpos' ? 'escpos' : 'tspl';
         const payload = protocol === 'tspl' ? buildTsplLabelPayload(req.body) : buildEscPosLabelPayload(req.body);
-        await sendEscPosPayload(printer.ipAddress, Number(printer.port) || 9100, payload);
-        return res.json({ success: true, data: { message: 'Labels sent to printer', count: req.body.labels.length, protocol } });
+        const queued = await queueDirectPrintJob(req, existing, {
+            documentType: 'label',
+            protocol,
+            dataBase64: payload.toString('base64'),
+            reference: String(req.body?.reference || `labels:${req.body.labels.length}`),
+            idempotencyKey: req.body?.idempotencyKey,
+        });
+        return res.status(queued.duplicate ? 200 : 202).json({
+            success: true,
+            data: { message: queued.duplicate ? 'Print job already exists' : 'Labels queued for direct printing', count: req.body.labels.length, protocol, duplicate: queued.duplicate, job: publicPrintJob(queued.job) },
+        });
     } catch (error: any) {
         if (error?.message) {
             return res.status(502).json({ success: false, error: { code: 'PRINTER_UNREACHABLE', message: error.message } });
@@ -1316,7 +1529,7 @@ settingRoutes.post('/printers/:id/print-labels', authenticate, withTenantTx(), a
 // printing (padding, i18n labels, formatting all live there already) and
 // just hands it over base64-encoded — the server's only job is relaying
 // those bytes over TCP, since browsers can't open raw sockets themselves.
-settingRoutes.post('/printers/:id/print-receipt', authenticate, withTenantTx(), authorize('sales:create'), async (req, res, next) => {
+settingRoutes.post('/printers/:id/print-receipt', authenticate, withTenantTx(), authorize('printing:receipt'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const tenantId = req.authUser?.tenantId;
@@ -1325,6 +1538,9 @@ settingRoutes.post('/printers/:id/print-receipt', authenticate, withTenantTx(), 
         const existing = await db.query.settings.findFirst({ where: and(...pConds) });
         if (!existing) {
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Printer not found or no access' } });
+        }
+        if (!ensureScopeAccess({ branchId: existing.branchId, tenantId: existing.tenantId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this printer' } });
         }
 
         const printer = existing.value as any;
@@ -1339,9 +1555,20 @@ settingRoutes.post('/printers/:id/print-receipt', authenticate, withTenantTx(), 
             return res.status(400).json({ success: false, error: { code: 'VALIDATION_001', message: 'No receipt data provided' } });
         }
 
-        const payload = Buffer.from(dataBase64, 'base64');
-        await sendEscPosPayload(printer.ipAddress, Number(printer.port) || 9100, payload);
-        return res.json({ success: true, data: { message: 'Receipt sent to printer' } });
+        if (!isPrivatePrinterAddress(String(printer.ipAddress))) {
+            return res.status(400).json({ success: false, error: { code: 'INVALID_PRINTER_ADDRESS', message: 'Printer must use a private LAN IP address' } });
+        }
+        const queued = await queueDirectPrintJob(req, existing, {
+            documentType: 'receipt',
+            protocol: 'escpos',
+            dataBase64,
+            reference: String(req.body?.reference || ''),
+            idempotencyKey: req.body?.idempotencyKey,
+        });
+        return res.status(queued.duplicate ? 200 : 202).json({
+            success: true,
+            data: { message: queued.duplicate ? 'Print job already exists' : 'Receipt queued for direct printing', duplicate: queued.duplicate, job: publicPrintJob(queued.job) },
+        });
     } catch (error: any) {
         if (error?.message) {
             return res.status(502).json({ success: false, error: { code: 'PRINTER_UNREACHABLE', message: error.message } });
@@ -1350,14 +1577,123 @@ settingRoutes.post('/printers/:id/print-receipt', authenticate, withTenantTx(), 
     }
 });
 
+// Print-job history is intentionally payload-free. Raw ESC/POS/TSPL bytes are
+// retained for retry but must never be sent back to ordinary UI clients.
+settingRoutes.get('/print-jobs', authenticate, withTenantTx(), authorize('printing:view'), async (req, res, next) => {
+    try {
+        const db = req.tx ?? globalDb;
+        const limit = Math.max(1, Math.min(100, Number(req.query.limit) || 30));
+        const status = String(req.query.status || '').toUpperCase();
+        const conditions: any[] = [];
+        if (['QUEUED', 'PROCESSING', 'PRINTED', 'FAILED'].includes(status)) conditions.push(eq(printJobs.status, status));
+        const rows = await db.query.printJobs.findMany({
+            ...(conditions.length ? { where: and(...conditions) } : {}),
+            orderBy: desc(printJobs.createdAt),
+            limit: Math.min(300, limit * 3),
+        });
+        const scoped = rows.filter((job) => ensureScopeAccess(job, req)).slice(0, limit).map(publicPrintJob);
+        res.json({ success: true, data: scoped });
+    } catch (error) {
+        next(error);
+    }
+});
+
+settingRoutes.get('/print-jobs/:id', authenticate, withTenantTx(), authorize('printing:view', 'printing:receipt', 'printing:label'), async (req, res, next) => {
+    try {
+        const db = req.tx ?? globalDb;
+        const job = await db.query.printJobs.findFirst({ where: eq(printJobs.id, req.params.id) });
+        if (!job) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Print job not found' } });
+        if (!ensureScopeAccess(job, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this print job' } });
+        res.json({ success: true, data: publicPrintJob(job) });
+    } catch (error) {
+        next(error);
+    }
+});
+
+settingRoutes.post('/print-jobs/:id/retry', authenticate, withTenantTx(), authorize('printing:reprint'), async (req, res, next) => {
+    try {
+        const db = req.tx ?? globalDb;
+        const existing = await db.query.printJobs.findFirst({ where: eq(printJobs.id, req.params.id) });
+        if (!existing) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Print job not found' } });
+        if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this print job' } });
+        if (existing.status === 'PROCESSING') {
+            return res.status(409).json({ success: false, error: { code: 'PRINT_IN_PROGRESS', message: 'Print job is still processing' } });
+        }
+
+        const requestedBy = req.authUser?.userId || req.user?.userId;
+        let job = existing;
+        if (existing.status === 'PRINTED') {
+            [job] = await db.insert(printJobs).values({
+                tenantId: existing.tenantId,
+                storeId: existing.storeId,
+                branchId: existing.branchId,
+                printerSettingId: existing.printerSettingId,
+                documentType: existing.documentType,
+                reference: existing.reference,
+                idempotencyKey: `reprint:${existing.id}:${randomUUID()}`,
+                status: 'QUEUED',
+                transport: existing.transport,
+                protocol: existing.protocol,
+                payload: existing.payload,
+                requestedBy: requestedBy!,
+                maxAttempts: existing.maxAttempts,
+            }).returning();
+        } else {
+            [job] = await db.update(printJobs).set({
+                status: 'QUEUED',
+                attempts: existing.attempts >= existing.maxAttempts ? 0 : existing.attempts,
+                requestedBy: requestedBy!,
+                queuedAt: new Date(),
+                startedAt: null,
+                failedAt: null,
+                lastError: null,
+                updatedAt: new Date(),
+            }).where(eq(printJobs.id, existing.id)).returning();
+        }
+
+        const queued = await enqueueOutboxMessage({
+            queue: QUEUES.PRINT_JOB,
+            eventType: 'printing.job.retry',
+            tenantId: job.tenantId,
+            aggregateId: job.id,
+            payload: { jobId: job.id, tenantId: job.tenantId },
+        }, db);
+        if (!queued) throw new Error('Unable to persist print retry message');
+
+        queueActivityLog(
+            requestedBy!,
+            existing.status === 'PRINTED' ? 'print_job_reprinted' : 'print_job_retried',
+            'printing',
+            `${existing.documentType} print job queued again`,
+            { jobId: job.id, sourceJobId: existing.id, tenantId: job.tenantId, branchId: job.branchId, storeId: job.storeId, reference: job.reference },
+            req,
+            { entity: 'print_job', entityId: job.id, oldData: { status: existing.status }, newData: { status: 'QUEUED' } },
+        ).catch(() => {});
+
+        res.status(202).json({ success: true, data: { message: 'Print job queued', job: publicPrintJob(job) } });
+    } catch (error) {
+        next(error);
+    }
+});
+
 // Delete printer
-settingRoutes.delete('/printers/:id', authenticate, withTenantTx(), authorize('settings:update'), async (req, res, next) => {
+settingRoutes.delete('/printers/:id', authenticate, withTenantTx(), authorize('printing:manage'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const tenantId = req.authUser?.tenantId;
         const dConds: any[] = [eq(settings.id, req.params.id)];
         if (tenantId && !req.authUser?.isSuperAdmin) dConds.push(eq(settings.tenantId, tenantId));
-        await db.delete(settings).where(and(...dConds));
+        // No fetch-then-check at all before this fix — a blind tenant-scoped
+        // delete, so any settings:update holder could delete another
+        // branch's printer config outright.
+        const existing = await db.query.settings.findFirst({ where: and(...dConds) });
+        if (!existing) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Printer not found or no access' } });
+        }
+        if (!ensureScopeAccess({ branchId: existing.branchId, tenantId: existing.tenantId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this printer' } });
+        }
+        await db.delete(settings).where(eq(settings.id, existing.id));
         res.json({ success: true, data: { message: 'Printer deleted' } });
     } catch (error) {
         next(error);
@@ -1373,7 +1709,10 @@ settingRoutes.get('/notifications', authenticate, withTenantTx(), async (req, re
     try {
         const db = req.tx ?? globalDb;
         const branchId = req.query.branchId ? String(req.query.branchId) : req.user!.branchId;
-        
+        if (req.query.branchId && !ensureScopeAccess({ branchId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+        }
+
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         const settingsRows = await getSettingsForBranch(db, 'notifications', branchId, tenantId);
         
@@ -1402,14 +1741,17 @@ settingRoutes.put('/notifications', authenticate, withTenantTx(), authorize('set
     try {
         const db = req.tx ?? globalDb;
         const branchId = req.body.branchId || req.user!.branchId;
+        if (req.body.branchId && !ensureScopeAccess({ branchId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+        }
         const notifSettings = req.body;
-        
+
         const results: any[] = [];
         for (const [key, value] of Object.entries(notifSettings)) {
             if (key === 'branchId') continue;
             
             const nTenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
-            const setting = await upsertSetting('notifications', key, value as any, branchId, nTenantId);
+            const setting = await upsertSetting(db, 'notifications', key, value as any, branchId, nTenantId);
             results.push(setting);
         }
         
@@ -2190,6 +2532,12 @@ settingRoutes.put('/api-keys/:id', authenticate, withTenantTx(), authorize('sett
         if (!existing) {
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'API key not found or no access' } });
         }
+        // Same gap already fixed on taxes/printers in this file — fetched
+        // by tenant only, never checked the row's own branchId against the
+        // caller's scope.
+        if (!ensureScopeAccess({ branchId: existing.branchId, tenantId: existing.tenantId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this API key' } });
+        }
 
         const currentVal = decryptJson<Record<string, unknown>>(existing.value as unknown as string);
         // apiKey/secretKey are only overwritten when the client actually
@@ -2230,6 +2578,9 @@ settingRoutes.delete('/api-keys/:id', authenticate, withTenantTx(), authorize('s
         if (!existing) {
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'API key not found or no access' } });
         }
+        if (!ensureScopeAccess({ branchId: existing.branchId, tenantId: existing.tenantId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this API key' } });
+        }
         await db.delete(settings).where(and(...akDelConds));
         res.json({ success: true, data: { message: 'Deleted' } });
     } catch (error) {
@@ -2247,7 +2598,7 @@ settingRoutes.post('/integrations/:id/connect', authenticate, withTenantTx(), au
         const branchId = req.user!.branchId;
         const intTenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
         const data = { connected: true, lastSync: new Date().toISOString(), ...req.body };
-        await upsertSetting('integration', req.params.id, JSON.stringify(data), branchId, intTenantId);
+        await upsertSetting(db, 'integration', req.params.id, JSON.stringify(data), branchId, intTenantId);
         res.json({ success: true, data: { id: req.params.id, connected: true } });
     } catch (error) {
         next(error);
@@ -2331,7 +2682,7 @@ settingRoutes.post('/import', authenticate, withTenantTx(), authorize('settings:
         let imported = 0;
         for (const row of rows) {
             if (!row.category || !row.key) continue;
-            await upsertSetting(row.category, row.key, row.value, branchId ?? null, tenantId);
+            await upsertSetting(db, row.category, row.key, row.value, branchId ?? null, tenantId);
             imported++;
         }
         res.json({ success: true, data: { imported } });
@@ -2358,7 +2709,7 @@ settingRoutes.put('/backup/schedule', authenticate, withTenantTx(), authorize('s
         const { schedule } = req.body;
         const branchId = req.user!.branchId;
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
-        await upsertSetting('backup', 'schedule', schedule || '', branchId, tenantId);
+        await upsertSetting(db, 'backup', 'schedule', schedule || '', branchId, tenantId);
         // Reload the scheduler with new schedule
         const { reloadBackupSchedule } = await import('@/infrastructure/workers/backup.worker');
         await reloadBackupSchedule();
@@ -2398,6 +2749,9 @@ settingRoutes.get('/:category/:key', authenticate, withTenantTx(), async (req, r
         const db = req.tx ?? globalDb;
         const { category, key } = req.params;
         const branchId = req.query.branchId ? String(req.query.branchId) : req.user!.branchId;
+        if (req.query.branchId && !ensureScopeAccess({ branchId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+        }
 
         // First try branch-specific (only when branchId is defined), then fallback to global
         let setting = branchId ? await db.query.settings.findFirst({
@@ -2436,7 +2790,7 @@ settingRoutes.put('/:category/:key', authenticate, withTenantTx(), authorize('se
         const branchId = effectiveGlobal ? null : (isSuperOrAdmin && req.body.branchId ? req.body.branchId : req.user!.branchId);
 
         const tenantId = (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) || undefined;
-        const setting = await upsertSetting(category, key, value, branchId, tenantId);
+        const setting = await upsertSetting(db, category, key, value, branchId, tenantId);
 
         res.json({ success: true, data: setting });
     } catch (error) {
@@ -2450,6 +2804,9 @@ settingRoutes.delete('/:category/:key', authenticate, withTenantTx(), authorize(
         const db = req.tx ?? globalDb;
         const { category, key } = req.params;
         const branchId = req.query.branchId ? String(req.query.branchId) : req.user!.branchId;
+        if (req.query.branchId && !ensureScopeAccess({ branchId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
+        }
 
         const branchCond2 = branchId ? eq(settings.branchId, branchId) : isNull(settings.branchId);
         const existing = await db.query.settings.findFirst({

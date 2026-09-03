@@ -391,6 +391,9 @@
                 { href: "/admin/roles", icon: Key, label: "ຈັດການບົດບາດ", desc: "ກຳນົດສິດ ແລະ ບົດບາດ", color: "from-pink-500 to-rose-500", roles: ['super_admin', 'admin'] },
                 { href: "/admin/permissions", icon: Shield, label: "ຈັດການສິດ", desc: "ກຳນົດເມນູ ແລະ ສິດ", color: "from-teal-500 to-cyan-500", roles: ['super_admin', 'admin'] },
                 { href: "/admin/audit", icon: History, label: "ປະຫວັດການໃຊ້ງານ", desc: "ເບິ່ງ Activity Logs", color: "from-indigo-500 to-blue-500", roles: ['super_admin', 'admin'] },
+                ...(userRole === 'super_admin' ? [
+                    { href: "/admin/branding", icon: Sparkles, label: "ໂລໂກ້ລະບົບ", desc: "ອັບໂຫລດ/ປ່ຽນໂລໂກ້ໜ້າ Login", color: "from-fuchsia-500 to-pink-500", roles: ['super_admin'] },
+                ] : []),
             ];
         }
         // Links ສຳລັບ Shop Admin ແລະ Manager

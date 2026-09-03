@@ -1,10 +1,15 @@
 <script lang="ts">
-    import { onMount } from 'svelte';
+    import { onMount, tick } from 'svelte';
     import { api } from '$api';
     import { t } from "$lib/i18n/index.svelte";
     import { formatCurrency, formatDateTime } from "$lib/utils";
-    import { Banknote, CreditCard, QrCode, Image } from "lucide-svelte";
-    import { isUsbPrintUnavailable, markUsbPrintUnavailable } from "$lib/utils/usbPrint";
+    import { Banknote, CreditCard, QrCode, Image, Loader2, AlertCircle } from "lucide-svelte";
+    import { toast } from "svelte-sonner";
+    import JsBarcode from "jsbarcode";
+    import QRCode from "qrcode";
+    import { tenantSettings } from "$lib/stores/settings.svelte";
+    import { generateEMVcoPayload } from "$lib/utils/emvcoQr";
+    import { createPrintIdempotencyKey, pickStrictPrinter } from "$lib/utils/printerRouting";
 
     interface ReceiptItem {
         productId: string;
@@ -18,6 +23,7 @@
 
     interface ReceiptData {
         transactionNo: string;
+        customerId?: string;
         items: ReceiptItem[];
         subtotal: number;
         discountAmount: number;
@@ -43,7 +49,12 @@
         showTaxDetails?: boolean;
         showQrCode?: boolean;
         primaryColor?: string;
-        paperSize?: '58mm' | '80mm' | 'A4';
+        // Not just '58mm' | '80mm' | 'A4' — the printer config at
+        // Settings > Printers offers 57/58/76/80/110mm widths, and this
+        // must be able to represent any of them (a receipt printed on a
+        // configured-but-uncovered width used to always fall back to
+        // hardcoded 80mm sizing here, printing at the wrong size).
+        paperSize?: string;
     }
 
     interface DesignElement {
@@ -69,6 +80,8 @@
     let designElements = $state<DesignElement[] | null>(null);
     let settingsLoaded = $state(false);
     let printTriggered = $state(false);
+    let isPrinting = $state(false);
+    let printError = $state<string | null>(null);
 
     onMount(async () => {
         try {
@@ -96,6 +109,22 @@
         settingsLoaded = true;
     });
 
+    // null = A4 (handled as its own fixed case everywhere this is used);
+    // otherwise the numeric thermal-paper width in mm, parsed from strings
+    // like "57mm"/"76mm"/"110mm". Only an EXPLICIT "A4" maps to null — no
+    // setting saved at all (the common case: most stores never touch
+    // Settings > Receipt) must keep defaulting to 80mm thermal like every
+    // caller here always did before, not silently become A4 the moment the
+    // paperSize field is unset.
+    function paperWidthMm(size?: string): number | null {
+        if (size === 'A4') return null;
+        if (!size) return 80;
+        const match = /^(\d+(?:\.\d+)?)mm$/.exec(size);
+        return match ? Number(match[1]) : 80;
+    }
+
+    const printWidthMm = $derived(paperWidthMm(receiptSettings.paperSize));
+
     function bytesToBase64(bytes: Uint8Array): string {
         let binary = "";
         for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
@@ -109,192 +138,316 @@
         try {
             const res = await api.get("settings/printers").json<any>();
             const printers: any[] = res?.data || [];
-            const candidates = printers.filter((p) => p.connectionType === "network" && p.isActive !== false);
-            if (candidates.length === 0) return null;
-            return (
-                candidates.find((p) => p.type === "receipt" && p.isDefault) ||
-                candidates.find((p) => p.type === "receipt") ||
-                candidates.find((p) => p.isDefault) ||
-                candidates[0] ||
-                null
-            );
+            return pickStrictPrinter(printers, "receipt", "network");
         } catch {
             return null;
         }
     }
 
-    async function printReceiptViaNetwork(receipt: ReceiptData): Promise<boolean> {
-        const printer = await findConfiguredNetworkReceiptPrinter();
-        if (!printer) return false;
-        try {
-            const payload = buildEscPosReceipt(receipt, receiptSettings);
-            const res = await api.post(`settings/printers/${printer.id}/print-receipt`, {
-                json: { dataBase64: bytesToBase64(payload) },
-            }).json<any>();
-            return !!res?.success;
-        } catch (err) {
-            console.warn("Direct network receipt print failed, falling back:", err);
-            return false;
+    async function waitForPrintJob(jobId: string): Promise<void> {
+        for (let attempt = 0; attempt < 24; attempt++) {
+            await new Promise((resolve) => setTimeout(resolve, 350));
+            const response = await api.get(`settings/print-jobs/${jobId}`).json<any>();
+            const job = response?.data;
+            if (job?.status === "PRINTED") return;
+            if (job?.status === "FAILED") throw new Error(job.lastError || t("printing.failed"));
         }
+        throw new Error(t("printing.timeout"));
+    }
+
+    async function printReceiptViaNetwork(receipt: ReceiptData, automatic: boolean): Promise<void> {
+        const printer = await findConfiguredNetworkReceiptPrinter();
+        if (!printer) throw new Error(t("printing.receiptPrinterRequired"));
+        const payload = await buildEscPosReceiptImage(receipt, receiptSettings);
+        const res = await api.post(`settings/printers/${printer.id}/print-receipt`, {
+            json: {
+                dataBase64: bytesToBase64(payload),
+                reference: receipt.transactionNo,
+                idempotencyKey: automatic
+                    ? `receipt:${receipt.transactionNo}:automatic`
+                    : createPrintIdempotencyKey(`receipt:${receipt.transactionNo}:manual`),
+            },
+        }).json<any>();
+        const jobId = res?.data?.job?.id;
+        if (!jobId) throw new Error(t("printing.queueFailed"));
+        await waitForPrintJob(jobId);
     }
 
     // ── Direct USB printing (bypasses the OS print dialog entirely) ────────────
     // Only for thermal 58mm/80mm receipts — A4 output doesn't suit raw ESC/POS.
-    async function findConfiguredUsbReceiptPrinter(): Promise<boolean> {
-        if (!("usb" in navigator)) return false;
-        if (receiptSettings.paperSize === "A4") return false;
-        try {
-            const res = await api.get("settings/printers").json<any>();
-            const printers: any[] = res?.data || [];
-            const candidates = printers.filter((p) => p.connectionType === "usb" && p.isActive !== false);
-            if (candidates.length === 0) return false;
-            return !!(
-                candidates.find((p) => p.type === "receipt" && p.isDefault) ||
-                candidates.find((p) => p.type === "receipt") ||
-                candidates.find((p) => p.isDefault) ||
-                candidates[0]
-            );
-        } catch {
-            return false;
+    // ── ESC/POS receipt rendering ───────────────────────────────────────────
+    // Thermal printers speak single-byte codepages (CP437/852/1252) with no
+    // Lao glyph table, so sending Lao product names / the ₭ currency symbol
+    // as raw UTF-8 text bytes silently drops or garbles them — that's why
+    // item names and prices were disappearing on real prints. Instead we
+    // rasterize the whole receipt to a monochrome bitmap (canvas → ESC/POS
+    // "GS v 0" raster image command), which prints correctly on any printer
+    // regardless of codepage support.
+    function canvasToEscPosRaster(canvas: HTMLCanvasElement): Uint8Array {
+        const ctx = canvas.getContext("2d")!;
+        const w = canvas.width, h = canvas.height;
+        const { data } = ctx.getImageData(0, 0, w, h);
+        const bytesPerRow = Math.ceil(w / 8);
+        const bandHeight = 240; // keep each raster command modest for wider printer compatibility
+        const GS = 0x1d, ESC = 0x1b;
+        const out: number[] = [ESC, 0x40, ESC, 0x61, 0x00]; // init, left-align
+
+        for (let bandStart = 0; bandStart < h; bandStart += bandHeight) {
+            const bh = Math.min(bandHeight, h - bandStart);
+            out.push(GS, 0x76, 0x30, 0x00, bytesPerRow & 0xff, (bytesPerRow >> 8) & 0xff, bh & 0xff, (bh >> 8) & 0xff);
+            for (let row = 0; row < bh; row++) {
+                const py = bandStart + row;
+                for (let bx = 0; bx < bytesPerRow; bx++) {
+                    let byte = 0;
+                    for (let bit = 0; bit < 8; bit++) {
+                        const px = bx * 8 + bit;
+                        if (px < w) {
+                            const idx = (py * w + px) * 4;
+                            const a = data[idx + 3];
+                            const lum = a === 0 ? 255 : (0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2]);
+                            if (lum < 160) byte |= 0x80 >> bit;
+                        }
+                    }
+                    out.push(byte);
+                }
+            }
         }
+
+        out.push(GS, 0x56, 0x41, 0x03); // partial cut with feed
+        return new Uint8Array(out);
     }
 
-    function padRight(text: string, width: number): string {
-        if (text.length >= width) return text.slice(0, width);
-        return text + " ".repeat(width - text.length);
-    }
-    function padLeft(text: string, width: number): string {
-        if (text.length >= width) return text.slice(0, width);
-        return " ".repeat(width - text.length) + text;
-    }
-    function twoColumn(left: string, right: string, width: number): string {
-        const rightPart = right.length >= width ? right.slice(0, width) : right;
-        const leftWidth = Math.max(0, width - rightPart.length);
-        return padRight(left, leftWidth).slice(0, leftWidth) + rightPart;
-    }
-    function centerLine(text: string, width: number): string {
-        if (text.length >= width) return text.slice(0, width);
-        const padTotal = width - text.length;
-        const padStart = Math.floor(padTotal / 2);
-        return " ".repeat(padStart) + text;
-    }
+    async function buildEscPosReceiptImage(receipt: ReceiptData, settings: ReceiptSettings): Promise<Uint8Array> {
+        const widthPx = Math.round((paperWidthMm(settings.paperSize) ?? 80) * 7.2); // ~203dpi thermal head
+        const marginPx = 12;
+        const contentWidth = widthPx - marginPx * 2;
 
-    function buildEscPosReceipt(receipt: ReceiptData, settings: ReceiptSettings): Uint8Array {
-        const width = settings.paperSize === "58mm" ? 32 : 42; // font-A columns
-        const ESC = 0x1b, GS = 0x1d;
-        const lines: string[] = [];
-        const divider = "-".repeat(width);
+        try {
+            await Promise.all([
+                document.fonts.load('16px "Noto Sans Lao"'),
+                document.fonts.load('bold 16px "Noto Sans Lao"'),
+            ]);
+            await document.fonts.ready;
+        } catch { /* best-effort — canvas falls back to a system font */ }
 
-        if (settings.branchName) lines.push(centerLine(settings.branchName, width));
-        if (settings.branchAddress) lines.push(centerLine(settings.branchAddress, width));
-        if (settings.branchPhone) lines.push(centerLine(settings.branchPhone, width));
-        if (settings.showTaxDetails && settings.branchTaxId) lines.push(centerLine(`Tax ID: ${settings.branchTaxId}`, width));
-        lines.push(divider);
+        const FONT = (size: number, bold = false) => `${bold ? "bold " : ""}${size}px "Noto Sans Lao", "Noto Sans", sans-serif`;
+
+        type Op =
+            | { kind: "text"; y: number; text: string; size: number; bold: boolean; align: "left" | "center" | "right" }
+            | { kind: "row"; y: number; left: string; right: string; size: number; bold: boolean }
+            | { kind: "divider"; y: number }
+            | { kind: "barcode"; y: number; height: number; value: string }
+            | { kind: "qrcode"; y: number; size: number; value: string };
+
+        const mctx = document.createElement("canvas").getContext("2d")!;
+        const ops: Op[] = [];
+        let y = marginPx;
+
+        function wrapText(text: string, size: number, bold: boolean, maxWidth: number): string[] {
+            mctx.font = FONT(size, bold);
+            const words = text.split(" ");
+            const lines: string[] = [];
+            let cur = "";
+            for (const w of words) {
+                const test = cur ? `${cur} ${w}` : w;
+                if (cur && mctx.measureText(test).width > maxWidth) { lines.push(cur); cur = w; }
+                else cur = test;
+            }
+            if (cur) lines.push(cur);
+            const final: string[] = [];
+            for (const line of lines) {
+                if (mctx.measureText(line).width <= maxWidth) { final.push(line); continue; }
+                let chunk = "";
+                for (const ch of line) {
+                    const test = chunk + ch;
+                    if (chunk && mctx.measureText(test).width > maxWidth) { final.push(chunk); chunk = ch; }
+                    else chunk = test;
+                }
+                if (chunk) final.push(chunk);
+            }
+            return final.length ? final : [""];
+        }
+
+        function addText(text: string, size: number, bold: boolean, align: "left" | "center" | "right", gap = 4) {
+            for (const line of wrapText(text, size, bold, contentWidth)) {
+                ops.push({ kind: "text", y, text: line, size, bold, align });
+                y += size * 1.35;
+            }
+            y += gap;
+        }
+        function addRow(left: string, right: string, size: number, bold = false, gap = 4) {
+            ops.push({ kind: "row", y, left, right, size, bold });
+            y += size * 1.35 + gap;
+        }
+        function addDivider(gap = 6) {
+            y += gap;
+            ops.push({ kind: "divider", y });
+            y += gap;
+        }
+
+        if (settings.branchName) addText(settings.branchName, 24, true, "center", 2);
+        if (settings.branchAddress) addText(settings.branchAddress, 16, false, "center", 2);
+        if (settings.branchPhone) addText(`${t("common.phone")}: ${settings.branchPhone}`, 16, false, "center", 2);
+        addDivider();
 
         const date = new Date(receipt.createdAt);
-        lines.push(`${date.toLocaleDateString("lo-LA")} ${date.toLocaleTimeString("lo-LA", { hour: "2-digit", minute: "2-digit" })}`);
-        lines.push(`${t("documents.receiptNo")}: ${receipt.transactionNo}`);
-        if (receipt.cashierName) lines.push(`ພະນັກງານຂາຍ: ${receipt.cashierName}`);
-        if (receipt.customerName) lines.push(`${t("documents.customer")}: ${receipt.customerName}`);
-        lines.push(divider);
+        addRow(t("documents.receiptNo"), receipt.transactionNo, 16, true);
+        addRow(t("documents.date"), `${date.toLocaleDateString("lo-LA")} ${date.toLocaleTimeString("lo-LA", { hour: "2-digit", minute: "2-digit" })}`, 16, false);
+        if (receipt.cashierName) addRow(t("documents.cashier"), receipt.cashierName, 16, false);
+        if (receipt.customerId) addRow(t("documents.customerId"), receipt.customerId, 16, false);
+        if (receipt.customerName) addRow(t("documents.customer"), receipt.customerName, 16, false);
+        addDivider();
 
         for (const item of receipt.items) {
-            const variant = [item.size, item.color].filter(Boolean).join(' / ');
-            lines.push(padRight(variant ? `${item.productName} (${variant})` : item.productName, width));
-            lines.push(twoColumn(`  x${item.quantity} @ ${formatCurrency(item.unitPrice)}`, formatCurrency(item.total), width));
+            const variant = [item.size, item.color].filter(Boolean).join(" / ");
+            addText(variant ? `${item.productName} (${variant})` : item.productName, 17, true, "left", 0);
+            addRow(`  x${item.quantity} @ ${formatCurrency(item.unitPrice)}`, formatCurrency(item.total), 15, false, 6);
         }
-        lines.push(divider);
+        addDivider();
 
-        lines.push(twoColumn(t("documents.subtotal"), formatCurrency(receipt.subtotal), width));
-        if (receipt.discountAmount) lines.push(twoColumn(t("documents.discount"), `-${formatCurrency(receipt.discountAmount)}`, width));
-        if (receipt.taxAmount) lines.push(twoColumn(t("documents.tax"), formatCurrency(receipt.taxAmount), width));
-        lines.push(twoColumn(t("documents.total"), formatCurrency(receipt.total), width));
-        lines.push(divider);
+        addRow(t("documents.subtotal"), formatCurrency(receipt.subtotal), 16, false);
+        if (receipt.discountAmount) addRow(t("documents.discount"), `-${formatCurrency(receipt.discountAmount)}`, 16, false);
+        if (receipt.taxAmount) addRow("VAT", formatCurrency(receipt.taxAmount), 16, false);
+        addDivider(4);
+        addRow(t("documents.grandTotal"), formatCurrency(receipt.total), 22, true, 8);
+        addDivider();
 
-        lines.push(twoColumn(t("documents.paymentMethod"), getPaymentMethodLabel(receipt.paymentMethod), width));
+        addRow(t("documents.paymentMethod"), getPaymentMethodLabel(receipt.paymentMethod), 16, false);
         if (receipt.paymentMethod?.toUpperCase() === "CASH") {
-            lines.push(twoColumn(t("documents.received"), formatCurrency(receipt.received), width));
-            lines.push(twoColumn(t("documents.change"), formatCurrency(receipt.change), width));
+            addRow(t("documents.received"), formatCurrency(receipt.received), 16, false);
+            addRow(t("documents.change"), formatCurrency(receipt.change), 16, false);
         }
 
         if (settings.footerText) {
-            lines.push(divider);
-            lines.push(centerLine(settings.footerText, width));
+            addDivider();
+            addText(settings.footerText, 16, false, "center", 2);
         }
 
-        const textBytes = Array.from(new TextEncoder().encode(lines.join("\n") + "\n\n\n"));
-        return new Uint8Array([
-            ESC, 0x40, // initialize
-            ESC, 0x61, 0x00, // left align
-            ...textBytes,
-            GS, 0x56, 0x41, 0x03, // partial cut with feed
-        ]);
+        // A QR block placed in the custom design (documents/design) is the
+        // user's actual intent to show it. Falls back to showQrCode !== false
+        // (not a plain truthy check) to match showLogo/showTaxDetails'
+        // convention elsewhere in this file — undefined means "never
+        // explicitly turned off," not "hidden."
+        if (designElements?.some((el) => el.type === "qrcode") || settings.showQrCode !== false) {
+            const qrSize = 120;
+            y += 10;
+            ops.push({ kind: "qrcode", y, size: qrSize, value: paymentQrContent(receipt) });
+            y += qrSize + 10;
+        }
+
+        const barcodeHeight = 70;
+        y += 10;
+        ops.push({ kind: "barcode", y, height: barcodeHeight, value: receipt.transactionNo });
+        y += barcodeHeight + 10;
+
+        if (settings.showTaxDetails && settings.branchTaxId) {
+            addText(`TIN: ${settings.branchTaxId}`, 14, false, "center", 2);
+        }
+        y += marginPx;
+
+        // QRCode.toCanvas is async, unlike JsBarcode — pre-render every QR op
+        // before the (synchronous) draw loop below.
+        const qrCanvases = new Map<Op, HTMLCanvasElement>();
+        for (const op of ops) {
+            if (op.kind === "qrcode") {
+                const qrCanvas = document.createElement("canvas");
+                try {
+                    await QRCode.toCanvas(qrCanvas, op.value, { width: op.size, margin: 1, errorCorrectionLevel: "M" });
+                    qrCanvases.set(op, qrCanvas);
+                } catch { /* skip QR if it can't be generated */ }
+            }
+        }
+
+        const canvas = document.createElement("canvas");
+        canvas.width = widthPx;
+        canvas.height = Math.ceil(y);
+        const ctx = canvas.getContext("2d")!;
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#000000";
+        ctx.textBaseline = "top";
+
+        for (const op of ops) {
+            if (op.kind === "text") {
+                ctx.font = FONT(op.size, op.bold);
+                ctx.textAlign = op.align;
+                const x = op.align === "left" ? marginPx : op.align === "right" ? widthPx - marginPx : widthPx / 2;
+                ctx.fillText(op.text, x, op.y);
+            } else if (op.kind === "row") {
+                ctx.font = FONT(op.size, op.bold);
+                ctx.textAlign = "left";
+                ctx.fillText(op.left, marginPx, op.y);
+                ctx.textAlign = "right";
+                ctx.fillText(op.right, widthPx - marginPx, op.y);
+            } else if (op.kind === "divider") {
+                ctx.save();
+                ctx.strokeStyle = "#000000";
+                ctx.lineWidth = 1;
+                ctx.setLineDash([4, 3]);
+                ctx.beginPath();
+                ctx.moveTo(marginPx, op.y);
+                ctx.lineTo(widthPx - marginPx, op.y);
+                ctx.stroke();
+                ctx.restore();
+            } else if (op.kind === "barcode") {
+                try {
+                    const bcCanvas = document.createElement("canvas");
+                    JsBarcode(bcCanvas, op.value, {
+                        format: "CODE128",
+                        width: 2,
+                        height: op.height - 20,
+                        displayValue: true,
+                        fontSize: 14,
+                        margin: 0,
+                        background: "#ffffff",
+                        lineColor: "#000000",
+                    });
+                    const drawWidth = Math.min(bcCanvas.width, contentWidth);
+                    const scale = drawWidth / bcCanvas.width;
+                    const drawHeight = bcCanvas.height * scale;
+                    ctx.drawImage(bcCanvas, (widthPx - drawWidth) / 2, op.y, drawWidth, drawHeight);
+                } catch { /* skip barcode if it can't be generated */ }
+            } else if (op.kind === "qrcode") {
+                const qrCanvas = qrCanvases.get(op);
+                if (qrCanvas) {
+                    const drawSize = Math.min(op.size, contentWidth);
+                    ctx.drawImage(qrCanvas, (widthPx - drawSize) / 2, op.y, drawSize, drawSize);
+                }
+            }
+        }
+
+        return canvasToEscPosRaster(canvas);
     }
 
-    async function printReceiptViaUsb(receipt: ReceiptData): Promise<boolean> {
-        if (isUsbPrintUnavailable()) return false;
-        if (!(await findConfiguredUsbReceiptPrinter())) return false;
-
-        // Auto-print must never show the browser's USB device picker — that
-        // "connection" prompt is only for the one-time setup step (Settings →
-        // Printers → Test Print). Here we only silently reconnect to a device
-        // the user already authorized in that step; if none exists yet, skip
-        // straight to the print dialog instead of interrupting checkout.
-        const authorizedDevices = await (navigator as any).usb.getDevices();
-        if (authorizedDevices.length === 0) return false;
-
-        let device: any = authorizedDevices[0];
+    async function printReceipt(automatic = false): Promise<void> {
+        if (!data || isPrinting) return;
+        isPrinting = true;
+        printError = null;
         try {
-            await device.open();
-            const config = device.configuration || (await device.selectConfiguration(1));
-            const iface = config?.interfaces?.[0];
-            if (!iface) throw new Error("No USB interface found");
-            await device.claimInterface(iface.interfaceNumber);
-            const ep = iface.alternate.endpoints.find((e: any) => e.direction === "out");
-            if (!ep) throw new Error("No OUT endpoint found");
-
-            await device.transferOut(ep.endpointNumber, buildEscPosReceipt(receipt, receiptSettings));
-
-            await device.releaseInterface(iface.interfaceNumber);
-            await device.close();
-            return true;
-        } catch (err: any) {
-            if (device) {
-                try { await device.close(); } catch { /* already closed */ }
-            }
-            if (err?.name === "SecurityError") {
-                // Same OS/driver conflict as the barcode-label printer — stop
-                // retrying WebUSB for the rest of the session.
-                markUsbPrintUnavailable();
-                console.warn("USB receipt printer access denied by the OS/driver, falling back to print dialog:", err);
-            } else {
-                console.warn("Direct USB receipt print failed, falling back to print dialog:", err);
-            }
-            return false;
+            await printReceiptViaNetwork(data, automatic);
+            toast.success(t("printing.completed"));
+        } catch (error) {
+            printError = error instanceof Error ? error.message : t("printing.failed");
+            toast.error(printError);
+        } finally {
+            isPrinting = false;
         }
-    }
-
-    async function printReceipt(): Promise<void> {
-        if (!data) return;
-        // Always fall back to the OS print dialog if no direct printer is
-        // configured/reachable — never abort silently with nothing shown.
-        const networkPrinted = await printReceiptViaNetwork(data).catch(() => false);
-        if (networkPrinted) return;
-        const usbPrinted = await printReceiptViaUsb(data).catch(() => false);
-        if (usbPrinted) return;
-        window.print();
     }
 
     $effect(() => {
         if (show && data && autoPrint && settingsLoaded && !printTriggered) {
             printTriggered = true;
-            setTimeout(() => printReceipt(), 300);
+            setTimeout(() => printReceipt(true), 300);
         }
         if (!show) printTriggered = false;
     });
 
     function handlePrint() {
-        printReceipt();
+        void printReceipt(false);
+    }
+
+    function handleBrowserPrint() {
+        window.print();
     }
 
     function getPaymentMethodLabel(method: string) {
@@ -332,17 +485,66 @@
 
     const alignClass = (align: string) =>
         align === 'center' ? 'text-center' : align === 'right' ? 'text-right' : 'text-left';
+
+    // Svelte action: renders a real CODE128 barcode into a <canvas>, used both
+    // on-screen and for the browser print path (thermal ESC/POS printing uses
+    // its own raster barcode drawn straight onto the receipt bitmap instead).
+    function barcodeAction(node: HTMLCanvasElement, value: string) {
+        function draw(v: string) {
+            try {
+                JsBarcode(node, v || " ", {
+                    format: "CODE128",
+                    width: 1.5,
+                    height: 40,
+                    displayValue: true,
+                    fontSize: 10,
+                    margin: 4,
+                    background: "#ffffff",
+                    lineColor: "#000000",
+                });
+            } catch { /* invalid/empty value — leave canvas blank */ }
+        }
+        draw(value);
+        return { update: draw };
+    }
+
+    // The receipt's QR encodes a real "scan to pay" EMVco payload (bank apps
+    // pre-fill the merchant account + exact amount) when the tenant has a QR
+    // merchant account configured in Settings → Payment Methods. Without one,
+    // it falls back to the transaction reference — still scannable, just not
+    // a payment code. Same payload format as the receipt designer preview
+    // (see $lib/utils/emvcoQr), so what a merchant previews while designing
+    // their receipt matches what actually prints.
+    function paymentQrContent(receipt: ReceiptData): string {
+        const merchantAccount = tenantSettings.qrMerchantCode?.trim();
+        if (!merchantAccount) return receipt.transactionNo;
+        return generateEMVcoPayload({
+            merchantAccount,
+            amount: receipt.total,
+            currency: tenantSettings.qrCurrencyCode || tenantSettings.currencyIsoCode,
+            countryCode: tenantSettings.config.country || "LA",
+            transactionId: receipt.transactionNo,
+        });
+    }
+
+    // Svelte action: renders a real QR code into a <canvas> — this used to be
+    // a static placeholder icon that never actually encoded anything.
+    function qrcodeAction(node: HTMLCanvasElement, value: string) {
+        function draw(v: string) {
+            QRCode.toCanvas(node, v || " ", { width: 80, margin: 1, errorCorrectionLevel: "M" }).catch(() => { /* leave canvas blank */ });
+        }
+        draw(value);
+        return { update: draw };
+    }
 </script>
 
 <svelte:head>
     {#if show}
-        {@html `<style>
+        <style>{`
             @media print {
                 @page {
-                    size: ${ receiptSettings.paperSize === '58mm' ? '58mm auto'
-                            : receiptSettings.paperSize === 'A4'  ? 'A4 portrait'
-                            : '80mm auto' };
-                    margin: ${ receiptSettings.paperSize === 'A4' ? '10mm' : '0mm' };
+                    size: ${ printWidthMm === null ? 'A4 portrait' : `${printWidthMm}mm auto` };
+                    margin: ${ printWidthMm === null ? '10mm' : '0mm' };
                 }
                 /* Hide all other UI — position:fixed breaks out of modal overflow:hidden */
                 body * { visibility: hidden !important; }
@@ -354,9 +556,7 @@
                     top: 0 !important;
                     right: auto !important;
                     bottom: auto !important;
-                    width: ${ receiptSettings.paperSize === '58mm' ? '58mm'
-                             : receiptSettings.paperSize === 'A4'  ? '210mm'
-                             : '80mm' } !important;
+                    width: ${ printWidthMm === null ? '210mm' : `${printWidthMm}mm` } !important;
                     max-width: none !important;
                     max-height: none !important;
                     height: auto !important;
@@ -367,9 +567,10 @@
                     box-shadow: none !important;
                     border: none !important;
                     border-radius: 0 !important;
-                    font-size: ${ receiptSettings.paperSize === 'A4'  ? '11pt'
-                                : receiptSettings.paperSize === '58mm' ? '7pt'
-                                : '8pt' } !important;
+                    font-size: ${ printWidthMm === null ? '11pt'
+                                : printWidthMm <= 60 ? '7pt'
+                                : printWidthMm <= 90 ? '8pt'
+                                : '9pt' } !important;
                     font-family: 'Courier New', 'Noto Sans Lao', monospace !important;
                     line-height: 1.5 !important;
                 }
@@ -413,7 +614,7 @@
                 /* Hide screen-only elements */
                 .no-print { display: none !important; }
             }
-        </style>`}
+        `}</style>
     {/if}
 </svelte:head>
 
@@ -433,7 +634,7 @@
             <div class="p-4 overflow-y-auto flex-1">
                 <div id="pos-receipt"
                     class="bg-white border border-gray-300 font-mono text-gray-900 mx-auto"
-                    style="width:{receiptSettings.paperSize === '58mm' ? '220px' : receiptSettings.paperSize === 'A4' ? '100%' : '302px'}; font-size:{receiptSettings.paperSize === '58mm' ? '8px' : receiptSettings.paperSize === 'A4' ? '13px' : '10px'}; line-height:1.5;">
+                    style="width:{printWidthMm === null ? '100%' : `${Math.round(printWidthMm * 3.78)}px`}; font-size:{printWidthMm === null ? '13px' : printWidthMm <= 60 ? '8px' : printWidthMm <= 90 ? '10px' : '12px'}; line-height:1.5;">
 
                     {#if designElements && designElements.length > 0}
                         <!-- Render using saved design -->
@@ -480,31 +681,36 @@
                                 {:else if el.type === 'items'}
                                     <div style="font-size:{el.fontSize}px">
                                         {#each data.items as item (item.productId)}
-                                            <div class="flex justify-between py-0.5">
-                                                <span class="flex-1 print-text">
-                                                    {item.productName}
-                                                    {#if item.size || item.color}
-                                                        <span class="text-gray-500">({[item.size, item.color].filter(Boolean).join(' / ')})</span>
-                                                    {/if}
-                                                    x{item.quantity}
-                                                </span>
-                                                <span class="print-text">{formatCurrency(item.total)}</span>
+                                            <div class="py-0.5">
+                                                <div class="flex justify-between">
+                                                    <span class="flex-1 print-text font-medium">
+                                                        {item.productName}
+                                                        {#if item.size || item.color}
+                                                            <span class="text-gray-500">({[item.size, item.color].filter(Boolean).join(' / ')})</span>
+                                                        {/if}
+                                                    </span>
+                                                    <span class="print-text">{formatCurrency(item.total)}</span>
+                                                </div>
+                                                <div class="print-text text-gray-500" style="font-size:{Math.max(el.fontSize - 2, 8)}px">
+                                                    {formatCurrency(item.unitPrice)} x {item.quantity}
+                                                </div>
                                             </div>
                                         {/each}
                                     </div>
                                 {:else if el.type === 'qrcode'}
-                                    {#if receiptSettings.showQrCode}
-                                        <div class="text-center py-2">
-                                            <div class="inline-block w-20 h-20 border border-gray-400 flex items-center justify-center">
-                                                <QrCode class="w-12 h-12 text-gray-400" />
-                                            </div>
-                                        </div>
-                                    {/if}
+                                    <!-- The element existing in the saved design already means the
+                                         merchant put it there — showQrCode (a separate flag with no
+                                         settings UI to toggle it) must not additionally gate it, or
+                                         a QR added in the design editor silently never renders.
+                                         alignClass(el.align), not a fixed text-center — this was
+                                         the one element type that never honored the design's actual
+                                         left/center/right choice for it. -->
+                                    <div class={`${alignClass(el.align)} py-2`}>
+                                        <canvas class="inline-block" use:qrcodeAction={paymentQrContent(data)}></canvas>
+                                    </div>
                                 {:else if el.type === 'barcode'}
                                     <div class="text-center py-2">
-                                        <div class="inline-block w-32 h-10 border border-gray-400 flex items-center justify-center text-xs text-gray-500">
-                                            {data.transactionNo}
-                                        </div>
+                                        <canvas class="inline-block" use:barcodeAction={data.transactionNo}></canvas>
                                     </div>
                                 {:else if el.type === 'signature'}
                                     <div class="text-center pt-4 pb-1">
@@ -542,6 +748,14 @@
                                 <div class="print-text font-mono font-medium text-right">{data.transactionNo}</div>
                                 <div class="print-text text-gray-500">{t("documents.date")}:</div>
                                 <div class="print-text text-right">{formatDateTime(data.createdAt)}</div>
+                                {#if data.cashierName}
+                                    <div class="print-text text-gray-500">{t("documents.cashier")}:</div>
+                                    <div class="print-text text-right">{data.cashierName}</div>
+                                {/if}
+                                {#if data.customerId}
+                                    <div class="print-text text-gray-500">{t("documents.customerId")}:</div>
+                                    <div class="print-text font-mono text-right">{data.customerId}</div>
+                                {/if}
                                 {#if data.customerName}
                                     <div class="print-text text-gray-500">{t("documents.customer")}:</div>
                                     <div class="print-text text-right">{data.customerName}</div>
@@ -626,11 +840,26 @@
                                 {/if}
                             </div>
 
+                            {#if receiptSettings.showQrCode !== false}
+                                <!-- QR Code -->
+                                <div class="text-center pt-2">
+                                    <canvas class="inline-block" use:qrcodeAction={paymentQrContent(data)}></canvas>
+                                </div>
+                            {/if}
+
+                            <!-- Barcode -->
+                            <div class="text-center pt-2">
+                                <canvas class="inline-block" use:barcodeAction={data.transactionNo}></canvas>
+                            </div>
+
                             <!-- Footer -->
                             <div class="text-center pt-4 print-border border-t border-gray-200">
                                 <p class="print-text text-sm text-gray-500">
                                     {receiptSettings.footerText ?? t("documents.thankYou")}
                                 </p>
+                                {#if receiptSettings.showTaxDetails !== false && receiptSettings.branchTaxId}
+                                    <p class="print-text text-xs text-gray-400 mt-1">TIN: {receiptSettings.branchTaxId}</p>
+                                {/if}
                                 <p class="print-text text-xs text-gray-400 mt-1">Powered by KPOS</p>
                             </div>
                         </div>
@@ -640,22 +869,36 @@
             </div>
 
             <!-- Actions -->
-            <div class="border-t border-gray-200 dark:border-gray-700 p-4 flex gap-2 no-print">
+            <div class="border-t border-gray-200 dark:border-gray-700 p-4 no-print">
+                {#if printError}
+                    <div class="mb-3 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300">
+                        <AlertCircle class="mt-0.5 h-4 w-4 shrink-0" />
+                        <span>{printError}</span>
+                    </div>
+                {/if}
+                <div class="flex flex-wrap gap-2">
                 <button
                     onclick={handlePrint}
+                    disabled={isPrinting}
                     class="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-primary-600 text-white rounded-lg hover:bg-primary-700 font-medium"
                 >
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
-                    </svg>
-                    {t("documents.print")}
+                    {#if isPrinting}<Loader2 class="h-5 w-5 animate-spin" />{/if}
+                    {t("printing.direct")}
+                </button>
+                <button
+                    onclick={handleBrowserPrint}
+                    disabled={isPrinting}
+                    class="flex-1 px-4 py-2.5 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 font-medium"
+                >
+                    {t("printing.browserPdf")}
                 </button>
                 <button
                     onclick={onClose}
-                    class="flex-1 px-4 py-2.5 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 font-medium"
+                    class="px-4 py-2.5 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 font-medium"
                 >
                     {t("common.close")}
                 </button>
+                </div>
             </div>
         </div>
     </div>

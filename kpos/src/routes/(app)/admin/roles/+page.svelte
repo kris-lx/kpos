@@ -57,8 +57,8 @@
                 return;
             }
             isSuperAdmin = user.isSuperAdmin || false;
-            // Allow super_admin, admin, hq_admin, hq_manager, branch_admin (roleLevel ≤ 5)
-            if (auth.roleLevel <= 5) {
+            // Platform role templates are managed by Super Admin only.
+            if (user.isSuperAdmin) {
                 canAccess = true;
             } else {
                 toast.error(t('common.accessDenied'));
@@ -77,6 +77,7 @@
 
     const rolesQuery = createQuery({
         queryKey: ["admin-roles"],
+        enabled: () => canAccess,
         queryFn: async () => {
             const response = await api.get("admin/roles").json<any>();
             return response.data || [];
@@ -85,6 +86,7 @@
 
     const permissionsQuery = createQuery({
         queryKey: ["admin-permissions"],
+        enabled: () => canAccess,
         queryFn: async () => {
             const response = await api.get("admin/permissions").json<any>();
             return response.data || [];
@@ -93,6 +95,7 @@
 
     const menuPermissionsQuery = createQuery({
         queryKey: ["admin-menu-permissions"],
+        enabled: () => canAccess,
         queryFn: async () => {
             const response = await api.get("admin/menu-permissions").json<any>();
             return response.data || [];
@@ -101,6 +104,7 @@
 
     const roleTemplatesQuery = createQuery({
         queryKey: ["admin-role-templates"],
+        enabled: () => canAccess,
         queryFn: async () => {
             const response = await api.get("admin/roles/templates").json<any>();
             return response.data || [];
@@ -162,12 +166,44 @@
         displayName: "",
         description: "",
         permissions: [] as string[],
-        isSystem: false
+        isSystem: false,
+        level: 7,
     });
 
     let expandedGroups = $state<Record<string, boolean>>({});
     let expandedMenus = $state<Record<string, boolean>>({});
     let useMenuPermissions = $state(true);
+
+    // The backend matches roles by exact `name` against canonical keys
+    // (ROLE_LEVELS, SYSTEM_ROLE_PERMISSIONS) — a display-style string typed
+    // directly into `name` (e.g. "Store Owner") silently never matches
+    // anything, so the role gets no canonical level/permission patching and
+    // is otherwise indistinguishable from a real one in the list. Found
+    // live: a role created this way sat at 0 permissions with no way for
+    // the boot-time patcher to ever notice or fix it. Auto-slugifying from
+    // the display name (only while the user hasn't hand-edited `name`
+    // themselves) removes the chance to typo this.
+    let nameManuallyEdited = $state(false);
+    function slugify(s: string): string {
+        return s.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    }
+    function onDisplayNameInput() {
+        if (!isEditing && !nameManuallyEdited) {
+            formData.name = slugify(formData.displayName);
+        }
+    }
+    function onNameInput() {
+        nameManuallyEdited = true;
+    }
+
+    const ROLE_LEVEL_OPTIONS = [
+        { value: 2, label: '2 — ເຈົ້າຂອງຮ້ານ / ຜູ້ບໍລິຫານທັງໝົດ (Tenant Owner)' },
+        { value: 3, label: '3 — ຄຸ້ມຄອງຫຼາຍສາຂາ (Multi-branch Management)' },
+        { value: 4, label: '4 — ຫົວໜ້າສາຂາ (Branch Supervisor)' },
+        { value: 5, label: '5 — ພະນັກງານຂາຍ (Cashier)' },
+        { value: 6, label: '6 — ພະນັກງານສະເພາະດ້ານ (Specialist)' },
+        { value: 7, label: '7 — ຕ່ຳສຸດ / ບໍ່ລະບຸ (Lowest / Unspecified)' },
+    ];
 
     function resetForm() {
         formData = {
@@ -175,8 +211,10 @@
             displayName: "",
             description: "",
             permissions: [],
-            isSystem: false
+            isSystem: false,
+            level: 7,
         };
+        nameManuallyEdited = false;
         isEditing = false;
         selectedRole = null;
     }
@@ -189,12 +227,14 @@
     function openEditModal(role: any) {
         selectedRole = role;
         isEditing = true;
+        nameManuallyEdited = true; // never auto-slug over an existing role's real name
         formData = {
             name: role.name,
             displayName: role.displayName,
             description: role.description || "",
             permissions: [...(role.permissions || [])],
-            isSystem: role.isSystem || false
+            isSystem: role.isSystem || false,
+            level: role.level ?? 7,
         };
         showFormModal = true;
     }
@@ -207,6 +247,13 @@
     function handleSubmit() {
         if (!formData.name.trim() || !formData.displayName.trim()) {
             toast.error(t('common.pleaseEnterRequired'));
+            return;
+        }
+        // A role with nothing checked grants nothing but is otherwise
+        // indistinguishable from a real one in the list — found live where
+        // this silently locked out a newly-approved store owner entirely.
+        if (formData.permissions.length === 0) {
+            toast.error('ກະລຸນາເລືອກຢ່າງໜ້ອຍໜຶ່ງສິດ — ບົດບາດທີ່ບໍ່ມີສິດຈະໃຊ້ງານບໍ່ໄດ້ເລີຍ');
             return;
         }
 
@@ -272,6 +319,7 @@
 
     function applyRoleTemplate(template: any) {
         formData.permissions = [...template.permissions];
+        if (typeof template.level === 'number') formData.level = template.level;
         toast.success(`ນຳໃຊ້ແມ່ແບບ: ${template.displayName}`);
     }
 
@@ -325,8 +373,10 @@
             displayName: role.displayName + " (ສຳເນົາ)",
             description: role.description || "",
             permissions: [...(role.permissions || [])],
-            isSystem: false
+            isSystem: false,
+            level: role.level ?? 7,
         };
+        nameManuallyEdited = true; // keep the "_copy" name as typed, don't re-slug over it
         isEditing = false;
         showFormModal = true;
     }
@@ -372,7 +422,7 @@
 </script>
 
 <svelte:head>
-    <title>ຈັດການບົດບາດ - Super Admin</title>
+    <title>Platform Role Templates - KPOS</title>
 </svelte:head>
 
 {#if !canAccess}
@@ -392,7 +442,7 @@
                         <Key class="w-7 h-7 text-white" />
                     </div>
                     <div>
-                        <h1 class="text-2xl lg:text-3xl font-bold text-gray-900 dark:text-white">ຈັດການບົດບາດ</h1>
+                        <h1 class="text-2xl lg:text-3xl font-bold text-gray-900 dark:text-white">Platform Role Templates</h1>
                         <p class="text-gray-500 dark:text-gray-400">ສ້າງ ແລະ ກຳນົດສິດໃຫ້ແຕ່ລະບົດບາດ</p>
                     </div>
                 </div>
@@ -406,7 +456,8 @@
                             class="pl-10 pr-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-sm focus:ring-2 focus:ring-pink-500 focus:border-transparent transition-all w-64"
                         />
                     </div>
-                    <button 
+                    {#if auth.isSuperAdmin}
+                    <button
                         onclick={() => $seedRolesMutation.mutate()}
                         disabled={$seedRolesMutation.isPending}
                         class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-all shadow-sm"
@@ -419,10 +470,13 @@
                         {/if}
                         <span class="hidden sm:inline">ສ້າງບົດບາດເລີ່ມຕົ້ນ</span>
                     </button>
+                    {/if}
+                    {#if auth.canCreate('roles')}
                     <button onclick={openCreateModal} class="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-pink-600 to-rose-600 hover:from-pink-700 hover:to-rose-700 text-white font-medium rounded-xl shadow-lg shadow-pink-500/30 transition-all hover:scale-105">
                         <Plus class="w-5 h-5" />
                         <span>ເພີ່ມບົດບາດ</span>
                     </button>
+                    {/if}
                 </div>
             </div>
 
@@ -492,10 +546,12 @@
                         </div>
                         <h3 class="text-xl font-semibold text-gray-900 dark:text-white mb-2">ບໍ່ພົບບົດບາດ</h3>
                         <p class="text-gray-500 dark:text-gray-400 mb-4">ເລີ່ມຕົ້ນໂດຍການສ້າງບົດບາດໃໝ່</p>
+                        {#if auth.canCreate('roles')}
                         <button onclick={openCreateModal} class="inline-flex items-center gap-2 px-4 py-2 bg-pink-500 hover:bg-pink-600 text-white font-medium rounded-lg transition-colors">
                             <Plus class="w-4 h-4" />
                             ເພີ່ມບົດບາດ
                         </button>
+                        {/if}
                     </div>
                 {:else}
                     <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 p-4">
@@ -530,22 +586,26 @@
                                             <span class="text-sm text-gray-600 dark:text-gray-400">{role.permissions?.length || 0} ສິດ</span>
                                         </div>
                                         <div class="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                            <button 
+                                            {#if auth.canUpdate('roles')}
+                                            <button
                                                 onclick={() => openEditModal(role)}
                                                 class="w-8 h-8 bg-blue-100 dark:bg-blue-900/30 hover:bg-blue-200 dark:hover:bg-blue-900/50 rounded-lg flex items-center justify-center text-blue-600 dark:text-blue-400 transition-colors"
                                                 title="ແກ້ໄຂ"
                                             >
                                                 <Edit class="w-4 h-4" />
                                             </button>
-                                            <button 
+                                            {/if}
+                                            {#if auth.canCreate('roles')}
+                                            <button
                                                 onclick={() => duplicateRole(role)}
                                                 class="w-8 h-8 bg-violet-100 dark:bg-violet-900/30 hover:bg-violet-200 dark:hover:bg-violet-900/50 rounded-lg flex items-center justify-center text-violet-600 dark:text-violet-400 transition-colors"
                                                 title="ສຳເນົາ"
                                             >
                                                 <Copy class="w-4 h-4" />
                                             </button>
-                                            {#if !role.isSystem}
-                                                <button 
+                                            {/if}
+                                            {#if !role.isSystem && auth.canDelete('roles')}
+                                                <button
                                                     onclick={() => openDeleteModal(role)}
                                                     class="w-8 h-8 bg-danger-100 dark:bg-danger-900/30 hover:bg-danger-200 dark:hover:bg-danger-900/50 rounded-lg flex items-center justify-center text-danger-600 dark:text-danger-400 transition-colors"
                                                     title="ລຶບ"
@@ -588,18 +648,23 @@
                         <div>
                             <label for="a11y-app-admin-roles-page-svelte-1" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ລະຫັດ (name) *</label>
                             <input id="a11y-app-admin-roles-page-svelte-1"
-                                type="text" 
-                                bind:value={formData.name} 
+                                type="text"
+                                bind:value={formData.name}
+                                oninput={onNameInput}
                                 placeholder="ເຊັ່ນ: manager"
                                 disabled={isEditing && selectedRole?.isSystem}
                                 class="w-full px-4 py-3 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl focus:ring-2 focus:ring-pink-500 focus:border-transparent text-gray-900 dark:text-white disabled:opacity-50"
                             />
+                            {#if !isEditing}
+                                <p class="text-xs text-gray-400 mt-1">ສ້າງອັດຕະໂນມັດຈາກຊື່ສະແດງ — ແກ້ໄຂໄດ້ຖ້າຕ້ອງການ</p>
+                            {/if}
                         </div>
                         <div>
                             <label for="a11y-app-admin-roles-page-svelte-2" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ຊື່ສະແດງ *</label>
                             <input id="a11y-app-admin-roles-page-svelte-2"
-                                type="text" 
-                                bind:value={formData.displayName} 
+                                type="text"
+                                bind:value={formData.displayName}
+                                oninput={onDisplayNameInput}
                                 placeholder="ເຊັ່ນ: ຜູ້ຈັດການ"
                                 class="w-full px-4 py-3 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl focus:ring-2 focus:ring-pink-500 focus:border-transparent text-gray-900 dark:text-white"
                             />
@@ -608,11 +673,23 @@
                     <div>
                         <label for="a11y-app-admin-roles-page-svelte-3" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ຄຳອະທິບາຍ</label>
                         <textarea id="a11y-app-admin-roles-page-svelte-3"
-                            bind:value={formData.description} 
+                            bind:value={formData.description}
                             placeholder="ອະທິບາຍບົດບາດນີ້..."
                             rows="2"
                             class="w-full px-4 py-3 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl focus:ring-2 focus:ring-pink-500 focus:border-transparent text-gray-900 dark:text-white resize-none"
                         ></textarea>
+                    </div>
+                    <div>
+                        <label for="a11y-app-admin-roles-page-svelte-level" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">ຂັ້ນສິດ (Level) *</label>
+                        <select id="a11y-app-admin-roles-page-svelte-level"
+                            bind:value={formData.level}
+                            class="w-full px-4 py-3 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl focus:ring-2 focus:ring-pink-500 focus:border-transparent text-gray-900 dark:text-white"
+                        >
+                            {#each ROLE_LEVEL_OPTIONS as opt (opt.value)}
+                                <option value={opt.value}>{opt.label}</option>
+                            {/each}
+                        </select>
+                        <p class="text-xs text-gray-400 mt-1">ກຳນົດຂອບເຂດການເຫັນ/ມອບໝາຍບົດບາດນີ້ — ເລກນ້ອຍ = ສິດສູງກວ່າ</p>
                     </div>
 
                     <!-- Role Templates -->
@@ -633,19 +710,110 @@
                         </div>
                     {/if}
 
+                    <!-- Platform permission catalog: custom-node tree shared conceptually with Store Owner roles. -->
+                    <div class="space-y-3">
+                        <div class="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                                <p class="text-sm font-medium text-gray-700 dark:text-gray-300">Platform Role Permissions</p>
+                                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                                    ເລືອກສິດແບບ Tree ຕາມ module. ສິດ CRUD ຂອງ module ຈັດການຕໍ່ໃນ Access Control.
+                                </p>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <span class="text-xs font-medium text-pink-700 dark:text-pink-300 bg-pink-50 dark:bg-pink-900/30 px-2.5 py-1 rounded-full">
+                                    {formData.permissions.length} ສິດ
+                                </span>
+                                <button type="button" onclick={() => {
+                                    const next: Record<string, boolean> = {};
+                                    for (const group of $permissionsQuery.data || []) next[group.key || group.name] = true;
+                                    expandedGroups = next;
+                                }} class="text-xs text-pink-600 dark:text-pink-400 hover:underline">ຂະຫຍາຍທັງໝົດ</button>
+                                <button type="button" onclick={() => expandedGroups = {}} class="text-xs text-gray-500 dark:text-gray-400 hover:underline">ຫຍໍ້ທັງໝົດ</button>
+                            </div>
+                        </div>
+
+                        <div class="rounded-2xl border border-slate-200/80 bg-gradient-to-br from-slate-50 via-white to-pink-50/50 shadow-inner dark:border-slate-700 dark:from-slate-900 dark:via-gray-800 dark:to-pink-950/20 overflow-hidden max-h-[360px] overflow-y-auto">
+                            {#each ($permissionsQuery.data || []) as group (group.key || group.name)}
+                                {@const groupKey = group.key || group.name}
+                                {@const groupLabel = group.label || group.name || group.key}
+                                {@const groupInitial = String(groupLabel).charAt(0).toUpperCase()}
+                                {@const groupPermissions = (group.permissions || []).map((permission: any) => permission.key).filter(Boolean)}
+                                {@const selectedCount = groupPermissions.filter((permission: string) => formData.permissions.includes(permission)).length}
+                                {@const allSelected = groupPermissions.length > 0 && selectedCount === groupPermissions.length}
+                                {@const someSelected = selectedCount > 0 && !allSelected}
+                                {@const isExpanded = expandedGroups[groupKey] ?? true}
+                                <div class="border-b last:border-b-0 border-slate-200/80 dark:border-slate-700/80">
+                                    <div class={cn(
+                                        "group flex items-center gap-2 px-3 py-3 transition-colors",
+                                        selectedCount > 0 ? "bg-pink-50/70 dark:bg-pink-950/20" : "bg-white/60 hover:bg-white dark:bg-gray-800/50 dark:hover:bg-gray-700/50"
+                                    )}>
+                                        <button
+                                            type="button"
+                                            aria-label={isExpanded ? `ຫຍໍ້ ${group.label || group.name}` : `ຂະຫຍາຍ ${group.label || group.name}`}
+                                            aria-expanded={isExpanded}
+                                            onclick={() => toggleGroup(groupKey)}
+                                            class="p-1.5 rounded-lg text-slate-400 hover:text-pink-700 dark:text-slate-500 dark:hover:text-pink-300 hover:bg-pink-100 dark:hover:bg-pink-900/30 transition-colors"
+                                        >
+                                            {#if isExpanded}<ChevronDown class="w-4 h-4" />{:else}<ChevronRight class="w-4 h-4" />{/if}
+                                        </button>
+                                        <label class="flex flex-1 min-w-0 items-center gap-2 cursor-pointer">
+                                            <input
+                                                type="checkbox"
+                                                checked={allSelected}
+                                                indeterminate={someSelected}
+                                                onchange={() => toggleGroupPermissions(group)}
+                                                class="h-4 w-4 rounded border-slate-300 text-pink-600 focus:ring-pink-500 dark:border-slate-600"
+                                            />
+                                            <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-pink-500 to-rose-500 text-xs font-bold text-white shadow-sm shadow-pink-500/25">{groupInitial}</span>
+                                            <span class="font-semibold text-gray-900 dark:text-white truncate">{groupLabel}</span>
+                                            <span class="ml-auto shrink-0 rounded-full bg-white/80 px-2 py-1 text-[11px] font-semibold text-slate-500 ring-1 ring-slate-200 dark:bg-slate-800/80 dark:text-slate-300 dark:ring-slate-700">{selectedCount}/{groupPermissions.length}</span>
+                                        </label>
+                                    </div>
+                                    {#if isExpanded}
+                                        <div role="group" class="relative ml-9 border-l border-dashed border-pink-200 pb-3 pl-5 pr-3 dark:border-pink-900/60">
+                                            {#each (group.permissions || []) as permission (permission.key)}
+                                                {@const action = String(permission.key || '').split(':').pop()?.toUpperCase() || 'VIEW'}
+                                                {@const selected = formData.permissions.includes(permission.key)}
+                                                <label class={cn(
+                                                    "relative flex items-center gap-2 rounded-xl px-2.5 py-2 cursor-pointer transition-all",
+                                                    selected ? "bg-white shadow-sm ring-1 ring-pink-200 dark:bg-slate-800 dark:ring-pink-900/70" : "hover:bg-white/80 dark:hover:bg-slate-800/70"
+                                                )}>
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={selected}
+                                                        onchange={() => togglePermission(permission.key)}
+                                                        class="h-4 w-4 rounded border-slate-300 text-pink-600 focus:ring-pink-500 dark:border-slate-600"
+                                                    />
+                                                    <span class={cn(
+                                                        "inline-flex min-w-12 justify-center rounded-md px-1.5 py-0.5 text-[10px] font-bold tracking-wide",
+                                                        selected ? "bg-pink-100 text-pink-700 dark:bg-pink-900/40 dark:text-pink-300" : "bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-300"
+                                                    )}>{action}</span>
+                                                    <span class={cn("text-sm", selected ? "font-medium text-slate-900 dark:text-white" : "text-slate-600 dark:text-slate-300")}>{permission.label || permission.displayName || permission.key}</span>
+                                                    <code class="ml-auto hidden text-[10px] text-slate-400 dark:text-slate-500 sm:inline">{permission.key}</code>
+                                                </label>
+                                            {/each}
+                                        </div>
+                                    {/if}
+                                </div>
+                            {:else}
+                                <div class="px-4 py-8 text-center text-sm text-gray-500 dark:text-gray-400">ບໍ່ພົບ permission catalog</div>
+                            {/each}
+                        </div>
+                    </div>
+
                     <!-- Menu Access Info -->
                     <div class="flex items-start gap-3 p-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-xl">
                         <Info class="w-5 h-5 text-blue-500 dark:text-blue-400 shrink-0 mt-0.5" />
                         <div class="flex-1 min-w-0">
-                            <p class="text-sm font-medium text-blue-800 dark:text-blue-300">ສິດການເຂົ້າເຖິງເມນູ</p>
+                            <p class="text-sm font-medium text-blue-800 dark:text-blue-300">Platform Role Template — ສຳລັບ Super Admin</p>
                             <p class="text-sm text-blue-700 dark:text-blue-400 mt-0.5">
-                                ສິດການເຂົ້າເຖິງເມນູຖືກຄວບຄຸມໂດຍ <strong>Rules Management</strong> ແຍກຕ່າງຫາກ
+                                ໜ້ານີ້ສ້າງ/ແກ້ template ຂອງ platform ເທົ່ານັ້ນ, ບໍ່ໄດ້ມອບ Role ໃຫ້ user. ການມອບ Role ໃຫ້ user ເຮັດໃນ Staff ແລະ menu CRUD ເຮັດໃນ <strong>Access Control</strong>.
                             </p>
                             <a
                                 href="/admin/rules"
                                 class="inline-flex items-center gap-1 mt-2 text-sm font-medium text-blue-600 dark:text-blue-400 hover:underline"
                             >
-                                ໄປຫາ Rules Management →
+                                ໄປ Access Control →
                             </a>
                         </div>
                     </div>

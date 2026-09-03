@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, branchFilter, ensureScopeAccess, buildScopeCondition, buildBranchIdScope, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, branchFilter, ensureScopeAccess, buildScopeCondition, buildBranchIdScope, invalidateQueryCache, tenantHasOtherEligibleUser, userIsEligibleChecker, isMakerCheckerEnforced, requireMaker, requireChecker, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { queryCache } from '@/infrastructure/http/middleware/cache.middleware';
 import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
 import { setRequestContext, setSuperAdminBypassContext } from '@/db/set-tenant-context';
@@ -287,7 +287,7 @@ inventoryRoutes.get('/movements', authenticate, withTenantTx(), branchFilter(), 
 });
 
 // Adjust inventory
-inventoryRoutes.put('/adjust', authenticate, withTenantTx(), branchFilter(), authorize('inventory:update'), async (req, res, next) => {
+inventoryRoutes.put('/adjust', authenticate, withTenantTx(), branchFilter(), authorize('inventory:update'), requireMaker(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const dbRead = db;
@@ -351,7 +351,7 @@ inventoryRoutes.put('/adjust', authenticate, withTenantTx(), branchFilter(), aut
 });
 
 // Stock transfer between branches
-inventoryRoutes.post('/transfer', authenticate, withTenantTx(), authorize('inventory:transfer'), branchFilter(), async (req, res, next) => {
+inventoryRoutes.post('/transfer', authenticate, withTenantTx(), authorize('inventory:transfer'), requireMaker(), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const dbRead = db;
@@ -820,7 +820,7 @@ inventoryRoutes.get('/purchase-orders/:id', authenticate, withTenantTx(), async 
 });
 
 // Create purchase order
-inventoryRoutes.post('/purchase-orders', authenticate, withTenantTx(), branchFilter(), authorize('inventory:create'), async (req, res, next) => {
+inventoryRoutes.post('/purchase-orders', authenticate, withTenantTx(), branchFilter(), authorize('inventory:create'), requireMaker(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const dbRead = db;
@@ -866,7 +866,7 @@ inventoryRoutes.post('/purchase-orders', authenticate, withTenantTx(), branchFil
 });
 
 // Update purchase order
-inventoryRoutes.put('/purchase-orders/:id', authenticate, withTenantTx(), authorize('inventory:update'), async (req, res, next) => {
+inventoryRoutes.put('/purchase-orders/:id', authenticate, withTenantTx(), authorize('inventory:update'), requireMaker(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const dbRead = db;
@@ -896,7 +896,7 @@ inventoryRoutes.put('/purchase-orders/:id', authenticate, withTenantTx(), author
 });
 
 // Update purchase order status
-inventoryRoutes.patch('/purchase-orders/:id/status', authenticate, withTenantTx(), authorize('inventory:update'), async (req, res, next) => {
+inventoryRoutes.patch('/purchase-orders/:id/status', authenticate, withTenantTx(), authorize('inventory:update'), requireChecker(), async (req, res, next) => {
     try {
         const { status } = req.body;
         const userId = req.user!.userId;
@@ -929,9 +929,19 @@ inventoryRoutes.patch('/purchase-orders/:id/status', authenticate, withTenantTx(
             // transition is what credits inventory (RECEIVED), so without this
             // any tenant user holding inventory:update could receive a PO into
             // (or approve one for) a branch outside their own scope.
-            const preCheck = await tx.query.purchaseOrders.findFirst({ where: and(...poConds), columns: { id: true, branchId: true, tenantId: true, status: true } });
+            const preCheck = await tx.query.purchaseOrders.findFirst({ where: and(...poConds), columns: { id: true, branchId: true, tenantId: true, status: true, createdBy: true } });
             if (!preCheck) return { order: null, alreadyProcessed: false };
             if (!ensureScopeAccess(preCheck, req)) return { order: null, alreadyProcessed: false, forbidden: true };
+            // Maker-checker: whoever created the PO cannot be the one who
+            // approves it — otherwise "approval" is just the requester
+            // rubber-stamping their own purchase, which defeats the point of
+            // having a separate approval step at all.
+            if (status === 'APPROVED' && preCheck.createdBy === userId
+                && !(await userIsEligibleChecker(tx, userId, 'inventory:update'))
+                && await isMakerCheckerEnforced(tx, preCheck.tenantId)
+                && await tenantHasOtherEligibleUser(tx, preCheck.tenantId, userId, 'inventory:update')) {
+                return { order: null, alreadyProcessed: false, selfApproval: true };
+            }
 
             if (status === 'RECEIVED') poConds.push(ne(purchaseOrders.status, 'RECEIVED'));
 
@@ -966,6 +976,9 @@ inventoryRoutes.patch('/purchase-orders/:id/status', authenticate, withTenantTx(
 
         if (result.alreadyProcessed) {
             return res.status(409).json({ success: false, error: { code: 'ALREADY_RECEIVED', message: 'This purchase order was already marked as received' } });
+        }
+        if ('selfApproval' in result && result.selfApproval) {
+            return res.status(403).json({ success: false, error: { code: 'SELF_APPROVAL', message: 'You cannot approve a purchase order you created yourself — ask another approver' } });
         }
         if (!result.order) {
             const message = 'forbidden' in result && result.forbidden ? 'No access to this purchase order' : 'Purchase order not found or no access';
@@ -1047,7 +1060,7 @@ inventoryRoutes.get('/stock-transfers', authenticate, withTenantTx(), branchFilt
 });
 
 // Create stock transfer
-inventoryRoutes.post('/stock-transfers', authenticate, withTenantTx(), authorize('inventory:update'), branchFilter(), async (req, res, next) => {
+inventoryRoutes.post('/stock-transfers', authenticate, withTenantTx(), authorize('inventory:update'), requireMaker(), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const dbRead = db;
@@ -1125,7 +1138,7 @@ inventoryRoutes.post('/stock-transfers', authenticate, withTenantTx(), authorize
 });
 
 // ─── Approve a stock transfer (deduct from source, add to destination) ───────
-inventoryRoutes.patch('/stock-transfers/:id/approve', authenticate, withTenantTx(), authorize('inventory:update'), branchFilter(), async (req, res, next) => {
+inventoryRoutes.patch('/stock-transfers/:id/approve', authenticate, withTenantTx(), authorize('inventory:update'), requireChecker(), branchFilter(), async (req, res, next) => {
     try {
         const { id } = req.params;
         const userId = req.user!.userId;
@@ -1149,6 +1162,9 @@ inventoryRoutes.patch('/stock-transfers/:id/approve', authenticate, withTenantTx
                     return { code: 'FORBIDDEN' as const };
                 }
             }
+            // Maker-checker: the person who requested the transfer can't also
+            // be the one who approves it (moves real stock between branches).
+            if (transfer.requestedBy === userId && !(await userIsEligibleChecker(tx, userId, 'inventory:update')) && await isMakerCheckerEnforced(tx, transfer.tenantId) && await tenantHasOtherEligibleUser(tx, transfer.tenantId, userId, 'inventory:update')) return { code: 'SELF_APPROVAL' as const };
 
             const [claimed] = await tx.update(stockTransfers)
                 .set({ status: 'COMPLETED', approvedBy: userId, approvedAt: new Date(), completedBy: userId, completedAt: new Date() })
@@ -1192,6 +1208,9 @@ inventoryRoutes.patch('/stock-transfers/:id/approve', authenticate, withTenantTx
         if (result.code === 'FORBIDDEN') {
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'ບໍ່ມີສິດອະນຸມັດການໂອນນີ້' } });
         }
+        if (result.code === 'SELF_APPROVAL') {
+            return res.status(403).json({ success: false, error: { code: 'SELF_APPROVAL', message: 'ທ່ານບໍ່ສາມາດອະນຸມັດການໂອນທີ່ຕົນເອງເປັນຜູ້ຮ້ອງຂໍໄດ້ — ກະລຸນາໃຫ້ຄົນອື່ນອະນຸມັດ' } });
+        }
         if (result.code === 'INVALID_STATE') {
             return res.status(400).json({ success: false, error: { code: 'INVALID_STATE', message: `Transfer is already ${result.status}` } });
         }
@@ -1214,7 +1233,7 @@ inventoryRoutes.patch('/stock-transfers/:id/approve', authenticate, withTenantTx
 });
 
 // ─── Reject a stock transfer ──────────────────────────────────────────────────
-inventoryRoutes.patch('/stock-transfers/:id/reject', authenticate, withTenantTx(), authorize('inventory:update'), branchFilter(), async (req, res, next) => {
+inventoryRoutes.patch('/stock-transfers/:id/reject', authenticate, withTenantTx(), authorize('inventory:update'), requireChecker(), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const dbRead = db;
@@ -1440,7 +1459,7 @@ inventoryRoutes.get('/stock-out', authenticate, withTenantTx(), branchFilter(), 
 });
 
 // Create stock out
-inventoryRoutes.post('/stock-out', authenticate, withTenantTx(), authorize('inventory:create'), async (req, res, next) => {
+inventoryRoutes.post('/stock-out', authenticate, withTenantTx(), authorize('inventory:create'), requireMaker(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const dbRead = db;
@@ -1471,7 +1490,7 @@ inventoryRoutes.post('/stock-out', authenticate, withTenantTx(), authorize('inve
 });
 
 // Create stock in
-inventoryRoutes.post('/stock-in', authenticate, withTenantTx(), authorize('inventory:create'), async (req, res, next) => {
+inventoryRoutes.post('/stock-in', authenticate, withTenantTx(), authorize('inventory:create'), requireMaker(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const dbRead = db;
@@ -1509,14 +1528,13 @@ inventoryRoutes.post('/stock-in', authenticate, withTenantTx(), authorize('inven
 });
 
 // Update stock in
-inventoryRoutes.put('/stock-in/:id', authenticate, withTenantTx(), authorize('inventory:update'), async (req, res, next) => {
+inventoryRoutes.put('/stock-in/:id', authenticate, withTenantTx(), authorize('inventory:update'), requireMaker(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const dbRead = db;
         const { id } = req.params;
         const { productId, quantity, unitCost, supplier, reference, notes, date, expiryDate, batchNumber } = req.body;
         const userId = req.user!.userId;
-        const branchId = req.user!.branchId || 'default';
 
         // BE-76: Tenant-scoped stock-in update
         const siUpdTenantId = req.authUser?.tenantId;
@@ -1525,6 +1543,16 @@ inventoryRoutes.put('/stock-in/:id', authenticate, withTenantTx(), authorize('in
         const existing = await db.query.stockMovements.findFirst({ where: and(...siUpdConds) });
         if (!existing) {
             res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Record not found or no access' } });
+            return;
+        }
+        // This route had NO branch/store scope check at all — any tenant
+        // user with inventory:update could edit another branch's stock-in
+        // record. It also recomputed the inventory delta against the
+        // CALLER's own branchId instead of the record's actual branchId, so
+        // even a same-tenant edit of a cross-branch record would have
+        // silently mutated the wrong branch's on-hand quantity.
+        if (!ensureScopeAccess({ branchId: existing.branchId, tenantId: existing.tenantId }, req)) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this stock-in record' } });
             return;
         }
 
@@ -1543,7 +1571,7 @@ inventoryRoutes.put('/stock-in/:id', authenticate, withTenantTx(), authorize('in
         }).where(and(...siUpdConds)).returning();
 
         if (quantityDiff !== 0) {
-            const inv = await db.query.inventory.findFirst({ where: and(eq(inventory.productId, existing.productId), eq(inventory.branchId, branchId)) });
+            const inv = await db.query.inventory.findFirst({ where: and(eq(inventory.productId, existing.productId), eq(inventory.branchId, existing.branchId)) });
             if (inv) await db.update(inventory).set({ quantity: inv.quantity + quantityDiff }).where(eq(inventory.id, inv.id));
         }
 
@@ -1566,6 +1594,9 @@ inventoryRoutes.delete('/stock-in/:id', authenticate, withTenantTx(), authorize(
         if (!movement) {
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Record not found or no access' } });
         }
+        if (!ensureScopeAccess({ branchId: movement.branchId, tenantId: movement.tenantId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this stock-in record' } });
+        }
         const inv = await db.query.inventory.findFirst({ where: and(eq(inventory.productId, movement.productId), eq(inventory.branchId, movement.branchId)) });
         if (inv) await db.update(inventory).set({ quantity: Math.max(0, inv.quantity - Math.abs(movement.quantity)) }).where(eq(inventory.id, inv.id));
         await db.delete(stockMovements).where(and(...siDelConds));
@@ -1576,13 +1607,12 @@ inventoryRoutes.delete('/stock-in/:id', authenticate, withTenantTx(), authorize(
 });
 
 // Update stock out
-inventoryRoutes.put('/stock-out/:id', authenticate, withTenantTx(), authorize('inventory:update'), async (req, res, next) => {
+inventoryRoutes.put('/stock-out/:id', authenticate, withTenantTx(), authorize('inventory:update'), requireMaker(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const dbRead = db;
         const { id } = req.params;
         const { productId, quantity, reason, reference, notes, date } = req.body;
-        const branchId = req.user!.branchId || 'default';
 
         // BE-76: Tenant-scoped stock-out update
         const soUpdTenantId = req.authUser?.tenantId;
@@ -1591,6 +1621,12 @@ inventoryRoutes.put('/stock-out/:id', authenticate, withTenantTx(), authorize('i
         const existing = await db.query.stockMovements.findFirst({ where: and(...soUpdConds) });
         if (!existing) {
             res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Record not found or no access' } });
+            return;
+        }
+        // Same fix as PUT /stock-in/:id above: no scope check + wrong branch
+        // (caller's own, not the record's) used for the inventory delta.
+        if (!ensureScopeAccess({ branchId: existing.branchId, tenantId: existing.tenantId }, req)) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this stock-out record' } });
             return;
         }
 
@@ -1607,7 +1643,7 @@ inventoryRoutes.put('/stock-out/:id', authenticate, withTenantTx(), authorize('i
         }).where(and(...soUpdConds)).returning();
 
         if (quantityDiff !== 0) {
-            const inv = await db.query.inventory.findFirst({ where: and(eq(inventory.productId, existing.productId), eq(inventory.branchId, branchId)) });
+            const inv = await db.query.inventory.findFirst({ where: and(eq(inventory.productId, existing.productId), eq(inventory.branchId, existing.branchId)) });
             if (inv) await db.update(inventory).set({ quantity: inv.quantity + quantityDiff }).where(eq(inventory.id, inv.id));
         }
 
@@ -1629,6 +1665,10 @@ inventoryRoutes.delete('/stock-out/:id', authenticate, withTenantTx(), authorize
         const movement = await db.query.stockMovements.findFirst({ where: and(...soDelConds) });
         if (!movement) {
             res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Record not found or no access' } });
+            return;
+        }
+        if (!ensureScopeAccess({ branchId: movement.branchId, tenantId: movement.tenantId }, req)) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this stock-out record' } });
             return;
         }
 
@@ -1745,7 +1785,7 @@ inventoryRoutes.get('/transfers', authenticate, withTenantTx(), branchFilter(), 
 });
 
 // Create transfer
-inventoryRoutes.post('/transfers', authenticate, withTenantTx(), authorize('inventory:update'), branchFilter(), async (req, res, next) => {
+inventoryRoutes.post('/transfers', authenticate, withTenantTx(), authorize('inventory:update'), requireMaker(), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const dbRead = db;
@@ -1802,7 +1842,7 @@ inventoryRoutes.post('/transfers', authenticate, withTenantTx(), authorize('inve
 });
 
 // Approve a simple transfer (deduct from source, credit destination)
-inventoryRoutes.patch('/transfers/:id/approve', authenticate, withTenantTx(), authorize('inventory:update'), branchFilter(), async (req, res, next) => {
+inventoryRoutes.patch('/transfers/:id/approve', authenticate, withTenantTx(), authorize('inventory:update'), requireChecker(), branchFilter(), async (req, res, next) => {
     try {
         const { id } = req.params;
         const userId = req.user!.userId;
@@ -1823,6 +1863,7 @@ inventoryRoutes.patch('/transfers/:id/approve', authenticate, withTenantTx(), au
                     return { code: 'FORBIDDEN' as const };
                 }
             }
+            if (transfer.requestedBy === userId && !(await userIsEligibleChecker(tx, userId, 'inventory:update')) && await isMakerCheckerEnforced(tx, transfer.tenantId) && await tenantHasOtherEligibleUser(tx, transfer.tenantId, userId, 'inventory:update')) return { code: 'SELF_APPROVAL' as const };
 
             const [claimed] = await tx.update(stockTransfers)
                 .set({ status: 'COMPLETED', approvedBy: userId, approvedAt: new Date(), completedBy: userId, completedAt: new Date() })
@@ -1859,6 +1900,7 @@ inventoryRoutes.patch('/transfers/:id/approve', authenticate, withTenantTx(), au
 
         if (result.code === 'NOT_FOUND') return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Transfer not found' } });
         if (result.code === 'FORBIDDEN') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Access denied' } });
+        if (result.code === 'SELF_APPROVAL') return res.status(403).json({ success: false, error: { code: 'SELF_APPROVAL', message: 'You cannot approve a transfer you requested yourself — ask another approver' } });
         if (result.code === 'INVALID_STATE') return res.status(400).json({ success: false, error: { code: 'INVALID_STATE', message: `Transfer is already ${result.status}` } });
         if (result.code === 'INSUFFICIENT_STOCK') {
             return res.status(400).json({ success: false, error: { code: 'INSUFFICIENT_STOCK', message: `ສິນຄ້າ ${result.productName} ສະຕອກບໍ່ພຽງພໍ (ມີ: ${result.available}, ຕ້ອງການ: ${result.required})` } });
@@ -1871,7 +1913,7 @@ inventoryRoutes.patch('/transfers/:id/approve', authenticate, withTenantTx(), au
 });
 
 // Reject a simple transfer
-inventoryRoutes.patch('/transfers/:id/reject', authenticate, withTenantTx(), authorize('inventory:update'), branchFilter(), async (req, res, next) => {
+inventoryRoutes.patch('/transfers/:id/reject', authenticate, withTenantTx(), authorize('inventory:update'), requireChecker(), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const dbRead = db;
@@ -1937,7 +1979,7 @@ inventoryRoutes.get('/stock-counts', authenticate, withTenantTx(), branchFilter(
 });
 
 // Create stock count
-inventoryRoutes.post('/stock-counts', authenticate, withTenantTx(), authorize('inventory:adjust'), async (req, res, next) => {
+inventoryRoutes.post('/stock-counts', authenticate, withTenantTx(), authorize('inventory:adjust'), requireMaker(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const dbRead = db;
@@ -1972,7 +2014,7 @@ inventoryRoutes.post('/stock-counts', authenticate, withTenantTx(), authorize('i
 });
 
 // Approve stock count (maker/checker) — only roleLevel ≤ 4 (hq_admin, hq_manager) or admin
-inventoryRoutes.patch('/stock-counts/:id/approve', authenticate, withTenantTx(), authorize('inventory:adjust'), async (req, res, next) => {
+inventoryRoutes.patch('/stock-counts/:id/approve', authenticate, withTenantTx(), authorize('inventory:adjust'), requireChecker(), async (req, res, next) => {
     try {
         const userId = req.authUser?.userId || req.user?.userId;
         const roleLevel = req.authUser?.roleLevel ?? 7;
@@ -1996,7 +2038,7 @@ inventoryRoutes.patch('/stock-counts/:id/approve', authenticate, withTenantTx(),
             // let a forbidden caller's request still flip status to 'approved'
             // (the claim commits inside this same transaction) even though the
             // response tells them it was rejected.
-            const preCheck = await tx.query.stockCounts.findFirst({ where: and(...scConds), columns: { id: true, branchId: true, status: true } });
+            const preCheck = await tx.query.stockCounts.findFirst({ where: and(...scConds), columns: { id: true, branchId: true, status: true, countedBy: true } });
             if (!preCheck) return { code: 'NOT_FOUND' as const };
             // roleLevel <= 4 alone only proves "HQ admin or above somewhere in
             // this tenant" — a store/branch-tree supervisor (levels 3-4) is
@@ -2006,6 +2048,19 @@ inventoryRoutes.patch('/stock-counts/:id/approve', authenticate, withTenantTx(),
             // under a completely different store.
             if (!ensureScopeAccess({ branchId: preCheck.branchId }, req)) {
                 return { code: 'FORBIDDEN' as const };
+            }
+            // Maker-checker, actually enforced: this route was already
+            // labeled "(maker/checker)" in its own comment, but only ever
+            // checked role level — the same HQ admin who counted the stock
+            // could also approve their own count, which isn't a check at all.
+            // Solo-owner escape hatch: skip the block if this tenant has no
+            // other active user who could plausibly hold this permission
+            // (see tenantHasOtherEligibleUser).
+            if (preCheck.countedBy === userId
+                && !(await userIsEligibleChecker(tx, userId, 'inventory:adjust'))
+                && await isMakerCheckerEnforced(tx, scTenantId)
+                && await tenantHasOtherEligibleUser(tx, scTenantId, userId, 'inventory:adjust')) {
+                return { code: 'SELF_APPROVAL' as const };
             }
 
             const claimConds = [...scConds, eq(stockCounts.status, 'pending')];
@@ -2043,6 +2098,7 @@ inventoryRoutes.patch('/stock-counts/:id/approve', authenticate, withTenantTx(),
 
         if (result.code === 'NOT_FOUND') return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Stock count not found' } });
         if (result.code === 'FORBIDDEN') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'ບໍ່ມີສິດອະນຸມັດການນັບສະຕອກນີ້' } });
+        if (result.code === 'SELF_APPROVAL') return res.status(403).json({ success: false, error: { code: 'SELF_APPROVAL', message: 'ທ່ານບໍ່ສາມາດອະນຸມັດການນັບສະຕອກຂອງຕົນເອງໄດ້ — ກະລຸນາໃຫ້ຄົນອື່ນອະນຸມັດ' } });
         if (result.code === 'INVALID_STATE') return res.status(400).json({ success: false, error: { code: 'INVALID_STATE', message: `Stock count is already ${result.status}` } });
 
         queueActivityLog(userId!, 'stock_count_approved', 'inventory', `ອະນຸມັດການນັບສະຕອກ ${result.countNo}`, { countId: result.countId }, req).catch(() => {});
@@ -2055,7 +2111,7 @@ inventoryRoutes.patch('/stock-counts/:id/approve', authenticate, withTenantTx(),
 });
 
 // Reject stock count (maker/checker)
-inventoryRoutes.patch('/stock-counts/:id/reject', authenticate, withTenantTx(), authorize('inventory:adjust'), async (req, res, next) => {
+inventoryRoutes.patch('/stock-counts/:id/reject', authenticate, withTenantTx(), authorize('inventory:adjust'), requireChecker(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const dbRead = db;

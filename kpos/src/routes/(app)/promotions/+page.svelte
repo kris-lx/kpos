@@ -3,8 +3,9 @@
     import { t } from "$lib/i18n/index.svelte";
     import { cn } from "$utils";
     import { api } from "$api";
-    import { auth } from "$stores";
+    import { auth, dialogStore } from "$stores";
     import { formatCurrency, formatDate } from "$lib/utils";
+    import MoneyInput from "$lib/components/MoneyInput.svelte";
     import { toast } from "svelte-sonner";
     import {
         Gift,
@@ -356,7 +357,7 @@
     }
 
     async function handleDelete(item: any) {
-        if (!confirm(t("common.confirmDelete"))) return;
+        if (!(await dialogStore.confirm(t("common.confirmDelete")))) return;
         try {
             const endpoint = activeTab === "coupons" ? "promotions/coupons" : 
                              activeTab === "discounts" ? "promotions/discounts" : "promotions";
@@ -632,7 +633,7 @@
                                     {t("promotions.amountPerPoint")}
                                 </label>
                                 <div class="flex items-center gap-2">
-                                    <input id="amt-per-pt" type="number" bind:value={loyaltySettings.amountPerPoint} min="1" class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm" />
+                                    <MoneyInput id="amt-per-pt" bind:value={loyaltySettings.amountPerPoint} min={1} class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm" />
                                     <span class="text-xs text-gray-500">₭</span>
                                 </div>
                             </div>
@@ -643,7 +644,7 @@
                                 <label for="pt-value" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                                     {t("promotions.pointValue")} ({t("promotions.kipPerPoint")})
                                 </label>
-                                <input id="pt-value" type="number" bind:value={loyaltySettings.pointValue} min="1" class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm" />
+                                <MoneyInput id="pt-value" bind:value={loyaltySettings.pointValue} min={1} class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm" />
                             </div>
                             <div>
                                 <label for="min-redeem" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -905,15 +906,15 @@
                     <!-- Row 1: Code + Name -->
                     <div class="grid grid-cols-2 gap-4">
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("common.code")}</label>
+                            <div class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("common.code")}</div>
                             <input type="text" value={editingItem?.code ?? editingItem?.id?.slice(0,8) ?? ''} disabled
                                 placeholder={t("common.auto")}
                                 class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50 text-gray-400 dark:text-gray-500" />
                         </div>
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                            <div class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                                 {t("common.name")} <span class="text-danger-500">*{t("promotions.required")}</span>
-                            </label>
+                            </div>
                             <input type="text" bind:value={formData.name} required
                                 placeholder={t("common.name")}
                                 class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500 focus:border-transparent" />
@@ -923,14 +924,14 @@
                     {#if activeTab === "coupons"}
                         <!-- Coupon Code -->
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("promotions.couponCode")} *</label>
+                            <div class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("promotions.couponCode")} *</div>
                             <input type="text" bind:value={formData.code} required placeholder="SAVE20"
                                 class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white uppercase focus:ring-2 focus:ring-pink-500 focus:border-transparent" />
                         </div>
 
                         <!-- Usage Limit -->
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">{t("promotions.usageLimit")}</label>
+                            <div class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">{t("promotions.usageLimit")}</div>
                             <div class="space-y-2.5">
                                 <label class="flex items-center gap-3 cursor-pointer">
                                     <input type="radio" bind:group={formData.usageLimitType} value="unlimited"
@@ -953,7 +954,7 @@
                         <!-- Discount Type + Value -->
                         <div class="grid grid-cols-2 gap-4">
                             <div>
-                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("promotions.type")}</label>
+                                <div class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("promotions.type")}</div>
                                 <select bind:value={formData.type}
                                     class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500">
                                     {#each (couponTypes.length ? couponTypes : [{value:'FIXED',label:'Fixed Amount'}]) as pt (pt.value)}
@@ -962,31 +963,36 @@
                                 </select>
                             </div>
                             <div>
-                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                                <div class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                                     {t("common.value")} ({formData.type === "PERCENTAGE" ? "%" : t("common.currency")}) *
-                                </label>
-                                <input type="number" bind:value={formData.value} required min="0"
-                                    class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500" />
+                                </div>
+                                {#if formData.type === "PERCENTAGE"}
+                                    <input type="number" bind:value={formData.value} required min="0" max="100"
+                                        class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500" />
+                                {:else}
+                                    <MoneyInput bind:value={formData.value} required min={0}
+                                        class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500" />
+                                {/if}
                             </div>
                         </div>
 
                         <!-- Min purchase + Max discount -->
                         <div class="grid grid-cols-2 gap-4">
                             <div>
-                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("promotions.minimumPurchase")}</label>
-                                <input type="number" bind:value={formData.minPurchase} min="0"
+                                <div class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("promotions.minimumPurchase")}</div>
+                                <MoneyInput bind:value={formData.minPurchase} min={0}
                                     class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500" />
                             </div>
                             <div>
-                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("promotions.maxDiscount")}</label>
-                                <input type="number" bind:value={formData.maxDiscount} min="0"
+                                <div class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("promotions.maxDiscount")}</div>
+                                <MoneyInput bind:value={formData.maxDiscount} min={0}
                                     class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500" />
                             </div>
                         </div>
 
                         <!-- Barcode field -->
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("promotions.couponBarcode")}</label>
+                            <div class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("promotions.couponBarcode")}</div>
                             <div class="flex gap-2">
                                 <input type="text" bind:value={formData.barcode} placeholder={t("promotions.barcodePlaceholder")}
                                     class="flex-1 px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500" />
@@ -1004,7 +1010,7 @@
                     {:else}
                         <!-- Products Section (Promotions & Discounts) -->
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("promotions.applicableProducts")}</label>
+                            <div class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("promotions.applicableProducts")}</div>
                             <div class="border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden">
                                 <!-- Search -->
                                 <div class="relative border-b border-gray-200 dark:border-gray-700">
@@ -1061,7 +1067,7 @@
                         <!-- Type + Value -->
                         <div class="grid grid-cols-2 gap-4">
                             <div>
-                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("promotions.type")}</label>
+                                <div class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("promotions.type")}</div>
                                 <select bind:value={formData.type}
                                     class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500">
                                     {#each activeTypes as pt (pt.value)}
@@ -1070,30 +1076,33 @@
                                 </select>
                             </div>
                             <div>
-                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                                <div class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                                     {t("common.value")} ({formData.type === "PERCENTAGE" ? "%" : t("common.currency")}) *
-                                </label>
-                                <input type="number" bind:value={formData.value} required min="0"
-                                    class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500" />
+                                </div>
+                                {#if formData.type === "PERCENTAGE"}
+                                    <input type="number" bind:value={formData.value} required min="0" max="100"
+                                        class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500" />
+                                {:else}
+                                    <MoneyInput bind:value={formData.value} required min={0}
+                                        class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500" />
+                                {/if}
                             </div>
                         </div>
 
                         {#if activeTab === "discounts"}
                             <div class="grid grid-cols-2 gap-4">
                                 <div>
-                                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("promotions.minimumPurchase")}</label>
-                                    <input type="number" bind:value={formData.minPurchase} min="0"
-                                        class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500" />
+                                    <div class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("promotions.minimumPurchase")}</div>
+                                    <MoneyInput bind:value={formData.minPurchase} min={0} />
                                 </div>
                                 <div>
-                                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("promotions.maxDiscount")}</label>
-                                    <input type="number" bind:value={formData.maxDiscount} min="0"
-                                        class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500" />
+                                    <div class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("promotions.maxDiscount")}</div>
+                                    <MoneyInput bind:value={formData.maxDiscount} min={0} />
                                 </div>
                             </div>
                         {:else}
                             <div>
-                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("promotions.usageLimit")}</label>
+                                <div class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("promotions.usageLimit")}</div>
                                 <input type="number" bind:value={formData.usageLimit} min="0"
                                     placeholder={t("promotions.unlimitedPlaceholder")}
                                     class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500" />
@@ -1116,7 +1125,7 @@
                             <div class="p-4 space-y-4 border-t border-gray-200 dark:border-gray-700">
                                 <!-- Date range -->
                                 <div>
-                                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("promotions.dateRange")}</label>
+                                    <div class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("promotions.dateRange")}</div>
                                     <div class="grid grid-cols-2 gap-3">
                                         <input type="date" bind:value={formData.startDate} required
                                             class="w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-pink-500" />
@@ -1127,7 +1136,7 @@
 
                                 <!-- Days of week -->
                                 <div>
-                                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">{t("promotions.daysOfWeek")}</label>
+                                    <div class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">{t("promotions.daysOfWeek")}</div>
                                     <div class="flex flex-wrap gap-2">
                                         {#each DAY_KEYS as day, i}
                                             <label class="flex items-center gap-1.5 cursor-pointer select-none">
@@ -1141,7 +1150,7 @@
 
                                 <!-- Time range -->
                                 <div>
-                                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">{t("promotions.timeRange")}</label>
+                                    <div class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">{t("promotions.timeRange")}</div>
                                     <div class="flex items-center gap-3">
                                         <span class="text-sm text-gray-600 dark:text-gray-400 shrink-0">{t("promotions.startTime")} :</span>
                                         <input type="time" bind:value={formData.startTime}
@@ -1162,7 +1171,7 @@
 
                     <!-- Notes -->
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("common.description")}</label>
+                        <div class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("common.description")}</div>
                         <textarea bind:value={formData.description} rows="2"
                             class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-pink-500 focus:border-transparent resize-none text-sm"></textarea>
                     </div>

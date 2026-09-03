@@ -6,6 +6,7 @@
     import { cn } from "$utils";
     import { api } from "$api";
     import { toast } from "svelte-sonner";
+    import { auth } from "$lib/stores/auth.svelte";
     import {
         ArrowLeft,
         Save,
@@ -37,6 +38,10 @@
     let allPermissions = $state<any[]>([]);
     let expandedModules = $state<Set<string>>(new Set());
     let useCustomPermissions = $state(false);
+    // Viewing staff permissions only needs staff:read. Editing them requires
+    // the owner/admin-granted staff:update permission; the API enforces the
+    // same rule together with tenant, role and branch scope.
+    let canManagePermissions = $derived(auth.hasPermission('staff:update') && !userData?.isSuperAdmin);
 
     // Computed: Effective permissions (role + user)
     let effectivePermissions = $derived.by(() => {
@@ -70,21 +75,6 @@
         }
     }
 
-    // Load all available permissions (extracted from loadPermissions response - no extra API call needed)
-    async function loadAllPermissions() {
-        // allPermissions is already populated by loadPermissions from the same endpoint
-        // This function exists as a fallback only if allPermissions wasn't set
-        if (allPermissions.length > 0) return;
-        try {
-            const response = await api.get(`staff/${userId}/permissions`).json<any>();
-            if (response.success && response.data?.allPermissions) {
-                allPermissions = response.data.allPermissions;
-            }
-        } catch (error) {
-            console.error("Failed to load all permissions:", error);
-        }
-    }
-
     // Toggle module expansion
     function toggleModule(module: string) {
         if (expandedModules.has(module)) {
@@ -113,7 +103,7 @@
 
     // Toggle user permission
     function togglePermission(perm: string) {
-        if (userData?.isSuperAdmin) return; // Cannot modify super admin
+        if (!canManagePermissions || userData?.isSuperAdmin) return; // Cannot modify without staff:update
         
         if (userPermissions.includes(perm)) {
             // Remove from user permissions
@@ -127,6 +117,7 @@
 
     // Select all permissions in a module
     function selectAllInModule(module: any) {
+        if (!canManagePermissions) return;
         const modulePerms = module.permissions.map((p: any) => p.value);
         const newPerms = [...new Set([...userPermissions, ...modulePerms])];
         userPermissions = newPerms;
@@ -135,6 +126,7 @@
 
     // Deselect all permissions in a module
     function deselectAllInModule(module: any) {
+        if (!canManagePermissions) return;
         const modulePerms = module.permissions.map((p: any) => p.value);
         userPermissions = userPermissions.filter(p => !modulePerms.includes(p));
         useCustomPermissions = userPermissions.length > 0;
@@ -142,12 +134,17 @@
 
     // Reset to role permissions only
     function resetToRolePermissions() {
+        if (!canManagePermissions) return;
         userPermissions = [];
         useCustomPermissions = false;
     }
 
     // Save permissions
     async function savePermissions() {
+        if (!canManagePermissions) {
+            toast.error('ບໍ່ມີສິດແກ້ໄຂ permission ຂອງພະນັກງານ');
+            return;
+        }
         isSaving = true;
         try {
             const response = await api.put(`staff/${userId}/permissions`, {
@@ -175,7 +172,6 @@
     }
 
     onMount(() => {
-        loadAllPermissions();
         loadPermissions();
     });
 </script>
@@ -207,7 +203,7 @@
         </div>
 
         <div class="flex items-center gap-3">
-            {#if useCustomPermissions}
+            {#if useCustomPermissions && canManagePermissions}
                 <button
                     onclick={resetToRolePermissions}
                     class={cn(
@@ -220,6 +216,7 @@
                     {t("staff.permissions.resetToRole")}
                 </button>
             {/if}
+            {#if canManagePermissions}
             <button
                 onclick={savePermissions}
                 disabled={isSaving}
@@ -236,8 +233,15 @@
                 {/if}
                 {t("common.save")}
             </button>
+            {/if}
         </div>
     </div>
+
+    {#if !isLoading && userData && !userData.isSuperAdmin && !canManagePermissions}
+        <div class="mb-6 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
+            ສາມາດເບິ່ງ permission ໄດ້ ແຕ່ບໍ່ສາມາດແກ້ໄຂ. ຕ້ອງໃຫ້ Store Owner ມອບ <code>staff:update</code> ໃຫ້ກ່ອນ.
+        </div>
+    {/if}
 
     {#if isLoading}
         <div class="flex items-center justify-center py-20">
@@ -255,6 +259,15 @@
             </p>
         </div>
     {:else}
+        <div class="mb-6 flex items-start gap-3 rounded-xl border border-violet-200 bg-violet-50 p-4 text-sm text-violet-800 dark:border-violet-800 dark:bg-violet-900/20 dark:text-violet-200">
+            <Shield class="mt-0.5 h-5 w-5 shrink-0 text-violet-600 dark:text-violet-400" />
+            <div>
+                <p class="font-semibold">User Permission Override</p>
+                <p class="mt-1 text-xs text-violet-700 dark:text-violet-300">
+                    ສິດຈາກ Role ແມ່ນສິດຫຼັກ. ການແກ້ໃນໜ້ານີ້ກະທົບສະເພາະ user ຄົນນີ້ເທົ່ານັ້ນ. ກົດ “Reset to Role” ເພື່ອລຶບ custom override ແລະກັບໄປໃຊ້ສິດຂອງ Role.
+                </p>
+            </div>
+        </div>
         <!-- User Info Card -->
         <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6 mb-6">
             <div class="flex items-center gap-4">
@@ -302,13 +315,14 @@
                 {@const counts = countModulePermissions(module)}
                 <div class={cn(i > 0 && "border-t border-gray-200 dark:border-gray-700")}>
                     <!-- Module Header -->
-                    <!-- svelte-ignore a11y_no_static_element_interactions -->
-                    <!-- svelte-ignore a11y_click_events_have_key_events -->
-                    <div
-                        onclick={() => toggleModule(module.module)}
-                        class="w-full flex items-center justify-between px-6 py-4 hover:bg-gray-50 dark:hover:bg-gray-750 transition-colors cursor-pointer"
-                    >
-                        <div class="flex items-center gap-3">
+                    <div class="w-full flex items-center justify-between px-6 py-4 hover:bg-gray-50 dark:hover:bg-gray-750 transition-colors">
+                        <button
+                            type="button"
+                            aria-expanded={expandedModules.has(module.module)}
+                            aria-controls={`permissions-${module.module}`}
+                            onclick={() => toggleModule(module.module)}
+                            class="flex min-w-0 items-center gap-3 text-left"
+                        >
                             {#if expandedModules.has(module.module)}
                                 <ChevronDown class="w-5 h-5 text-gray-400" />
                             {:else}
@@ -320,17 +334,19 @@
                             <span class="text-sm text-gray-500 dark:text-gray-400">
                                 ({counts.granted}/{counts.total})
                             </span>
-                        </div>
+                        </button>
                         <div class="flex items-center gap-2">
                             <button
                                 onclick={(e) => { e.stopPropagation(); selectAllInModule(module); }}
-                                class="px-2 py-1 text-xs font-medium text-green-600 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-900/20 rounded transition-colors"
+                                disabled={!canManagePermissions}
+                                class="px-2 py-1 text-xs font-medium text-green-600 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-900/20 rounded transition-colors disabled:cursor-not-allowed disabled:opacity-40"
                             >
                                 {t("common.selectAll")}
                             </button>
                             <button
                                 onclick={(e) => { e.stopPropagation(); deselectAllInModule(module); }}
-                                class="px-2 py-1 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors"
+                                disabled={!canManagePermissions}
+                                class="px-2 py-1 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors disabled:cursor-not-allowed disabled:opacity-40"
                             >
                                 {t("common.unselectAll")}
                             </button>
@@ -339,13 +355,16 @@
 
                     <!-- Module Permissions -->
                     {#if expandedModules.has(module.module)}
-                        <div class="px-6 pb-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                        <div id={`permissions-${module.module}`} class="px-6 pb-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                             {#each module.permissions as perm (perm.value)}
                                 {@const isGranted = hasPermission(perm.value)}
                                 {@const isFromRole = isRolePermission(perm.value)}
                                 {@const isCustom = isUserPermission(perm.value)}
                                 <button
+                                    type="button"
                                     onclick={() => togglePermission(perm.value)}
+                                    disabled={!canManagePermissions}
+                                    aria-pressed={isGranted}
                                     class={cn(
                                         "flex items-center gap-3 p-3 rounded-lg border transition-all text-left",
                                         isGranted

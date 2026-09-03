@@ -97,7 +97,7 @@ ssoRoutes.get('/sso/callback', authRateLimiter, async (req, res, next) => {
         }
 
         try {
-            await authService.loginWithSso(txn.tenantId, email, res);
+            await authService.loginWithSso(txn.tenantId, email, res, req.secure);
         } catch (err: any) {
             if (err?.code === 'NO_ACCOUNT') {
                 return res.redirect(frontendRedirect('/login', { ssoError: 'no_account_found' }));

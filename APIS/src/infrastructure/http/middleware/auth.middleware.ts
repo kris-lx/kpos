@@ -10,7 +10,7 @@ import { ApiError } from './error.middleware';
 import { db } from '@/config/database.config';
 import { cache } from '@/config/redis.config';
 import { eq, inArray, and, or, like, isNull, sql, type SQL } from 'drizzle-orm';
-import { users, userStores, tenants, roles, branches, stores } from '@/db/schema/tables';
+import { users, userStores, tenants, roles, branches, stores, settings } from '@/db/schema/tables';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import { hasPerm, permissionsToMask, maskToStrings, stringsToMask, legacyPermTobit, type PermBit } from '@/infrastructure/permissions';
 import { getUserMask, invalidateUserPermissions } from '@/infrastructure/services/permission.service';
@@ -162,6 +162,10 @@ export interface AuthenticatedUser extends JwtPayload {
     /** User's home/anchor store (mirrors branchId from JwtPayload). */
     storeId: string;
     isSuperAdmin: boolean;
+    /** Per-user shift policy. False means this user may sell without opening a shift. */
+    requiresShift: boolean;
+    /** Per-user checker assignment used by approval UI and approval middleware. */
+    checkerEnabled: boolean;
     tenantId: string | null;
     /** Numeric role level (1=system_admin … 7=staff). Lower = broader access. */
     roleLevel: number;
@@ -365,6 +369,8 @@ interface CachedAuthUser {
     storeId: string;
     tenantId: string | null;
     isSuperAdmin: boolean;
+    requiresShift: boolean;
+    checkerEnabled: boolean;
     permissions: string[];
     role: string;
     roleId: string | null;
@@ -377,7 +383,9 @@ interface CachedAuthUser {
 async function loadCachedAuthUser(userId: string): Promise<CachedAuthUser | null> {
     const cacheKey = `${CACHE_PREFIX}:auth:${userId}`;
     const cached = await cache.get<CachedAuthUser>(cacheKey);
-    if (cached) return cached;
+    // Rebuild pre-requiresShift cache entries once after this field was added.
+    if (cached && typeof cached.requiresShift === 'boolean' && typeof cached.checkerEnabled === 'boolean') return cached;
+    if (cached) await cache.del(cacheKey);
 
     const user = await db.query.users.findFirst({
         where: eq(users.id, userId),
@@ -405,19 +413,22 @@ async function loadCachedAuthUser(userId: string): Promise<CachedAuthUser | null
     // reviewed by any admin for that tenant.
     const userPerms = user.permissions || [];
     let rolePerms: string[] = [];
+    let roleLevel: number | undefined;
 
-    const loadRolePerms = async (tx: typeof db): Promise<string[]> => {
-        if (!user.roleId) return [];
+    const loadRolePerms = async (tx: typeof db): Promise<{ permissions: string[]; level?: number }> => {
+        if (!user.roleId) return { permissions: [] };
         const roleRow = await tx.query.roles.findFirst({
             where: eq(roles.id, user.roleId),
-            columns: { permissions: true },
+            columns: { permissions: true, level: true },
         });
-        return (roleRow?.permissions as string[]) || [];
+        return { permissions: (roleRow?.permissions as string[]) || [], level: roleRow?.level };
     };
 
-    rolePerms = user.tenantId && !user.isSuperAdmin
+    const roleResult = user.tenantId && !user.isSuperAdmin
         ? await runWithTenantContext(user.tenantId, (tx) => loadRolePerms(tx as unknown as typeof db))
         : await loadRolePerms(db);
+    rolePerms = roleResult.permissions;
+    roleLevel = roleResult.level;
 
     const mergedPermissions = [...new Set([...rolePerms, ...userPerms])];
     // Compute bitmask from merged permission strings — O(n) once, then O(1) per check
@@ -431,10 +442,17 @@ async function loadCachedAuthUser(userId: string): Promise<CachedAuthUser | null
         storeId: user.storeId || '',
         tenantId: user.tenantId || null,
         isSuperAdmin: user.isSuperAdmin,
+        requiresShift: user.requiresShift !== false,
+        checkerEnabled: user.checkerEnabled === true,
         permissions: mergedPermissions,
         role: user.role,
         roleId: user.roleId,
-        roleLevel: getRoleLevel(user.role, user.isSuperAdmin),
+        // DB-backed level from the user's actual `roles` row, not a
+        // name-based lookup — a linked role always has a real level (the
+        // column defaults to 7, never null). Only falls back to name
+        // matching when there's no linked role at all (e.g. isSuperAdmin
+        // accounts, or legacy rows never assigned a roleId).
+        roleLevel: roleLevel ?? getRoleLevel(user.role, user.isSuperAdmin),
         maskLow,
         maskHigh,
     };
@@ -477,9 +495,13 @@ export async function resolveAssignableRole(
         callerBranchId?: string | null;
         callerRoleLevel: number;
         callerIsSuperAdmin: boolean;
+        /** Caller's own resolved permissions — required to close the escalation
+         *  path described below for any role whose `level` hasn't been
+         *  explicitly reviewed (defaults to 7 for anything not hand-set). */
+        callerPermissions: string[];
     }
 ): Promise<ResolvedRole | null> {
-    const { roleId, roleName, callerTenantId, callerBranchId, callerRoleLevel, callerIsSuperAdmin } = params;
+    const { roleId, roleName, callerTenantId, callerBranchId, callerRoleLevel, callerIsSuperAdmin, callerPermissions } = params;
     if (!roleId && !roleName) return null;
 
     // Takes the CALLER'S OWN db handle (req.tx or globalDb) rather than
@@ -490,40 +512,70 @@ export async function resolveAssignableRole(
     // that the reserved req.tx connection was already holding open, and
     // under concurrent staff-creation load deadlocked the pool entirely
     // (every connection reserved, none left for the nested transaction).
-    const isVisible = (role: { tenantId: string | null; branchId: string | null }): boolean => {
+    // Privilege ladder, mirroring the guard on POST /roles/:id/assign
+    // (roles/presentation/routes.ts) — this is the other path that attaches
+    // a role to a user (staff create/update, admin user create/update), so
+    // without it a caller with only staff:create could hand themselves or a
+    // new account the global "super_admin"/"admin" system-template role
+    // (tenantId IS NULL rows exist for every built-in role name — level 1
+    // included — since ordinary roles like "cashier"/"store_owner" also ship
+    // as global templates, so blocking tenantId===null outright would break
+    // normal staff creation; the level check is the real invariant).
+    const isVisible = (role: { tenantId: string | null; branchId: string | null; level: number }): boolean => {
         if (callerIsSuperAdmin) return true;
-        if (role.tenantId === null) return true; // global system template
+        if (role.level < callerRoleLevel) return false; // ladder: never grant a role above your own level
+        if (role.tenantId === null) return true; // global system template, level-appropriate
         if (role.tenantId !== callerTenantId) return false;
         if (callerRoleLevel <= 2) return true; // tenant-level: sees all of their tenant's roles
         return role.branchId === null || role.branchId === callerBranchId;
     };
 
-    let row: { id: string; name: string; tenantId: string | null; branchId: string | null } | undefined;
+    let row: { id: string; name: string; tenantId: string | null; branchId: string | null; level: number; permissions: string[] } | undefined;
     if (roleId) {
         row = await dbHandle.query.roles.findFirst({
             where: eq(roles.id, roleId),
-            columns: { id: true, name: true, tenantId: true, branchId: true },
+            columns: { id: true, name: true, tenantId: true, branchId: true, level: true, permissions: true },
         });
         if (row && !isVisible(row)) row = undefined;
     } else {
         if (callerTenantId) {
             const tenantRow = await dbHandle.query.roles.findFirst({
                 where: and(eq(roles.name, roleName!), eq(roles.tenantId, callerTenantId)),
-                columns: { id: true, name: true, tenantId: true, branchId: true },
+                columns: { id: true, name: true, tenantId: true, branchId: true, level: true, permissions: true },
             });
             if (tenantRow && isVisible(tenantRow)) row = tenantRow;
         }
         if (!row) {
             const globalRow = await dbHandle.query.roles.findFirst({
                 where: and(eq(roles.name, roleName!), isNull(roles.tenantId)),
-                columns: { id: true, name: true, tenantId: true, branchId: true },
+                columns: { id: true, name: true, tenantId: true, branchId: true, level: true, permissions: true },
             });
             if (globalRow && isVisible(globalRow)) row = globalRow;
         }
     }
 
     if (!row) return null;
-    return { id: row.id, name: row.name, roleLevel: getRoleLevel(row.name, false) };
+
+    // Second, independent gate: even if `level` passed the ladder above (a
+    // custom role someone never got around to setting a real level on
+    // defaults to 7, i.e. "harmless" to the ladder check regardless of what
+    // it actually grants), a caller must still personally hold every
+    // permission the role would hand out. Without this, a mid-tier manager
+    // with only staff:create could create a puppet account and assign it
+    // any custom role in the tenant — including one holding "*" — and the
+    // level default would never catch it. Mirrors the same backstop already
+    // shipped on POST /roles (creating a role you can't personally back).
+    // Every non-superadmin, including a level-2 store owner, may delegate
+    // only permissions that were granted to them. Level controls hierarchy;
+    // it must never become an implicit permission wildcard.
+    if (!callerIsSuperAdmin && !callerPermissions.includes('*')) {
+        const rolePerms = (row.permissions as string[]) || [];
+        const callerPermSet = new Set(callerPermissions);
+        const ungranted = rolePerms.filter(p => !callerPermSet.has(p));
+        if (ungranted.length > 0) return null;
+    }
+
+    return { id: row.id, name: row.name, roleLevel: row.level };
 }
 
 // Untyped `Request`/`Response` here would pin this middleware's type params to the
@@ -594,7 +646,13 @@ export async function authenticate(
             const expandedBranchIds = await loadBranchIdsForStores(wholeStoreIds);
 
             const accessibleBranchIds = [...new Set([...narrowedBranchIds, ...expandedBranchIds])];
-            const accessibleStoreIds = [...new Set(accessibleStores.map(s => s.storeId))];
+            // Must mirror wholeStoreIds, not every row's storeId — a branch-
+            // narrowed grant also carries a storeId (a branch belongs to
+            // exactly one store), so including it here would flip
+            // branchFilter's scopeByStore on for branch-only staff and leak
+            // every sibling branch under that store (products/customers/etc
+            // routes that key off scopeByStore filter by storeId alone).
+            const accessibleStoreIds = [...new Set(wholeStoreIds)];
 
             // If user has no store assignments, fall back to their single-value anchors
             if (accessibleBranchIds.length === 0 && user.branchId) {
@@ -653,6 +711,8 @@ export async function authenticate(
                 activeStorePath,
                 storeId: user.storeId || '',
                 isSuperAdmin: user.isSuperAdmin || false,
+                requiresShift: user.requiresShift !== false,
+                checkerEnabled: user.checkerEnabled === true,
                 roleLevel: user.roleLevel,
                 maskLow: user.maskLow ?? '0',
                 maskHigh: user.maskHigh ?? '0',
@@ -836,6 +896,56 @@ export function authorize(...permStrings: string[]) {
             if (passedString) { next(); return; }
 
             throw ApiError.forbidden('Insufficient permissions');
+        } catch (error) {
+            next(error);
+        }
+    };
+}
+
+/**
+ * Per-user maker assignment. This is deliberately separate from the role
+ * permission check: a role may hold `sales:create`/`inventory:create`, but an
+ * owner can still turn a specific user's maker assignment off.
+ */
+export function requireMaker() {
+    return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+        try {
+            if (!req.authUser || req.authUser.isSuperAdmin) {
+                next();
+                return;
+            }
+            const dbHandle: any = req.tx ?? db;
+            const user = await dbHandle.query.users.findFirst({
+                where: eq(users.id, req.authUser.userId),
+                columns: { makerEnabled: true },
+            });
+            if (!user || user.makerEnabled === false) {
+                throw ApiError.forbidden('This user is not assigned as a maker');
+            }
+            next();
+        } catch (error) {
+            next(error);
+        }
+    };
+}
+
+/** Per-user checker assignment, separate from the approval permission itself. */
+export function requireChecker() {
+    return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+        try {
+            if (!req.authUser || req.authUser.isSuperAdmin) {
+                next();
+                return;
+            }
+            const dbHandle: any = req.tx ?? db;
+            const user = await dbHandle.query.users.findFirst({
+                where: eq(users.id, req.authUser.userId),
+                columns: { checkerEnabled: true },
+            });
+            if (!user || user.checkerEnabled !== true) {
+                throw ApiError.forbidden('This user is not assigned as a checker');
+            }
+            next();
         } catch (error) {
             next(error);
         }
@@ -1237,7 +1347,10 @@ export function ensureScopeAccess(
     if (req.authUser.isSuperAdmin) return true;
     
     // Tenant Admins (role level ≤ 2) are restricted to their own tenant
-    const isTenantAdmin = getRoleLevel(req.authUser.role, req.authUser.isSuperAdmin) <= 2 || req.authUser.permissions.includes('*');
+    // The resolved DB-backed roleLevel is the authority for custom roles.
+    // A wildcard permission grants actions, but must never grant tenant-wide
+    // scope by itself; otherwise a tenant role could cross the data boundary.
+    const isTenantAdmin = req.authUser.roleLevel <= 2;
     if (isTenantAdmin) {
         // If the record has a tenantId, it MUST match the admin's tenantId
         if (record.tenantId && record.tenantId !== req.authUser.tenantId) {
@@ -1262,6 +1375,102 @@ export function ensureScopeAccess(
     if (!record.storeId && !record.branchId && !record.tenantId) return true;
 
     return false;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MAKER-CHECKER SOLE-USER ESCAPE HATCH
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Maker-checker (stock transfer/PO/count approval, sales void/refund) rejects
+ * self-approval unconditionally. That's correct for any tenant with actual
+ * staff, but a brand-new tenant — every `POST /admin/register-and-apply`
+ * signup creates exactly ONE user — would otherwise be permanently unable to
+ * void their own mistaken sale or approve their own stock count, with no way
+ * out short of creating a second account and logging in as themselves twice.
+ *
+ * This checks whether any OTHER active user in the same tenant could
+ * plausibly ever hold `requiredPermission` themselves — not just "does any
+ * other active user exist at all". An earlier version only did the latter, a
+ * pure headcount: a solo owner with one `kitchen_staff` account (whose only
+ * permissions are `restaurant:view`/`restaurant:manage`, per
+ * systemRolePermissions.ts) would have been reported as "not alone" and
+ * blocked from ever approving their own stock counts/transfers/POs or
+ * voiding/refunding their own sales — the kitchen_staff account can never
+ * hold `inventory:*`/`sales:delete`, so that tenant was just as stuck as a
+ * literal solo tenant, but without the escape hatch, because the naive
+ * headcount said "you're not alone."
+ *
+ * Checked against `users.permissions` (the resolved, session-authoritative
+ * array `authorize()` itself falls back to) with the same `'*'` and
+ * `<module>:*` wildcard rules `authorize()`/`hasPermission()` use elsewhere.
+ * Callers should only enforce the self-approval block when this returns
+ * true, and let a genuinely-unable-to-be-checked owner self-approve when it
+ * returns false.
+ */
+export async function tenantHasOtherEligibleUser(
+    db: any,
+    tenantId: string | null | undefined,
+    excludeUserId: string,
+    requiredPermission: string,
+): Promise<boolean> {
+    if (!tenantId) return false;
+    // Real permissions come from the linked `roles` row (see
+    // loadCachedAuthUser) — users.permissions alone is just a rarely-used
+    // per-user override on top of that, normally empty. Checking only
+    // users.permissions (as this used to) meant a tenant with a dozen staff
+    // who all get their access through a role — the standard, intended way
+    // — always looked "solo" to this check, silently defeating the
+    // self-approval block for every tenant that actually uses roles.
+    const candidates = await db.query.users.findMany({
+        where: and(eq(users.tenantId, tenantId), eq(users.isActive, true), sql`${users.id} != ${excludeUserId}`),
+        columns: { permissions: true, isSuperAdmin: true, checkerEnabled: true },
+        with: { roleRelation: { columns: { permissions: true } } },
+    });
+    const [module] = requiredPermission.split(':');
+    return candidates.some((u: { permissions: string[] | null; isSuperAdmin: boolean; checkerEnabled: boolean; roleRelation?: { permissions: string[] | null } | null }) => {
+        if (!u.checkerEnabled) return false;
+        if (u.isSuperAdmin) return true;
+        const perms = [...(u.roleRelation?.permissions || []), ...(u.permissions || [])];
+        return perms.includes('*') || perms.includes(requiredPermission) || perms.includes(`${module}:*`);
+    });
+}
+
+/** Whether this exact user was explicitly assigned as a checker and holds the
+ * permission required by the approval action. */
+export async function userIsEligibleChecker(
+    db: any,
+    userId: string,
+    requiredPermission: string,
+): Promise<boolean> {
+    const user = await db.query.users.findFirst({
+        where: and(eq(users.id, userId), eq(users.isActive, true)),
+        columns: { permissions: true, isSuperAdmin: true, checkerEnabled: true },
+        with: { roleRelation: { columns: { permissions: true } } },
+    });
+    if (!user || !user.checkerEnabled) return false;
+    if (user.isSuperAdmin) return true;
+    const [module] = requiredPermission.split(':');
+    const perms = [...(user.roleRelation?.permissions || []), ...(user.permissions || [])];
+    return perms.includes('*') || perms.includes(requiredPermission) || perms.includes(`${module}:*`);
+}
+
+/**
+ * Whether maker-checker self-approval blocking is actually enforced for this
+ * tenant — a store owner's own governance choice (Settings), not a fixed
+ * platform rule. Defaults to true (strict — same behavior as before this
+ * setting existed) when nothing has been saved yet. Stored tenant-wide
+ * (branchId null), not per-branch — this is a single business-wide policy
+ * decision, not something that should silently differ by location.
+ */
+export async function isMakerCheckerEnforced(db: any, tenantId: string | null | undefined): Promise<boolean> {
+    if (!tenantId) return true;
+    const row = await db.query.settings.findFirst({
+        where: and(eq(settings.category, 'operations'), eq(settings.key, 'requireMakerChecker'), eq(settings.tenantId, tenantId), isNull(settings.branchId)),
+        columns: { value: true },
+    });
+    if (!row) return true;
+    return row.value !== false && row.value !== 'false';
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1302,7 +1511,7 @@ export function isSuperAdmin(req: Request): boolean {
  */
 export function isAdmin(req: Request): boolean {
     if (!req.authUser) return false;
-    return req.authUser.isSuperAdmin || getRoleLevel(req.authUser.role, false) <= 2;
+    return req.authUser.isSuperAdmin || req.authUser.roleLevel <= 2;
 }
 
 /**
@@ -1315,7 +1524,7 @@ export function requireAdmin() {
                 throw ApiError.unauthorized('Not authenticated');
             }
 
-            if (!req.authUser.isSuperAdmin && getRoleLevel(req.authUser.role, false) > 2) {
+            if (!req.authUser.isSuperAdmin && req.authUser.roleLevel > 2) {
                 throw ApiError.forbidden('Admin access required');
             }
 

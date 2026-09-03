@@ -117,7 +117,11 @@ promotionRoutes.post('/coupons/validate', authenticate, withTenantTx(), async (r
         }
 
         if (subtotal < coupon.minPurchase) {
-            res.status(400).json({ success: false, error: { code: 'CPN_006', message: `Minimum purchase of ${coupon.minPurchase} required` } });
+            // `message` stays English (server-side, no request-locale concept
+            // here) — the frontend maps `code` to a translated string and
+            // uses `details.minPurchase` to fill in the amount, rather than
+            // displaying this raw string to the user.
+            res.status(400).json({ success: false, error: { code: 'CPN_006', message: `Minimum purchase of ${coupon.minPurchase} required`, details: { minPurchase: coupon.minPurchase } } });
             return;
         }
 
@@ -148,6 +152,13 @@ promotionRoutes.post('/coupons/validate', authenticate, withTenantTx(), async (r
 promotionRoutes.post('/coupons', authenticate, withTenantTx(), authorize('promotions:create'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
+        // `name`/`code`/`type`/`value` are NOT NULL columns with no default —
+        // req.body used to go straight into the insert unvalidated, so a
+        // missing field surfaced as a raw Postgres 23502 (not-null violation)
+        // 500 instead of a clean, actionable 400.
+        if (!req.body.name || !req.body.code || !req.body.type || req.body.value === undefined || req.body.value === null) {
+            return res.status(400).json({ success: false, error: { code: 'VALIDATION_001', message: 'name, code, type, and value are required' } });
+        }
         // Check if code exists (tenant-scoped — otherwise a coupon code taken
         // by an unrelated tenant would spuriously block this one)
         const createTenantId = req.authUser?.tenantId;
@@ -160,7 +171,12 @@ promotionRoutes.post('/coupons', authenticate, withTenantTx(), authorize('promot
         }
 
         const data = { ...req.body };
-        if (data.startDate) data.startDate = new Date(data.startDate);
+        // `startDate` is NOT NULL with no DB default — omitting it (or
+        // sending "", same as the endDate case below) used to reach
+        // Drizzle's insert as undefined/"" and crash with a raw 23502
+        // not-null violation. Defaults to "starts now", same as leaving a
+        // start-date picker on today.
+        data.startDate = data.startDate ? new Date(data.startDate) : new Date();
         // The form's default/common case sends endDate as "" (no end date
         // chosen). The old `if (data.endDate) data.endDate = ... : null`
         // guard skipped the whole assignment whenever endDate was falsy,

@@ -3,6 +3,7 @@
   import { onMount } from 'svelte';
   import { QueryClient, QueryClientProvider } from '@tanstack/svelte-query';
   import { Toaster } from 'svelte-sonner';
+  import GlobalDialog from '$lib/components/GlobalDialog.svelte';
 
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -28,9 +29,11 @@
   {@render children()}
 </QueryClientProvider>
 
-<Toaster 
-  position="top-right" 
-  richColors 
-  closeButton 
+<GlobalDialog />
+
+<Toaster
+  position="top-right"
+  richColors
+  closeButton
   duration={4000}
 />

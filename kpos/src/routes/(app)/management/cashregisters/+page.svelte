@@ -7,8 +7,9 @@
     import { t } from "$lib/i18n/index.svelte";
     import { cn, formatCurrency, formatDate } from "$utils";
     import { api } from "$api";
-    import { auth } from "$stores";
+    import { auth, dialogStore } from "$stores";
     import { toast } from "svelte-sonner";
+    import MoneyInput from "$lib/components/MoneyInput.svelte";
     import {
         MonitorSmartphone,
         Plus,
@@ -203,8 +204,8 @@
         }
     }
 
-    function handleDelete(register: any) {
-        if (confirm(t("registers.deleteConfirm"))) {
+    async function handleDelete(register: any) {
+        if (await dialogStore.confirm(t("registers.deleteConfirm"))) {
             $deleteMutationFn.mutate(register.id);
         }
     }
@@ -471,11 +472,9 @@
 
                 <div>
                     <label for="a11y-app-management-cashregisters-page-svelte-4" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{t("registers.openingBalance")}</label>
-                    <input id="a11y-app-management-cashregisters-page-svelte-4"
-                        type="number"
+                    <MoneyInput id="a11y-app-management-cashregisters-page-svelte-4"
                         bind:value={formData.openingBalance}
-                        min="0"
-                        step="0.01"
+                        min={0}
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white"
                     />
                 </div>

@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, branchFilter, requireStoreAccess, invalidateUserStoreCache, invalidateAllUserStoreCache, getRoleLevel, canAccessStore, type ScopeFilter, buildStoreIdScope } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, branchFilter, requireStoreAccess, invalidateUserStoreCache, invalidateAllUserStoreCache, canAccessStore, type ScopeFilter, buildStoreIdScope } from '@/infrastructure/http/middleware/auth.middleware';
 import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
 import { db as globalDb } from '@/config/database.config';
 import { stores, branches, users, userStores, storeRequests } from '@/db/schema/tables';
@@ -21,8 +21,8 @@ type StoreScopeRecord = {
 type UserScopeRecord = {
     id: string;
     tenantId?: string | null;
-    role?: string | null;
     isSuperAdmin?: boolean | null;
+    roleRelation?: { level: number } | null;
 };
 
 // Stores are now the top-level, tenant-rooted tier (Tenant → Store → Branch) —
@@ -37,6 +37,12 @@ function canAccessStoreRecord(req: any, store: StoreScopeRecord): boolean {
     if (store.tenantId && store.tenantId !== authUser.tenantId) return false;
     if ((authUser.roleLevel ?? 7) <= 2) return true;
     if (store.id && authUser.accessibleStoreIds?.includes(store.id)) return true;
+    // A branch-narrowed grant doesn't add its owning store to
+    // accessibleStoreIds (that list is whole-store grants only, so it can't
+    // be used for broad storeId-only scoping elsewhere) — but a user should
+    // still be able to see the basic record of the store their own branch
+    // belongs to. activeStoreId is resolved to exactly that one store.
+    if (store.id && authUser.activeStoreId === store.id) return true;
     if (store.storePath && canAccessStore(authUser, store.storePath)) return true;
     return false;
 }
@@ -47,7 +53,11 @@ function canManageTargetUser(req: any, target: UserScopeRecord): boolean {
     if (authUser.isSuperAdmin) return true;
     if (target.tenantId !== authUser.tenantId) return false;
     if (target.isSuperAdmin) return false;
-    return getRoleLevel(target.role || 'staff', false) > (authUser.roleLevel ?? 7);
+    // DB-backed level from the target's own linked `roles` row — see the
+    // matching comment in staff/presentation/routes.ts's canManageStaffRecord
+    // for why a name-based getRoleLevel() lookup silently let any custom
+    // role through regardless of its actual privilege.
+    return (target.roleRelation?.level ?? 7) > (authUser.roleLevel ?? 7);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -393,7 +403,7 @@ storeRoutes.get('/:id', authenticate, withTenantTx(), branchFilter(), async (req
 
         const store = await db.query.stores.findFirst({
             where: and(...getConds),
-            with: { branches: true, userAccess: { with: { user: true } } },
+            with: { branches: true, userAccess: { with: { user: { columns: { password: false, twoFASecret: false } } } } },
         });
 
         if (!store) {
@@ -572,6 +582,14 @@ storeRoutes.put('/:id/transfer', authenticate, withTenantTx(), authorize('stores
         if (!store) {
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Store not found or no access' } });
         }
+        // Only tenant-scoped before this — every other mutation in this file
+        // (PUT /:id, POST /:id/users, etc.) additionally checks
+        // canAccessStoreRecord, but this route never did, letting a
+        // store-scoped user reparent ANY store in the tenant, not just ones
+        // they actually have store-level access to.
+        if (!canAccessStoreRecord(req, store)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this store' } });
+        }
 
         if (store.parentStoreId === (toParentStoreId || null)) {
             return res.status(400).json({ success: false, error: { code: 'SAME_PARENT', message: 'ຮ້ານຢູ່ພາຍໃຕ້ນີ້ຢູ່ແລ້ວ' } });
@@ -586,7 +604,7 @@ storeRoutes.put('/:id/transfer', authenticate, withTenantTx(), authorize('stores
             const parConds: any[] = [eq(stores.id, toParentStoreId)];
             if (tenantId && !req.authUser?.isSuperAdmin) parConds.push(eq(stores.tenantId, tenantId));
             const targetParent = await db.query.stores.findFirst({ where: and(...parConds) });
-            if (!targetParent) {
+            if (!targetParent || !canAccessStoreRecord(req, targetParent)) {
                 return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Target parent store not found' } });
             }
             // Prevent creating a cycle: target can't be a descendant of the store being moved.
@@ -622,7 +640,17 @@ storeRoutes.delete('/:id', authenticate, withTenantTx(), authorize('stores:delet
         const tenantId = req.authUser?.tenantId;
         const delConds: any[] = [eq(stores.id, req.params.id)];
         if (tenantId && !req.authUser?.isSuperAdmin) delConds.push(eq(stores.tenantId, tenantId));
-        await db.update(stores).set({ isActive: false, updatedAt: new Date() }).where(and(...delConds));
+        // No fetch-then-check at all before this fix — a blind tenant-scoped
+        // soft-delete, so any user holding stores:delete could delete ANY
+        // store in the tenant regardless of their own store-level scope.
+        const existing = await db.query.stores.findFirst({ where: and(...delConds) });
+        if (!existing) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Store not found or no access' } });
+        }
+        if (!canAccessStoreRecord(req, existing)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this store' } });
+        }
+        await db.update(stores).set({ isActive: false, updatedAt: new Date() }).where(eq(stores.id, existing.id));
 
         res.json({ success: true, data: { message: 'Store deleted' } });
     } catch (error) {
@@ -652,7 +680,7 @@ storeRoutes.post('/:id/users', authenticate, withTenantTx(), authorize('staff:up
 
         const userConds: any[] = [eq(users.id, userId)];
         if (tenantId && !req.authUser?.isSuperAdmin) userConds.push(eq(users.tenantId, tenantId));
-        const user = await db.query.users.findFirst({ where: and(...userConds) });
+        const user = await db.query.users.findFirst({ where: and(...userConds), with: { roleRelation: { columns: { level: true } } } });
         if (!user) {
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'User not found or no access' } });
         }
@@ -670,7 +698,7 @@ storeRoutes.post('/:id/users', authenticate, withTenantTx(), authorize('staff:up
         });
 
         if (existing) {
-            const [updated] = await db.update(userStores).set({ tenantId: store.tenantId, canRead, canWrite, canDelete, canManage, isDefault }).where(eq(userStores.id, existing.id)).returning();
+            const [updated] = await db.update(userStores).set({ tenantId: store.tenantId, branchId: null, canRead, canWrite, canDelete, canManage, isDefault }).where(eq(userStores.id, existing.id)).returning();
             await invalidateUserStoreCache(userId);
             return res.json({ success: true, data: updated });
         }
@@ -708,7 +736,7 @@ storeRoutes.delete('/:id/users/:userId', authenticate, withTenantTx(), authorize
         if (tenantId && !req.authUser?.isSuperAdmin) assignmentConds.push(eq(userStores.tenantId, tenantId));
         const assignment = await db.query.userStores.findFirst({
             where: and(...assignmentConds),
-            with: { store: true, user: true },
+            with: { store: true, user: { with: { roleRelation: { columns: { level: true } } } } },
         });
 
         if (!assignment) {
@@ -771,7 +799,7 @@ storeRoutes.get('/users/:userId/stores', authenticate, withTenantTx(), authorize
         const tenantId = req.authUser?.tenantId;
         const userConds: any[] = [eq(users.id, userId)];
         if (tenantId && !req.authUser?.isSuperAdmin) userConds.push(eq(users.tenantId, tenantId));
-        const targetUser = await db.query.users.findFirst({ where: and(...userConds) });
+        const targetUser = await db.query.users.findFirst({ where: and(...userConds), with: { roleRelation: { columns: { level: true } } } });
         if (!targetUser || !canManageTargetUser(req, targetUser)) {
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'User not found or no access' } });
         }
@@ -808,7 +836,7 @@ storeRoutes.post('/users/:userId/bulk-assign', authenticate, withTenantTx(), aut
         const tenantId = req.authUser?.tenantId;
         const userConds: any[] = [eq(users.id, userId)];
         if (tenantId && !req.authUser?.isSuperAdmin) userConds.push(eq(users.tenantId, tenantId));
-        const user = await db.query.users.findFirst({ where: and(...userConds) });
+        const user = await db.query.users.findFirst({ where: and(...userConds), with: { roleRelation: { columns: { level: true } } } });
         if (!user || !canManageTargetUser(req, user)) {
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'User not found or no access' } });
         }
@@ -865,7 +893,7 @@ storeRoutes.delete('/users/:userId/stores', authenticate, withTenantTx(), author
         const tenantId = req.authUser?.tenantId;
         const userConds: any[] = [eq(users.id, userId)];
         if (tenantId && !req.authUser?.isSuperAdmin) userConds.push(eq(users.tenantId, tenantId));
-        const targetUser = await db.query.users.findFirst({ where: and(...userConds) });
+        const targetUser = await db.query.users.findFirst({ where: and(...userConds), with: { roleRelation: { columns: { level: true } } } });
         if (!targetUser || !canManageTargetUser(req, targetUser)) {
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'User not found or no access' } });
         }

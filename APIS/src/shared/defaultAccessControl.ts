@@ -1,4 +1,5 @@
 import { SYSTEM_ROLE_PERMISSIONS } from './systemRolePermissions';
+import { ROLE_LEVELS } from '@/infrastructure/http/middleware/auth.middleware';
 
 export type DefaultRole = {
     name: string;
@@ -6,6 +7,7 @@ export type DefaultRole = {
     description: string;
     permissions: string[];
     isSystem: true;
+    level: number;
 };
 
 export type DefaultRule = {
@@ -34,7 +36,11 @@ const adminPermissions = unique([
     'admin:manage',
 ]);
 
-export const DEFAULT_ROLES: DefaultRole[] = [
+// Level is filled in below via ROLE_LEVELS[name] — a single lookup keeps
+// this list (and auth.middleware.ts's ROLE_LEVELS) as the one place either
+// value can drift, instead of hand-copying a number onto every entry here
+// too.
+const DEFAULT_ROLES_UNLEVELED: Omit<DefaultRole, 'level'>[] = [
     { name: 'super_admin', displayName: 'Super Admin', description: 'Full platform access', permissions: ['*'], isSystem: true },
     { name: 'admin', displayName: 'Admin', description: 'Platform admin with tenant operations access', permissions: adminPermissions, isSystem: true },
 
@@ -61,24 +67,40 @@ export const DEFAULT_ROLES: DefaultRole[] = [
     { name: 'manager', displayName: 'Manager', description: 'Branch manager (legacy alias for branch_manager)', permissions: permissionSet('manager'), isSystem: true },
 ];
 
+export const DEFAULT_ROLES: DefaultRole[] = DEFAULT_ROLES_UNLEVELED.map(r => ({
+    ...r,
+    level: ROLE_LEVELS[r.name] ?? 7,
+}));
+
 export const DEFAULT_RULES: DefaultRule[] = [
     { name: 'dashboard', displayName: 'Dashboard', description: 'Main dashboard', module: 'dashboard', icon: 'LayoutDashboard', routes: ['/dashboard'], permissions: ['dashboard:view'], order: 0, isSystem: true },
-    { name: 'sales', displayName: 'Sales (POS)', description: 'POS sales, credit sales, and held bills', module: 'sales', icon: 'ShoppingCart', routes: ['/pos', '/pos/credit', '/pos/held'], permissions: ['sales:view', 'sales:create', 'sales:update', 'sales:delete', 'sales:void', 'sales:refund', 'pos:access', 'pos:discount', 'pos:void', 'pos:credit'], order: 1, isSystem: true },
-    { name: 'products', displayName: 'Products', description: 'Products, categories, barcode, SKU, and pricing', module: 'products', icon: 'Package', routes: ['/products', '/products/sku', '/products/pricing', '/categories', '/barcode'], permissions: ['products:view', 'products:create', 'products:update', 'products:delete', 'products:import', 'categories:view', 'categories:create', 'categories:update', 'categories:delete'], order: 2, isSystem: true },
+    { name: 'sales', displayName: 'Sales (POS)', description: 'POS sales, credit sales, held bills, and receipt printing', module: 'sales', icon: 'ShoppingCart', routes: ['/pos', '/pos/credit', '/pos/held'], permissions: ['sales:view', 'sales:create', 'sales:update', 'sales:delete', 'sales:void', 'sales:refund', 'pos:access', 'pos:discount', 'pos:void', 'pos:credit', 'printing:view', 'printing:receipt'], order: 1, isSystem: true },
+    { name: 'products', displayName: 'Products', description: 'Products, categories, barcode, SKU, pricing, and label printing', module: 'products', icon: 'Package', routes: ['/products', '/products/sku', '/products/pricing', '/categories', '/barcode'], permissions: ['products:view', 'products:create', 'products:update', 'products:delete', 'products:import', 'categories:view', 'categories:create', 'categories:update', 'categories:delete', 'printing:view', 'printing:label'], order: 2, isSystem: true },
     { name: 'inventory', displayName: 'Inventory', description: 'Inventory, stock in/out, adjustments, transfers, counts, purchase orders, vendors, expiry', module: 'inventory', icon: 'Boxes', routes: ['/inventory', '/inventory/stockin', '/inventory/stockout', '/inventory/adjust', '/inventory/transfer', '/inventory/count', '/inventory/purchase-orders', '/inventory/vendors', '/inventory/expiry', '/inventory/out-of-stock'], permissions: ['inventory:view', 'inventory:create', 'inventory:update', 'inventory:delete', 'inventory:transfer', 'inventory:adjust', 'inventory:stockin', 'inventory:stockout'], order: 3, isSystem: true },
     { name: 'restaurant', displayName: 'Restaurant', description: 'Tables, restaurant orders, kitchen, reservations, and e-menu', module: 'restaurant', icon: 'UtensilsCrossed', routes: ['/restaurant/tables', '/restaurant/orders', '/restaurant/kitchen', '/restaurant/reservations', '/restaurant/e-menu'], permissions: ['restaurant:view', 'restaurant:manage', 'tables:view', 'tables:create', 'tables:update', 'tables:delete'], order: 4, isSystem: true },
     { name: 'promotions', displayName: 'Promotions', description: 'Promotions, coupons, and discounts', module: 'promotions', icon: 'Gift', routes: ['/promotions', '/promotions/coupons', '/promotions/discounts'], permissions: ['promotions:view', 'promotions:create', 'promotions:update', 'promotions:delete'], order: 5, isSystem: true },
     { name: 'customers', displayName: 'Customers (CRM)', description: 'Customers, members, points, and loyalty', module: 'customers', icon: 'Users', routes: ['/customers', '/customers/members', '/customers/points', '/customers/loyalty'], permissions: ['customers:view', 'customers:create', 'customers:update', 'customers:delete'], order: 6, isSystem: true },
     { name: 'payments', displayName: 'Payments', description: 'Payment methods, transactions, and settlements', module: 'payments', icon: 'Wallet', routes: ['/payments', '/payments/transactions', '/payments/settlements'], permissions: ['payments:view', 'payments:create', 'payments:void', 'payments:settle', 'payments:manage'], order: 7, isSystem: true },
     { name: 'documents', displayName: 'Documents', description: 'Documents, invoice design, invoices, and tax invoices', module: 'documents', icon: 'FileText', routes: ['/documents', '/documents/design', '/documents/invoices', '/documents/tax-invoices'], permissions: ['documents:view', 'documents:create', 'documents:update', 'documents:delete'], order: 8, isSystem: true },
-    { name: 'reports', displayName: 'Reports', description: 'Sales, product, inventory, financial, staff, customer, promotion, branch, period, and GL reports', module: 'reports', icon: 'BarChart3', routes: ['/reports', '/reports/products', '/reports/inventory', '/reports/financial', '/reports/staff', '/reports/customers', '/reports/promotions', '/reports/period-compare', '/reports/branch-compare', '/reports/gl'], permissions: ['reports:view', 'reports:export', 'reports:sales', 'reports:inventory', 'reports:financial', 'reports:staff'], order: 9, isSystem: true },
+    { name: 'reports', displayName: 'Reports', description: 'Sales, product, inventory, financial, staff, customer, promotion, branch, period, and GL reports', module: 'reports', icon: 'BarChart3', routes: ['/reports', '/reports/products', '/reports/inventory', '/reports/financial', '/reports/staff', '/reports/customers', '/reports/promotions', '/reports/period-compare', '/reports/branch-compare', '/reports/gl'], permissions: ['reports:view', 'reports:export', 'reports:sales', 'reports:products', 'reports:inventory', 'reports:financial', 'reports:staff', 'reports:customers', 'reports:payments', 'reports:promotions'], order: 9, isSystem: true },
+    { name: 'finance', displayName: 'Finance', description: 'Profit and loss, expenses, payroll, cash flow, tax, and finance audit', module: 'finance', icon: 'WalletCards', routes: ['/finance'], permissions: ['reports:financial', 'expenses:view', 'expenses:create', 'expenses:approve', 'expenses:pay', 'payroll:view', 'payroll:view_detail', 'payroll:view_self', 'payroll:compensation', 'payroll:policy', 'payroll:manage', 'payroll:approve', 'payroll:pay', 'payroll:export'], order: 9, isSystem: true },
     { name: 'branches', displayName: 'Branch Management', description: 'Branch management', module: 'branches', icon: 'Building2', routes: ['/branches'], permissions: ['branches:view', 'branches:create', 'branches:update', 'branches:delete'], order: 10, isSystem: true },
     { name: 'management.stores', displayName: 'Store Management', description: 'Stores and points of sale', module: 'management.stores', icon: 'Store', routes: ['/management/stores', '/my-store', '/store-request'], permissions: ['stores:view', 'stores:create', 'stores:update', 'stores:delete', 'stores:assign'], order: 11, isSystem: true },
-    { name: 'management.staff', displayName: 'Staff Management', description: 'Staff and shifts', module: 'management.staff', icon: 'UserCog', routes: ['/staff', '/staff/shifts', '/management/shifts'], permissions: ['staff:view', 'staff:create', 'staff:update', 'staff:delete'], order: 12, isSystem: true },
+    { name: 'management.staff', displayName: 'Staff Management', description: 'Staff directory and all-staff shift overview', module: 'management.staff', icon: 'UserCog', routes: ['/staff', '/management/shifts'], permissions: ['staff:view', 'staff:create', 'staff:update', 'staff:delete'], order: 12, isSystem: true },
+    { name: 'attendance', displayName: 'Attendance', description: 'Clock in/out and attendance history', module: 'attendance', icon: 'CalendarClock', routes: ['/staff/attendance'], permissions: ['attendance:clock', 'attendance:view', 'attendance:manage'], order: 12, isSystem: true },
+    // Clocking your own shift in/out is a basic cashier action, not "staff
+    // management" — it used to share management.staff's staff:view
+    // requirement, which a plain cashier/staff role never has, so the route
+    // guard bounced them to /dashboard the moment they tried to reach
+    // /staff/shifts (even after the API-side permission on the close-shift
+    // endpoint itself was fixed to sales:create). Anyone who can ring up a
+    // sale can open/close their own shift.
+    { name: 'shifts', displayName: 'Cash Shift', description: 'Open/close a POS cash drawer and view cash-shift history', module: 'shifts', icon: 'Banknote', routes: ['/staff/shifts'], permissions: ['sales:create'], order: 12, isSystem: true },
     { name: 'management.roles', displayName: 'Role Management', description: 'Roles and permissions', module: 'management.roles', icon: 'Shield', routes: ['/staff/roles'], permissions: ['roles:view', 'roles:create', 'roles:update', 'roles:delete'], order: 13, isSystem: true },
     { name: 'management.operations', displayName: 'Daily Operations', description: 'Cash registers and daily store operations', module: 'management.operations', icon: 'Monitor', routes: ['/management/cashregisters'], permissions: ['stores:view', 'stores:update'], order: 14, isSystem: true },
-    { name: 'settings', displayName: 'Settings', description: 'General, display, receipt, tax, payment, printer, notification, integration, and profile settings', module: 'settings', icon: 'Settings', routes: ['/settings', '/settings/display', '/settings/receipt', '/settings/tax', '/settings/payments', '/settings/printers', '/settings/notifications', '/settings/integrations', '/settings/profile'], permissions: ['settings:view', 'settings:update'], order: 15, isSystem: true },
+    { name: 'settings', displayName: 'Settings', description: 'General, display, receipt, tax, payment, printer, notification, integration, and profile settings', module: 'settings', icon: 'Settings', routes: ['/settings', '/settings/display', '/settings/receipt', '/settings/tax', '/settings/payments', '/settings/printers', '/settings/notifications', '/settings/integrations', '/settings/profile'], permissions: ['settings:view', 'settings:update', 'printing:view', 'printing:reprint', 'printing:manage'], order: 15, isSystem: true },
     { name: 'admin', displayName: 'Super Admin', description: 'Platform administration panel', module: 'admin', icon: 'ShieldCheck', routes: ['/admin', '/admin/stores', '/admin/requests', '/admin/branches', '/admin/users', '/admin/roles', '/admin/positions', '/admin/rules', '/admin/audit', '/admin/permissions', '/admin/enums'], permissions: ['*', 'admin:access', 'admin:view', 'admin:manage'], order: 16, isSystem: true },
+    { name: 'audit', displayName: 'Audit Log', description: 'Tenant audit history', module: 'audit', icon: 'History', routes: ['/admin/audit'], permissions: ['audit:view'], order: 17, isSystem: true },
 ];
 
 const allRules = (exclude: string[] = []): Record<string, CrudFlags> =>
@@ -101,6 +123,7 @@ export const DEFAULT_ROLE_RULES: Record<string, Record<string, CrudFlags>> = {
         payments: { r: true, c: true, u: false, d: false },
         documents: { r: true, c: true, u: true, d: false },
         reports: { r: true, c: false, u: false, d: false },
+        finance: { r: true, c: true, u: true, d: false },
         branches: { r: true, c: false, u: true, d: false },
         'management.stores': { r: true, c: false, u: true, d: false },
         'management.staff': { r: true, c: true, u: true, d: false },
@@ -111,6 +134,7 @@ export const DEFAULT_ROLE_RULES: Record<string, Record<string, CrudFlags>> = {
     accountant: {
         dashboard: { r: true, c: false, u: false, d: false },
         reports: { r: true, c: false, u: false, d: false },
+        finance: { r: true, c: false, u: false, d: false },
         payments: { r: true, c: false, u: false, d: false },
         documents: { r: true, c: false, u: false, d: false },
     },
@@ -125,6 +149,7 @@ export const DEFAULT_ROLE_RULES: Record<string, Record<string, CrudFlags>> = {
         payments: { r: true, c: true, u: false, d: false },
         documents: { r: true, c: true, u: false, d: false },
         reports: { r: true, c: false, u: false, d: false },
+        finance: { r: true, c: true, u: true, d: false },
         'management.stores': { r: true, c: false, u: true, d: false },
         'management.staff': { r: true, c: true, u: true, d: false },
         'management.operations': { r: true, c: false, u: true, d: false },
@@ -162,9 +187,10 @@ export const DEFAULT_ROLE_RULES: Record<string, Record<string, CrudFlags>> = {
         restaurant: { r: true, c: true, u: true, d: false }, promotions: { r: true, c: true, u: true, d: true },
         customers: { r: true, c: true, u: true, d: false }, payments: { r: true, c: true, u: false, d: false },
         documents: { r: true, c: true, u: false, d: false }, reports: { r: true, c: false, u: false, d: false },
-        branches: { r: true, c: false, u: true, d: false },
+        branches: { r: true, c: true, u: true, d: false },
         'management.stores': { r: true, c: true, u: true, d: true }, 'management.staff': { r: true, c: true, u: true, d: true },
         'management.roles': { r: true, c: false, u: false, d: false }, 'management.operations': { r: true, c: true, u: true, d: false },
+        audit: { r: true, c: false, u: false, d: false },
         settings: { r: true, c: false, u: true, d: false },
     },
     branch_admin: {

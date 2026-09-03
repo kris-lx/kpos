@@ -14,8 +14,8 @@ describe('high-risk route security wiring', () => {
         const required = [
             "salesRoutes.post('/', authenticate, withTenantTx(), authorize('sales:create')",
             "salesRoutes.post('/shifts/open', authenticate, withTenantTx(), authorize('sales:create')",
-            "salesRoutes.post('/shifts/:id/close', authenticate, withTenantTx(), authorize('sales:update')",
-            "salesRoutes.post('/shifts/:id/cash-movement', authenticate, withTenantTx(), authorize('sales:update')",
+            "salesRoutes.post('/shifts/:id/close', authenticate, withTenantTx(), authorize('sales:create')",
+            "salesRoutes.post('/shifts/:id/cash-movement', authenticate, withTenantTx(), authorize('sales:create')",
             "salesRoutes.post('/held', authenticate, withTenantTx(), authorize('sales:create')",
             "salesRoutes.delete('/held/:id', authenticate, withTenantTx(), authorize('sales:update', 'sales:delete')",
             "salesRoutes.post('/credit', authenticate, withTenantTx(), authorize('pos:credit', 'sales:create')",
@@ -54,7 +54,10 @@ describe('high-risk route security wiring', () => {
 
         expect(settings).toContain("settingRoutes.post('/documents', authenticate, withTenantTx(), authorize('documents:create')");
         expect(settings).toContain("settingRoutes.patch('/documents/:id/status', authenticate, withTenantTx(), authorize('documents:update')");
-        expect(settings).toContain("settingRoutes.post('/printers/:id/test', authenticate, withTenantTx(), authorize('settings:update')");
+        expect(settings).toContain("settingRoutes.post('/printers/:id/test', authenticate, withTenantTx(), authorize('printing:manage')");
+        expect(settings).toContain("settingRoutes.post('/printers/:id/print-receipt', authenticate, withTenantTx(), authorize('printing:receipt')");
+        expect(settings).toContain("settingRoutes.post('/printers/:id/print-labels', authenticate, withTenantTx(), authorize('printing:label')");
+        expect(settings).toContain("settingRoutes.post('/print-jobs/:id/retry', authenticate, withTenantTx(), authorize('printing:reprint')");
         expect(settings).toContain("settingRoutes.post('/notifications/test-line', authenticate, withTenantTx(), authorize('settings:update')");
         expect(documents).toContain("documentRoutes.get('/settings', authenticate, withTenantTx(), authorize('documents:view', 'documents:read', 'settings:read')");
         expect(documents).toContain("documentRoutes.put('/settings', authenticate, withTenantTx(), authorize('settings:update')");

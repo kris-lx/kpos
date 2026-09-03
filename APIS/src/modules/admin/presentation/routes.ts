@@ -4,14 +4,14 @@
 
 import { Router } from 'express';
 import { totalmem, freemem } from 'os';
-import { authenticate, authorize, requireSuperAdmin, requireAdmin, requireTenantAdmin, isSuperAdmin, isAdmin, invalidateRoleRulesCache, invalidateAllUserStoreCache, invalidateUserStoreCache, branchFilter, buildTenantCondition, tenantScope, ensureScopeAccess, ROLE_LEVELS } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, requireSuperAdmin, requireAdmin, requireTenantAdmin, isSuperAdmin, isAdmin, invalidateRoleRulesCache, invalidateAllUserStoreCache, invalidateUserStoreCache, branchFilter, buildTenantCondition, buildScopeCondition, tenantScope, ensureScopeAccess, ROLE_LEVELS, resolveAssignableRole, getRoleLevel } from '@/infrastructure/http/middleware/auth.middleware';
 import { permissionsToMask } from '@/infrastructure/permissions';
 import { invalidateAllTenantPermissions } from '@/infrastructure/services/permission.service';
 import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
 import { setRequestContext, setSuperAdminBypassContext } from '@/db/set-tenant-context';
 import { db as globalDb } from '@/config/database.config';
 import { writePlatformAuditLog } from '@/infrastructure/helpers/platform-audit.helper';
-import { publish, QUEUES, isRabbitMQConnected } from '@/config/rabbitmq.config';
+import { queueActivityLog } from '@/infrastructure/helpers/activity-log.helper';
 import argon2 from 'argon2';
 import { tenants, users, sessions, roles, rules, roleRules, permissionGroups, permissions, menuPermissions, stores, userStores, productStores, storeRequests, branches, activityLogs, transactions, transactionItems, transactionPayments, heldSales, orders, orderItems, reservations, tables, cashMovements, shifts, cashRegisters, stockTransferItems, stockTransfers, stockMovements, stockCounts, stockCountItems, inventory, purchaseOrderItems, purchaseOrders, vendors, billOfMaterials, productPriceLevels, skuVariants, products, categories, priceLevels, pointsHistory, customers, pointHistory, members, membershipTiers, pointSettings, promotions, coupons, paymentMethods, discounts, settlements, documents, documentTemplates, settings, notifications, systemEnums } from '@/db/schema/tables';
 import { eq, and, or, ne, ilike, inArray, notInArray, gte, lte, desc, asc, count, sum, sql, isNull, isNotNull } from 'drizzle-orm';
@@ -183,11 +183,85 @@ adminRoutes.post('/register-and-apply', async (req, res, next) => {
 // STORE REQUESTS MANAGEMENT
 // ═══════════════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════════════
+// PLATFORM BRANDING (login-page logo) — public read, super-admin CRUD
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Public — the login page renders before any auth, so this must work with
+// no token. Safe under RLS with no tenant GUC set: the platform-scope row
+// this reads/writes always has tenantId/branchId = NULL, and every
+// *_tenant_isolation policy's `tenant_id IS NULL` clause is unconditional
+// (see drizzle/0020_superadmin_rls_bypass.sql) — it doesn't depend on
+// current_setting() at all, unlike the tenant-scoped branch of that OR.
+adminRoutes.get('/public/branding', async (req, res, next) => {
+    try {
+        // Public platform branding is intentionally tenant-agnostic and is
+        // read before authentication, so no request-scoped `db` exists.
+        // eslint-disable-next-line no-restricted-syntax -- public platform branding is explicitly filtered to tenantId/branchId NULL
+        const row = await globalDb.query.settings.findFirst({
+            where: and(eq(settings.category, 'platform'), eq(settings.key, 'loginLogo'), isNull(settings.tenantId), isNull(settings.branchId)),
+        });
+        res.json({ success: true, data: { loginLogo: (row?.value as string | undefined) ?? null } });
+    } catch (error) {
+        next(error);
+    }
+});
+
+adminRoutes.post('/branding/logo', authenticate, requireSuperAdmin(), async (req, res, next) => {
+    try {
+        const { image } = req.body;
+        if (!image) {
+            return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Image data is required' } });
+        }
+
+        const { uploadService, IMAGE_ONLY_MIME_TYPES } = await import('@/infrastructure/services/upload.service');
+        const result = await uploadService.uploadSingle(image, {
+            folder: 'kpos/platform',
+            maxWidth: 512,
+            maxHeight: 512,
+            quality: 90,
+            allowedMimeTypes: IMAGE_ONLY_MIME_TYPES,
+        });
+
+        // eslint-disable-next-line no-restricted-syntax -- platform branding is explicitly filtered to tenantId/branchId NULL
+        const existing = await globalDb.query.settings.findFirst({
+            where: and(eq(settings.category, 'platform'), eq(settings.key, 'loginLogo'), isNull(settings.tenantId), isNull(settings.branchId)),
+        });
+        if (existing) {
+            // eslint-disable-next-line no-restricted-syntax -- platform branding is a global setting
+            await globalDb.update(settings).set({ value: result.url, updatedAt: new Date() }).where(eq(settings.id, existing.id));
+        } else {
+            // eslint-disable-next-line no-restricted-syntax -- platform branding is a global setting
+            await globalDb.insert(settings).values({ category: 'platform', key: 'loginLogo', value: result.url, tenantId: null, branchId: null });
+        }
+
+        res.json({ success: true, data: { url: result.url } });
+    } catch (error) {
+        next(error);
+    }
+});
+
+adminRoutes.delete('/branding/logo', authenticate, requireSuperAdmin(), async (req, res, next) => {
+    try {
+        // eslint-disable-next-line no-restricted-syntax -- platform branding is explicitly filtered to tenantId/branchId NULL
+        const existing = await globalDb.query.settings.findFirst({
+            where: and(eq(settings.category, 'platform'), eq(settings.key, 'loginLogo'), isNull(settings.tenantId), isNull(settings.branchId)),
+        });
+        if (existing) {
+            // eslint-disable-next-line no-restricted-syntax -- platform branding is a global setting
+            await globalDb.delete(settings).where(eq(settings.id, existing.id));
+        }
+        res.json({ success: true, data: { deleted: true } });
+    } catch (error) {
+        next(error);
+    }
+});
+
 /**
  * GET /admin/requests/count - Get count of pending requests (for notification badge)
  * Must be before /requests/:id to avoid route conflict
  */
-adminRoutes.get('/requests/count', authenticate, withTenantTx(), requireTenantAdmin(), branchFilter(), async (req, res, next) => {
+adminRoutes.get('/requests/count', authenticate, withTenantTx(), requireTenantAdmin(), authorize('admin:view'), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const countConds: any[] = [eq(storeRequests.status, 'pending')];
@@ -203,7 +277,7 @@ adminRoutes.get('/requests/count', authenticate, withTenantTx(), requireTenantAd
 /**
  * GET /admin/requests - Get all store/branch requests (Super Admin only)
  */
-adminRoutes.get('/requests', authenticate, withTenantTx(), requireTenantAdmin(), branchFilter(), async (req, res, next) => {
+adminRoutes.get('/requests', authenticate, withTenantTx(), requireTenantAdmin(), authorize('admin:view'), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const { status, type, search, page = 1, limit = 20 } = req.query;
@@ -274,7 +348,7 @@ adminRoutes.get('/requests', authenticate, withTenantTx(), requireTenantAdmin(),
 /**
  * GET /admin/requests/:id - Get single request details
  */
-adminRoutes.get('/requests/:id', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.get('/requests/:id', authenticate, withTenantTx(), requireTenantAdmin(), authorize('admin:view'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const { id } = req.params;
@@ -468,59 +542,28 @@ adminRoutes.post('/requests/:id/approve', authenticate, withTenantTx(), requireA
                 canRead: true, canWrite: true, canDelete: true, canManage: true, isDefault: true, assignedBy: reviewerId as string,
             }]);
 
-            // Find or create store_owner role SCOPED to the new tenant
-            let storeOwnerRole = await db.query.roles.findFirst({
-                where: and(eq(roles.name, 'store_owner'), eq(roles.tenantId, tenantId)),
-            });
-            let isNewRole = false;
-            if (!storeOwnerRole) {
-                const [created] = await db.insert(roles).values({
-                    tenantId,
-                    name: 'store_owner', displayName: 'Store Owner',
-                    description: 'ເຈົ້າຂອງຮ້ານ - ສິດຄວບຄຸມຮ້ານທັງໝົດ',
-                    permissions: ACCESS_DEFAULT_ROLES.find(r => r.name === 'store_owner')?.permissions || [],
-                    isSystem: true,
-                }).returning();
-                storeOwnerRole = created;
-                isNewRole = true;
-            }
+            // Roles/rules are NOT auto-created here on purpose — a super_admin
+            // must create (or pick an existing) role for the new tenant and
+            // assign it via the Roles + Staff/User management screens after
+            // approval. The owner account is activated and linked to the new
+            // tenant/store/branch below, but with no roleId/role until that
+            // manual step happens — loadCachedAuthUser only ever sources
+            // permissions from an actual `roles` row via user.roleId (never a
+            // bare name string), so this account is fully locked out of
+            // tenant data until a real role is assigned, by design.
 
-            // Seed roleRules for new store_owner role so CRUD operations work after first login
-            if (isNewRole) {
-                const storeOwnerRuleMap = ACCESS_DEFAULT_ROLE_RULES['store_owner'] || {};
-                const ruleNames = Object.keys(storeOwnerRuleMap);
-                if (ruleNames.length > 0) {
-                    const existingRules = await db.query.rules.findMany({
-                        where: inArray(rules.name, ruleNames),
-                    });
-                    const ruleNameToId: Record<string, string> = {};
-                    for (const r of existingRules) { ruleNameToId[r.name] = r.id; }
-
-                    const roleRuleValues = ruleNames
-                        .filter(ruleName => ruleNameToId[ruleName])
-                        .map(ruleName => {
-                            const crud = storeOwnerRuleMap[ruleName];
-                            return {
-                                roleId: storeOwnerRole!.id,
-                                ruleId: ruleNameToId[ruleName],
-                                canRead: crud.r, canCreate: crud.c, canUpdate: crud.u, canDelete: crud.d,
-                            };
-                        });
-
-                    if (roleRuleValues.length > 0) {
-                        await db.insert(roleRules).values(roleRuleValues);
-                    }
-                }
-            }
-
-            // Activate user + assign to new tenant + role + store/branch anchors
+            // Activate user + assign to new tenant + store/branch anchors.
+            // checkerEnabled explicitly true: the founding owner is the only
+            // guaranteed person in a brand-new tenant, so they must be able
+            // to void/refund from day one — the column default is false
+            // (nobody should default to approver rights), which is right for
+            // every OTHER new user but wrong for this one specific case.
             await db.update(users).set({
                 isActive: true,
                 tenantId,
-                roleId: storeOwnerRole.id,
-                role: 'store_owner',
                 storeId: store.id,
                 branchId: targetBranchId,
+                checkerEnabled: true,
             }).where(eq(users.id, request.requesterId));
 
             // Update the storeRequest itself with the new tenantId
@@ -616,7 +659,7 @@ adminRoutes.post('/requests/:id/reject', authenticate, withTenantTx(), requireAd
 /**
  * GET /admin/branches - Get all branches with full details
  */
-adminRoutes.get('/branches', authenticate, withTenantTx(), requireTenantAdmin(), branchFilter(), async (req, res, next) => {
+adminRoutes.get('/branches', authenticate, withTenantTx(), requireTenantAdmin(), authorize('branches:view'), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const { search, isActive, page = 1, limit = 50 } = req.query;
@@ -677,7 +720,7 @@ adminRoutes.get('/branches', authenticate, withTenantTx(), requireTenantAdmin(),
 /**
  * POST /admin/branches - Create a new branch (Super Admin only)
  */
-adminRoutes.post('/branches', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.post('/branches', authenticate, withTenantTx(), requireTenantAdmin(), authorize('branches:create'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const { name, code, address, phone, email, taxId, logo, isMain, settings, parentBranchId, storeId: bodyStoreId } = req.body;
@@ -759,7 +802,7 @@ adminRoutes.post('/branches', authenticate, withTenantTx(), requireTenantAdmin()
 /**
  * PUT /admin/branches/:id - Update a branch
  */
-adminRoutes.put('/branches/:id', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.put('/branches/:id', authenticate, withTenantTx(), requireTenantAdmin(), authorize('branches:update'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const { id } = req.params;
@@ -804,7 +847,7 @@ adminRoutes.put('/branches/:id', authenticate, withTenantTx(), requireTenantAdmi
 /**
  * DELETE /admin/branches/:id - Deactivate a branch
  */
-adminRoutes.delete('/branches/:id', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.delete('/branches/:id', authenticate, withTenantTx(), requireTenantAdmin(), authorize('branches:delete'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const { id } = req.params;
@@ -843,7 +886,7 @@ adminRoutes.delete('/branches/:id', authenticate, withTenantTx(), requireTenantA
 /**
  * GET /admin/stores - Get all stores
  */
-adminRoutes.get('/stores', authenticate, withTenantTx(), requireTenantAdmin(), branchFilter(), async (req, res, next) => {
+adminRoutes.get('/stores', authenticate, withTenantTx(), requireTenantAdmin(), authorize('stores:view'), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const { search, parentStoreId, isActive, page = 1, limit = 50 } = req.query;
@@ -884,7 +927,7 @@ adminRoutes.get('/stores', authenticate, withTenantTx(), requireTenantAdmin(), b
  * POST /admin/stores - Create a new store (Tenant → Store → Branch — a store
  * no longer needs an existing branch; branches are created under it instead)
  */
-adminRoutes.post('/stores', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.post('/stores', authenticate, withTenantTx(), requireTenantAdmin(), authorize('stores:create'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const { name, code, parentStoreId, address, phone, email, settings } = req.body;
@@ -920,13 +963,16 @@ adminRoutes.post('/stores', authenticate, withTenantTx(), requireTenantAdmin(), 
 /**
  * PUT /admin/stores/:id - Update a store
  */
-adminRoutes.put('/stores/:id', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.put('/stores/:id', authenticate, withTenantTx(), requireTenantAdmin(), authorize('stores:update'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const { id } = req.params;
         const { name, code, address, phone, email, isActive, settings } = req.body;
 
-        const existing = await db.query.stores.findFirst({ where: eq(stores.id, id) });
+        const storeTenantScope = tenantScope(req, stores.tenantId);
+        const existing = await db.query.stores.findFirst({
+            where: storeTenantScope ? and(eq(stores.id, id), storeTenantScope) : eq(stores.id, id),
+        });
         if (!existing) {
             return res.status(404).json({
                 success: false,
@@ -935,7 +981,8 @@ adminRoutes.put('/stores/:id', authenticate, withTenantTx(), requireTenantAdmin(
         }
 
         if (code && code !== existing.code) {
-            const duplicate = await db.query.stores.findFirst({ where: eq(stores.code, code) });
+            const dupConds = storeTenantScope ? and(eq(stores.code, code), storeTenantScope) : eq(stores.code, code);
+            const duplicate = await db.query.stores.findFirst({ where: dupConds });
             if (duplicate) {
                 return res.status(400).json({
                     success: false,
@@ -956,12 +1003,15 @@ adminRoutes.put('/stores/:id', authenticate, withTenantTx(), requireTenantAdmin(
 /**
  * DELETE /admin/stores/:id - Deactivate a store
  */
-adminRoutes.delete('/stores/:id', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.delete('/stores/:id', authenticate, withTenantTx(), requireTenantAdmin(), authorize('stores:delete'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const { id } = req.params;
 
-        const store = await db.query.stores.findFirst({ where: eq(stores.id, id) });
+        const delStoreScope = tenantScope(req, stores.tenantId);
+        const store = await db.query.stores.findFirst({
+            where: delStoreScope ? and(eq(stores.id, id), delStoreScope) : eq(stores.id, id),
+        });
         if (!store) {
             return res.status(404).json({
                 success: false,
@@ -984,11 +1034,12 @@ adminRoutes.delete('/stores/:id', authenticate, withTenantTx(), requireTenantAdm
 /**
  * GET /admin/stores/:id/details - Get store with full details
  */
-adminRoutes.get('/stores/:id/details', authenticate, withTenantTx(), async (req, res, next) => {
+adminRoutes.get('/stores/:id/details', authenticate, withTenantTx(), authorize('stores:view'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
+        const detailsScope = tenantScope(req, stores.tenantId);
         const store = await db.query.stores.findFirst({
-            where: eq(stores.id, req.params.id),
+            where: detailsScope ? and(eq(stores.id, req.params.id), detailsScope) : eq(stores.id, req.params.id),
             with: { branches: { columns: { id: true, name: true, code: true, address: true, phone: true } } },
         });
         if (!store) {
@@ -1003,10 +1054,11 @@ adminRoutes.get('/stores/:id/details', authenticate, withTenantTx(), async (req,
 /**
  * GET /admin/stores/:id/stats - Get store statistics
  */
-adminRoutes.get('/stores/:id/stats', authenticate, withTenantTx(), async (req, res, next) => {
+adminRoutes.get('/stores/:id/stats', authenticate, withTenantTx(), authorize('stores:view'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
-        const store = await db.query.stores.findFirst({ where: eq(stores.id, req.params.id) });
+        const statsScope = tenantScope(req, stores.tenantId);
+        const store = await db.query.stores.findFirst({ where: statsScope ? and(eq(stores.id, req.params.id), statsScope) : eq(stores.id, req.params.id) });
         if (!store) {
             return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Store not found' } });
         }
@@ -1047,10 +1099,11 @@ adminRoutes.get('/stores/:id/stats', authenticate, withTenantTx(), async (req, r
 /**
  * GET /admin/stores/:id/branches - Get branches related to store
  */
-adminRoutes.get('/stores/:id/branches', authenticate, withTenantTx(), async (req, res, next) => {
+adminRoutes.get('/stores/:id/branches', authenticate, withTenantTx(), authorize('stores:view'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
-        const store = await db.query.stores.findFirst({ where: eq(stores.id, req.params.id), columns: { id: true } });
+        const branchesScope = tenantScope(req, stores.tenantId);
+        const store = await db.query.stores.findFirst({ where: branchesScope ? and(eq(stores.id, req.params.id), branchesScope) : eq(stores.id, req.params.id), columns: { id: true } });
         if (!store) {
             return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Store not found' } });
         }
@@ -1064,9 +1117,17 @@ adminRoutes.get('/stores/:id/branches', authenticate, withTenantTx(), async (req
 /**
  * GET /admin/stores/:id/users - Get users with access to store
  */
-adminRoutes.get('/stores/:id/users', authenticate, withTenantTx(), async (req, res, next) => {
+adminRoutes.get('/stores/:id/users', authenticate, withTenantTx(), authorize('staff:view'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
+        const usersStoreScope = tenantScope(req, stores.tenantId);
+        const store = await db.query.stores.findFirst({
+            where: usersStoreScope ? and(eq(stores.id, req.params.id), usersStoreScope) : eq(stores.id, req.params.id),
+            columns: { id: true },
+        });
+        if (!store) {
+            return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Store not found' } });
+        }
         const usList = await db.query.userStores.findMany({
             where: eq(userStores.storeId, req.params.id),
             with: { user: { columns: { id: true, name: true, email: true, phone: true, role: true, avatar: true, isActive: true } } },
@@ -1138,7 +1199,7 @@ adminRoutes.put('/stores/:id/update', authenticate, withTenantTx(), authorize('s
 /**
  * GET /admin/dashboard - System overview statistics (scoped to tenant)
  */
-adminRoutes.get('/dashboard', authenticate, withTenantTx(), requireTenantAdmin(), branchFilter(), async (req, res, next) => {
+adminRoutes.get('/dashboard', authenticate, withTenantTx(), requireTenantAdmin(), authorize('admin:view'), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         // Build tenant-scoped conditions for each table via centralized scope helper
@@ -1197,7 +1258,7 @@ adminRoutes.get('/dashboard', authenticate, withTenantTx(), requireTenantAdmin()
 /**
  * GET /admin/dashboard/chart-data - Chart data for Pie, Column, Line charts
  */
-adminRoutes.get('/dashboard/chart-data', authenticate, withTenantTx(), requireTenantAdmin(), branchFilter(), async (req, res, next) => {
+adminRoutes.get('/dashboard/chart-data', authenticate, withTenantTx(), requireTenantAdmin(), authorize('admin:view'), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const tenantCond = buildTenantCondition(req.branchFilter, users.tenantId);
@@ -1281,7 +1342,7 @@ adminRoutes.get('/dashboard/chart-data', authenticate, withTenantTx(), requireTe
  * Returns branches grouped by tenant with per-branch stats (products, categories, stock, users).
  * Super admin: all tenants. Tenant admin: own tenant only.
  */
-adminRoutes.get('/stores-overview', authenticate, withTenantTx(), requireTenantAdmin(), branchFilter(), async (req, res, next) => {
+adminRoutes.get('/stores-overview', authenticate, withTenantTx(), requireTenantAdmin(), authorize('admin:view'), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const authUser = req.authUser!;
@@ -1292,17 +1353,26 @@ adminRoutes.get('/stores-overview', authenticate, withTenantTx(), requireTenantA
         if (!authUser.isSuperAdmin && filter?.tenantId) {
             branchConds.push(eq(branches.tenantId, filter.tenantId));
         }
+        // Hard cap — this endpoint returns full stats for every matched
+        // branch in one response (no pagination in its shape: branches
+        // grouped by tenant). At super_admin scope with this repo's largest
+        // scale-test tenant (100k+ branches), fetching them all — even after
+        // the join-based rewrite below removed the query-time explosion —
+        // still means serializing an unbounded multi-tens-of-MB JSON payload
+        // that hangs the request. 2000 comfortably covers any real tenant
+        // roster; scale-test data is the only thing that would ever hit it.
+        const BRANCH_OVERVIEW_LIMIT = 2000;
         const allBranches = await db.query.branches.findMany({
             where: and(...branchConds),
             columns: { id: true, name: true, code: true, logo: true, tenantId: true, isMain: true, address: true, phone: true },
             orderBy: asc(branches.name),
+            limit: BRANCH_OVERVIEW_LIMIT,
         });
 
         if (allBranches.length === 0) {
             return res.json({ success: true, data: [] });
         }
 
-        const branchIds = allBranches.map(b => b.id);
         const tenantIds = [...new Set(allBranches.map(b => b.tenantId).filter(Boolean))];
 
         // Fetch tenants for grouping
@@ -1311,26 +1381,38 @@ adminRoutes.get('/stores-overview', authenticate, withTenantTx(), requireTenantA
             : [];
         const tenantMap = new Map(tenantRows.map(t => [t.id, t]));
 
-        // Per-branch counts in parallel
+        // Per-branch counts, scoped via the same branch condition as a JOIN
+        // rather than re-querying by a materialized id list — an inArray()
+        // over an unscoped super_admin's full branch set (100k+ ids on this
+        // repo's largest scale-test tenant) blew past Postgres's 65,534-
+        // bound-parameter limit (MAX_PARAMETERS_EXCEEDED, the exact error
+        // this endpoint was 500ing on for super_admin). Joining pushes the
+        // same scope down into one indexed query instead of a huge IN-list.
         const [productCounts, categoryCounts, stockCounts2, userCounts] = await Promise.all([
             // products per branch (via inventory)
             db.select({ branchId: inventory.branchId, cnt: count() })
-                .from(inventory).where(inArray(inventory.branchId, branchIds))
+                .from(inventory)
+                .innerJoin(branches, eq(inventory.branchId, branches.id))
+                .where(and(...branchConds))
                 .groupBy(inventory.branchId),
             // categories per branch (via products → categories)
             db.selectDistinct({ branchId: inventory.branchId, categoryId: products.categoryId })
                 .from(inventory)
                 .innerJoin(products, eq(inventory.productId, products.id))
-                .where(and(inArray(inventory.branchId, branchIds), isNotNull(products.categoryId))),
+                .innerJoin(branches, eq(inventory.branchId, branches.id))
+                .where(and(...branchConds, isNotNull(products.categoryId))),
             // stock value per branch
             db.select({ branchId: inventory.branchId, qty: sum(inventory.quantity), val: sql<number>`sum(${inventory.quantity} * COALESCE(${products.cost}, ${products.price}, 0))` })
                 .from(inventory)
                 .innerJoin(products, eq(inventory.productId, products.id))
-                .where(inArray(inventory.branchId, branchIds))
+                .innerJoin(branches, eq(inventory.branchId, branches.id))
+                .where(and(...branchConds))
                 .groupBy(inventory.branchId),
             // users per branch
             db.select({ branchId: users.branchId, cnt: count() })
-                .from(users).where(and(inArray(users.branchId, branchIds), eq(users.isActive, true)))
+                .from(users)
+                .innerJoin(branches, eq(users.branchId, branches.id))
+                .where(and(...branchConds, eq(users.isActive, true)))
                 .groupBy(users.branchId),
         ]);
 
@@ -1379,7 +1461,7 @@ adminRoutes.get('/stores-overview', authenticate, withTenantTx(), requireTenantA
 /**
  * POST /admin/users - Create a new user (Super Admin / Admin)
  */
-adminRoutes.post('/users', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.post('/users', authenticate, withTenantTx(), requireSuperAdmin(), authorize('staff:create'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const { email, password, name, phone, avatar, role, roleId, branchId, permissions, isActive = true } = req.body;
@@ -1401,16 +1483,58 @@ adminRoutes.post('/users', authenticate, withTenantTx(), requireTenantAdmin(), a
             });
         }
 
+        // A platform-level super admin has no tenantId of their own — for
+        // them, the target tenant must come from the request body, or every
+        // user created via this admin endpoint silently ends up orphaned
+        // (tenantId: null, unable to actually act as that tenant's staff).
+        const tenantId = req.authUser?.isSuperAdmin
+            ? (req.body.tenantId ?? null)
+            : (req.authUser?.tenantId || req.user?.tenantId);
+
+        // Resolve via the same shared path staff/presentation/routes.ts uses —
+        // handles both roleId and name-only lookups, tenant/branch visibility,
+        // and the privilege ladder (cannot assign a role above your own
+        // level). The previous ad hoc `roleId`-only lookup here left a
+        // role-name-only request (the common case — e.g. { role: "cashier" })
+        // completely unresolved: the user was created with roleId: null,
+        // which meant GET /users/me/menu had no role_rules to look up and
+        // returned an empty menu for that account.
         let roleName = role || 'staff';
-        if (roleId) {
-            const selectedRole = await db.query.roles.findFirst({ where: eq(roles.id, roleId) });
-            if (selectedRole) roleName = selectedRole.name;
+        let resolvedRoleId: string | undefined;
+        if (roleId || role) {
+            const resolved = await resolveAssignableRole(db, {
+                roleId,
+                roleName: role,
+                callerTenantId: tenantId ?? null,
+                callerBranchId: req.authUser?.activeBranchId ?? null,
+                callerRoleLevel: req.authUser?.roleLevel ?? 7,
+                callerIsSuperAdmin: req.authUser?.isSuperAdmin ?? false,
+                callerPermissions: req.authUser?.permissions || [],
+            });
+            if (resolved) {
+                roleName = resolved.name;
+                resolvedRoleId = resolved.id;
+            } else if (roleId) {
+                // Explicit roleId requested but not assignable — reject
+                // outright rather than silently falling back to a plain
+                // "staff" role the caller didn't ask for.
+                return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Role not found or not assignable' } });
+            }
         }
+
+        // Cannot grant a permission the caller doesn't personally hold —
+        // otherwise any tenant-admin-level caller could hand a brand-new
+        // account permissions: ["*"] regardless of the resolved role, since
+        // this array is merged into the user's effective permission set at
+        // auth-load time. Same guard as staff/presentation/routes.ts.
+        const rawPermissions = Array.isArray(permissions) ? permissions.filter((p: unknown) => typeof p === 'string') : [];
+        const scopedPermissions = req.authUser?.isSuperAdmin || (req.authUser?.permissions || []).includes('*')
+            ? rawPermissions
+            : rawPermissions.filter((p: string) => (req.authUser?.permissions || []).includes(p));
 
         // Hash password
         const hashedPassword = await argon2.hash(password);
 
-        const tenantId = req.authUser?.tenantId || req.user?.tenantId;
         const [user] = await db.insert(users).values({
             tenantId,
             email,
@@ -1419,11 +1543,26 @@ adminRoutes.post('/users', authenticate, withTenantTx(), requireTenantAdmin(), a
             phone,
             avatar,
             role: roleName,
-            roleId,
+            roleId: resolvedRoleId,
             branchId,
-            permissions: permissions || [],
+            permissions: scopedPermissions,
             isActive,
-        }).returning();
+        }).returning({
+            id: users.id,
+            tenantId: users.tenantId,
+            email: users.email,
+            name: users.name,
+            phone: users.phone,
+            avatar: users.avatar,
+            role: users.role,
+            roleId: users.roleId,
+            branchId: users.branchId,
+            permissions: users.permissions,
+            isActive: users.isActive,
+            isSuperAdmin: users.isSuperAdmin,
+            createdAt: users.createdAt,
+            updatedAt: users.updatedAt,
+        });
 
         // Log activity
         await logActivity(req.authUser!.userId, 'user_created', `ສ້າງຜູ້ໃຊ້ໃໝ່: ${name}`, { targetUserId: user.id }, req);
@@ -1437,7 +1576,7 @@ adminRoutes.post('/users', authenticate, withTenantTx(), requireTenantAdmin(), a
 /**
  * GET /admin/users - List all users (Super Admin)
  */
-adminRoutes.get('/users', authenticate, withTenantTx(), requireTenantAdmin(), branchFilter(), async (req, res, next) => {
+adminRoutes.get('/users', authenticate, withTenantTx(), requireSuperAdmin(), authorize('staff:view'), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const { search, branchId, isActive, isSuperAdmin, page = 1, limit = 20 } = req.query;
@@ -1641,13 +1780,13 @@ adminRoutes.get('/check-super-admin', authenticate, withTenantTx(), async (req, 
 /**
  * GET /admin/permissions - Get all permission groups (dynamic from database or default)
  */
-adminRoutes.get('/permissions', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.get('/permissions', authenticate, withTenantTx(), requireSuperAdmin(), authorize('admin:view'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const dbPermissions = await db.query.permissionGroups.findMany({
             where: eq(permissionGroups.isActive, true),
             orderBy: asc(permissionGroups.order),
-            with: { permissions: true },
+            with: { permissions: { where: eq(permissions.isActive, true), orderBy: asc(permissions.order) } },
         });
 
         if (dbPermissions.length > 0) {
@@ -1672,22 +1811,90 @@ adminRoutes.get('/permissions', authenticate, withTenantTx(), requireTenantAdmin
 /**
  * POST /admin/permissions - Create/Update permission groups (Super Admin only)
  */
-adminRoutes.post('/permissions', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.post('/permissions', authenticate, withTenantTx(), requireSuperAdmin(), authorize('admin:manage'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const { groups } = req.body;
 
-        await db.delete(permissions);
-        await db.delete(permissionGroups);
+        if (!Array.isArray(groups)) {
+            return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'groups must be an array' } });
+        }
+
+        const seenGroupKeys = new Set<string>();
+        const seenPermissionKeys = new Set<string>();
+        for (const group of groups) {
+            if (!group || typeof group.key !== 'string' || !group.key.trim() || !Array.isArray(group.permissions)) {
+                return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Each group needs a key and permissions array' } });
+            }
+            if (seenGroupKeys.has(group.key)) {
+                return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: `Duplicate permission group: ${group.key}` } });
+            }
+            seenGroupKeys.add(group.key);
+            for (const permission of group.permissions) {
+                if (!permission || typeof permission.key !== 'string' || !permission.key.trim()) {
+                    return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Each permission needs a key' } });
+                }
+                if (seenPermissionKeys.has(permission.key)) {
+                    return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: `Duplicate permission: ${permission.key}` } });
+                }
+                seenPermissionKeys.add(permission.key);
+            }
+        }
+
+        // Keep catalog rows stable because roles and audit data may reference
+        // their IDs. Deactivate rows omitted from the submitted catalog, then
+        // update or insert the rows that remain.
+        await db.update(permissions).set({ isActive: false, updatedAt: new Date() });
+        await db.update(permissionGroups).set({ isActive: false, updatedAt: new Date() });
+
+        const existingGroups = await db.query.permissionGroups.findMany();
+        const existingPermissions = await db.query.permissions.findMany();
+        const groupsByKey = new Map(existingGroups.map(group => [group.key, group]));
+        const permissionsByKey = new Map(existingPermissions.map(permission => [permission.key, permission]));
 
         for (let i = 0; i < groups.length; i++) {
             const group = groups[i];
-            const [pg] = await db.insert(permissionGroups).values({ key: group.key, label: group.label, icon: group.icon, color: group.color, order: i, isActive: true }).returning();
+            const existingGroup = groupsByKey.get(group.key);
+            let pg = existingGroup;
+            if (existingGroup) {
+                const [updatedGroup] = await db.update(permissionGroups)
+                    .set({ label: group.label, icon: group.icon, color: group.color, order: i, isActive: true, updatedAt: new Date() })
+                    .where(eq(permissionGroups.id, existingGroup.id))
+                    .returning();
+                pg = updatedGroup;
+            } else {
+                const [createdGroup] = await db.insert(permissionGroups)
+                    .values({ key: group.key, label: group.label, icon: group.icon, color: group.color, order: i, isActive: true })
+                    .returning();
+                pg = createdGroup;
+            }
             for (let j = 0; j < group.permissions.length; j++) {
                 const p = group.permissions[j];
-                await db.insert(permissions).values({ key: p.key, label: p.label, groupId: pg.id, order: j, isActive: true });
+                const existingPermission = permissionsByKey.get(p.key);
+                if (existingPermission) {
+                    await db.update(permissions)
+                        .set({ label: p.label, groupId: pg.id, order: j, isActive: true, updatedAt: new Date() })
+                        .where(eq(permissions.id, existingPermission.id));
+                } else {
+                    await db.insert(permissions)
+                        .values({ key: p.key, label: p.label, groupId: pg.id, order: j, isActive: true });
+                }
             }
         }
+
+        await logActivity(
+            req.authUser!.userId,
+            'permission_catalog_updated',
+            `Updated ${groups.length} permission groups and ${seenPermissionKeys.size} permissions`,
+            { groupCount: groups.length, permissionCount: seenPermissionKeys.size },
+            req,
+        );
+
+        // A global catalog change can affect every tenant role's effective
+        // permission mask and the menu cached for already-signed-in users.
+        const tenantRows = await db.query.tenants.findMany({ columns: { id: true } });
+        await Promise.all(tenantRows.map(tenant => invalidateAllTenantPermissions(tenant.id).catch(() => {})));
+        await invalidateAllUserStoreCache();
 
         res.json({ success: true, message: 'Permissions updated successfully' });
     } catch (error) {
@@ -1702,7 +1909,7 @@ adminRoutes.post('/permissions', authenticate, withTenantTx(), requireTenantAdmi
 /**
  * GET /admin/roles - Get all roles
  */
-adminRoutes.get('/roles', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.get('/roles', authenticate, withTenantTx(), requireSuperAdmin(), authorize('roles:view'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const { search, page = 1, limit = 50 } = req.query;
@@ -1738,7 +1945,7 @@ adminRoutes.get('/roles', authenticate, withTenantTx(), requireTenantAdmin(), as
  * GET /admin/roles/templates - Get default role templates
  * MUST be before /roles/:id to prevent Express matching 'templates' as :id
  */
-adminRoutes.get('/roles/templates', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res) => {
+adminRoutes.get('/roles/templates', authenticate, withTenantTx(), requireSuperAdmin(), authorize('roles:view'), async (req, res) => {
     // Add a stable id so frontend keyed-each blocks don't crash on undefined
     const templates = ACCESS_DEFAULT_ROLES.map(r => ({ ...r, id: r.name }));
     res.json({ success: true, data: templates });
@@ -1768,6 +1975,7 @@ adminRoutes.post('/roles/seed', authenticate, withTenantTx(), requireSuperAdmin(
                 const [updated] = await db.update(roles).set({
                     displayName: roleData.displayName, description: roleData.description,
                     permissions: roleData.permissions, isSystem: roleData.isSystem,
+                    level: roleData.level,
                     maskLow: mask.low, maskHigh: mask.high,
                 }).where(eq(roles.id, existing.id)).returning();
                 results.push({ ...updated, action: 'updated' });
@@ -1790,7 +1998,7 @@ adminRoutes.post('/roles/seed', authenticate, withTenantTx(), requireSuperAdmin(
 /**
  * GET /admin/roles/:id - Get single role
  */
-adminRoutes.get('/roles/:id', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.get('/roles/:id', authenticate, withTenantTx(), requireSuperAdmin(), authorize('roles:view'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const { id } = req.params;
@@ -1813,27 +2021,54 @@ adminRoutes.get('/roles/:id', authenticate, withTenantTx(), requireTenantAdmin()
 /**
  * POST /admin/roles - Create a new role
  */
-adminRoutes.post('/roles', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.post('/roles', authenticate, withTenantTx(), requireSuperAdmin(), authorize('roles:create'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
-        const { name, displayName, description, permissions } = req.body;
+        const { name, displayName, description, permissions, level, tenantId: targetTenantId } = req.body;
 
-        // Super-admin creates global roles (tenantId=null); others create tenant-scoped roles
-        const roleTenantId = req.authUser?.isSuperAdmin ? null : (req.authUser?.tenantId || req.user?.tenantId || null);
+        // Super-admin creates a global role (tenantId=null) by default, or a
+        // role scoped to a SPECIFIC tenant when they pass one explicitly —
+        // this is how a super_admin assigns a real role to a newly-approved
+        // store's owner (roles are no longer auto-created at registration
+        // time; see POST /admin/requests/:id/approve). Without this, there
+        // was no way to create a tenant-scoped role on behalf of a tenant
+        // that has no admin of its own yet to do it themselves.
+        let roleTenantId: string | null;
+        if (req.authUser?.isSuperAdmin) {
+            if (targetTenantId) {
+                const targetTenant = await db.query.tenants.findFirst({ where: eq(tenants.id, targetTenantId), columns: { id: true } });
+                if (!targetTenant) {
+                    return res.status(400).json({ success: false, error: { code: 'INVALID_TENANT', message: 'Tenant not found' } });
+                }
+            }
+            roleTenantId = targetTenantId || null;
+        } else {
+            roleTenantId = req.authUser?.tenantId || req.user?.tenantId || null;
+        }
+
+        // Explicit level wins; unset falls back to the matching built-in
+        // name's level, then 7 — see roles/presentation/routes.ts POST / for
+        // why this is now a persisted DB fact rather than re-derived from
+        // name on every read.
+        const requestedLevel = Number.isInteger(level) ? Number(level) : (ROLE_LEVELS[name] ?? 7);
+        if (requestedLevel < 1 || requestedLevel > 7) {
+            return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'level must be between 1 and 7' } });
+        }
 
         // Privilege ladder: cannot create a role more privileged than your own.
         const callerLevel = req.authUser?.roleLevel ?? 7;
         if (!req.authUser?.isSuperAdmin && callerLevel > 2) {
-            const targetLevel = ROLE_LEVELS[name] ?? 7;
-            if (targetLevel < callerLevel) {
+            if (requestedLevel < callerLevel) {
                 return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot create a role with higher privileges than your own' } });
             }
         }
 
-        // Branch ownership: branch-level callers (level >= 5) may only create roles
-        // private to their own branch — never tenant-wide templates.
+        // Branch ownership: branch-level callers (level >= 4 — branch_admin
+        // included) may only create roles private to their own branch —
+        // never tenant-wide templates. See the matching comment in
+        // roles/presentation/routes.ts POST / for why this cutoff is 4, not 5.
         let roleBranchId: string | null = null;
-        if (!req.authUser?.isSuperAdmin && callerLevel >= 5) {
+        if (!req.authUser?.isSuperAdmin && callerLevel >= 4) {
             roleBranchId = req.authUser?.activeBranchId || null;
             if (!roleBranchId) {
                 return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No branch context available to create a branch role' } });
@@ -1872,7 +2107,7 @@ adminRoutes.post('/roles', authenticate, withTenantTx(), requireTenantAdmin(), a
         const mask = permissionsToMask(perms);
         const [role] = await db.insert(roles).values({
             tenantId: roleTenantId, branchId: roleBranchId, name, displayName, description,
-            permissions: perms, isSystem: false,
+            permissions: perms, isSystem: false, level: requestedLevel,
             maskLow: mask.low, maskHigh: mask.high,
         }).returning();
 
@@ -1888,11 +2123,11 @@ adminRoutes.post('/roles', authenticate, withTenantTx(), requireTenantAdmin(), a
 /**
  * PATCH /admin/roles/:id - Update a role
  */
-adminRoutes.patch('/roles/:id', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.patch('/roles/:id', authenticate, withTenantTx(), requireSuperAdmin(), authorize('roles:update'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const { id } = req.params;
-        const { name, displayName, description, permissions } = req.body;
+        const { name, displayName, description, permissions, level } = req.body;
 
         // Tenant + branch scoped lookup — a tenant/branch admin can only touch
         // roles they own (prevents cross-tenant / cross-branch edits).
@@ -1901,7 +2136,7 @@ adminRoutes.patch('/roles/:id', authenticate, withTenantTx(), requireTenantAdmin
         if (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) {
             patchConds.push(eq(roles.tenantId, req.authUser.tenantId));
         }
-        if (!req.authUser?.isSuperAdmin && callerLevel >= 5) {
+        if (!req.authUser?.isSuperAdmin && callerLevel >= 4) {
             patchConds.push(eq(roles.branchId, req.authUser?.activeBranchId ?? '__none__'));
         }
         const existing = await db.query.roles.findFirst({ where: and(...patchConds) });
@@ -1916,10 +2151,17 @@ adminRoutes.patch('/roles/:id', authenticate, withTenantTx(), requireTenantAdmin
         if (existing.isSystem) {
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot modify system roles' } });
         }
+        // Explicit level wins; unset leaves the role's current DB level
+        // unchanged (never re-derived from name).
+        let requestedLevel = existing.level;
+        if (level !== undefined) {
+            if (!Number.isInteger(level) || level < 1 || level > 7) {
+                return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'level must be between 1 and 7' } });
+            }
+            requestedLevel = level;
+        }
         if (!req.authUser?.isSuperAdmin && callerLevel > 2) {
-            const existingLevel = ROLE_LEVELS[existing.name] ?? 7;
-            const targetLevel = ROLE_LEVELS[name || existing.name] ?? 7;
-            if (existingLevel < callerLevel || targetLevel < callerLevel) {
+            if (existing.level < callerLevel || requestedLevel < callerLevel) {
                 return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Cannot modify a role with higher privileges than your own' } });
             }
         }
@@ -1959,14 +2201,24 @@ adminRoutes.patch('/roles/:id', authenticate, withTenantTx(), requireTenantAdmin
             displayName: displayName || existing.displayName,
             description: description !== undefined ? description : existing.description,
             permissions: newPerms,
+            level: requestedLevel,
             maskLow: mask.low,
             maskHigh: mask.high,
         }).where(eq(roles.id, id)).returning();
 
-        // Invalidate cached permission masks for all users of this tenant
+        // Invalidate cached permissions/menu for every user holding this role.
+        // invalidateAllTenantPermissions only busts the kpos:rbac:* bitmask
+        // cache — it never touches kpos:auth:{userId}, the cache actually
+        // read on every authenticated request (menu, permission checks).
+        // Same gap as the sibling roles/:id PUT handler — see its comment.
         if (role.tenantId) {
             invalidateAllTenantPermissions(role.tenantId).catch(() => {});
         }
+        const affectedUsers = await db.query.users.findMany({
+            where: eq(users.roleId, id),
+            columns: { id: true },
+        });
+        await Promise.all(affectedUsers.map(u => invalidateUserStoreCache(u.id).catch(() => {})));
 
         // Log activity
         await logActivity(req.authUser!.userId, 'role_updated', `ແກ້ໄຂບົດບາດ: ${role.displayName}`, { roleId: role.id }, req);
@@ -1980,7 +2232,7 @@ adminRoutes.patch('/roles/:id', authenticate, withTenantTx(), requireTenantAdmin
 /**
  * DELETE /admin/roles/:id - Delete a role
  */
-adminRoutes.delete('/roles/:id', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.delete('/roles/:id', authenticate, withTenantTx(), requireSuperAdmin(), authorize('roles:delete'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const { id } = req.params;
@@ -1991,7 +2243,7 @@ adminRoutes.delete('/roles/:id', authenticate, withTenantTx(), requireTenantAdmi
         if (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) {
             delConds.push(eq(roles.tenantId, req.authUser.tenantId));
         }
-        if (!req.authUser?.isSuperAdmin && callerLevel >= 5) {
+        if (!req.authUser?.isSuperAdmin && callerLevel >= 4) {
             delConds.push(eq(roles.branchId, req.authUser?.activeBranchId ?? '__none__'));
         }
 
@@ -2034,6 +2286,50 @@ adminRoutes.delete('/roles/:id', authenticate, withTenantTx(), requireTenantAdmi
 // ACTIVITY LOGS & AUDIT
 // ═══════════════════════════════════════════════════════════════════════════
 
+const AUDIT_CATEGORY_ACTIONS: Record<string, string[]> = {
+    activity: [],
+    sales: ['sale_created', 'sale_voided', 'sale_refunded', 'payment_refunded', 'payment_voided'],
+    inventory: [
+        'inventory_adjusted', 'inventory_transferred', 'transfer_created',
+        'transfer_approved', 'transfer_rejected', 'stock_count_approved',
+        'stock_count_rejected',
+    ],
+    staff: ['staff_created', 'staff_updated', 'staff_workflow_updated', 'staff_permissions_updated', 'user_created', 'user_updated', 'user_deleted'],
+    access: [
+        'role_created', 'role_updated', 'role_deleted', 'role_assigned', 'roles_seeded',
+        'rule_created', 'rule_updated', 'rule_deleted', 'role_rules_updated',
+        'rules_seeded', 'rules_matrix_saved', 'role_rules_copied',
+    ],
+    security: ['login', 'logout', 'login_failed', 'session_revoked'],
+    finance: [
+        'expense_created', 'expense_submitted', 'expense_approved', 'expense_rejected', 'expense_paid',
+        'payroll_tax_profile_created', 'payroll_work_policy_created', 'compensation_created',
+        'payroll_period_created', 'payroll_calculated', 'payroll_submitted', 'payroll_approved',
+        'payroll_rejected', 'payroll_paid', 'payroll_closed', 'payroll_reversed',
+        'payroll_adjustment_created', 'payroll_adjustment_approved',
+    ],
+    approvals: [
+        'transfer_approved', 'transfer_rejected', 'stock_count_approved',
+        'stock_count_rejected', 'invoice_approved', 'invoice_rejected',
+        'tax_invoice_approved', 'tax_invoice_rejected',
+        'expense_approved', 'expense_rejected', 'payroll_approved', 'payroll_rejected',
+        'payroll_adjustment_approved',
+    ],
+};
+
+function auditCategoryCondition(category: unknown) {
+    const actions = typeof category === 'string' ? AUDIT_CATEGORY_ACTIONS[category] : undefined;
+    return actions?.length ? inArray(activityLogs.action, actions) : undefined;
+}
+
+function auditScopeCondition(req: any) {
+    return buildScopeCondition(
+        req.branchFilter,
+        { tenantId: activityLogs.tenantId, branchId: activityLogs.branchId, storeId: activityLogs.storeId },
+        'storeId',
+    );
+}
+
 /**
  * Helper function to log activity — publishes to queue if available, else writes sync
  */
@@ -2045,31 +2341,14 @@ async function logActivity(
     req?: any
 ) {
     try {
-        const payload = {
+        await queueActivityLog(
             userId,
             action,
-            resource: action.split('_')[0] || 'admin',
-            details: description,
-            metadata: metadata || {},
-            ip: req?.ip || req?.headers?.['x-forwarded-for'] || null,
-            userAgent: req?.headers?.['user-agent'] || null,
-        };
-
-        // Try async queue first; fall back to synchronous DB write
-        const tenantId = req?.authUser?.tenantId || req?.user?.tenantId || undefined;
-        const queued = isRabbitMQConnected() && publish(QUEUES.ACTIVITY_LOG, { ...payload, tenantId } as Record<string, unknown>);
-        if (!queued) {
-            // eslint-disable-next-line no-restricted-syntax -- tenantId already explicit in the insert values above
-            await globalDb.insert(activityLogs).values({
-                tenantId,
-                userId,
-                action,
-                description,
-                metadata: metadata || {},
-                ip: payload.ip,
-                userAgent: payload.userAgent,
-            });
-        }
+            action.split('_')[0] || 'admin',
+            description,
+            metadata || {},
+            req,
+        );
     } catch (error) {
         console.error('Failed to log activity:', error);
     }
@@ -2078,7 +2357,7 @@ async function logActivity(
 /**
  * GET /admin/activity - Get recent activity (for dashboard)
  */
-adminRoutes.get('/activity', authenticate, withTenantTx(), requireTenantAdmin(), branchFilter(), async (req, res, next) => {
+adminRoutes.get('/activity', authenticate, withTenantTx(), requireTenantAdmin(), authorize('admin:view'), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const { limit = 10 } = req.query;
@@ -2102,15 +2381,17 @@ adminRoutes.get('/activity', authenticate, withTenantTx(), requireTenantAdmin(),
 /**
  * GET /admin/audit - Get audit logs with filtering
  */
-adminRoutes.get('/audit', authenticate, withTenantTx(), requireTenantAdmin(), branchFilter(), async (req, res, next) => {
+adminRoutes.get('/audit', authenticate, withTenantTx(), requireTenantAdmin(), authorize('audit:view'), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
-        const { search, action, userId, dateFrom, dateTo, page = 1, limit = 20 } = req.query;
+        const { search, action, category, userId, dateFrom, dateTo, page = 1, limit = 20 } = req.query;
         const skip = (Number(page) - 1) * Number(limit);
 
         const aConds: any[] = [];
-        const tenantScope = buildTenantCondition(req.branchFilter, activityLogs.tenantId);
+        const tenantScope = auditScopeCondition(req);
         if (tenantScope) aConds.push(tenantScope);
+        const categoryScope = auditCategoryCondition(category);
+        if (categoryScope) aConds.push(categoryScope);
         if (action) aConds.push(eq(activityLogs.action, String(action)));
         if (userId) aConds.push(eq(activityLogs.userId, String(userId)));
         if (dateFrom) aConds.push(gte(activityLogs.createdAt, new Date(String(dateFrom))));
@@ -2125,13 +2406,17 @@ adminRoutes.get('/audit', authenticate, withTenantTx(), requireTenantAdmin(), br
             db.query.activityLogs.findMany({
                 where: aWhere, offset: skip, limit: Number(limit),
                 orderBy: desc(activityLogs.createdAt),
-                with: { user: { columns: { id: true, name: true, email: true } } },
+                with: {
+                    user: { columns: { id: true, name: true, email: true } },
+                    store: { columns: { id: true, name: true } },
+                    branch: { columns: { id: true, name: true, code: true } },
+                },
             }),
             db.select({ value: count() }).from(activityLogs).where(aWhere),
             Promise.all([
-                db.select({ value: count() }).from(activityLogs).where(ilike(activityLogs.action, '%login%')),
-                db.select({ value: count() }).from(activityLogs).where(ilike(activityLogs.action, '%updated%')),
-                db.select({ value: count() }).from(activityLogs).where(ilike(activityLogs.action, '%failed%')),
+                db.select({ value: count() }).from(activityLogs).where(and(aWhere, ilike(activityLogs.action, '%login%'))),
+                db.select({ value: count() }).from(activityLogs).where(and(aWhere, ilike(activityLogs.action, '%updated%'))),
+                db.select({ value: count() }).from(activityLogs).where(and(aWhere, ilike(activityLogs.action, '%failed%'))),
             ])
         ]);
 
@@ -2159,30 +2444,40 @@ adminRoutes.get('/audit', authenticate, withTenantTx(), requireTenantAdmin(), br
 /**
  * GET /admin/audit/export - Export audit logs as CSV
  */
-adminRoutes.get('/audit/export', authenticate, withTenantTx(), requireTenantAdmin(), branchFilter(), async (req, res, next) => {
+adminRoutes.get('/audit/export', authenticate, withTenantTx(), requireTenantAdmin(), authorize('audit:view'), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
-        const { action, userId, dateFrom, dateTo } = req.query;
+        const { search, action, category, userId, dateFrom, dateTo } = req.query;
 
         const eConds: any[] = [];
-        const tenantScope = buildTenantCondition(req.branchFilter, activityLogs.tenantId);
+        const tenantScope = auditScopeCondition(req);
         if (tenantScope) eConds.push(tenantScope);
+        const categoryScope = auditCategoryCondition(category);
+        if (categoryScope) eConds.push(categoryScope);
         if (action) eConds.push(eq(activityLogs.action, String(action)));
         if (userId) eConds.push(eq(activityLogs.userId, String(userId)));
         if (dateFrom) eConds.push(gte(activityLogs.createdAt, new Date(String(dateFrom))));
         if (dateTo) eConds.push(lte(activityLogs.createdAt, new Date(String(dateTo) + 'T23:59:59.999Z')));
+        if (search) {
+            const s = String(search);
+            eConds.push(or(ilike(activityLogs.description, '%' + s + '%'), ilike(activityLogs.action, '%' + s + '%')));
+        }
         const eWhere = eConds.length > 0 ? and(...eConds) : undefined;
 
         const logs = await db.query.activityLogs.findMany({
             where: eWhere, orderBy: desc(activityLogs.createdAt), limit: 10000,
-            with: { user: { columns: { name: true, email: true } } },
+            with: {
+                user: { columns: { name: true, email: true } },
+                store: { columns: { name: true } },
+                branch: { columns: { name: true, code: true } },
+            },
         });
 
         // Generate CSV
-        const csvHeader = 'Date,Time,User,Email,Action,Description,IP\n';
+        const csvHeader = 'Date,Time,User,Email,Store,Branch,Action,Description,IP\n';
         const csvRows = logs.map(log => {
             const date = new Date(log.createdAt);
-            return `"${date.toLocaleDateString()}","${date.toLocaleTimeString()}","${log.user?.name || 'System'}","${log.user?.email || ''}","${log.action}","${log.description || ''}","${log.ip || ''}"`;
+            return `"${date.toLocaleDateString()}","${date.toLocaleTimeString()}","${log.user?.name || 'System'}","${log.user?.email || ''}","${log.store?.name || ''}","${log.branch?.name || log.branch?.code || ''}","${log.action}","${log.description || ''}","${log.ip || ''}"`;
         }).join('\n');
 
         res.setHeader('Content-Type', 'text/csv');
@@ -2313,7 +2608,7 @@ adminRoutes.get('/system/health', authenticate, withTenantTx(), requireAdmin(), 
 /**
  * GET /admin/users/:id - Get single user details
  */
-adminRoutes.get('/users/:id', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.get('/users/:id', authenticate, withTenantTx(), requireSuperAdmin(), authorize('staff:view'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const { id } = req.params;
@@ -2357,7 +2652,7 @@ adminRoutes.get('/users/:id', authenticate, withTenantTx(), requireTenantAdmin()
 /**
  * PATCH /admin/users/:id - Update user
  */
-adminRoutes.patch('/users/:id', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.patch('/users/:id', authenticate, withTenantTx(), requireSuperAdmin(), authorize('staff:update'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const { id } = req.params;
@@ -2381,12 +2676,6 @@ adminRoutes.patch('/users/:id', authenticate, withTenantTx(), requireTenantAdmin
             }
         }
 
-        let roleName = existing.role;
-        if (roleId) {
-            const role = await db.query.roles.findFirst({ where: eq(roles.id, roleId) });
-            if (role) roleName = role.name;
-        }
-
         // Tenant scoping: System Admins can only update users within their own tenant
         if (!req.authUser!.isSuperAdmin && req.authUser!.tenantId) {
             if (existing.tenantId && existing.tenantId !== req.authUser!.tenantId) {
@@ -2394,14 +2683,33 @@ adminRoutes.patch('/users/:id', authenticate, withTenantTx(), requireTenantAdmin
             }
         }
 
+        let roleName = existing.role;
+        let resolvedRoleId = roleId;
+        if (roleId) {
+            // Tenant-scoped lookup — see POST /admin/users for why this matters.
+            const roleConds = [eq(roles.id, roleId)];
+            if (!req.authUser!.isSuperAdmin && req.authUser!.tenantId) roleConds.push(eq(roles.tenantId, req.authUser!.tenantId));
+            const role = await db.query.roles.findFirst({ where: and(...roleConds) });
+            if (role) {
+                roleName = role.name;
+            } else {
+                resolvedRoleId = undefined;
+            }
+        }
+
         const updateData: Record<string, unknown> = {};
         if (name !== undefined) updateData.name = name;
         if (email !== undefined) updateData.email = email;
         if (phone !== undefined) updateData.phone = phone;
-        if (roleId !== undefined) { updateData.roleId = roleId; updateData.role = roleName; }
+        if (roleId !== undefined && resolvedRoleId !== undefined) { updateData.roleId = resolvedRoleId; updateData.role = roleName; }
         if (branchId !== undefined) updateData.branchId = branchId;
         if (permissions !== undefined && Array.isArray(permissions)) {
-            updateData.permissions = permissions.filter((p: unknown) => typeof p === 'string');
+            // Cannot grant a permission the caller doesn't personally hold —
+            // same escalation guard as POST /admin/users above.
+            const rawPermissions = permissions.filter((p: unknown) => typeof p === 'string');
+            updateData.permissions = req.authUser!.isSuperAdmin || (req.authUser!.permissions || []).includes('*')
+                ? rawPermissions
+                : rawPermissions.filter((p: string) => (req.authUser!.permissions || []).includes(p));
         }
         if (isActive !== undefined) updateData.isActive = isActive;
 
@@ -2433,7 +2741,7 @@ adminRoutes.patch('/users/:id', authenticate, withTenantTx(), requireTenantAdmin
 /**
  * DELETE /admin/users/:id - Deactivate user
  */
-adminRoutes.delete('/users/:id', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.delete('/users/:id', authenticate, withTenantTx(), requireSuperAdmin(), authorize('staff:delete'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const { id } = req.params;
@@ -2642,6 +2950,16 @@ adminRoutes.delete('/enums/:id', authenticate, withTenantTx(), requireAdmin(), a
 
 const DEFAULT_PERMISSION_GROUPS = [
     {
+        key: "printing", label: "Printing", icon: "Printer", color: "from-cyan-500 to-blue-500",
+        permissions: [
+            { key: "printing:view", label: "View print jobs" },
+            { key: "printing:receipt", label: "Print receipts" },
+            { key: "printing:label", label: "Print barcode labels" },
+            { key: "printing:reprint", label: "Retry and reprint jobs" },
+            { key: "printing:manage", label: "Manage printers" },
+        ]
+    },
+    {
         key: "dashboard", label: "ແຜງຄວບຄຸມ", icon: "LayoutDashboard", color: "from-indigo-500 to-blue-500",
         permissions: [
             { key: "dashboard:view", label: "ເບິ່ງແຜງຄວບຄຸມ" },
@@ -2752,6 +3070,14 @@ const DEFAULT_PERMISSION_GROUPS = [
             { key: "staff:create", label: "ເພີ່ມພະນັກງານ" },
             { key: "staff:update", label: "ແກ້ໄຂພະນັກງານ" },
             { key: "staff:delete", label: "ລຶບພະນັກງານ" },
+        ]
+    },
+    {
+        key: "attendance", label: "ການເຂົ້າວຽກ", icon: "CalendarClock", color: "from-emerald-500 to-teal-500",
+        permissions: [
+            { key: "attendance:clock", label: "ເຂົ້າ / ອອກວຽກຂອງຕົນເອງ" },
+            { key: "attendance:view", label: "ເບິ່ງບັນທຶກເວລາພະນັກງານ" },
+            { key: "attendance:manage", label: "ເພີ່ມ ແກ້ ແລະຍົກເລີກບັນທຶກເວລາ" },
         ]
     },
     {
@@ -2935,12 +3261,12 @@ const DEFAULT_MENU_STRUCTURE = [
         icon: "BarChart3",
         requiredPermission: "reports:view",
         children: [
-            { key: "reports.sales", label: "Sales Report", labelLao: "ລາຍງານການຂາຍ", icon: "BarChart3", path: "/reports", requiredPermission: "reports:view" },
-            { key: "reports.products", label: "Product Report", labelLao: "ລາຍງານສິນຄ້າ", icon: "Package", path: "/reports/products", requiredPermission: "reports:view" },
-            { key: "reports.inventory", label: "Inventory Report", labelLao: "ລາຍງານສາງ", icon: "Boxes", path: "/reports/inventory", requiredPermission: "reports:view" },
-            { key: "reports.financial", label: "Financial Report", labelLao: "ລາຍງານການເງິນ", icon: "DollarSign", path: "/reports/financial", requiredPermission: "reports:view" },
-            { key: "reports.staff", label: "Staff Report", labelLao: "ລາຍງານພະນັກງານ", icon: "UserCog", path: "/reports/staff", requiredPermission: "reports:view" },
-            { key: "reports.customers", label: "Customer Report", labelLao: "ລາຍງານລູກຄ້າ", icon: "Users", path: "/reports/customers", requiredPermission: "reports:view" },
+            { key: "reports.sales", label: "Sales Report", labelLao: "ລາຍງານການຂາຍ", icon: "BarChart3", path: "/reports", requiredPermission: "reports:sales" },
+            { key: "reports.products", label: "Product Report", labelLao: "ລາຍງານສິນຄ້າ", icon: "Package", path: "/reports/products", requiredPermission: "reports:products" },
+            { key: "reports.inventory", label: "Inventory Report", labelLao: "ລາຍງານສາງ", icon: "Boxes", path: "/reports/inventory", requiredPermission: "reports:inventory" },
+            { key: "reports.financial", label: "Financial Report", labelLao: "ລາຍງານການເງິນ", icon: "DollarSign", path: "/reports/financial", requiredPermission: "reports:financial" },
+            { key: "reports.staff", label: "Staff Report", labelLao: "ລາຍງານພະນັກງານ", icon: "UserCog", path: "/reports/staff", requiredPermission: "reports:staff" },
+            { key: "reports.customers", label: "Customer Report", labelLao: "ລາຍງານລູກຄ້າ", icon: "Users", path: "/reports/customers", requiredPermission: "reports:customers" },
         ]
     },
     {
@@ -2953,8 +3279,9 @@ const DEFAULT_MENU_STRUCTURE = [
             { key: "management.branches", label: "Branches", labelLao: "ສາຂາ", icon: "Building2", path: "/branches", requiredPermission: "branches:view" },
             { key: "management.stores", label: "Stores", labelLao: "ຮ້ານຄ້າ", icon: "Store", path: "/management/stores", requiredPermission: "stores:view" },
             { key: "management.staff", label: "Staff", labelLao: "ພະນັກງານ", icon: "Users", path: "/staff", requiredPermission: "staff:view" },
+            { key: "management.attendance", label: "Attendance", labelLao: "ບັນທຶກເຂົ້າວຽກ", icon: "CalendarClock", path: "/staff/attendance" },
             { key: "management.roles", label: "Roles", labelLao: "ບົດບາດ", icon: "Key", path: "/staff/roles", requiredPermission: "roles:view" },
-            { key: "management.shifts", label: "Shifts", labelLao: "ກະວຽກ", icon: "Clock", path: "/staff/shifts", requiredPermission: "staff:view" },
+            { key: "management.shifts", label: "Cash Shifts", labelLao: "ກະເງິນສົດ", icon: "Banknote", path: "/staff/shifts", requiredPermission: "sales:create" },
             { key: "management.registers", label: "Cash Registers", labelLao: "ເຄື່ອງຄິດເງິນ", icon: "Monitor", path: "/management/cashregisters", requiredPermission: "settings:view" },
         ]
     },
@@ -2988,7 +3315,20 @@ const DEFAULT_MENU_STRUCTURE = [
             { key: "super-admin.users", label: "All Users", labelLao: "ຈັດການຜູ້ໃຊ້", icon: "Users", path: "/admin/users", requiredPermission: "admin:view" },
             { key: "super-admin.roles", label: "System Roles", labelLao: "ຈັດການບົດບາດ", icon: "Key", path: "/admin/roles", requiredPermission: "admin:manage" },
             { key: "super-admin.permissions", label: "Permissions", labelLao: "ຈັດການສິດ", icon: "Shield", path: "/admin/permissions", requiredPermission: "admin:manage" },
-            { key: "super-admin.audit", label: "Audit Log", labelLao: "ປະຫວັດການໃຊ້ງານ", icon: "History", path: "/admin/audit", requiredPermission: "admin:view" },
+            {
+                key: "super-admin.audit", label: "Audit", labelLao: "ກວດສອບ Audit", icon: "History",
+                requiredPermission: "audit:view",
+                children: [
+                    { key: "super-admin.audit.overview", label: "Overview", labelLao: "ພາບລວມ", icon: "LayoutDashboard", path: "/admin/audit", requiredPermission: "audit:view" },
+                    { key: "super-admin.audit.activity", label: "Activity Log", labelLao: "ປະຫວັດການກະທຳ", icon: "Activity", path: "/admin/audit?view=activity", requiredPermission: "audit:view" },
+                    { key: "super-admin.audit.sales", label: "Sales Audit", labelLao: "ກວດການຂາຍ", icon: "ShoppingCart", path: "/admin/audit?view=sales", requiredPermission: "audit:view" },
+                    { key: "super-admin.audit.inventory", label: "Inventory Audit", labelLao: "ກວດສາງສິນຄ້າ", icon: "Boxes", path: "/admin/audit?view=inventory", requiredPermission: "audit:view" },
+                    { key: "super-admin.audit.staff", label: "Staff Audit", labelLao: "ກວດກາພະນັກງານ", icon: "Users", path: "/admin/audit?view=staff", requiredPermission: "audit:view" },
+                    { key: "super-admin.audit.access", label: "Access Audit", labelLao: "ກວດ Roles / Rules / Permissions", icon: "Key", path: "/admin/audit?view=access", requiredPermission: "audit:view" },
+                    { key: "super-admin.audit.approvals", label: "Maker-Checker", labelLao: "ກວດ Maker-Checker", icon: "ShieldCheck", path: "/admin/audit?view=approvals", requiredPermission: "audit:view" },
+                    { key: "super-admin.audit.security", label: "Security Audit", labelLao: "ກວດຄວາມປອດໄພ", icon: "Lock", path: "/admin/audit?view=security", requiredPermission: "audit:view" },
+                ],
+            },
         ]
     },
     {
@@ -3011,17 +3351,68 @@ const DEFAULT_MENU_STRUCTURE = [
     },
 ];
 
+// CRUD controls the standard action suffixes only. Fine-grained actions such
+// as void, refund, export and transfer remain explicit permissions and are
+// intentionally not inferred from a broad CRUD checkbox.
+function crudPermissionFlag(permission: string, crud: { r: boolean; c: boolean; u: boolean; d: boolean }): boolean | null {
+    const action = permission.split(':').pop()?.toLowerCase();
+    if (action === 'view' || action === 'read' || action === 'list') return crud.r;
+    if (action === 'create' || action === 'add') return crud.c;
+    if (action === 'update' || action === 'edit') return crud.u;
+    if (action === 'delete' || action === 'remove') return crud.d;
+    return null;
+}
+
+async function syncCrudPermissionsForRoles(
+    db: any,
+    roleIds: string[],
+    matrix: Record<string, Record<string, { r: boolean; c: boolean; u: boolean; d: boolean }>>,
+    matrixRules: Array<{ id: string; permissions: string[] | null }>,
+): Promise<void> {
+    if (roleIds.length === 0) return;
+
+    const roleRows = await db.query.roles.findMany({
+        where: inArray(roles.id, roleIds),
+        columns: { id: true, permissions: true },
+    });
+
+    for (const role of roleRows) {
+        const next = new Set<string>((role.permissions as string[] | null) || []);
+        const controlled = new Set<string>();
+
+        for (const rule of matrixRules) {
+            const crud = matrix[role.id]?.[rule.id];
+            if (!crud) continue;
+            for (const permission of rule.permissions || []) {
+                const allowed = crudPermissionFlag(permission, crud);
+                if (allowed === null) continue;
+                controlled.add(permission);
+                next.delete(permission);
+                if (allowed) next.add(permission);
+            }
+        }
+
+        // Keep wildcard and non-CRUD permissions untouched. Only permission
+        // keys represented by the Rule catalog are recalculated here.
+        if (controlled.size > 0) {
+            await db.update(roles)
+                .set({ permissions: [...next], updatedAt: new Date() })
+                .where(eq(roles.id, role.id));
+        }
+    }
+}
+
 /**
  * GET /admin/menu-permissions - Get menu structure for role assignment
  */
-adminRoutes.get('/menu-permissions', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.get('/menu-permissions', authenticate, withTenantTx(), requireSuperAdmin(), authorize('admin:view'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         // Try to get from database first
         const dbMenus = await db.query.menuPermissions.findMany({
             where: and(eq(menuPermissions.isActive, true), isNull(menuPermissions.parentId)),
             orderBy: asc(menuPermissions.order),
-            with: { children: true },
+            with: { children: { with: { children: true } } },
         });
 
         if (dbMenus.length > 0) {
@@ -3039,7 +3430,7 @@ adminRoutes.get('/menu-permissions', authenticate, withTenantTx(), requireTenant
 /**
  * POST /admin/menu-permissions/seed - Seed menu permissions to database
  */
-adminRoutes.post('/menu-permissions/seed', authenticate, withTenantTx(), requireAdmin(), async (req, res, next) => {
+adminRoutes.post('/menu-permissions/seed', authenticate, withTenantTx(), requireSuperAdmin(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         await db.delete(menuPermissions);
@@ -3073,7 +3464,7 @@ adminRoutes.post('/menu-permissions/seed', authenticate, withTenantTx(), require
 /**
  * POST /admin/rules/seed - Seed default rules + role-rule CRUD mappings
  */
-adminRoutes.post('/rules/seed', authenticate, withTenantTx(), requireAdmin(), async (req, res, next) => {
+adminRoutes.post('/rules/seed', authenticate, withTenantTx(), requireSuperAdmin(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         await db.delete(roleRules);
@@ -3124,7 +3515,7 @@ adminRoutes.post('/rules/seed', authenticate, withTenantTx(), requireAdmin(), as
 /**
  * GET /admin/rules - Get all rules
  */
-adminRoutes.get('/rules', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.get('/rules', authenticate, withTenantTx(), requireSuperAdmin(), authorize('roles:view'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const allRules = await db.query.rules.findMany({
@@ -3141,7 +3532,7 @@ adminRoutes.get('/rules', authenticate, withTenantTx(), requireTenantAdmin(), as
 /**
  * GET /admin/roles/:id/rules - Get rules for a specific role with CRUD flags
  */
-adminRoutes.get('/roles/:id/rules', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.get('/roles/:id/rules', authenticate, withTenantTx(), requireSuperAdmin(), authorize('roles:view'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const rrList = await db.query.roleRules.findMany({
@@ -3158,7 +3549,7 @@ adminRoutes.get('/roles/:id/rules', authenticate, withTenantTx(), requireTenantA
  * PUT /admin/roles/:id/rules - Update rules for a specific role
  * Body: { rules: [{ ruleId, canRead, canCreate, canUpdate, canDelete }] }
  */
-adminRoutes.put('/roles/:id/rules', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.put('/roles/:id/rules', authenticate, withTenantTx(), requireSuperAdmin(), authorize('roles:update'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const { id: roleId } = req.params;
@@ -3177,7 +3568,7 @@ adminRoutes.put('/roles/:id/rules', authenticate, withTenantTx(), requireTenantA
         if (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) {
             ruleTargetConds.push(eq(roles.tenantId, req.authUser.tenantId));
         }
-        if (!req.authUser?.isSuperAdmin && callerLevel >= 5) {
+        if (!req.authUser?.isSuperAdmin && callerLevel >= 4) {
             ruleTargetConds.push(eq(roles.branchId, req.authUser?.activeBranchId ?? '__none__'));
         }
         const targetRole = await db.query.roles.findFirst({ where: and(...ruleTargetConds) });
@@ -3204,8 +3595,20 @@ adminRoutes.put('/roles/:id/rules', authenticate, withTenantTx(), requireTenantA
         const role = await db.query.roles.findFirst({ where: eq(roles.id, roleId), columns: { name: true } });
         await logActivity(req.authUser!.userId, 'role_rules_updated', `ອັບເດດ rules ສຳລັບ ${role?.name}: ${created.length} rules`, { roleId }, req);
 
-        // Invalidate cached rules for this role
+        // Invalidate cached rules for this role, AND every already-logged-in
+        // holder's cached auth/menu data — kpos:auth:{userId} is what
+        // /users/me/menu actually reads, and role_rules is its *primary*
+        // source (permissions array is only the fallback), so this is the
+        // main path users hit when an admin grants/revokes menu access.
+        // Without this, a newly-granted permission (e.g. sales:create for
+        // POS) silently doesn't show up for an already-logged-in user until
+        // their session naturally expires.
         await invalidateRoleRulesCache(roleId);
+        const affectedUsers = await db.query.users.findMany({
+            where: eq(users.roleId, roleId),
+            columns: { id: true },
+        });
+        await Promise.all(affectedUsers.map(u => invalidateUserStoreCache(u.id).catch(() => {})));
 
         res.json({ success: true, data: created, message: `${created.length} rules assigned` });
     } catch (error) {
@@ -3217,7 +3620,7 @@ adminRoutes.put('/roles/:id/rules', authenticate, withTenantTx(), requireTenantA
  * GET /admin/rules/matrix - Get the full CRUD matrix in one call
  * Returns: { roles, rules, matrix: { [roleId]: { [ruleId]: { r, c, u, d } } } }
  */
-adminRoutes.get('/rules/matrix', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.get('/rules/matrix', authenticate, withTenantTx(), requireSuperAdmin(), authorize('roles:view'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
 
@@ -3230,11 +3633,16 @@ adminRoutes.get('/rules/matrix', authenticate, withTenantTx(), requireTenantAdmi
         const callerBranchId = req.authUser?.activeBranchId;
         const roleScopeConds: any[] = [];
         if (!isSuperAdmin && callerTenantId) roleScopeConds.push(eq(roles.tenantId, callerTenantId));
-        if (!isSuperAdmin && callerLevel >= 5) roleScopeConds.push(or(isNull(roles.branchId), eq(roles.branchId, callerBranchId ?? '__none__')));
+        if (!isSuperAdmin && callerLevel >= 4) roleScopeConds.push(or(isNull(roles.branchId), eq(roles.branchId, callerBranchId ?? '__none__')));
 
-        const [matrixRules, matrixRoles] = await Promise.all([
+        const [matrixRules, matrixRoles, dbMenus] = await Promise.all([
             db.query.rules.findMany({ where: eq(rules.isActive, true), orderBy: asc(rules.order) }),
             db.query.roles.findMany({ where: roleScopeConds.length > 0 ? and(...roleScopeConds) : undefined, orderBy: asc(roles.name) }),
+            db.query.menuPermissions.findMany({
+                where: and(eq(menuPermissions.isActive, true), isNull(menuPermissions.parentId)),
+                orderBy: asc(menuPermissions.order),
+                with: { children: { with: { children: true } } },
+            }),
         ]);
         const matrixRoleIds = matrixRoles.map(r => r.id);
         const matrixRoleRules = matrixRoleIds.length > 0
@@ -3270,10 +3678,11 @@ adminRoutes.get('/rules/matrix', authenticate, withTenantTx(), requireTenantAdmi
         res.json({
             success: true,
             data: {
-                roles: matrixRoles.map(r => ({ id: r.id, name: r.name, displayName: r.displayName, description: r.description, isSystem: r.isSystem })),
+                roles: matrixRoles.map(r => ({ id: r.id, name: r.name, displayName: r.displayName, description: r.description, isSystem: r.isSystem, permissions: r.permissions || [] })),
                 rules: matrixRules.map(r => ({ id: r.id, name: r.name, displayName: r.displayName, module: r.module, icon: r.icon, routes: r.routes, permissions: r.permissions, order: r.order })),
                 matrix,
                 roleStats,
+                menus: dbMenus.length > 0 ? dbMenus : DEFAULT_MENU_STRUCTURE,
             }
         });
     } catch (error) {
@@ -3285,7 +3694,7 @@ adminRoutes.get('/rules/matrix', authenticate, withTenantTx(), requireTenantAdmi
  * PUT /admin/rules/matrix - Batch save the entire CRUD matrix in one call
  * Body: { matrix: { [roleId]: { [ruleId]: { r, c, u, d } } } }
  */
-adminRoutes.put('/rules/matrix', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.put('/rules/matrix', authenticate, withTenantTx(), requireSuperAdmin(), authorize('roles:update'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const { matrix } = req.body;
@@ -3350,7 +3759,11 @@ adminRoutes.put('/rules/matrix', authenticate, withTenantTx(), requireTenantAdmi
             const callerBranchId = req.authUser?.activeBranchId;
             const roleScopeConds: any[] = [];
             if (callerTenantId) roleScopeConds.push(eq(roles.tenantId, callerTenantId));
-            if (callerLevel >= 5) roleScopeConds.push(or(isNull(roles.branchId), eq(roles.branchId, callerBranchId ?? '__none__')));
+            // Write scope, not view scope — a branch-level caller (>= 4, same
+            // cutoff as create/update/delete elsewhere in this file) may only
+            // write role_rules for roles owned by their own branch, not
+            // rewrite a tenant-wide template's rules through this batch path.
+            if (callerLevel >= 4) roleScopeConds.push(or(isNull(roles.branchId), eq(roles.branchId, callerBranchId ?? '__none__')));
 
             const visibleRoles = await db.query.roles.findMany({
                 where: roleScopeConds.length > 0 ? and(...roleScopeConds) : undefined,
@@ -3377,10 +3790,32 @@ adminRoutes.put('/rules/matrix', authenticate, withTenantTx(), requireTenantAdmi
             // ever affects the roles they were explicitly granted in this call.
         }
 
+        const syncRules = await db.query.rules.findMany({
+            where: eq(rules.isActive, true),
+            columns: { id: true, permissions: true },
+        });
+        await syncCrudPermissionsForRoles(db, requestedRoleIds, matrix, syncRules);
+
         await logActivity(req.authUser!.userId, 'rules_matrix_saved', `ບັນທຶກ CRUD matrix: ${count} role-rules`, {}, req);
 
-        // Invalidate all cached role rules (matrix affects all roles)
+        // Invalidate all cached role rules, AND every already-logged-in
+        // user's cached auth/menu data (kpos:auth:{userId}) — role_rules is
+        // /users/me/menu's primary data source, so without this a grant made
+        // here silently doesn't show up until the affected sessions expire.
+        // Superadmin writes touch the whole platform's role_rules (full
+        // delete + rebuild + cross-tenant cascade above), so bust every
+        // user's cache rather than trying to track the exact affected set;
+        // tenant/branch admin writes are scoped to requestedRoleIds.
         await invalidateRoleRulesCache();
+        if (isSuperAdmin) {
+            await invalidateAllUserStoreCache();
+        } else if (requestedRoleIds.length > 0) {
+            const affectedUsers = await db.query.users.findMany({
+                where: inArray(users.roleId, requestedRoleIds),
+                columns: { id: true },
+            });
+            await Promise.all(affectedUsers.map(u => invalidateUserStoreCache(u.id).catch(() => {})));
+        }
 
         res.json({ success: true, message: `ບັນທຶກ ${count} role-rules ສຳເລັດ`, data: { count } });
     } catch (error) {
@@ -3392,7 +3827,7 @@ adminRoutes.put('/rules/matrix', authenticate, withTenantTx(), requireTenantAdmi
  * POST /admin/roles/:id/copy-rules - Copy rules from one role to another
  * Body: { sourceRoleId: string }
  */
-adminRoutes.post('/roles/:id/copy-rules', authenticate, withTenantTx(), requireTenantAdmin(), async (req, res, next) => {
+adminRoutes.post('/roles/:id/copy-rules', authenticate, withTenantTx(), requireSuperAdmin(), authorize('roles:update'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const targetRoleId = req.params.id;
@@ -3435,6 +3870,16 @@ adminRoutes.post('/roles/:id/copy-rules', authenticate, withTenantTx(), requireT
             count++;
         }
 
+        const copiedMatrix: Record<string, Record<string, { r: boolean; c: boolean; u: boolean; d: boolean }>> = { [targetRoleId]: {} };
+        for (const sr of sourceRulesList) {
+            copiedMatrix[targetRoleId][sr.ruleId] = { r: sr.canRead, c: sr.canCreate, u: sr.canUpdate, d: sr.canDelete };
+        }
+        const copyRulesCatalog = await db.query.rules.findMany({
+            where: eq(rules.isActive, true),
+            columns: { id: true, permissions: true },
+        });
+        await syncCrudPermissionsForRoles(db, [targetRoleId], copiedMatrix, copyRulesCatalog);
+
         const [sourceRole, targetRole] = await Promise.all([
             db.query.roles.findFirst({ where: eq(roles.id, sourceRoleId), columns: { name: true } }),
             db.query.roles.findFirst({ where: eq(roles.id, targetRoleId), columns: { name: true } }),
@@ -3443,6 +3888,8 @@ adminRoutes.post('/roles/:id/copy-rules', authenticate, withTenantTx(), requireT
 
         // Invalidate cached rules for the target role
         await invalidateRoleRulesCache(targetRoleId);
+        const targetUsers = await db.query.users.findMany({ where: eq(users.roleId, targetRoleId), columns: { id: true } });
+        await Promise.all(targetUsers.map(u => invalidateUserStoreCache(u.id).catch(() => {})));
 
         res.json({ success: true, message: `ຄັດລອກ ${count} rules ສຳເລັດ`, data: { count } });
     } catch (error) {
@@ -3459,15 +3906,22 @@ adminRoutes.patch('/stores/:id/status', authenticate, withTenantTx(), authorize(
         const { id } = req.params;
         const { isActive } = req.body;
 
-        // Check access
-        const hasAccess = req.authUser!.isSuperAdmin || 
-                          req.authUser!.role === 'admin' ||
-                          (req.authUser as any).storeId === id;
-
-        if (!hasAccess) {
-            return res.status(403).json({
+        // Was a hardcoded role==='admin' name check with NO tenant scope on
+        // the update query itself — authorize() above already gates on
+        // stores:update/admin:manage, but this then either wrongly blocked
+        // legitimate tenant admins whose role name isn't literally "admin"
+        // (hq_admin, merchant_owner, tenant_admin, ...), or — worse — let
+        // anyone holding the literal role name "admin" toggle ANY store in
+        // ANY tenant by ID, since neither branch checked store ownership.
+        const storeConds: any[] = [eq(stores.id, id)];
+        if (!req.authUser?.isSuperAdmin && req.authUser?.tenantId) {
+            storeConds.push(eq(stores.tenantId, req.authUser.tenantId));
+        }
+        const existingStore = await db.query.stores.findFirst({ where: and(...storeConds) });
+        if (!existingStore) {
+            return res.status(404).json({
                 success: false,
-                error: { code: 'FORBIDDEN', message: 'Access denied' }
+                error: { code: 'NOT_FOUND', message: 'Store not found or no access' }
             });
         }
 
@@ -3828,4 +4282,3 @@ adminRoutes.post('/migrate-role-masks', authenticate, withTenantTx(), requireSup
         next(error);
     }
 });
-

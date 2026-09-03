@@ -52,6 +52,11 @@
 
     async function loadData() {
         isLoading = true;
+        if (!auth.activeBranchId) {
+            orders = [];
+            isLoading = false;
+            return;
+        }
         try {
             const res = await api.get(`restaurant/orders?status=${filterStatus}`).json<any>();
             orders = res.data?.data || res.data || [];

@@ -81,7 +81,9 @@
         },
     });
 
-    $effect(() => { void searchQuery; void currentPage; void pageSize; $branchesQuery.refetch(); });
+    // get() avoids the infinite-refetch-loop footgun — see admin/audit's
+    // equivalent effect for the full explanation.
+    $effect(() => { void searchQuery; void currentPage; void pageSize; get(branchesQuery).refetch(); });
 
     // Stores are the top-level tier now — every branch belongs to exactly one
     // store, so creating a branch requires picking that store.

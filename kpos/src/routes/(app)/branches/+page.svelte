@@ -3,7 +3,7 @@
     import { get } from "svelte/store";
     import { api } from "$api";
     import { auth } from "$stores";
-    import { cn, formatPhone } from "$utils";
+    import { cn, formatPhone, validateFile, IMAGE_ONLY_FILE_TYPES } from "$utils";
     import { toast } from "svelte-sonner";
     import { t } from '$lib/i18n/index.svelte';
     import {
@@ -59,7 +59,7 @@
         const input = event.target as HTMLInputElement;
         const file = input.files?.[0];
         if (!file) return;
-        if (file.size > 2 * 1024 * 1024) { toast.error(t('common.fileTooBig').replace('{name}','').replace('{max}','2MB')); return; }
+        if (!(await validateFile(file, { allowedTypes: IMAGE_ONLY_FILE_TYPES }))) { input.value = ""; return; }
         isUploadingLogo = true;
         try {
             const base64 = await new Promise<string>((resolve, reject) => {
@@ -92,7 +92,9 @@
         },
     });
 
-    $effect(() => { void searchQuery; $branchesQuery.refetch(); });
+    // get() avoids the infinite-refetch-loop footgun — see admin/audit's
+    // equivalent effect for the full explanation.
+    $effect(() => { void searchQuery; get(branchesQuery).refetch(); });
 
     const storesQuery = createQuery({
         queryKey: ["branches-stores-list"],

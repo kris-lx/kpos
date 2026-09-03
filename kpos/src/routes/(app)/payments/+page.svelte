@@ -5,6 +5,7 @@
     import { api } from "$api";
     import { auth } from "$stores";
     import { formatCurrency, formatDateTime } from "$lib/utils";
+    import { printHtml } from "$lib/utils/printHtml";
     import { toast } from "svelte-sonner";
     import {
         CreditCard,
@@ -261,10 +262,7 @@
 <body><h1>${t("payments.reportTitle")}</h1><p style="text-align:center">${new Date().toLocaleDateString('lo-LA')}</p>
 <table><thead><tr><th>${t("common.date")}</th><th>${t("common.code")}</th><th>${t("customers.customer")}</th><th>${t("payments.method")}</th><th>${t("payments.amount")}</th><th>${t("payments.status")}</th></tr></thead><tbody>${rows}</tbody>
 <tfoot><tr><td colspan="4">${t("common.total")}</td><td style="text-align:right">${formatCurrency(total)}</td><td>${filteredTransactions.length} ${t("common.items")}</td></tr></tfoot></table></body></html>`;
-        const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        const w = window.open(url, '_blank');
-        if (w) w.onload = () => w.print();
+        printHtml(html);
         toast.success(t("reports.exportSuccess"));
     }
 

@@ -1,6 +1,5 @@
 FROM oven/bun:1-alpine AS base
 WORKDIR /app
-RUN apk add --no-cache curl
 
 # ── Install dependencies ────────────────────────────────────────────────────
 FROM base AS deps
@@ -12,7 +11,7 @@ RUN bun install --frozen-lockfile || bun install
 FROM base AS migrator
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-CMD ["bunx", "drizzle-kit", "migrate"]
+CMD ["sh", "-c", "bunx drizzle-kit migrate && bun src/db/configure-app-role.ts"]
 
 # ── Production runtime ──────────────────────────────────────────────────────
 # We run the TypeScript source directly with bun (no bundling step needed —

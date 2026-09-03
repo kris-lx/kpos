@@ -3,15 +3,16 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { Router } from 'express';
-import { authenticate, authorize, branchFilter, applyScopeFilter, ensureScopeAccess, buildScopeCondition, tenantScope, invalidateQueryCache, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
+import { authenticate, authorize, branchFilter, applyScopeFilter, ensureScopeAccess, buildScopeCondition, tenantScope, invalidateQueryCache, tenantHasOtherEligibleUser, userIsEligibleChecker, isMakerCheckerEnforced, requireMaker, requireChecker, type ScopeFilter } from '@/infrastructure/http/middleware/auth.middleware';
 import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
 import { setRequestContext, setSuperAdminBypassContext } from '@/db/set-tenant-context';
 import { db as globalDb } from '@/config/database.config';
-import { transactions, transactionItems, transactionPayments, products, inventory, stockMovements, paymentMethods, shifts, cashRegisters, cashMovements, heldSales, customers, members, membershipTiers, pointsHistory, pointHistory, settings, coupons, promotions, discounts } from '@/db/schema/tables';
+import { transactions, transactionItems, transactionPayments, products, inventory, stockMovements, paymentMethods, shifts, cashRegisters, cashMovements, heldSales, customers, members, membershipTiers, pointsHistory, pointHistory, settings, coupons, promotions, discounts, users, employeeWorkSchedules } from '@/db/schema/tables';
 import { eq, and, or, isNull, ne, ilike, inArray, gte, lte, lt, desc, asc, count, sum, sql } from 'drizzle-orm';
 import { queueActivityLog } from '@/infrastructure/helpers/activity-log.helper';
 import { calcPointsEarned, calcPointsRedeemValue } from '../domain/loyalty-points.js';
 import { validateSplitPayments, validateCoupon } from '../domain/split-payment.js';
+import { evaluateClockOut, scheduleMatchesOpenedAt } from '@/shared/employee-work-schedule';
 
 export const salesRoutes = Router();
 
@@ -57,10 +58,26 @@ function genTxnNo(prefix: string, branchId: string): string {
     return `${prefix}-${branchId.slice(-4).toUpperCase()}-${date}-${ts}${rnd}`;
 }
 
+async function getShiftClockOutStatus(db: any, shift: { tenantId?: string | null; branchId: string; userId: string; openedAt: Date }, now = new Date()) {
+    const conditions: any[] = [
+        eq(employeeWorkSchedules.userId, shift.userId),
+        eq(employeeWorkSchedules.branchId, shift.branchId),
+        lte(employeeWorkSchedules.effectiveFrom, shift.openedAt),
+        or(isNull(employeeWorkSchedules.effectiveTo), gte(employeeWorkSchedules.effectiveTo, shift.openedAt)),
+    ];
+    if (shift.tenantId) conditions.push(eq(employeeWorkSchedules.tenantId, shift.tenantId));
+    const candidates = await db.query.employeeWorkSchedules.findMany({
+        where: and(...conditions),
+        orderBy: desc(employeeWorkSchedules.effectiveFrom),
+    });
+    const schedule = candidates.find((candidate: any) => scheduleMatchesOpenedAt(candidate, shift.openedAt));
+    return schedule ? evaluateClockOut(schedule, now) : null;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // CREATE SALE (Transaction)
 // ═══════════════════════════════════════════════════════════════════════════
-salesRoutes.post('/', authenticate, withTenantTx(), authorize('sales:create'), async (req, res, next) => {
+salesRoutes.post('/', authenticate, withTenantTx(), authorize('sales:create'), requireMaker(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const {
@@ -85,6 +102,24 @@ salesRoutes.post('/', authenticate, withTenantTx(), authorize('sales:create'), a
 
         if (!branchId || !userId) {
             return res.status(400).json({ success: false, error: { code: 'AUTH_001', message: 'User or branch not resolved' } });
+        }
+
+        // A sale must happen inside an open cash shift — otherwise the cash
+        // drawer's expected-vs-counted reconciliation at shift-close time has
+        // no way to attribute this sale's cash to any shift at all. Before
+        // this check, `POST /sales` never even set `transactions.shiftId`,
+        // so cashiers could ring up sales with no shift open, and shift
+        // open/close was effectively optional rather than the accountability
+        // boundary it's meant to be.
+        const workflowUser = await db.query.users.findFirst({
+            where: eq(users.id, userId),
+            columns: { requiresShift: true },
+        });
+        const openShift = await db.query.shifts.findFirst({ where: and(eq(shifts.userId, userId), eq(shifts.status, 'OPEN')) });
+        if (workflowUser?.requiresShift !== false) {
+            if (!openShift) {
+                return res.status(400).json({ success: false, error: { code: 'SHIFT_REQUIRED', message: 'You must open a shift before making a sale' } });
+            }
         }
 
         // BE-51: CRITICAL — tenant-scoped product lookup prevents cross-tenant purchases
@@ -147,10 +182,19 @@ salesRoutes.post('/', authenticate, withTenantTx(), authorize('sales:create'), a
         const minPointsRedeem = Number(lv.minPointsRedeem) || 0;
         const maxPointsRedeem = Number(lv.maxPointsRedeem) || 0;
 
-        // Load member tier for auto-discount and point multiplier
+        // Load tier for auto-discount and point multiplier. Tries a real
+        // `members` row first (kept for any future caller that sends a real
+        // memberId), but POS only ever offers/selects from the `customers`
+        // table — memberId is never actually populated by the checkout UI —
+        // so in practice tier benefits are computed from customers.points
+        // against membershipTiers.minPoints instead. Without this fallback,
+        // every tier configured on the Loyalty settings page (discount %,
+        // point multiplier) was pure decoration: never applied to a real
+        // discount or point bonus for an actual customer.
         let tierDiscountPercent = 0;
         let tierPointMultiplier = 1;
         let memberRecord: any = null;
+        let customerRecord: any = null;
         if (memberId) {
             memberRecord = await db.query.members.findFirst({
                 where: eq(members.id, memberId),
@@ -160,15 +204,21 @@ salesRoutes.post('/', authenticate, withTenantTx(), authorize('sales:create'), a
                 tierDiscountPercent = Number(memberRecord.tier.discountPercent) || 0;
                 tierPointMultiplier = Number(memberRecord.tier.pointMultiplier) || 1;
             }
-        }
-
-        // Load customer for points balance validation
-        let customerRecord: any = null;
-        if (customerId && pointsToRedeem > 0) {
+        } else if (customerId) {
             customerRecord = await db.query.customers.findFirst({
                 where: eq(customers.id, customerId),
                 columns: { id: true, points: true },
             });
+            if (customerRecord) {
+                const tierConds: any[] = [eq(membershipTiers.isActive, true)];
+                if (saleTenantId && !req.authUser?.isSuperAdmin) tierConds.push(eq(membershipTiers.tenantId, saleTenantId));
+                const tiers = await db.query.membershipTiers.findMany({ where: and(...tierConds), orderBy: desc(membershipTiers.minPoints) });
+                const matchedTier = tiers.find(t => (customerRecord.points ?? 0) >= t.minPoints);
+                if (matchedTier) {
+                    tierDiscountPercent = Number(matchedTier.discountPercent) || 0;
+                    tierPointMultiplier = Number(matchedTier.pointMultiplier) || 1;
+                }
+            }
         }
 
         // ── Promotions, coupons, and item-level discount rules ──────────────
@@ -217,7 +267,14 @@ salesRoutes.post('/', authenticate, withTenantTx(), authorize('sales:create'), a
                     COUPON_LIMIT_REACHED: 'Coupon usage limit reached',
                     COUPON_MIN_PURCHASE: `Minimum purchase of ${couponRecord.minPurchase} required`,
                 };
-                return res.status(400).json({ success: false, error: { code: couponResult.code, message: msgs[couponResult.code] ?? couponResult.code } });
+                return res.status(400).json({
+                    success: false,
+                    error: {
+                        code: couponResult.code,
+                        message: msgs[couponResult.code] ?? couponResult.code,
+                        details: couponResult.code === 'COUPON_MIN_PURCHASE' ? { minPurchase: couponRecord.minPurchase } : undefined,
+                    },
+                });
             }
             couponDiscountAmount = couponRecord.type === 'PERCENTAGE'
                 ? (subtotal * couponRecord.value) / 100
@@ -229,7 +286,7 @@ salesRoutes.post('/', authenticate, withTenantTx(), authorize('sales:create'), a
         let promoDiscountAmount = 0;
         const appliedPromoIds: string[] = [];
         for (const promo of activePromos) {
-            if (promo.memberOnly && !memberId) continue;
+            if (promo.memberOnly && !memberId && !customerId) continue;
             const conds = (promo.conditions as any) || {};
             if (conds.minPurchase && subtotal < conds.minPurchase) continue;
             if (conds.dayOfWeek?.length && !conds.dayOfWeek.includes(promoNow.getDay())) continue;
@@ -344,7 +401,7 @@ salesRoutes.post('/', authenticate, withTenantTx(), authorize('sales:create'), a
             // 2. Insert transaction
             const [newTransaction] = await tx.insert(transactions).values({
                 tenantId: saleTenantId,
-                transactionNo, type: 'SALE', status: 'COMPLETED', branchId, storeId, userId, customerId, memberId, orderType,
+                transactionNo, type: 'SALE', status: 'COMPLETED', branchId, storeId, userId, shiftId: openShift?.id, customerId, memberId, orderType,
                 subtotal: Math.round(subtotal * 100) / 100,
                 discountType, discountValue,
                 discountAmount: Math.round(discountAmount * 100) / 100,
@@ -353,6 +410,7 @@ salesRoutes.post('/', authenticate, withTenantTx(), authorize('sales:create'), a
                 received: Math.round(totalAmount * 100) / 100,
                 change: 0, note: notes,
                 pointsEarned, pointsRedeemed: pointsRedeemInt,
+                pointsRedeemAmount: Math.round(pointsRedeemValue * 100) / 100,
             }).returning();
 
             // 3. Insert items
@@ -644,9 +702,18 @@ salesRoutes.get('/shifts', authenticate, withTenantTx(), branchFilter(), async (
         // see shifts from their "active" store instead of their whole tenant.
         const isTenantWideAdmin = !isSuperAdmin && (authUser?.roleLevel ?? 7) <= 2;
         if (!isSuperAdmin && !isTenantWideAdmin) {
-            const activeStoreId = authUser?.activeStoreId;
-            if (activeStoreId) shiftConds.push(eq(shifts.storeId, activeStoreId));
-            else if (filter?.branchIds?.length) shiftConds.push(inArray(shifts.branchId, filter.branchIds));
+            // Branch-first, store-fallback — same fix and same reason as the
+            // staff list route: checking activeStoreId first (which is set
+            // for virtually every session) meant any cashier saw every
+            // sibling branch's full shift list under their store — opening
+            // balances, closing balances, cash movements, assigned users —
+            // regardless of which single branch filter.branchIds actually
+            // restricted them to.
+            if (filter?.branchIds?.length) {
+                shiftConds.push(inArray(shifts.branchId, filter.branchIds));
+            } else if (authUser?.activeStoreId) {
+                shiftConds.push(eq(shifts.storeId, authUser.activeStoreId));
+            }
         }
         if (branchId) shiftConds.push(eq(shifts.branchId, String(branchId)));
         if (userId) shiftConds.push(eq(shifts.userId, String(userId)));
@@ -692,7 +759,8 @@ salesRoutes.get('/shifts/current', authenticate, withTenantTx(), async (req, res
             with: { user: { columns: { name: true } }, register: true },
         });
 
-        res.json({ success: true, data: shift });
+        const scheduleStatus = shift ? await getShiftClockOutStatus(db, shift) : null;
+        res.json({ success: true, data: shift ? { ...shift, scheduleStatus } : null });
     } catch (error) {
         next(error);
     }
@@ -717,6 +785,14 @@ salesRoutes.get('/shifts/:id', authenticate, withTenantTx(), async (req, res, ne
 
         if (!shift) {
             res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Shift not found' } });
+            return;
+        }
+        // Only tenant-scoped before this — any user with a valid session
+        // could view another branch's full shift detail (transactions, cash
+        // movements, opening balance) just by guessing/enumerating a shift
+        // ID, since this route has no authorize() and no branch check at all.
+        if (!ensureScopeAccess({ branchId: shift.branchId, storeId: shift.storeId, tenantId: shift.tenantId }, req)) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this shift' } });
             return;
         }
 
@@ -781,10 +857,15 @@ salesRoutes.post('/shifts/open', authenticate, withTenantTx(), authorize('sales:
 });
 
 // Close shift
-salesRoutes.post('/shifts/:id/close', authenticate, withTenantTx(), authorize('sales:update'), async (req, res, next) => {
+// sales:create (not sales:update) — matches /shifts/open below. Closing your
+// own shift is a basic cashier action, not "editing sales records"; the
+// default cashier/staff role deliberately doesn't grant sales:update (can't
+// freely edit past sales), which meant every cashier who could open a shift
+// was blocked from ever closing it. Found live: staff clock-out was broken.
+salesRoutes.post('/shifts/:id/close', authenticate, withTenantTx(), authorize('sales:create'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
-        const { closingBalance, notes } = req.body;
+        const { closingBalance, notes, overrideReason } = req.body;
 
         const closeConds: any[] = [eq(shifts.id, req.params.id)];
         const closeTc = tenantScope(req, shifts.tenantId);
@@ -795,7 +876,33 @@ salesRoutes.post('/shifts/:id/close', authenticate, withTenantTx(), authorize('s
         });
 
         if (!shift) { res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Shift not found' } }); return; }
+        // Tenant-only scope let any user with sales:create close ANY branch's
+        // open shift by ID — not just their own or one within their scope.
+        if (!ensureScopeAccess({ branchId: shift.branchId, storeId: shift.storeId, tenantId: shift.tenantId }, req)) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this shift' } });
+            return;
+        }
         if (shift.status !== 'OPEN') { res.status(400).json({ success: false, error: { code: 'SHIFT_002', message: 'Shift is already closed' } }); return; }
+
+        const callerId = req.authUser?.userId || req.user?.userId || '';
+        const closingAnotherUser = shift.userId !== callerId;
+        const canManageOthers = Boolean(req.authUser?.isSuperAdmin || req.authUser?.permissions?.includes('*') || req.authUser?.permissions?.includes('staff:update'));
+        if (closingAnotherUser && !canManageOthers) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'You can close only your own shift' } });
+        }
+
+        const scheduleStatus = await getShiftClockOutStatus(db, shift);
+        const hasManagerOverride = closingAnotherUser && canManageOthers && typeof overrideReason === 'string' && overrideReason.trim().length >= 5;
+        if (scheduleStatus && !scheduleStatus.canClose && !hasManagerOverride) {
+            return res.status(409).json({
+                success: false,
+                error: {
+                    code: 'SHIFT_END_NOT_REACHED',
+                    message: `Scheduled work ends at ${scheduleStatus.scheduledEndTime}. ${scheduleStatus.minutesRemaining} minute(s) remaining.`,
+                    details: scheduleStatus,
+                },
+            });
+        }
 
         const completedTxns = (shift.transactions || []).filter(t => t.status === 'COMPLETED');
         const cashSales = completedTxns.reduce((s, t) => s + t.total, 0);
@@ -811,6 +918,16 @@ salesRoutes.post('/shifts/:id/close', authenticate, withTenantTx(), authorize('s
             status: 'CLOSED', closingBalance: closingBalance || 0, expectedBalance, difference, closedAt: new Date(), notes: notes || shift.notes,
         }).where(eq(shifts.id, req.params.id));
 
+        if (hasManagerOverride) {
+            queueActivityLog(callerId, 'shift_early_close_overridden', 'shift', `Early clock-out override for ${shift.shiftNo}`, {
+                shiftId: shift.id,
+                targetUserId: shift.userId,
+                branchId: shift.branchId,
+                overrideReason: overrideReason.trim(),
+                scheduleStatus,
+            }, req).catch(() => {});
+        }
+
         const updatedShift = await db.query.shifts.findFirst({
             where: eq(shifts.id, req.params.id),
             with: { user: { columns: { name: true } }, register: true },
@@ -822,8 +939,8 @@ salesRoutes.post('/shifts/:id/close', authenticate, withTenantTx(), authorize('s
     }
 });
 
-// Add cash movement to shift
-salesRoutes.post('/shifts/:id/cash-movement', authenticate, withTenantTx(), authorize('sales:update'), async (req, res, next) => {
+// Add cash movement to shift — same fix as /shifts/:id/close above.
+salesRoutes.post('/shifts/:id/cash-movement', authenticate, withTenantTx(), authorize('sales:create'), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const { type, amount, reason } = req.body;
@@ -832,8 +949,12 @@ salesRoutes.post('/shifts/:id/cash-movement', authenticate, withTenantTx(), auth
         const cmConds: any[] = [eq(shifts.id, req.params.id)];
         const cmTc = tenantScope(req, shifts.tenantId);
         if (cmTc) cmConds.push(cmTc);
-        const targetShift = await db.query.shifts.findFirst({ where: and(...cmConds), columns: { id: true } });
+        const targetShift = await db.query.shifts.findFirst({ where: and(...cmConds), columns: { id: true, branchId: true, storeId: true, tenantId: true } });
         if (!targetShift) { res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Shift not found' } }); return; }
+        if (!ensureScopeAccess({ branchId: targetShift.branchId, storeId: targetShift.storeId, tenantId: targetShift.tenantId }, req)) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this shift' } });
+            return;
+        }
 
         const [movement] = await db.insert(cashMovements).values({ shiftId: req.params.id, type, amount, reason, userId }).returning();
 
@@ -894,6 +1015,12 @@ salesRoutes.get('/registers/:id', authenticate, withTenantTx(), async (req, res,
             res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Register not found' } });
             return;
         }
+        // Tenant-only scope let any user with settings:update view another
+        // branch's cash register (and its recent shift history) by ID.
+        if (!ensureScopeAccess({ branchId: register.branchId, storeId: register.storeId, tenantId: register.tenantId }, req)) {
+            res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this register' } });
+            return;
+        }
 
         res.json({ success: true, data: register });
     } catch (error) {
@@ -908,6 +1035,13 @@ salesRoutes.post('/registers', authenticate, withTenantTx(), authorize('settings
         const { name, branchId, isActive } = req.body;
         if (!name || !branchId) {
             return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'name and branchId are required' } });
+        }
+        // This accepted branchId straight from the client with no check the
+        // caller actually has access to it — a register (and every shift
+        // opened against it) could be created for an arbitrary branch
+        // anywhere in the tenant.
+        if (!ensureScopeAccess({ branchId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this branch' } });
         }
         const regTenantId = req.authUser?.tenantId || req.user?.tenantId;
         const regStoreId = req.authUser?.activeStoreId || undefined;
@@ -929,7 +1063,18 @@ salesRoutes.put('/registers/:id', authenticate, withTenantTx(), authorize('setti
         const updConds: any[] = [eq(cashRegisters.id, req.params.id)];
         const updTc = tenantScope(req, cashRegisters.tenantId);
         if (updTc) updConds.push(updTc);
-        const [register] = await db.update(cashRegisters).set(updateData).where(and(...updConds)).returning();
+        const existingRegister = await db.query.cashRegisters.findFirst({ where: and(...updConds) });
+        if (!existingRegister) {
+            return res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Register not found' } });
+        }
+        // Same tenant-only-scope gap as GET/DELETE — any settings:update
+        // holder could edit another branch's register, including
+        // repointing it to a branchId they don't have access to.
+        if (!ensureScopeAccess({ branchId: existingRegister.branchId, storeId: existingRegister.storeId, tenantId: existingRegister.tenantId }, req)
+            || (updateData.branchId && !ensureScopeAccess({ branchId: updateData.branchId }, req))) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this register or branch' } });
+        }
+        const [register] = await db.update(cashRegisters).set(updateData).where(eq(cashRegisters.id, existingRegister.id)).returning();
 
         res.json({ success: true, data: register });
     } catch (error) {
@@ -945,7 +1090,14 @@ salesRoutes.delete('/registers/:id', authenticate, withTenantTx(), authorize('se
         const delConds: any[] = [eq(cashRegisters.id, req.params.id)];
         const delTc = tenantScope(req, cashRegisters.tenantId);
         if (delTc) delConds.push(delTc);
-        await db.update(cashRegisters).set({ isActive: false }).where(and(...delConds));
+        const existingRegister = await db.query.cashRegisters.findFirst({ where: and(...delConds) });
+        if (!existingRegister) {
+            return res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Register not found' } });
+        }
+        if (!ensureScopeAccess({ branchId: existingRegister.branchId, storeId: existingRegister.storeId, tenantId: existingRegister.tenantId }, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this register' } });
+        }
+        await db.update(cashRegisters).set({ isActive: false }).where(eq(cashRegisters.id, existingRegister.id));
 
         res.json({ success: true, data: { message: 'Register deleted' } });
     } catch (error) {
@@ -958,6 +1110,17 @@ salesRoutes.delete('/registers/:id', authenticate, withTenantTx(), authorize('se
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Get all held sales
+// A held sale belongs to the staff member who parked it — nobody else
+// should be able to view or resume/delete it, except tenant-wide admins
+// (store_owner and up) and super_admins, who need to be able to recover
+// a held sale left by an absent/offline staff member.
+function canAccessHeldSale(heldSale: { userId?: string | null }, req: any): boolean {
+    if (req.authUser?.isSuperAdmin) return true;
+    if ((req.authUser?.roleLevel ?? 7) <= 2) return true;
+    const currentUserId = req.authUser?.userId || req.user?.userId;
+    return !!currentUserId && heldSale.userId === currentUserId;
+}
+
 salesRoutes.get('/held', authenticate, withTenantTx(), branchFilter(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
@@ -974,6 +1137,16 @@ salesRoutes.get('/held', authenticate, withTenantTx(), branchFilter(), async (re
         if (heldScope) heldConds.push(heldScope);
         const branchId = req.authUser?.activeBranchId || req.user?.branchId;
         if (!filter && branchId) heldConds.push(eq(heldSales.branchId, branchId));
+
+        // A held sale is a staff member's private in-progress cart — other
+        // staff must not see or resume it. Tenant-wide admins (store_owner,
+        // roleLevel <= 2) and super_admins are exempt so they can recover an
+        // absent/offline staff member's held sale.
+        const isTenantWideAdmin = !req.authUser?.isSuperAdmin && (req.authUser?.roleLevel ?? 7) <= 2;
+        const holderUserId = req.authUser?.userId || req.user?.userId;
+        if (!req.authUser?.isSuperAdmin && !isTenantWideAdmin && holderUserId) {
+            heldConds.push(eq(heldSales.userId, holderUserId));
+        }
 
         const heldWhere = heldConds.length > 0 ? and(...heldConds) : undefined;
 
@@ -1012,6 +1185,9 @@ salesRoutes.get('/held/:id', authenticate, withTenantTx(), async (req, res, next
         if (!ensureScopeAccess(heldSale, req)) {
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this held sale' } });
         }
+        if (!canAccessHeldSale(heldSale, req)) {
+            return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this held sale' } });
+        }
 
         res.json({ success: true, data: heldSale });
     } catch (error) {
@@ -1020,7 +1196,7 @@ salesRoutes.get('/held/:id', authenticate, withTenantTx(), async (req, res, next
 });
 
 // Create held sale
-salesRoutes.post('/held', authenticate, withTenantTx(), authorize('sales:create'), async (req, res, next) => {
+salesRoutes.post('/held', authenticate, withTenantTx(), authorize('sales:create'), requireMaker(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const userId = req.authUser?.userId || req.user?.userId;
@@ -1048,6 +1224,7 @@ salesRoutes.delete('/held/:id', authenticate, withTenantTx(), authorize('sales:u
         const existing = await db.query.heldSales.findFirst({ where: eq(heldSales.id, req.params.id) });
         if (!existing) return res.status(404).json({ success: false, error: { code: 'RES_001', message: 'Held sale not found' } });
         if (!ensureScopeAccess(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
+        if (!canAccessHeldSale(existing, req)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access' } });
 
         await db.delete(heldSales).where(eq(heldSales.id, req.params.id));
 
@@ -1121,7 +1298,7 @@ salesRoutes.get('/credit', authenticate, withTenantTx(), branchFilter(), async (
 });
 
 // Create credit sale
-salesRoutes.post('/credit', authenticate, withTenantTx(), authorize('pos:credit', 'sales:create'), async (req, res, next) => {
+salesRoutes.post('/credit', authenticate, withTenantTx(), authorize('pos:credit', 'sales:create'), requireMaker(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const {
@@ -1145,11 +1322,57 @@ salesRoutes.post('/credit', authenticate, withTenantTx(), authorize('pos:credit'
             return res.status(400).json({ success: false, error: { code: 'AUTH_001', message: 'User or branch not resolved' } });
         }
 
+        // Same shift-accountability requirement as POST / — see the comment
+        // there. Credit sales still move stock and record cash-owed the same
+        // way a cash sale does, so they need the same shift attribution.
+        const creditWorkflowUser = await db.query.users.findFirst({
+            where: eq(users.id, userId),
+            columns: { requiresShift: true },
+        });
+        const creditOpenShift = await db.query.shifts.findFirst({ where: and(eq(shifts.userId, userId), eq(shifts.status, 'OPEN')) });
+        if (creditWorkflowUser?.requiresShift !== false && !creditOpenShift) {
+            return res.status(400).json({ success: false, error: { code: 'SHIFT_REQUIRED', message: 'You must open a shift before making a sale' } });
+        }
+
         if (!customerId) {
             return res.status(400).json({
                 success: false,
                 error: { code: 'CUSTOMER_REQUIRED', message: 'Customer is required for credit sales' }
             });
+        }
+
+        // Load loyalty settings + tier (same resolution as POST /sales — see
+        // the comment there for why the customer/membershipTiers fallback
+        // exists: POS never sends a real memberId, so a `members` row is
+        // never actually reached in practice). Credit sales didn't apply
+        // tier discounts or earn points at all before this.
+        const creditLoyaltySettingConds: any[] = [eq(settings.category, 'loyalty'), eq(settings.key, 'program_settings')];
+        if (creditTenantId && !req.authUser?.isSuperAdmin) creditLoyaltySettingConds.push(eq(settings.tenantId, creditTenantId));
+        const creditLoyaltySetting = await db.query.settings.findFirst({ where: and(...creditLoyaltySettingConds) });
+        const clv = (creditLoyaltySetting?.value as any) || {};
+        const creditLoyaltyEnabled = clv.enabled === true;
+        const creditAmountPerPoint = Number(clv.amountPerPoint) || 100;
+
+        let creditTierDiscountPercent = 0;
+        let creditTierPointMultiplier = 1;
+        if (memberId) {
+            const memberRecord = await db.query.members.findFirst({ where: eq(members.id, memberId), with: { tier: true } });
+            if (memberRecord?.tier) {
+                creditTierDiscountPercent = Number(memberRecord.tier.discountPercent) || 0;
+                creditTierPointMultiplier = Number(memberRecord.tier.pointMultiplier) || 1;
+            }
+        } else if (customerId) {
+            const custForTier = await db.query.customers.findFirst({ where: eq(customers.id, customerId), columns: { points: true } });
+            if (custForTier) {
+                const tierConds: any[] = [eq(membershipTiers.isActive, true)];
+                if (creditTenantId && !req.authUser?.isSuperAdmin) tierConds.push(eq(membershipTiers.tenantId, creditTenantId));
+                const tiers = await db.query.membershipTiers.findMany({ where: and(...tierConds), orderBy: desc(membershipTiers.minPoints) });
+                const matchedTier = tiers.find(t => (custForTier.points ?? 0) >= t.minPoints);
+                if (matchedTier) {
+                    creditTierDiscountPercent = Number(matchedTier.discountPercent) || 0;
+                    creditTierPointMultiplier = Number(matchedTier.pointMultiplier) || 1;
+                }
+            }
         }
 
         // Calculate totals
@@ -1204,11 +1427,15 @@ salesRoutes.post('/credit', authenticate, withTenantTx(), authorize('pos:credit'
         } else if (discountType === 'FIXED') {
             discountAmount = discountValue;
         }
+        if (creditTierDiscountPercent > 0) {
+            discountAmount += (subtotal * creditTierDiscountPercent) / 100;
+        }
 
         // Calculate tax
         const taxableAmount = subtotal - discountAmount;
         const taxAmount = (taxableAmount * taxRate) / 100;
         const totalAmount = taxableAmount + taxAmount;
+        const creditPointsEarned = calcPointsEarned(totalAmount, creditAmountPerPoint, creditTierPointMultiplier, creditLoyaltyEnabled);
 
         const transactionNo = genTxnNo('CRD', branchId);
 
@@ -1231,10 +1458,11 @@ salesRoutes.post('/credit', authenticate, withTenantTx(), authorize('pos:credit'
 
             const [txn] = await tx.insert(transactions).values({
                 tenantId: creditTenantId,
-                transactionNo, type: 'SALE', status: 'COMPLETED', branchId, storeId: creditStoreId, userId, customerId, memberId,
+                transactionNo, type: 'SALE', status: 'COMPLETED', branchId, storeId: creditStoreId, userId, shiftId: creditOpenShift?.id, customerId, memberId,
                 orderType: 'CREDIT', subtotal, discountType, discountValue, discountAmount, taxAmount,
                 total: totalAmount, received: initialPayment, change: 0, note: notes,
                 isCredit: true, creditStatus, dueDate: dueDate ? new Date(dueDate) : null, paidAmount: initialPayment,
+                pointsEarned: creditPointsEarned,
             }).returning();
 
             if (txItems2.length > 0) {
@@ -1255,6 +1483,47 @@ salesRoutes.post('/credit', authenticate, withTenantTx(), authorize('pos:credit'
                 }
             }
 
+            // Loyalty: earn points atomically with the sale — same as the
+            // regular POST / route. Credit sales are marked COMPLETED (stock
+            // deducted, transaction finalized) immediately at creation, same
+            // as cash sales; only `creditStatus` tracks whether the balance
+            // has actually been paid off. The void/refund reversal path
+            // (below, transaction.customerId/memberId) already assumed
+            // points were earned at creation time, so this fixes a real
+            // inconsistency rather than introducing a new policy.
+            if (creditLoyaltyEnabled && customerId && creditPointsEarned > 0) {
+                await tx.update(customers)
+                    .set({
+                        points: sql`${customers.points} + ${creditPointsEarned}`,
+                        totalSpent: sql`COALESCE(${customers.totalSpent}, 0) + ${Math.round(totalAmount * 100) / 100}`,
+                        visitCount: sql`COALESCE(${customers.visitCount}, 0) + 1`,
+                        lastVisitAt: new Date(),
+                        updatedAt: new Date(),
+                    })
+                    .where(eq(customers.id, customerId));
+                await tx.insert(pointsHistory).values({
+                    tenantId: creditTenantId, customerId,
+                    points: creditPointsEarned, type: 'EARN',
+                    reason: `Credit sale ${transactionNo}`, referenceId: txn.id, createdBy: userId,
+                });
+            }
+            if (creditLoyaltyEnabled && memberId && creditPointsEarned > 0) {
+                const [updMember] = await tx.update(members)
+                    .set({
+                        points: sql`${members.points} + ${creditPointsEarned}`,
+                        totalSpent: sql`COALESCE(${members.totalSpent}, 0) + ${Math.round(totalAmount * 100) / 100}`,
+                        visitCount: sql`COALESCE(${members.visitCount}, 0) + 1`,
+                        updatedAt: new Date(),
+                    })
+                    .where(eq(members.id, memberId))
+                    .returning({ points: members.points });
+                await tx.insert(pointHistory).values({
+                    tenantId: creditTenantId, memberId,
+                    type: 'EARN', points: creditPointsEarned, balance: updMember.points,
+                    reference: txn.id, referenceType: 'CREDIT_SALE',
+                });
+            }
+
             return txn.id;
         });
 
@@ -1270,7 +1539,7 @@ salesRoutes.post('/credit', authenticate, withTenantTx(), authorize('pos:credit'
 });
 
 // Record payment for credit sale
-salesRoutes.post('/credit/:id/payment', authenticate, withTenantTx(), authorize('pos:credit', 'sales:update'), async (req, res, next) => {
+salesRoutes.post('/credit/:id/payment', authenticate, withTenantTx(), authorize('pos:credit', 'sales:update'), requireMaker(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const { amount, paymentMethodId, reference, notes } = req.body;
@@ -1430,7 +1699,7 @@ salesRoutes.get('/:id', authenticate, withTenantTx(), async (req, res, next) => 
 // ═══════════════════════════════════════════════════════════════════════════
 // VOID SALE
 // ═══════════════════════════════════════════════════════════════════════════
-salesRoutes.post('/:id/void', authenticate, withTenantTx(), authorize('sales:delete'), async (req, res, next) => {
+salesRoutes.post('/:id/void', authenticate, withTenantTx(), authorize('sales:delete'), requireChecker(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const { reason } = req.body;
@@ -1453,6 +1722,23 @@ salesRoutes.post('/:id/void', authenticate, withTenantTx(), authorize('sales:del
 
         if (!ensureScopeAccess(transaction, req)) {
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this transaction' } });
+        }
+
+        // Maker-checker, required by policy decision: the cashier who rang
+        // up a sale can never be the one who voids it — a second person
+        // (any other user with sales:delete, typically a manager) must do
+        // it. Same enforced-by-comparison pattern as the inventory/PO
+        // approval flows, applied here with no role or amount threshold —
+        // EXCEPT when this tenant has no other active user at all (every
+        // brand-new signup starts as exactly one person): without this
+        // escape hatch a solo owner could never void their own mistake,
+        // permanently, with no way out.
+        const voidUserId = req.authUser?.userId || req.user?.userId || '';
+        if (transaction.userId === voidUserId
+            && !(await userIsEligibleChecker(db, voidUserId, 'sales:delete'))
+            && await isMakerCheckerEnforced(db, transaction.tenantId)
+            && await tenantHasOtherEligibleUser(db, transaction.tenantId, voidUserId, 'sales:delete')) {
+            return res.status(403).json({ success: false, error: { code: 'SELF_APPROVAL', message: 'You cannot void a sale you rang up yourself — ask another authorized user to void it' } });
         }
 
         if (transaction.status === 'VOIDED') {
@@ -1535,7 +1821,7 @@ salesRoutes.post('/:id/void', authenticate, withTenantTx(), authorize('sales:del
 // ═══════════════════════════════════════════════════════════════════════════
 // REFUND SALE
 // ═══════════════════════════════════════════════════════════════════════════
-salesRoutes.post('/:id/refund', authenticate, withTenantTx(), authorize('sales:delete'), async (req, res, next) => {
+salesRoutes.post('/:id/refund', authenticate, withTenantTx(), authorize('sales:delete'), requireChecker(), async (req, res, next) => {
     try {
         const db = req.tx ?? globalDb;
         const { reason, items: refundItems } = req.body;
@@ -1558,6 +1844,17 @@ salesRoutes.post('/:id/refund', authenticate, withTenantTx(), authorize('sales:d
 
         if (!ensureScopeAccess(transaction, req)) {
             return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'No access to this transaction' } });
+        }
+
+        // Maker-checker, same policy/pattern/solo-owner escape hatch as
+        // /:id/void above: the original cashier can't also process their
+        // own refund, unless this tenant has literally no other active user.
+        const refundUserId = req.authUser?.userId || req.user?.userId || '';
+        if (transaction.userId === refundUserId
+            && !(await userIsEligibleChecker(db, refundUserId, 'sales:delete'))
+            && await isMakerCheckerEnforced(db, transaction.tenantId)
+            && await tenantHasOtherEligibleUser(db, transaction.tenantId, refundUserId, 'sales:delete')) {
+            return res.status(403).json({ success: false, error: { code: 'SELF_APPROVAL', message: 'You cannot refund a sale you rang up yourself — ask another authorized user to process the refund' } });
         }
 
         if (transaction.status !== 'COMPLETED') {
@@ -1685,6 +1982,7 @@ salesRoutes.post('/:id/refund', authenticate, withTenantTx(), authorize('sales:d
         });
 
         const fullRefund = await db.query.transactions.findFirst({ where: eq(transactions.id, refund.id), with: { items: true } });
+        queueActivityLog(refundUserId, 'sale_refunded', 'sales', 'Refunded sale ' + transaction.id, { transactionId: transaction.id, refundId: refund.id, amount: refundAmount, reason }, req).catch(() => {});
         res.json({ success: true, data: fullRefund });
     } catch (error) {
         next(error);

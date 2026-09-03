@@ -1,6 +1,6 @@
 ﻿<script lang="ts">
     import { t } from "$lib/i18n/index.svelte";
-    import { cn } from "$utils";
+    import { cn, validateFile, IMAGE_ONLY_FILE_TYPES } from "$utils";
     import { api } from "$api";
     import { toast } from "svelte-sonner";
     import { onMount } from "svelte";
@@ -138,6 +138,7 @@
         const input = event.target as HTMLInputElement;
         const file = input.files?.[0];
         if (!file) return;
+        if (!(await validateFile(file, { allowedTypes: IMAGE_ONLY_FILE_TYPES }))) { input.value = ""; return; }
 
         try {
             const base64 = await new Promise<string>((resolve, reject) => {

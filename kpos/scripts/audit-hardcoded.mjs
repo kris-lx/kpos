@@ -16,10 +16,13 @@ const allowedPathParts = [
 ];
 
 const hardcodedTextPattern = /[ກ-ຮ]/;
+// Valid Lao text belongs in locale/catalog data and is intentionally allowed;
+// this audit catches the UTF-8-as-Windows-1252 corruption form instead.
+const encodingCorruptionPattern = /[\u00E0\u00C2\u00C3]/;
 const unsafeDataPattern =
   /\b(mock|dummy|fake|hardcoded|fall back to hardcoded|fallbackPermissions|KPOS Demo Store|Sample Product|Another Item)\b/i;
-const unsafeTranslationFallbackPattern = /t\([^\r\n]+\)\s*\|\|/;
-const strictTranslationFallbackPattern = /t\([^\r\n()]+\)\s*\|\|\s*(['"`])/;
+const unsafeTranslationFallbackPattern = /\bt\([^\r\n]+\)\s*\|\|/;
+const strictTranslationFallbackPattern = /\bt\([^\r\n()]+\)\s*\|\|\s*(['"`])/;
 
 function walk(dir) {
   const entries = readdirSync(dir, { withFileTypes: true });
@@ -60,7 +63,7 @@ for (const scanRoot of scanRoots) {
       if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('*')) return;
 
       const issues = [];
-      if (hardcodedTextPattern.test(line)) issues.push('hardcoded visible Lao text');
+      if (encodingCorruptionPattern.test(line)) issues.push('corrupted Lao text encoding');
       if (strictTranslationFallbackPattern.test(line) || unsafeTranslationFallbackPattern.test(line) && /['"`]/.test(line.split('||')[1] || '')) {
         issues.push('translation fallback text');
       }

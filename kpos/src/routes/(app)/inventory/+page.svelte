@@ -4,6 +4,7 @@
         createMutation,
         useQueryClient,
     } from "@tanstack/svelte-query";
+    import { get } from "svelte/store";
     import { api } from "$api";
     import { cn, formatCurrency, formatDate, escapeCsvCell } from "$utils";
     import { toast } from "svelte-sonner";
@@ -118,7 +119,9 @@
         void currentPage;
         void pageSize;
         void auth.activeStoreId;
-        $inventoryQuery.refetch();
+        // get() avoids the infinite-refetch-loop footgun — see admin/audit's
+        // equivalent effect for the full explanation.
+        get(inventoryQuery).refetch();
     });
 
     // Pagination computed values
@@ -296,7 +299,7 @@
 
     <!-- Stats Cards -->
     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <div class="bg-white dark:bg-gray-900 rounded-xl p-4">
+        <div data-testid="inventory-stat-total" class="bg-white dark:bg-gray-900 rounded-xl p-4">
             <div class="flex items-center gap-3">
                 <div
                     class="w-10 h-10 rounded-lg bg-primary-100 dark:bg-primary-900/30 flex items-center justify-center"
@@ -312,7 +315,7 @@
             </div>
         </div>
 
-        <div class="bg-white dark:bg-gray-900 rounded-xl p-4">
+        <div data-testid="inventory-stat-low-stock" class="bg-white dark:bg-gray-900 rounded-xl p-4">
             <div class="flex items-center gap-3">
                 <div
                     class="w-10 h-10 rounded-lg bg-warning-100 dark:bg-warning-900/30 flex items-center justify-center"
@@ -328,7 +331,7 @@
             </div>
         </div>
 
-        <div class="bg-white dark:bg-gray-900 rounded-xl p-4">
+        <div data-testid="inventory-stat-out-of-stock" class="bg-white dark:bg-gray-900 rounded-xl p-4">
             <div class="flex items-center gap-3">
                 <div
                     class="w-10 h-10 rounded-lg bg-danger-100 dark:bg-danger-900/30 flex items-center justify-center"
@@ -344,7 +347,7 @@
             </div>
         </div>
 
-        <div class="bg-white dark:bg-gray-900 rounded-xl p-4">
+        <div data-testid="inventory-stat-stock-value" class="bg-white dark:bg-gray-900 rounded-xl p-4">
             <div class="flex items-center gap-3">
                 <div
                     class="w-10 h-10 rounded-lg bg-success-100 dark:bg-success-900/30 flex items-center justify-center"

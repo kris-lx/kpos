@@ -152,7 +152,8 @@
                         </label>
                         <div class="relative">
                             <input
-                                type={showPassword ? "text" : "password"}
+                        type={showPassword ? "text" : "password"}
+                        autocomplete="new-password"
                                 id="password"
                                 bind:value={password}
                                 required
@@ -188,7 +189,8 @@
                         </label>
                         <div class="relative">
                             <input
-                                type={showConfirmPassword ? "text" : "password"}
+                        type={showConfirmPassword ? "text" : "password"}
+                        autocomplete="new-password"
                                 id="confirm-password"
                                 bind:value={confirmPassword}
                                 required

@@ -144,9 +144,15 @@ export async function logEmailResult(params: { tenantId: string; toEmail: string
 // Fire-and-forget send with retry via the EMAIL queue (falls back to inline send if
 // RabbitMQ isn't connected — same pattern as queueAssetCleanup).
 export async function sendEmailWithRetry(params: SendEmailParams): Promise<void> {
-    const { publish, isRabbitMQConnected } = await import('@/config/rabbitmq.config');
+    const { isRabbitMQConnected } = await import('@/config/rabbitmq.config');
     const { QUEUES } = await import('@/config/rabbitmq.config');
-    if (isRabbitMQConnected() && publish(QUEUES.EMAIL, { ...params, attempt: 0 })) return;
+    const { enqueueOutboxMessage } = await import('@/infrastructure/messaging/outbox.service');
+    if (isRabbitMQConnected() && await enqueueOutboxMessage({
+        queue: QUEUES.EMAIL,
+        eventType: 'email.send',
+        tenantId: params.tenantId,
+        payload: { ...params, attempt: 0 },
+    })) return;
 
     // Sync fallback
     try {

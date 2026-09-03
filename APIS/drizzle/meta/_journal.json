@@ -211,6 +211,132 @@
       "when": 1785594000000,
       "tag": "0029_partition_high_volume_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1786000000000,
+      "tag": "0030_users_branch_store_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1786000100000,
+      "tag": "0031_branches_list_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1786888528973,
+      "tag": "0032_add_roles_level_column",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1787000000000,
+      "tag": "0033_add_user_workflow_controls",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1787332893401,
+      "tag": "0034_reliable_messaging",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1787332950000,
+      "tag": "0035_audit_scope_columns",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1787333010000,
+      "tag": "0036_document_approval_audit",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1787333070000,
+      "tag": "0037_finance_expense_payroll",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1787688000000,
+      "tag": "0038_scoped_payroll_tax",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1787688600000,
+      "tag": "0039_refresh_tenant_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1787690000000,
+      "tag": "0040_branch_payroll_ot",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1787691000000,
+      "tag": "0041_employee_work_schedules",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1788200000000,
+      "tag": "0042_payroll_attendance_controls",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1788210000000,
+      "tag": "0043_staff_attendance",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1788266000000,
+      "tag": "0044_attendance_menu_discoverability",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1788270000000,
+      "tag": "0045_payroll_integrity",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1788320000000,
+      "tag": "0046_payroll_policy_ownership",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1788436800000,
+      "tag": "0047_production_print_jobs",
+      "breakpoints": true
     }
   ]
 }

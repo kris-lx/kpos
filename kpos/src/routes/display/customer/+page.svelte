@@ -3,6 +3,7 @@
     import { cn } from "$utils";
     import { api } from "$api";
     import { t } from "$lib/i18n/index.svelte";
+    import QRCode from "qrcode";
     import {
         Store,
         ShoppingCart,
@@ -19,12 +20,25 @@
         showClock: true,
         showPromotions: true,
         showQR: true,
+        // 'gateway' = live per-transaction QR from a connected payment
+        // gateway (broadcast in currentTransaction.qrImageDataUrl while a
+        // sale is being paid). 'image'/'emv' are a static QR the owner set
+        // once in Settings > Display (a bank/mobile-money QR most shops
+        // already have) — shown once checkout completes so the customer has
+        // time to scan, no gateway integration required.
+        paymentQrMode: "gateway" as "gateway" | "image" | "emv",
+        paymentQrImage: "",
+        paymentQrEmvCode: "",
         fontSize: "large" as "small" | "medium" | "large",
         accentColor: "#3b82f6",
         currency: "₭",
         storeName: "",
         storeSlogan: "",
     });
+
+    // Rendered once from paymentQrEmvCode (not on every render) — only
+    // regenerated when the configured EMV string actually changes.
+    let staticEmvQrImage = $state("");
 
     // Current transaction data (received from POS via BroadcastChannel)
     let currentTransaction = $state<{
@@ -43,6 +57,7 @@
         customerName?: string;
         paymentMethod?: string;
         change?: number;
+        qrImageDataUrl?: string;
         status: "idle" | "active" | "payment" | "complete";
     }>({
         items: [],
@@ -53,7 +68,38 @@
         status: "idle",
     });
 
+    // 'gateway' is a live, per-transaction QR that only exists while the
+    // gateway payment is pending — it must disappear once the sale is
+    // complete (that QR is now dead/expired). The static 'image'/'emv' modes
+    // are the opposite: they're the store's fixed payment QR, meant to
+    // linger through and after checkout completes so the customer has time
+    // to scan it.
+    //
+    // "gateway" is also the mode's default with nothing ever explicitly
+    // saved to Settings > Display — the common case for a store that never
+    // visited that page at all. If no gateway is configured (no dynamic QR
+    // will ever arrive for a non-QR sale) but a static QR image/EMV code
+    // *is* set on Settings > Payments, prefer showing that instead of
+    // silently showing nothing — most shops just want "show my QR after
+    // checkout" without knowing this mode selector exists.
+    const staticQrFallback = $derived(displaySettings.paymentQrImage || staticEmvQrImage);
+    const activePaymentQrImage = $derived(
+        displaySettings.paymentQrMode === "image" ? displaySettings.paymentQrImage
+        : displaySettings.paymentQrMode === "emv" ? staticEmvQrImage
+        : currentTransaction.qrImageDataUrl || staticQrFallback
+    );
+    const usingStaticFallback = $derived(displaySettings.paymentQrMode === "gateway" && !currentTransaction.qrImageDataUrl && !!staticQrFallback);
+    const showPaymentQrBlock = $derived(
+        displaySettings.showQR && !!activePaymentQrImage &&
+        (displaySettings.paymentQrMode === "gateway" && !usingStaticFallback
+            ? currentTransaction.status === "payment"
+            : currentTransaction.status === "payment" || currentTransaction.status === "complete")
+    );
+
     let promotions = $state<Array<{ id: string; title: string; description?: string }>>([]);
+
+    const COMPLETE_HOLD_MS = 8000;
+    let completeHoldUntil = 0;
 
     let currentTime = $state(new Date());
     let currentPromoIndex = $state(0);
@@ -63,16 +109,47 @@
 
     async function loadDisplayData() {
         try {
-            const [settingsRes, promotionsRes] = await Promise.all([
+            const [settingsRes, receiptRes, promotionsRes] = await Promise.all([
                 api.get("settings/category/display").json<any>(),
+                api.get("settings/category/receipt").json<any>(),
                 api.get("promotions?limit=10").json<any>(),
             ]);
+
+            // The static payment QR image is configured once on
+            // Settings > Payments (category 'receipt', key 'qrImage') — the
+            // same image printed on receipts — not duplicated into
+            // display_config, so it stays in sync with what's on paper.
+            const receiptRows: any[] = Array.isArray(receiptRes.data) ? receiptRes.data : [];
+            displaySettings.paymentQrImage = receiptRows.find((r: any) => r.key === "qrImage")?.value || "";
 
             const rows: any[] = Array.isArray(settingsRes.data) ? settingsRes.data : [];
             const displayConfig = rows.find((row: any) => row.key === "display_config")?.value;
             const parsedConfig = typeof displayConfig === "string" ? JSON.parse(displayConfig) : displayConfig;
-            if (parsedConfig) {
-                displaySettings = { ...displaySettings, ...parsedConfig };
+            // The settings/display admin page stores its (richer) config
+            // nested under customerDisplay.* rather than as flat top-level
+            // fields — bridge the fields this page actually renders from
+            // there instead of spreading the raw object (which would just
+            // add unused `mode`/`customerDisplay`/`posDisplay` keys with no
+            // effect and silently leave showLogo/accentColor/showQR at their
+            // hardcoded defaults regardless of what the owner configured).
+            const cd = parsedConfig?.customerDisplay;
+            if (cd) {
+                displaySettings = {
+                    ...displaySettings,
+                    showLogo: cd.showLogo ?? displaySettings.showLogo,
+                    accentColor: cd.accentColor ?? displaySettings.accentColor,
+                    fontSize: cd.fontSize ?? displaySettings.fontSize,
+                    showQR: cd.showPaymentQr ?? displaySettings.showQR,
+                    paymentQrMode: cd.paymentQrMode ?? displaySettings.paymentQrMode,
+                    paymentQrEmvCode: cd.paymentQrEmvCode ?? displaySettings.paymentQrEmvCode,
+                };
+                if (displaySettings.paymentQrMode === "emv" && displaySettings.paymentQrEmvCode) {
+                    try {
+                        staticEmvQrImage = await QRCode.toDataURL(displaySettings.paymentQrEmvCode, { width: 240, margin: 1 });
+                    } catch {
+                        staticEmvQrImage = "";
+                    }
+                }
             }
 
             promotions = (promotionsRes.data || [])
@@ -108,7 +185,39 @@
             channel = new BroadcastChannel("kpos_customer_display");
             channel.onmessage = (event) => {
                 if (event.data.type === "transaction_update") {
-                    currentTransaction = event.data.payload;
+                    // The POS calls cart.clear() immediately after
+                    // broadcasting "complete" (for the next sale), which
+                    // fires its own cart-sync effect broadcasting "idle" a
+                    // moment later — without this guard, the completed-sale
+                    // screen (and the static payment QR the customer is
+                    // meant to scan) would flash for a fraction of a second
+                    // and vanish. Hold "complete" for a few seconds and
+                    // ignore a same-tick idle/active follow-up.
+                    const incoming = event.data.payload;
+                    if (Date.now() < completeHoldUntil && (incoming.status === "idle" || incoming.status === "active")) {
+                        return;
+                    }
+                    if (incoming.status === "complete") {
+                        completeHoldUntil = Date.now() + COMPLETE_HOLD_MS;
+                        // No further broadcast is guaranteed once the hold
+                        // window ends (the next customer may not touch the
+                        // cart right away) — force the return to idle so the
+                        // screen doesn't stay stuck showing a finished sale.
+                        setTimeout(() => {
+                            if (currentTransaction.status === "complete") {
+                                currentTransaction = { ...currentTransaction, status: "idle", qrImageDataUrl: "" };
+                            }
+                        }, COMPLETE_HOLD_MS);
+                    } else if (incoming.status) {
+                        completeHoldUntil = 0;
+                    }
+                    // Shallow-merge, not replace — the POS side sends
+                    // lightweight partial updates for the QR code alone
+                    // (generated well before checkout is confirmed, while
+                    // the customer is expected to scan it) separately from
+                    // the full cart/totals broadcast; a full replace would
+                    // wipe whichever one arrived first.
+                    currentTransaction = { ...currentTransaction, ...incoming };
                 }
                 if (event.data.type === "settings_update") {
                     displaySettings = {
@@ -547,8 +656,17 @@
                         </div>
                     {/if}
 
-                    <!-- QR Code / Thank you -->
-                    {#if displaySettings.showQR && currentTransaction.status !== "complete"}
+                    <!-- Payment QR Code — either a live gateway QR (JDB Yes
+                         Pay / Alipay / WeChat) broadcast from the POS the
+                         moment the cashier generates it, or the store's own
+                         static bank/mobile-money QR configured once in
+                         Settings > Display (image upload or EMV code) that
+                         persists through checkout completion. Mode and
+                         on/off are both set by the store owner or a staff
+                         member granted settings:update. Never a fake
+                         placeholder — only rendered when a real QR image
+                         actually exists. -->
+                    {#if showPaymentQrBlock}
                         <div
                             class={cn(
                                 "mt-6 p-4 rounded-xl text-center",
@@ -557,11 +675,11 @@
                                     : "bg-white",
                             )}
                         >
-                            <div
-                                class="w-24 h-24 mx-auto bg-white rounded-lg flex items-center justify-center"
-                            >
-                                <span class="text-4xl">📱</span>
-                            </div>
+                            <img
+                                src={activePaymentQrImage}
+                                alt={t("pos.scanQrToPay")}
+                                class="w-40 h-40 mx-auto bg-white rounded-lg p-2"
+                            />
                             <p
                                 class={cn(
                                     "mt-2 text-sm",

@@ -14,6 +14,7 @@ export interface RefreshTokenResult {
 export interface RefreshTokenUseCaseInput {
     refreshToken: string;
     res?: Response;
+    secureCookie?: boolean;
 }
 
 export class RefreshTokenUseCase implements IUseCase<RefreshTokenUseCaseInput, RefreshTokenResult> {
@@ -21,7 +22,7 @@ export class RefreshTokenUseCase implements IUseCase<RefreshTokenUseCaseInput, R
 
     async execute(input: RefreshTokenUseCaseInput): Promise<Result<RefreshTokenResult>> {
         try {
-            const result = await this.authService.refreshToken(input.refreshToken, input.res);
+            const result = await this.authService.refreshToken(input.refreshToken, input.res, input.secureCookie);
             return Result.ok(result);
         } catch (error) {
             const err = error instanceof Error ? error : new Error('Token refresh failed');

@@ -90,7 +90,12 @@
             toast.success("ອະນຸມັດການນັບສຳເລັດ");
             loadData();
         } catch (e: any) {
-            toast.error(e?.message || t("common.error"));
+            let msg = t("common.error");
+            try {
+                const errData = await e?.response?.json();
+                if (errData?.error?.message) msg = errData.error.message;
+            } catch {}
+            toast.error(msg);
         }
     }
 
@@ -388,7 +393,13 @@
                                             <Eye class="w-4 h-4" />
                                         </button>
                                         {#if count.status === 'pending' && canApprove}
-                                            <button onclick={() => approveCount(count.id)} class="p-2 text-success-600 hover:bg-success-50 dark:hover:bg-success-900/30 rounded-lg" title="ອະນຸມັດ">
+                                            {@const isSelfCounted = count.countedBy === auth.user?.id}
+                                            <button
+                                                onclick={() => approveCount(count.id)}
+                                                disabled={isSelfCounted}
+                                                class="p-2 text-success-600 hover:bg-success-50 dark:hover:bg-success-900/30 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                                                title={isSelfCounted ? "ທ່ານບໍ່ສາມາດອະນຸມັດການນັບຂອງຕົນເອງໄດ້" : "ອະນຸມັດ"}
+                                            >
                                                 <ThumbsUp class="w-4 h-4" />
                                             </button>
                                             <button onclick={() => openRejectModal(count.id)} class="p-2 text-danger-600 hover:bg-danger-50 dark:hover:bg-danger-900/30 rounded-lg" title="ປະຕິເສດ">

@@ -25,7 +25,7 @@ import * as schema from "@/db/schema";
 // checked out. `max_lifetime` additionally recycles connections
 // periodically so any connection-level staleness self-heals.
 //
-// Dev pool bumped 5 → 15: a single login does 4 concurrent DB-touching
+// Dev pool bumped 5 → 30: a single login does 4 concurrent DB-touching
 // requests client-side (loadStoreContext/loadRules/refreshProfile/
 // tenantSettings.load — see auth.svelte.ts login()), and each of those can
 // itself need more than one pooled connection (withTenantTx()'s per-request
@@ -34,7 +34,7 @@ import * as schema from "@/db/schema";
 // 5 was tight enough that ordinary concurrent page-load traffic — not just
 // pathological hangs — could genuinely exhaust it.
 export const primaryClient = postgres(dbConfig.url, {
-  max: appConfig.isProduction ? 20 : 15,
+  max: appConfig.isProduction ? 20 : 30,
   idle_timeout: 20,
   connect_timeout: 10,
   max_lifetime: 60 * 30, // recycle every 30 minutes

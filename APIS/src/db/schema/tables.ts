@@ -70,6 +70,7 @@ export const branches = pgTable('branches', {
     index('branches_parent_idx').on(t.parentBranchId),
     index('branches_path_idx').on(t.branchPath),
     uniqueIndex('branches_tenant_code_idx').on(t.tenantId, t.code),
+    index('branches_tenant_active_name_idx').on(t.tenantId, t.isActive, t.name),
 ]);
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -93,6 +94,13 @@ export const users = pgTable('users', {
     branchId: uuid('branch_id'),
     permissions: text('permissions').array().notNull().default([]),
     isActive: boolean('is_active').notNull().default(true),
+    // Workflow flags are assigned per user by an owner/branch admin. They
+    // complement (and never bypass) the role permission checks: a checker
+    // still needs the relevant approval permission, and a maker still needs
+    // the relevant create permission.
+    makerEnabled: boolean('maker_enabled').notNull().default(true),
+    checkerEnabled: boolean('checker_enabled').notNull().default(false),
+    requiresShift: boolean('requires_shift').notNull().default(true),
     isSuperAdmin: boolean('is_super_admin').notNull().default(false),
     emailVerified: boolean('email_verified').notNull().default(false),
     twoFAEnabled: boolean('two_fa_enabled').notNull().default(false),
@@ -102,6 +110,8 @@ export const users = pgTable('users', {
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (t) => [
     uniqueIndex('users_tenant_email_idx').on(t.tenantId, t.email),
+    index('users_tenant_branch_idx').on(t.tenantId, t.branchId),
+    index('users_tenant_store_idx').on(t.tenantId, t.storeId),
 ]);
 
 export const sessions = pgTable('sessions', {
@@ -134,6 +144,16 @@ export const roles = pgTable('roles', {
     isSystem: boolean('is_system').notNull().default(false),
     maskLow: bigint('mask_low', { mode: 'bigint' }).notNull().default(sql`0`),
     maskHigh: bigint('mask_high', { mode: 'bigint' }).notNull().default(sql`0`),
+    // Numeric privilege tier (1 = platform .. 7 = lowest/specialist), the DB-
+    // backed replacement for name-keyed ROLE_LEVELS lookups. A role name a
+    // caller invented (anything outside the ~20 built-in names) always
+    // resolved to the hardcoded map's `?? 7` fallback — which ladder checks
+    // (assign this role / create a role no more privileged than yourself)
+    // read as "harmless," regardless of what permissions the role actually
+    // held. This column makes level an explicit, per-row fact set at
+    // creation time and validated against the creator's own level, instead
+    // of an inference from a name string.
+    level: integer('level').notNull().default(7),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (t) => [
@@ -283,7 +303,11 @@ export const userStores = pgTable('user_stores', {
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (t) => [
-    uniqueIndex('user_stores_user_store_idx').on(t.userId, t.storeId),
+    // A whole-store grant is unique, while a user may hold several explicit
+    // branch grants inside the same store. PostgreSQL treats NULL values as
+    // distinct, so partial indexes make both invariants explicit.
+    uniqueIndex('user_stores_user_store_whole_idx').on(t.userId, t.storeId).where(sql`${t.branchId} IS NULL`),
+    uniqueIndex('user_stores_user_store_branch_idx').on(t.userId, t.storeId, t.branchId).where(sql`${t.branchId} IS NOT NULL`),
 ]);
 
 export const productStores = pgTable('product_stores', {
@@ -576,6 +600,10 @@ export const transactions = pgTable('transactions', {
     change: doublePrecision('change').notNull().default(0),
     pointsEarned: integer('points_earned').notNull().default(0),
     pointsRedeemed: integer('points_redeemed').notNull().default(0),
+    // Monetary value of redeemed loyalty points. Keeping this separate from
+    // the point count prevents financial reports from silently omitting the
+    // discount applied to the final payable amount.
+    pointsRedeemAmount: doublePrecision('points_redeem_amount').notNull().default(0),
     note: text('note'),
     voidReason: text('void_reason'),
     refundReason: text('refund_reason'),
@@ -681,6 +709,65 @@ export const paymentMethods = pgTable('payment_methods', {
 // SHIFTS & CASH MANAGEMENT
 // ═══════════════════════════════════════════════════════════════════════════
 
+export const employeeWorkSchedules = pgTable('employee_work_schedules', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id').notNull(),
+    storeId: uuid('store_id').notNull(),
+    branchId: uuid('branch_id').notNull(),
+    userId: uuid('user_id').notNull(),
+    dayOfWeek: integer('day_of_week').notNull(),
+    startTime: text('start_time').notNull(),
+    endTime: text('end_time').notNull(),
+    timezone: text('timezone').notNull().default('Asia/Vientiane'),
+    earlyClockOutGraceMinutes: integer('early_clock_out_grace_minutes').notNull().default(0),
+    effectiveFrom: timestamp('effective_from').notNull().defaultNow(),
+    effectiveTo: timestamp('effective_to'),
+    isActive: boolean('is_active').notNull().default(true),
+    createdBy: uuid('created_by').notNull(),
+    updatedBy: uuid('updated_by'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (t) => [
+    index('employee_work_schedules_user_branch_effective_idx').on(t.userId, t.branchId, t.effectiveFrom),
+    index('employee_work_schedules_tenant_idx').on(t.tenantId),
+    index('employee_work_schedules_scope_active_idx').on(t.branchId, t.isActive, t.dayOfWeek),
+]);
+
+// Work attendance is intentionally separate from `shifts`. A shift is a
+// cash-drawer session and therefore only applies to users who operate a POS
+// register; attendance applies to every employee and is the source of truth
+// for payroll hours, late arrivals, and early departures.
+export const attendanceRecords = pgTable('attendance_records', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id').notNull(),
+    storeId: uuid('store_id').notNull(),
+    branchId: uuid('branch_id').notNull(),
+    userId: uuid('user_id').notNull(),
+    workDate: text('work_date').notNull(),
+    clockInAt: timestamp('clock_in_at').notNull(),
+    clockOutAt: timestamp('clock_out_at'),
+    scheduledStartAt: timestamp('scheduled_start_at'),
+    scheduledEndAt: timestamp('scheduled_end_at'),
+    timezone: text('timezone').notNull().default('Asia/Vientiane'),
+    status: text('status').notNull().default('OPEN'),
+    lateMinutes: integer('late_minutes').notNull().default(0),
+    earlyLeaveMinutes: integer('early_leave_minutes').notNull().default(0),
+    workedMinutes: integer('worked_minutes').notNull().default(0),
+    clockInSource: text('clock_in_source').notNull().default('WEB'),
+    clockOutSource: text('clock_out_source'),
+    note: text('note'),
+    adjustmentReason: text('adjustment_reason'),
+    createdBy: uuid('created_by').notNull(),
+    updatedBy: uuid('updated_by'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (t) => [
+    index('attendance_records_tenant_date_idx').on(t.tenantId, t.workDate),
+    index('attendance_records_branch_clock_in_idx').on(t.branchId, t.clockInAt),
+    index('attendance_records_user_clock_in_idx').on(t.userId, t.clockInAt),
+    uniqueIndex('attendance_records_one_open_per_user_idx').on(t.userId).where(sql`status = 'OPEN'`),
+]);
+
 export const shifts = pgTable('shifts', {
     id: uuid('id').primaryKey().defaultRandom(),
     tenantId: uuid('tenant_id'),
@@ -732,6 +819,261 @@ export const cashMovements = pgTable('cash_movements', {
     userId: uuid('user_id').notNull(),
     createdAt: timestamp('created_at').notNull().defaultNow(),
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FINANCE — EXPENSE LEDGER & PAYROLL
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const expenses = pgTable('expenses', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    storeId: uuid('store_id'),
+    branchId: uuid('branch_id').notNull(),
+    category: text('category').notNull(),
+    vendor: text('vendor'),
+    reference: text('reference'),
+    description: text('description'),
+    amount: doublePrecision('amount').notNull(),
+    taxAmount: doublePrecision('tax_amount').notNull().default(0),
+    paymentMethod: text('payment_method'),
+    expenseDate: timestamp('expense_date').notNull().defaultNow(),
+    status: text('status').notNull().default('DRAFT'),
+    createdBy: uuid('created_by').notNull(),
+    submittedBy: uuid('submitted_by'),
+    approvedBy: uuid('approved_by'),
+    paidBy: uuid('paid_by'),
+    approvedAt: timestamp('approved_at'),
+    paidAt: timestamp('paid_at'),
+    rejectionReason: text('rejection_reason'),
+    attachmentUrl: text('attachment_url'),
+    idempotencyKey: text('idempotency_key'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (t) => [
+    index('expenses_tenant_date_idx').on(t.tenantId, t.expenseDate),
+    index('expenses_branch_date_idx').on(t.branchId, t.expenseDate),
+    index('expenses_status_idx').on(t.status),
+]);
+
+export const employeeCompensation = pgTable('employee_compensation', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    storeId: uuid('store_id'),
+    branchId: uuid('branch_id'),
+    userId: uuid('user_id').notNull(),
+    payType: text('pay_type').notNull().default('MONTHLY'),
+    baseRate: doublePrecision('base_rate').notNull().default(0),
+    allowance: doublePrecision('allowance').notNull().default(0),
+    defaultDeduction: doublePrecision('default_deduction').notNull().default(0),
+    taxExemptAmount: doublePrecision('tax_exempt_amount').notNull().default(0),
+    socialSecurityEnabled: boolean('social_security_enabled').notNull().default(true),
+    overtimeEligible: boolean('overtime_eligible').notNull().default(true),
+    commissionRate: doublePrecision('commission_rate').notNull().default(0),
+    effectiveFrom: timestamp('effective_from').notNull(),
+    effectiveTo: timestamp('effective_to'),
+    status: text('status').notNull().default('ACTIVE'),
+    createdBy: uuid('created_by').notNull(),
+    updatedBy: uuid('updated_by'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (t) => [
+    index('employee_compensation_user_effective_idx').on(t.userId, t.effectiveFrom),
+    index('employee_compensation_tenant_idx').on(t.tenantId),
+]);
+
+export const payrollTaxProfiles = pgTable('payroll_tax_profiles', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    storeId: uuid('store_id'),
+    branchId: uuid('branch_id'),
+    name: text('name').notNull(),
+    currency: text('currency').notNull().default('LAK'),
+    effectiveFrom: timestamp('effective_from').notNull(),
+    effectiveTo: timestamp('effective_to'),
+    // Progressive cumulative brackets: [{ upTo: 5000000, rate: 0.05 },
+    // { upTo: null, rate: 0.1 }]. Rates are stored as decimal fractions.
+    taxBrackets: jsonb('tax_brackets').notNull().default(sql`'[]'::jsonb`),
+    taxableDeduction: doublePrecision('taxable_deduction').notNull().default(0),
+    employeeSocialRate: doublePrecision('employee_social_rate').notNull().default(0),
+    employerSocialRate: doublePrecision('employer_social_rate').notNull().default(0),
+    socialContributionCap: doublePrecision('social_contribution_cap').notNull().default(0),
+    sourceReference: text('source_reference'),
+    status: text('status').notNull().default('ACTIVE'),
+    createdBy: uuid('created_by').notNull(),
+    updatedBy: uuid('updated_by'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (t) => [
+    index('payroll_tax_profiles_tenant_effective_idx').on(t.tenantId, t.effectiveFrom),
+    index('payroll_tax_profiles_scope_idx').on(t.storeId, t.branchId, t.status),
+]);
+
+export const payrollWorkPolicies = pgTable('payroll_work_policies', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id').notNull(),
+    storeId: uuid('store_id').notNull(),
+    branchId: uuid('branch_id').notNull(),
+    name: text('name').notNull(),
+    timezone: text('timezone').notNull().default('Asia/Vientiane'),
+    effectiveFrom: timestamp('effective_from').notNull(),
+    effectiveTo: timestamp('effective_to'),
+    standardHoursPerDay: doublePrecision('standard_hours_per_day').notNull(),
+    monthlyWorkDays: doublePrecision('monthly_work_days').notNull(),
+    overtimeMultiplier: doublePrecision('overtime_multiplier').notNull(),
+    overtimeEveningMultiplier: doublePrecision('overtime_evening_multiplier').notNull().default(2),
+    overtimeNightMultiplier: doublePrecision('overtime_night_multiplier').notNull().default(3),
+    weekendMultiplier: doublePrecision('weekend_multiplier').notNull(),
+    weekendEveningMultiplier: doublePrecision('weekend_evening_multiplier').notNull().default(3),
+    weekendNightMultiplier: doublePrecision('weekend_night_multiplier').notNull().default(3.5),
+    holidayMultiplier: doublePrecision('holiday_multiplier').notNull(),
+    holidayEveningMultiplier: doublePrecision('holiday_evening_multiplier').notNull().default(3),
+    holidayNightMultiplier: doublePrecision('holiday_night_multiplier').notNull().default(3.5),
+    nightShiftPremiumRate: doublePrecision('night_shift_premium_rate').notNull().default(0.15),
+    roundingMinutes: integer('rounding_minutes').notNull().default(1),
+    maxShiftHours: doublePrecision('max_shift_hours').notNull().default(24),
+    weekendDays: jsonb('weekend_days').notNull().default(sql`'[0]'::jsonb`),
+    holidayDates: jsonb('holiday_dates').notNull().default(sql`'[]'::jsonb`),
+    lateGraceMinutes: integer('late_grace_minutes').notNull().default(0),
+    earlyLeaveGraceMinutes: integer('early_leave_grace_minutes').notNull().default(0),
+    lateDeductionMultiplier: doublePrecision('late_deduction_multiplier').notNull().default(1),
+    earlyLeaveDeductionMultiplier: doublePrecision('early_leave_deduction_multiplier').notNull().default(1),
+    sourceReference: text('source_reference'),
+    status: text('status').notNull().default('ACTIVE'),
+    createdBy: uuid('created_by').notNull(),
+    updatedBy: uuid('updated_by'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (t) => [
+    index('payroll_work_policies_scope_effective_idx').on(t.branchId, t.status, t.effectiveFrom),
+    index('payroll_work_policies_tenant_idx').on(t.tenantId),
+]);
+
+export const payrollPeriods = pgTable('payroll_periods', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    storeId: uuid('store_id'),
+    branchId: uuid('branch_id'),
+    periodStart: timestamp('period_start').notNull(),
+    periodEnd: timestamp('period_end').notNull(),
+    status: text('status').notNull().default('OPEN'),
+    totalGross: doublePrecision('total_gross').notNull().default(0),
+    totalDeductions: doublePrecision('total_deductions').notNull().default(0),
+    totalIncomeTax: doublePrecision('total_income_tax').notNull().default(0),
+    totalEmployeeSocial: doublePrecision('total_employee_social').notNull().default(0),
+    totalEmployerSocial: doublePrecision('total_employer_social').notNull().default(0),
+    totalEmployerCost: doublePrecision('total_employer_cost').notNull().default(0),
+    totalNet: doublePrecision('total_net').notNull().default(0),
+    taxProfileId: uuid('tax_profile_id'),
+    workPolicyId: uuid('work_policy_id'),
+    currency: text('currency').notNull().default('LAK'),
+    createdBy: uuid('created_by').notNull(),
+    submittedBy: uuid('submitted_by'),
+    approvedBy: uuid('approved_by'),
+    paidBy: uuid('paid_by'),
+    approvedAt: timestamp('approved_at'),
+    paidAt: timestamp('paid_at'),
+    closedAt: timestamp('closed_at'),
+    rejectionReason: text('rejection_reason'),
+    reversalReason: text('reversal_reason'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (t) => [
+    index('payroll_periods_tenant_start_idx').on(t.tenantId, t.periodStart),
+    index('payroll_periods_branch_start_idx').on(t.branchId, t.periodStart),
+    index('payroll_periods_status_idx').on(t.status),
+]);
+
+export const payrollItems = pgTable('payroll_items', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    storeId: uuid('store_id'),
+    branchId: uuid('branch_id'),
+    currency: text('currency').notNull().default('LAK'),
+    periodId: uuid('period_id').notNull(),
+    userId: uuid('user_id').notNull(),
+    payType: text('pay_type').notNull(),
+    hoursWorked: doublePrecision('hours_worked').notNull().default(0),
+    regularHours: doublePrecision('regular_hours').notNull().default(0),
+    overtimeHours: doublePrecision('overtime_hours').notNull().default(0),
+    weekendHours: doublePrecision('weekend_hours').notNull().default(0),
+    holidayHours: doublePrecision('holiday_hours').notNull().default(0),
+    attendanceDays: doublePrecision('attendance_days').notNull().default(0),
+    scheduledDays: doublePrecision('scheduled_days').notNull().default(0),
+    absenceDays: doublePrecision('absence_days').notNull().default(0),
+    lateMinutes: integer('late_minutes').notNull().default(0),
+    earlyLeaveMinutes: integer('early_leave_minutes').notNull().default(0),
+    attendanceDeduction: doublePrecision('attendance_deduction').notNull().default(0),
+    basePay: doublePrecision('base_pay').notNull().default(0),
+    overtimePay: doublePrecision('overtime_pay').notNull().default(0),
+    commission: doublePrecision('commission').notNull().default(0),
+    allowance: doublePrecision('allowance').notNull().default(0),
+    reimbursement: doublePrecision('reimbursement').notNull().default(0),
+    taxableIncome: doublePrecision('taxable_income').notNull().default(0),
+    incomeTax: doublePrecision('income_tax').notNull().default(0),
+    employeeSocialSecurity: doublePrecision('employee_social_security').notNull().default(0),
+    employerSocialSecurity: doublePrecision('employer_social_security').notNull().default(0),
+    otherDeductions: doublePrecision('other_deductions').notNull().default(0),
+    deductions: doublePrecision('deductions').notNull().default(0),
+    grossPay: doublePrecision('gross_pay').notNull().default(0),
+    netPay: doublePrecision('net_pay').notNull().default(0),
+    employerCost: doublePrecision('employer_cost').notNull().default(0),
+    taxProfileId: uuid('tax_profile_id'),
+    calculationDetails: jsonb('calculation_details'),
+    adjustmentReason: text('adjustment_reason'),
+    expenseId: uuid('expense_id'),
+    status: text('status').notNull().default('DRAFT'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (t) => [
+    uniqueIndex('payroll_items_period_user_idx').on(t.periodId, t.userId),
+    index('payroll_items_tenant_idx').on(t.tenantId),
+]);
+
+export const payrollAdjustments = pgTable('payroll_adjustments', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id').notNull(),
+    storeId: uuid('store_id').notNull(),
+    branchId: uuid('branch_id').notNull(),
+    periodId: uuid('period_id').notNull(),
+    userId: uuid('user_id').notNull(),
+    type: text('type').notNull(),
+    amount: doublePrecision('amount').notNull(),
+    reason: text('reason').notNull(),
+    status: text('status').notNull().default('PENDING_APPROVAL'),
+    createdBy: uuid('created_by').notNull(),
+    approvedBy: uuid('approved_by'),
+    approvedAt: timestamp('approved_at'),
+    reviewedBy: uuid('reviewed_by'),
+    reviewedAt: timestamp('reviewed_at'),
+    reviewReason: text('review_reason'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (t) => [
+    index('payroll_adjustments_period_user_idx').on(t.periodId, t.userId),
+    index('payroll_adjustments_scope_status_idx').on(t.branchId, t.status),
+]);
+
+export const payrollPayments = pgTable('payroll_payments', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id'),
+    storeId: uuid('store_id'),
+    branchId: uuid('branch_id'),
+    currency: text('currency').notNull().default('LAK'),
+    periodId: uuid('period_id').notNull(),
+    payrollItemId: uuid('payroll_item_id').notNull(),
+    userId: uuid('user_id').notNull(),
+    amount: doublePrecision('amount').notNull(),
+    paymentMethod: text('payment_method').notNull(),
+    reference: text('reference'),
+    idempotencyKey: text('idempotency_key'),
+    reversalOfPaymentId: uuid('reversal_of_payment_id'),
+    paidBy: uuid('paid_by').notNull(),
+    paidAt: timestamp('paid_at').notNull().defaultNow(),
+}, (t) => [
+    uniqueIndex('payroll_payments_idempotency_idx').on(t.idempotencyKey),
+    index('payroll_payments_item_history_idx').on(t.payrollItemId, t.paidAt),
+    index('payroll_payments_tenant_date_idx').on(t.tenantId, t.paidAt),
+]);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // RESTAURANT MODULE
@@ -1122,6 +1464,10 @@ export const documents = pgTable('documents', {
     storeId: uuid('store_id'),
     data: jsonb('data').notNull(),
     status: text('status').notNull().default('CREATED'),
+    approvedBy: uuid('approved_by'),
+    approvedAt: timestamp('approved_at'),
+    rejectedBy: uuid('rejected_by'),
+    rejectedAt: timestamp('rejected_at'),
     printCount: integer('print_count').notNull().default(0),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
@@ -1286,6 +1632,39 @@ export const settings = pgTable('settings', {
     index('settings_tenant_idx').on(t.tenantId),
 ]);
 
+// Durable record of every direct thermal/label print request. The raw printer
+// payload is retained so failed jobs can be retried without rebuilding a
+// receipt from mutable browser state.
+export const printJobs = pgTable('print_jobs', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id').notNull(),
+    storeId: uuid('store_id'),
+    branchId: uuid('branch_id'),
+    printerSettingId: uuid('printer_setting_id').notNull(),
+    documentType: text('document_type').notNull(), // receipt | label
+    reference: text('reference'),
+    idempotencyKey: text('idempotency_key').notNull(),
+    status: text('status').notNull().default('QUEUED'), // QUEUED | PROCESSING | PRINTED | FAILED
+    transport: text('transport').notNull().default('network'),
+    protocol: text('protocol').notNull(),
+    payload: jsonb('payload').notNull(),
+    requestedBy: uuid('requested_by').notNull(),
+    attempts: integer('attempts').notNull().default(0),
+    maxAttempts: integer('max_attempts').notNull().default(3),
+    lastError: text('last_error'),
+    queuedAt: timestamp('queued_at').notNull().defaultNow(),
+    startedAt: timestamp('started_at'),
+    printedAt: timestamp('printed_at'),
+    failedAt: timestamp('failed_at'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (t) => [
+    uniqueIndex('print_jobs_tenant_idempotency_idx').on(t.tenantId, t.idempotencyKey),
+    index('print_jobs_tenant_created_idx').on(t.tenantId, t.createdAt),
+    index('print_jobs_branch_created_idx').on(t.branchId, t.createdAt),
+    index('print_jobs_status_queued_idx').on(t.status, t.queuedAt),
+]);
+
 // ═══════════════════════════════════════════════════════════════════════════
 // SYSTEM ENUMS (dropdown/select values stored in DB, editable by admin)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1327,6 +1706,8 @@ export const activityLogs = pgTable('activity_logs', {
     id: uuid('id').primaryKey().defaultRandom(),
     tenantId: uuid('tenant_id'),
     userId: uuid('user_id').notNull(),
+    storeId: uuid('store_id'),
+    branchId: uuid('branch_id'),
     action: text('action').notNull(),
     description: text('description'),
     entity: text('entity'),
@@ -1342,6 +1723,8 @@ export const activityLogs = pgTable('activity_logs', {
     index('activity_logs_user_idx').on(t.userId),
     index('activity_logs_action_idx').on(t.action),
     index('activity_logs_created_idx').on(t.createdAt),
+    index('activity_logs_tenant_branch_created_idx').on(t.tenantId, t.branchId, t.createdAt),
+    index('activity_logs_tenant_store_created_idx').on(t.tenantId, t.storeId, t.createdAt),
 ]);
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1363,6 +1746,35 @@ export const platformAuditLogs = pgTable('platform_audit_logs', {
 // ═══════════════════════════════════════════════════════════════════════════
 // USER ROLE ASSIGNMENTS (scoped multi-role)
 // ═══════════════════════════════════════════════════════════════════════════
+
+export const outboxMessages = pgTable('outbox_messages', {
+    eventId: uuid('event_id').primaryKey().defaultRandom(),
+    queue: text('queue').notNull(),
+    eventType: text('event_type').notNull(),
+    tenantId: uuid('tenant_id'),
+    aggregateId: text('aggregate_id'),
+    payload: jsonb('payload').notNull(),
+    attempts: integer('attempts').notNull().default(0),
+    availableAt: timestamp('available_at').notNull().defaultNow(),
+    lockedAt: timestamp('locked_at'),
+    publishedAt: timestamp('published_at'),
+    lastError: text('last_error'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (t) => [
+    index('outbox_messages_pending_idx').on(t.publishedAt, t.availableAt, t.createdAt),
+    index('outbox_messages_queue_idx').on(t.queue, t.publishedAt),
+]);
+
+export const messageReceipts = pgTable('message_receipts', {
+    eventId: uuid('event_id').primaryKey(),
+    queue: text('queue').notNull(),
+    status: text('status').notNull().default('processing'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow(),
+    processedAt: timestamp('processed_at'),
+}, (t) => [
+    index('message_receipts_status_idx').on(t.status, t.updatedAt),
+]);
 
 export const userRoleAssignments = pgTable('user_role_assignments', {
     id: uuid('id').primaryKey().defaultRandom(),

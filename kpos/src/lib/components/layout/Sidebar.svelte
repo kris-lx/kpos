@@ -53,6 +53,7 @@
         ChefHat,
         ClipboardCheck,
         Timer,
+        Banknote,
         Star,
         Heart,
         PackageX,
@@ -90,8 +91,36 @@
     let badgePollFailures = $state(0);
     const MAX_BADGE_FAILURES = 3;
 
+    // These catalog screens are platform-owned. The API menu can contain stale
+    // rows after a migration, so keep the boundary enforced in the client too.
+    const PLATFORM_ONLY_MENU_KEYS = new Set([
+        "admin.roles",
+        "admin.rules",
+        "admin.permissions",
+        "admin.users",
+    ]);
+
+    function isAccessControlMenuVisible(item: MenuItem): boolean {
+        if (PLATFORM_ONLY_MENU_KEYS.has(item.id)) {
+            return Boolean(auth.user?.isSuperAdmin);
+        }
+
+        // Store Owner owns tenant roles. Branch Admin manages staff assignments
+        // only and should not see the tenant role editor.
+        if (item.id === "management.roles") {
+            return Boolean(auth.user?.isSuperAdmin) || auth.roleLevel <= 2;
+        }
+
+        return true;
+    }
+
     // Helper: check if a menu item should be visible based on rules + permissions
     function isMenuVisible(item: MenuItem): boolean {
+        if (!isAccessControlMenuVisible(item)) return false;
+        // Attendance is discoverable to every authenticated employee. The
+        // page explains missing grants; API calls and CRUD controls remain
+        // protected by attendance:clock/view/manage.
+        if (item.href === '/staff/attendance') return true;
         // No permission required = always visible
         if (!item.permission && !item.href) return true;
         // Super admin sees everything
@@ -120,7 +149,7 @@
         PackageSearch, CalendarClock, TrendingUp, TrendingDown, PieChart,
         FileSpreadsheet, Wallet, BellRing, Plug, Monitor, HelpCircle,
         Crown, Layers, ShoppingBag, ChefHat, ClipboardCheck, Timer,
-        Star, Heart, PackageX, Shield, ShieldCheck, FileCheck, Key, History, Briefcase,
+        Star, Heart, PackageX, Shield, ShieldCheck, FileCheck, Key, History, Briefcase, Banknote,
         Store, LogOut, ChevronDown,
     };
 
@@ -131,14 +160,10 @@
 
     // Auto-expand only the active parent menu; collapse all others (accordion)
     $effect(() => {
-        const pathname = $page.url.pathname;
         let activeId: string | null = null;
         for (const item of menuItems) {
             if (item.children) {
-                const hasActiveChild = item.children.some(
-                    (child) => child.href && (pathname === child.href || pathname.startsWith(child.href + "/"))
-                );
-                if (hasActiveChild) { activeId = item.id; break; }
+                if (hasActiveDescendant(item)) { activeId = item.id; break; }
             }
         }
         if (activeId) {
@@ -159,6 +184,13 @@
         return getResponseStatus(err) === 401 || getResponseStatus(err) === 403;
     }
 
+    // 429 fell through both isNetworkError and isAuthError uncounted, so the
+    // failure counter below never tripped — polling kept retrying every 30s
+    // indefinitely against an already-rate-limited endpoint, with no backoff.
+    function isRateLimited(err: unknown): boolean {
+        return getResponseStatus(err) === 429;
+    }
+
     async function ensureAuthReady(): Promise<boolean> {
         if (auth.isAuthenticated) return true;
         if (!auth.user) return false;
@@ -177,7 +209,7 @@
             badgePollFailures = 0;
         } catch (err) {
             if (isAuthError(err)) return;
-            if (isNetworkError(err)) {
+            if (isNetworkError(err) || isRateLimited(err)) {
                 badgePollFailures++;
             }
         }
@@ -197,7 +229,7 @@
             badgePollFailures = 0;
         } catch (err) {
             if (isAuthError(err)) return;
-            if (isNetworkError(err)) {
+            if (isNetworkError(err) || isRateLimited(err)) {
                 badgePollFailures++;
             }
         }
@@ -232,6 +264,7 @@
         'reports.branch-compare': 'branchCompare', 'reports.gl': 'glReport',
         'management.branches': 'branches', 'management.stores': 'stores',
         'management.staff': 'staffList', 'management.users': 'users',
+        'management.attendance': 'attendance',
         'management.roles': 'roles', 'management.cashregisters': 'cashRegisters',
         'management.shifts': 'shifts',
         'settings.general': 'generalSettings', 'settings.display': 'displaySettings',
@@ -245,18 +278,37 @@
         'admin.audit': 'adminAudit',
     };
 
+    // Keep the audit tree usable even when an older database still has the
+    // original single-link `admin.audit` menu row. The API seed supplies the
+    // same tree for new installations; this fallback makes the UI migrate
+    // gracefully without requiring a destructive menu reset.
+    const AUDIT_SUBMENU = [
+        { key: 'audit.overview', label: 'Overview', labelLao: 'ພາບລວມ', icon: 'LayoutDashboard', path: '/admin/audit', requiredPermission: 'audit:view' },
+        { key: 'audit.activity', label: 'Activity Log', labelLao: 'ປະຫວັດການກະທຳ', icon: 'Activity', path: '/admin/audit?view=activity', requiredPermission: 'audit:view' },
+        { key: 'audit.sales', label: 'Sales Audit', labelLao: 'ກວດການຂາຍ', icon: 'ShoppingCart', path: '/admin/audit?view=sales', requiredPermission: 'audit:view' },
+        { key: 'audit.inventory', label: 'Inventory Audit', labelLao: 'ກວດສາງສິນຄ້າ', icon: 'Boxes', path: '/admin/audit?view=inventory', requiredPermission: 'audit:view' },
+        { key: 'audit.staff', label: 'Staff Audit', labelLao: 'ກວດກາພະນັກງານ', icon: 'Users', path: '/admin/audit?view=staff', requiredPermission: 'audit:view' },
+        { key: 'audit.access', label: 'Access Audit', labelLao: 'ກວດ Roles / Rules / Permissions', icon: 'Key', path: '/admin/audit?view=access', requiredPermission: 'audit:view' },
+        { key: 'audit.approvals', label: 'Maker-Checker', labelLao: 'ກວດ Maker-Checker', icon: 'ShieldCheck', path: '/admin/audit?view=approvals', requiredPermission: 'audit:view' },
+        { key: 'audit.security', label: 'Security Audit', labelLao: 'ກວດຄວາມປອດໄພ', icon: 'Lock', path: '/admin/audit?view=security', requiredPermission: 'audit:view' },
+    ];
+
     function mapApiMenuItem(raw: any): MenuItem {
         const navSuffix = API_KEY_TO_NAV[raw.key] ?? raw.key;
+        const rawChildren = Array.isArray(raw.children) ? raw.children : [];
+        const children = rawChildren.length > 0
+            ? rawChildren
+            : (raw.key === 'admin.audit' || raw.key === 'super-admin.audit' ? AUDIT_SUBMENU : []);
         const item: MenuItem = {
             id: raw.key,
             name: raw.labelLao || raw.label,
             nameKey: `nav.${navSuffix}`,
             icon: resolveIcon(raw.icon),
             permission: raw.requiredPermission || undefined,
-            href: raw.path || undefined,
+            href: children.length > 0 ? undefined : (raw.path || undefined),
         };
-        if (raw.children?.length > 0) {
-            item.children = raw.children.map(mapApiMenuItem);
+        if (children.length > 0) {
+            item.children = children.map(mapApiMenuItem);
         }
         return item;
     }
@@ -318,18 +370,20 @@
 
     function isActive(href?: string): boolean {
         if (!href) return false;
+        const target = new URL(href, 'http://kpos.local');
         const pathname = $page.url.pathname;
-        if (pathname === href) return true;
+        const search = $page.url.search;
+        if (pathname === target.pathname && search === target.search) return true;
         
         // Find the most specific match among all menu items
         let bestMatch = "";
         for (const item of menuItems) {
-            if (item.href && pathname.startsWith(item.href) && item.href.length > bestMatch.length) {
+            if (item.href && isHrefMatch(item.href, pathname, search) && item.href.length > bestMatch.length) {
                 bestMatch = item.href;
             }
             if (item.children) {
                 for (const child of item.children) {
-                    if (child.href && pathname.startsWith(child.href) && child.href.length > bestMatch.length) {
+                    if (child.href && isHrefMatch(child.href, pathname, search) && child.href.length > bestMatch.length) {
                         bestMatch = child.href;
                     }
                 }
@@ -341,16 +395,27 @@
         
         // Fallback for paths that aren't in the menu exactly but share a prefix (like /documents/invoices/123)
         // We only use this if we didn't find a better match
-        if (href !== "/" && pathname.startsWith(href + "/") && bestMatch === href) return true;
+        const targetPath = target.pathname;
+        if (target.search === '' && href !== "/" && pathname.startsWith(targetPath + "/") && bestMatch === href) return true;
         
         return false;
     }
 
+    function isHrefMatch(href: string, pathname: string, search: string): boolean {
+        const target = new URL(href, 'http://kpos.local');
+        if (target.search && target.search !== search) return false;
+        if (!target.search && search) return false;
+        return pathname.startsWith(target.pathname);
+    }
+
     function isParentActive(item: MenuItem): boolean {
-        if (item.children) {
-            return item.children.some((child) => isActive(child.href));
-        }
-        return isActive(item.href);
+        return item.children ? hasActiveDescendant(item) : isActive(item.href);
+    }
+
+    function hasActiveDescendant(item: MenuItem): boolean {
+        return item.children?.some((child) => child.children
+            ? hasActiveDescendant(child)
+            : isActive(child.href)) ?? false;
     }
 
     function getBadgeClass(color?: string): string {
@@ -467,7 +532,9 @@
                                 onmouseleave={() => { if (!isOpen) hoveredMenu = null; }}
                             >
                                 <button
-                                    onclick={() => { if (isOpen) toggleMenu(item.id); }}
+                                    onclick={() => { if (isOpen) toggleMenu(item.id); else onToggle?.(); }}
+                                    aria-expanded={isOpen ? expandedMenus.has(item.id) : undefined}
+                                    aria-controls={isOpen ? `sidebar-menu-${item.id}` : undefined}
                                     class={cn(
                                         "flex items-center w-full gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200",
                                         isParentActive(item)
@@ -544,6 +611,7 @@
                             {#if isOpen}
                                 {#if expandedMenus.has(item.id)}
                                     <ul
+                                        id={`sidebar-menu-${item.id}`}
                                         class="mt-1 ml-4 pl-4 border-l-2 border-gray-200 dark:border-gray-700 space-y-1"
                                     >
                                     {#each item.children as child}
@@ -553,6 +621,8 @@
                                                     <!-- Level 2 parent (grandparent submenu) -->
                                                     <button
                                                         onclick={() => toggleMenu(child.id)}
+                                                        aria-expanded={expandedMenus.has(child.id)}
+                                                        aria-controls={`sidebar-menu-${child.id}`}
                                                         class={cn(
                                                             "flex items-center w-full gap-3 px-3 py-2 rounded-lg text-sm transition-all duration-200",
                                                             child.children.some(gc => isActive(gc.href))
@@ -565,7 +635,7 @@
                                                         <ChevronDown class={cn("w-3 h-3 transition-transform duration-200", expandedMenus.has(child.id) ? "rotate-180" : "")} />
                                                     </button>
                                                     {#if expandedMenus.has(child.id)}
-                                                        <ul class="mt-1 ml-3 pl-3 border-l border-gray-200 dark:border-gray-700 space-y-0.5">
+                                                        <ul id={`sidebar-menu-${child.id}`} class="mt-1 ml-3 pl-3 border-l border-gray-200 dark:border-gray-700 space-y-0.5">
                                                             {#each child.children as grandchild}
                                                                 {#if isMenuVisible(grandchild)}
                                                                     <li>

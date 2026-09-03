@@ -6,8 +6,9 @@
         QueryClient,
         QueryClientProvider,
     } from "@tanstack/svelte-query";
+    import { get } from "svelte/store";
     import { api } from "$api";
-    import { auth } from "$stores";
+    import { auth, dialogStore } from "$stores";
     import { cn } from "$utils";
     import { toast } from "svelte-sonner";
     import { t } from "$lib/i18n/index.svelte";
@@ -49,7 +50,9 @@
     // Refetch when search or store changes
     $effect(() => {
         void searchQuery; void activeStoreId;
-        $categoriesQuery.refetch();
+        // get() avoids the infinite-refetch-loop footgun — see admin/audit's
+        // equivalent effect for the full explanation.
+        get(categoriesQuery).refetch();
     });
 
     // Filtered and paginated
@@ -151,8 +154,8 @@
         }
     }
 
-    function confirmDelete(category: any) {
-        if (confirm(t("common.deleteMessage"))) {
+    async function confirmDelete(category: any) {
+        if (await dialogStore.confirm(t("common.deleteMessage"))) {
             $deleteMutate.mutate(category.id);
         }
     }

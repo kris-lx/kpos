@@ -2,6 +2,7 @@
     import { onMount } from "svelte";
     import { t } from "$lib/i18n/index.svelte";
     import { cn, formatCurrency, formatDate, escapeCsvCell, escapeHtml } from "$utils";
+    import { printHtml } from "$utils/printHtml";
     import { api } from "$api";
     import { toast } from "svelte-sonner";
     import { auth } from "$stores";
@@ -137,10 +138,7 @@
         ).join('');
         const total = filteredSettlements.reduce((sum, s) => sum + (s.amount || 0), 0);
         const html = `<html><head><meta charset="utf-8"><style>body{font-family:'Noto Sans Lao',sans-serif}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ddd;padding:8px;font-size:12px}th{background:#f5f5f5}tfoot td{font-weight:bold}</style></head><body><h2 style="text-align:center">ລາຍການຊຳລະ</h2><table><thead><tr><th>ວັນທີ</th><th>ລະຫັດ</th><th>ວິທີຊຳລະ</th><th>ຍອດເງິນ</th><th>ສະຖານະ</th></tr></thead><tbody>${rows}</tbody><tfoot><tr><td colspan="3" style="text-align:right">ລວມ</td><td style="text-align:right">${formatCurrency(total)}</td><td></td></tr></tfoot></table></body></html>`;
-        const blob = new Blob([html], { type: 'text/html' });
-        const url = URL.createObjectURL(blob);
-        const w = window.open(url, '_blank');
-        if (w) w.onload = () => w.print();
+        printHtml(html);
         toast.success(t('common.exportSuccess'));
         showExportMenu = false;
     }

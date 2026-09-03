@@ -6,6 +6,7 @@
     import { api } from "$api";
     import { auth } from "$stores";
     import { toast } from "svelte-sonner";
+    import StaffScheduleModal from "$lib/components/StaffScheduleModal.svelte";
     import {
         Users,
         Plus,
@@ -31,9 +32,16 @@
     } from "lucide-svelte";
 
     // Rule-based CRUD
-    const canCreateStaff = $derived(auth.canCreate('staff'));
+    // Match the exact permission checked by POST /staff. A role rule alone
+    // must not render Add Staff for a sales-only employee.
+    const canCreateStaff = $derived(auth.hasPermission('staff:create') && auth.canCreate('staff'));
     const canUpdateStaff = $derived(auth.canUpdate('staff'));
     const canDeleteStaff = $derived(auth.canDelete('staff'));
+    const canManageWorkflow = $derived(
+        auth.hasPermission('staff:update') &&
+        auth.canUpdate('staff') &&
+        (auth.isSuperAdmin || (auth.roleLevel ?? 7) <= 4),
+    );
 
     // State
     let searchQuery = $state("");
@@ -41,6 +49,7 @@
     let showAddModal = $state(false);
     let showViewModal = $state(false);
     let showDeleteModal = $state(false);
+    let scheduleStaff = $state<any>(null);
     let selectedStaff = $state<any>(null);
     let isLoading = $state(true);
     let isSaving = $state(false);
@@ -74,12 +83,20 @@
         branchId: "",
         roleId: "",
         isActive: true,
+        makerEnabled: true,
+        checkerEnabled: false,
+        requiresShift: true,
     });
     
     // Stores, Branches and Roles for dropdowns
     let stores = $state<any[]>([]);
     let branches = $state<any[]>([]);
     let roles = $state<any[]>([]);
+    // Keep an existing legacy/template assignment visible while editing, but
+    // do not offer global templates as a new assignment choice.
+    let assignableRoles = $derived(
+        roles.filter((role) => role.assignable !== false || role.id === formData.roleId),
+    );
 
     // A store now has many branches (Tenant → Store → Branch). Branches are
     // fetched per-store on demand (see loadBranchesForStore below) rather
@@ -245,8 +262,37 @@
             branchId: staff.branchId || "",
             roleId: staff.roleId || "",
             isActive: staff.isActive ?? true,
+            makerEnabled: staff.makerEnabled ?? true,
+            checkerEnabled: staff.checkerEnabled ?? false,
+            requiresShift: staff.requiresShift ?? true,
         };
         showAddModal = true;
+    }
+
+    let scheduleBranchOptions = $state<any[]>([]);
+
+    async function manageSchedule(staff: any) {
+        if (staff.branchId) {
+            scheduleBranchOptions = [];
+            scheduleStaff = staff;
+            return;
+        }
+        // No single fixed branch (assigned at store level across many
+        // branches instead) — look up which branches they actually have an
+        // assignment in, so the modal can offer a picker rather than just
+        // refusing outright.
+        try {
+            const res = await api.get(`staff/${staff.id}/schedulable-branches`).json<any>();
+            const options = res.success ? (res.data || []) : [];
+            if (options.length === 0) {
+                toast.error("ພະນັກງານຄົນນີ້ຍັງບໍ່ໄດ້ຖືກມອບໝາຍໃຫ້ສາຂາໃດເລີຍ ກະລຸນາມອບໝາຍສາຂາກ່ອນ ຈຶ່ງຈະກຳນົດຕາຕະລາງເວລາໄດ້");
+                return;
+            }
+            scheduleBranchOptions = options;
+            scheduleStaff = staff;
+        } catch {
+            toast.error(t('common.loadingError'));
+        }
     }
 
     // Confirm delete
@@ -288,7 +334,20 @@
         try {
             let response;
             if (selectedStaff) {
-                response = await api.put(`staff/${selectedStaff.id}`, { json: formData }).json<any>();
+                const { makerEnabled, checkerEnabled, requiresShift, ...profileData } = formData;
+                // The backend intentionally keeps an owner's self-edit limited
+                // to workflow flags. Do not send profile/role fields for that
+                // case, otherwise the role ladder rejects the whole request.
+                if (selectedStaff.id !== auth.user?.id) {
+                    response = await api.put(`staff/${selectedStaff.id}`, { json: profileData }).json<any>();
+                    if (!response.success) {
+                        toast.error(response.error?.message || t("error.network"));
+                        return;
+                    }
+                }
+                response = await api.put(`staff/${selectedStaff.id}/workflow`, {
+                    json: { makerEnabled, checkerEnabled, requiresShift },
+                }).json<any>();
             } else {
                 response = await api.post("staff", { json: formData }).json<any>();
             }
@@ -296,7 +355,7 @@
                 toast.success(selectedStaff ? t("staff.updateSuccess") : t("staff.createSuccess"));
                 showAddModal = false;
                 selectedStaff = null;
-                formData = { name: "", email: "", password: "", phone: "", role: "staff", storeId: "", branchId: "", roleId: "", isActive: true };
+                formData = { name: "", email: "", password: "", phone: "", role: "staff", storeId: "", branchId: "", roleId: "", isActive: true, makerEnabled: true, checkerEnabled: false, requiresShift: true };
                 await loadStaff();
                 await loadStaffCounts();
             } else {
@@ -313,7 +372,7 @@
     // Open add modal
     function openAddModal() {
         selectedStaff = null;
-        formData = { name: "", email: "", password: "", phone: "", role: "staff", storeId: auth.activeStoreId || "", branchId: "", roleId: "", isActive: true };
+        formData = { name: "", email: "", password: "", phone: "", role: "staff", storeId: auth.activeStoreId || "", branchId: "", roleId: "", isActive: true, makerEnabled: true, checkerEnabled: false, requiresShift: true };
         showAddModal = true;
     }
 
@@ -594,14 +653,21 @@
                                 </div>
                             </td>
                             <td class="px-4 py-3">
-                                <span
-                                    class={cn(
-                                        "px-2 py-1 rounded-full text-xs font-medium",
-                                        getRoleColor(staff.role),
-                                    )}
-                                >
-                                    {staff.roleLabel}
-                                </span>
+                                <div class="space-y-1.5">
+                                    <span
+                                        class={cn(
+                                            "px-2 py-1 rounded-full text-xs font-medium",
+                                            getRoleColor(staff.role),
+                                        )}
+                                    >
+                                        {staff.roleLabel}
+                                    </span>
+                                    <div class="flex flex-wrap gap-1">
+                                        {#if staff.makerEnabled !== false}<span class="px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 text-[10px]">Maker</span>{/if}
+                                        {#if staff.checkerEnabled === true}<span class="px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300 text-[10px]">Checker</span>{/if}
+                                        {#if staff.requiresShift === false}<span class="px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300 text-[10px]">No shift</span>{/if}
+                                    </div>
+                                </div>
                             </td>
                             <td
                                 class="px-4 py-3 text-sm text-gray-600 dark:text-gray-300"
@@ -660,6 +726,15 @@
                                     >
                                         <Shield class="w-4 h-4" />
                                     </button>
+                                    {#if canManageWorkflow && staff.requiresShift !== false}
+                                    <button
+                                        onclick={() => manageSchedule(staff)}
+                                        class="p-2 text-gray-500 hover:text-blue-600 dark:text-gray-400 dark:hover:text-blue-400 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
+                                        title="Manage work schedule"
+                                    >
+                                        <Clock class="w-4 h-4" />
+                                    </button>
+                                    {/if}
                                     {/if}
                                     {#if canDeleteStaff}
                                     <button
@@ -722,6 +797,15 @@
         {/if}
     </div>
 </div>
+
+{#if scheduleStaff}
+    <StaffScheduleModal
+        staff={scheduleStaff}
+        branchId={scheduleStaff.branchId || null}
+        branchOptions={scheduleBranchOptions}
+        onclose={() => (scheduleStaff = null)}
+    />
+{/if}
 
 <!-- Add/Edit Staff Modal -->
 {#if showAddModal}
@@ -851,11 +935,37 @@
                         class="w-full px-4 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                     >
                         <option value="">-- {t("roles.selectRole")} --</option>
-                        {#each roles as role (role.id)}
+                        {#each assignableRoles as role (role.id)}
                             <option value={role.id}>{role.displayName || role.name}</option>
                         {/each}
                     </select>
                 </div>
+                {#if canManageWorkflow}
+                <div class="rounded-xl border border-primary-200 dark:border-primary-900/50 bg-primary-50/60 dark:bg-primary-900/10 p-4 space-y-3">
+                    <div>
+                        <h3 class="text-sm font-semibold text-gray-900 dark:text-white">Maker / Checker</h3>
+                        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">ກຳນົດໜ້າທີ່ຂອງ user ຄົນນີ້ໃນ workflow ຂອງຮ້ານ</p>
+                    </div>
+                    <label class="flex items-start gap-2">
+                        <input type="checkbox" bind:checked={formData.makerEnabled} class="mt-0.5 w-4 h-4 rounded border-gray-300 dark:border-gray-600 text-primary-600 focus:ring-primary-500" />
+                        <span class="text-sm text-gray-700 dark:text-gray-300">
+                            ເປັນ Maker (ສາມາດຂາຍ/ສ້າງລາຍການ)
+                            <span class="block text-xs text-danger-600 dark:text-danger-400 mt-0.5">⚠ ຖ້າປິດ, ຄົນນີ້ຈະ<b>ຂາຍ/ສ້າງລາຍການບໍ່ໄດ້ເລີຍ</b> — ໃຊ້ສຳລັບຄົນທີ່ບໍ່ໄດ້ຂາຍເອງ (ເຊັ່ນ: ບັນຊີ) ເທົ່ານັ້ນ</span>
+                        </span>
+                    </label>
+                    <label class="flex items-start gap-2">
+                        <input type="checkbox" bind:checked={formData.checkerEnabled} class="mt-0.5 w-4 h-4 rounded border-gray-300 dark:border-gray-600 text-primary-600 focus:ring-primary-500" />
+                        <span class="text-sm text-gray-700 dark:text-gray-300">
+                            ເປັນ Checker (ສາມາດອະນຸມັດ ຍົກເລີກ/ຄືນເງິນຂອງຄົນອື່ນ)
+                            <span class="block text-xs text-gray-400 dark:text-gray-500 mt-0.5">ຄົນທີ່ຂາຍເອງຈະຍົກເລີກ/ຄືນເງິນລາຍການຂອງຕົນເອງບໍ່ໄດ້ ຕ້ອງໃຫ້ Checker ຄົນອື່ນອະນຸມັດ</span>
+                        </span>
+                    </label>
+                    <label class="flex items-start gap-2">
+                        <input type="checkbox" bind:checked={formData.requiresShift} class="mt-0.5 w-4 h-4 rounded border-gray-300 dark:border-gray-600 text-primary-600 focus:ring-primary-500" />
+                        <span class="text-sm text-gray-700 dark:text-gray-300">ບັງຄັບເປີດກະກ່ອນເຮັດວຽກ</span>
+                    </label>
+                </div>
+                {/if}
                 <label class="flex items-center gap-2">
                     <input type="checkbox" bind:checked={formData.isActive} class="w-4 h-4 rounded border-gray-300 dark:border-gray-600 text-primary-600 focus:ring-primary-500" />
                     <span class="text-sm text-gray-700 dark:text-gray-300">{t("staff.isActive")}</span>

@@ -7,7 +7,15 @@ import { authenticate, authorize, branchFilter, ensureScopeAccess, isAdmin, type
 import { withTenantTx } from '@/infrastructure/http/middleware/tenant-tx.middleware';
 import { db as globalDb } from '@/config/database.config';
 import { branches, stores, users } from '@/db/schema/tables';
-import { eq, and, inArray, ne, asc, count, sql, or } from 'drizzle-orm';
+import { eq, and, inArray, ne, asc, count, sql, or, ilike } from 'drizzle-orm';
+
+// Hard cap so a tenant with tens of thousands of branches (level<=2 callers
+// see the whole tenant, unscoped by branch) can't force an unbounded
+// row-count/payload. Combined with `branches_tenant_active_name_idx`,
+// this turns the query into an index scan with limit pushdown instead of a
+// full scan + external sort.
+const BRANCHES_LIST_CAP = 500;
+import { queryInChunks } from '@/infrastructure/helpers/chunked-query.helper';
 
 export const branchRoutes = Router();
 
@@ -43,24 +51,46 @@ branchRoutes.get('/', authenticate, withTenantTx(), branchFilter(), async (req, 
             }
         }
 
-        const rows = await db.query.branches.findMany({
-            where: and(...conditions),
-            orderBy: asc(branches.name),
-        });
+        const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
+        if (search) conditions.push(ilike(branches.name, `%${search}%`));
 
-        // Attach employee count per branch
+        // Total count + `limit + 1` over-fetch so the response can say
+        // "truncated" instead of silently returning an alphabetically-first
+        // slice with no signal that anything was cut off — for the
+        // 100k-branch scale case this cap exists for, that used to look
+        // exactly like "this tenant only has 500 branches" from the client's
+        // point of view.
+        const [rows, [{ value: totalBranches }]] = await Promise.all([
+            db.query.branches.findMany({
+                where: and(...conditions),
+                orderBy: asc(branches.name),
+                limit: BRANCHES_LIST_CAP,
+            }),
+            db.select({ value: count() }).from(branches).where(and(...conditions)),
+        ]);
+
+        // Attach employee count per branch. Chunked — an unscoped super_admin
+        // call here can pull 100k+ branch ids (this repo's largest scale-test
+        // tenant), and a single inArray() over all of them blows past
+        // Postgres's 65,534-bound-parameter limit (MAX_PARAMETERS_EXCEEDED).
         const branchIds = rows.map(b => b.id);
         let countMap = new Map<string, number>();
         if (branchIds.length > 0) {
-            const userCounts = await db.select({ branchId: users.branchId, cnt: count() })
-                .from(users)
-                .where(and(inArray(users.branchId, branchIds), eq(users.isActive, true)))
-                .groupBy(users.branchId);
-            userCounts.forEach(r => { if (r.branchId) countMap.set(r.branchId, Number(r.cnt)); });
+            const userCounts = await queryInChunks(branchIds, (batch) =>
+                db.select({ branchId: users.branchId, cnt: count() })
+                    .from(users)
+                    .where(and(inArray(users.branchId, batch), eq(users.isActive, true)))
+                    .groupBy(users.branchId)
+            );
+            userCounts.forEach(r => { if (r.branchId) countMap.set(r.branchId, (countMap.get(r.branchId) ?? 0) + Number(r.cnt)); });
         }
         const data = rows.map(b => ({ ...b, employeeCount: countMap.get(b.id) ?? 0 }));
 
-        res.json({ success: true, data });
+        res.json({
+            success: true,
+            data,
+            meta: { total: Number(totalBranches) || 0, returned: data.length, truncated: Number(totalBranches) > BRANCHES_LIST_CAP },
+        });
     } catch (error) {
         next(error);
     }

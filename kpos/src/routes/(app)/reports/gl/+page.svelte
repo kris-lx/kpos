@@ -306,9 +306,11 @@
         <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-100 dark:border-gray-700 overflow-hidden">
             <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-gray-700">
                 <h2 class="font-semibold text-gray-900 dark:text-white">P&L ຕາມສາຂາ</h2>
+                {#if auth.canExport('reports')}
                 <button onclick={exportPLCsv} class="flex items-center gap-2 px-3 py-1.5 text-sm border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 transition-colors">
                     <Download class="w-4 h-4" /> CSV
                 </button>
+                {/if}
             </div>
             <div class="overflow-x-auto">
                 <table class="w-full text-sm">
@@ -440,9 +442,11 @@
                     <option value={a}>{a}</option>
                 {/each}
             </select>
+            {#if auth.canExport('reports')}
             <button onclick={exportAuditCsv} class="flex items-center gap-2 px-3 py-2 text-sm border border-gray-200 dark:border-gray-600 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 transition-colors">
                 <Download class="w-4 h-4" /> CSV
             </button>
+            {/if}
         </div>
 
         <div class="bg-white dark:bg-gray-800 rounded-2xl border border-gray-100 dark:border-gray-700 overflow-hidden">

@@ -5,6 +5,7 @@
     import { api } from "$api";
     import { auth } from "$lib/stores/auth.svelte";
     import { formatCurrency, formatDate, escapeHtml, escapeCsvCell } from "$lib/utils";
+    import { printHtml } from "$lib/utils/printHtml";
     import { toast } from "svelte-sonner";
     import MoneyInput from "$lib/components/MoneyInput.svelte";
     import {
@@ -60,24 +61,42 @@
         items: [] as { productId: string; quantity: number; unitCost: number }[],
     });
 
+    // The backend stores/compares status as uppercase (DRAFT on create,
+    // RECEIVED/APPROVED via PATCH .../status — all exact-match eq()
+    // queries). This file compared against lowercase "pending"/"received"/
+    // "cancelled" everywhere, which never matched anything: stats always
+    // showed 0 pending / 0 received, every order's badge fell through to
+    // the ugly raw-string default (a PO literally rendered "DRAFT" instead
+    // of a translated label), and the status filter buttons silently
+    // returned empty results since the backend does a case-sensitive eq().
     // Stats
     let stats = $derived({
         total: totalItems,
-        pending: purchaseOrders.filter((o) => o.status === "pending").length,
-        received: purchaseOrders.filter((o) => o.status === "received").length,
+        pending: purchaseOrders.filter((o) => o.status !== "RECEIVED" && o.status !== "CANCELLED").length,
+        received: purchaseOrders.filter((o) => o.status === "RECEIVED").length,
         totalValue: purchaseOrders.reduce((sum, o) => sum + (o.totalAmount || 0), 0),
     });
 
     function getStatusConfig(status: string) {
         switch (status) {
-            case "received":
+            case "RECEIVED":
                 return { bg: "bg-success-100 dark:bg-success-900/50", text: "text-success-700 dark:text-success-400", label: "ຮັບແລ້ວ", icon: Check };
-            case "pending":
-                return { bg: "bg-amber-100 dark:bg-amber-900/50", text: "text-amber-700 dark:text-amber-400", label: "ລໍຖ້າ", icon: Clock };
-            case "cancelled":
+            case "CANCELLED":
                 return { bg: "bg-danger-100 dark:bg-danger-900/50", text: "text-danger-700 dark:text-danger-400", label: "ຍົກເລີກ", icon: AlertCircle };
             default:
-                return { bg: "bg-gray-100 dark:bg-gray-700", text: "text-gray-600 dark:text-gray-400", label: status, icon: Clock };
+                // DRAFT / APPROVED / anything else not-yet-received — all read as "pending" to the user.
+                return { bg: "bg-amber-100 dark:bg-amber-900/50", text: "text-amber-700 dark:text-amber-400", label: "ລໍຖ້າ", icon: Clock };
+        }
+    }
+
+    async function markReceived(order: any) {
+        try {
+            await api.patch(`inventory/purchase-orders/${order.id}/status`, { json: { status: 'RECEIVED' } }).json();
+            toast.success("ຮັບເຄື່ອງເຂົ້າສາງສຳເລັດ");
+            loadData();
+        } catch (e: any) {
+            const errData = await e?.response?.json?.().catch(() => null);
+            toast.error(errData?.error?.message || t('common.error'));
         }
     }
 
@@ -261,8 +280,7 @@
                 <tfoot><tr><td colspan="4">ລວມທັງໝົດ</td><td style="text-align:right">${totalValue.toLocaleString()}</td><td></td></tr></tfoot>
                 </table></body></html>`;
 
-            const win = window.open('', '_blank');
-            if (win) { win.document.write(html); win.document.close(); win.print(); }
+            printHtml(html);
             toast.success(t('common.exportSuccess'));
         } catch {
             toast.error(t('common.exportFailed'));
@@ -369,7 +387,7 @@
                 />
             </div>
             <div class="flex gap-2">
-                {#each [{ id: null, label: "ທັງໝົດ" }, { id: "pending", label: "ລໍຖ້າ" }, { id: "received", label: "ຮັບແລ້ວ" }, { id: "cancelled", label: "ຍົກເລີກ" }] as filter (filter.id)}
+                {#each [{ id: null, label: "ທັງໝົດ" }, { id: "DRAFT", label: "ລໍຖ້າ" }, { id: "RECEIVED", label: "ຮັບແລ້ວ" }, { id: "CANCELLED", label: "ຍົກເລີກ" }] as filter (filter.id)}
                     <button
                         onclick={() => { statusFilter = filter.id; handleFilterChange(); }}
                         class={cn("px-3 py-2 rounded-lg text-sm font-medium transition-all", statusFilter === filter.id ? "bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-400" : "text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700")}
@@ -437,6 +455,11 @@
                                         <button onclick={() => openView(order)} class="p-2 text-gray-400 hover:text-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded-lg transition-all">
                                             <Eye class="w-4 h-4" />
                                         </button>
+                                        {#if order.status !== 'RECEIVED' && order.status !== 'CANCELLED'}
+                                            <button onclick={() => markReceived(order)} title="ຮັບເຄື່ອງເຂົ້າສາງ" class="p-2 text-gray-400 hover:text-success-600 hover:bg-success-50 dark:hover:bg-success-900/30 rounded-lg transition-all">
+                                                <Check class="w-4 h-4" />
+                                            </button>
+                                        {/if}
                                     </div>
                                 </td>
                             </tr>

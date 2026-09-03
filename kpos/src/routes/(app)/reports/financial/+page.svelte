@@ -1,6 +1,7 @@
 ﻿<script lang="ts">
     import { onMount } from "svelte";
     import { cn, formatCurrency, escapeHtml, escapeCsvCell } from "$utils";
+    import { printHtml } from "$utils/printHtml";
     import { api } from "$api";
     import { t } from "$lib/i18n/index.svelte";
     import { auth } from "$stores";
@@ -62,8 +63,14 @@
         try {
             const res = await api.get(`reports/financial?period=${periodFilter}`).json<any>();
             financialData = res.data || {};
-        } catch (e) {
+        } catch (e: any) {
             console.error("Failed to load:", e);
+            let msg = t("common.error");
+            try {
+                const errData = await e?.response?.json();
+                if (errData?.error?.message) msg = errData.error.message;
+            } catch {}
+            toast.error(msg);
         } finally {
             isLoading = false;
         }
@@ -139,12 +146,7 @@
 <h2>ວິທີການຊຳລະ</h2><table><tr><th>ວິທີ</th><th>ຍອດ</th><th>ຈຳນວນ</th></tr>
 ${(financialData.paymentMethods || []).map((p: any) => `<tr><td>${escapeHtml(p.methodName || '')}</td><td class="text-right">${formatCurrency(p.total || 0)}</td><td class="text-right">${p.count || 0}</td></tr>`).join('')}
 </table></body></html>`;
-        const w = window.open('', '_blank');
-        if (w) {
-            w.document.write(html);
-            w.document.close();
-            w.onload = () => w.print();
-        }
+        printHtml(html);
         toast.success(t("reports.exportSuccess"));
         exporting = false;
     }
@@ -207,8 +209,9 @@ ${(financialData.paymentMethods || []).map((p: any) => `<tr><td>${escapeHtml(p.m
                 <option value="year">{t("reports.thisYear")}</option>
             </select>
             <!-- Export Dropdown -->
+            {#if auth.canExport('reports')}
             <div class="relative">
-                <button 
+                <button
                     onclick={() => showExportMenu = !showExportMenu}
                     disabled={exporting}
                     class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl text-sm font-medium"
@@ -238,6 +241,7 @@ ${(financialData.paymentMethods || []).map((p: any) => `<tr><td>${escapeHtml(p.m
                     </div>
                 {/if}
             </div>
+            {/if}
         </div>
     </div>
 

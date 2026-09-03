@@ -105,6 +105,12 @@
 
     async function loadData() {
         isLoading = true;
+        if (!auth.activeBranchId) {
+            tables = [];
+            kitchenOrders = [];
+            isLoading = false;
+            return;
+        }
         await Promise.all([loadTables(), loadKitchenOrders()]);
         isLoading = false;
     }
